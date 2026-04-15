@@ -598,9 +598,9 @@ def cmd_status(config):
 def main():
     parser = argparse.ArgumentParser(
         prog="oo",
-        description="Odoo development toolkit",
+        description="Odoo development toolkit (by GED)",
     )
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", title="commands", metavar="")
 
     subparsers.add_parser("start", help="Start the Odoo server")
     subparsers.add_parser("stop", help="Stop the Odoo server")
