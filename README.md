@@ -75,4 +75,4 @@ oo/
 
 ## Current status
 
-Early design phase. The existing `odev.py` is included as reference for the rewrite.
+Early design phase. The existing `old_odev.py` is included as reference for the rewrite.
