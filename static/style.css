@@ -239,6 +239,25 @@ section.hidden { display: none; }
   word-break: break-all;
 }
 
+/* --- code --- */
+
+.code-current { margin-bottom: 18px; font-size: 14px; }
+.code-current .dim { font-size: 13px; margin-bottom: 6px; display: block; }
+.current-branch-line { margin-bottom: 4px; }
+
+.branch-name {
+  color: #c38cb4;
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.code-subtitle {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+
 /* --- config --- */
 
 .config-block { margin-bottom: 30px; }

@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "databases", "git", "tasks", "runbot", "config"];
+const SECTIONS = ["server", "databases", "code", "tasks", "runbot", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -16,6 +16,7 @@ function showSection(name) {
   }
   if (name === "server") populateTargetSelect(); // pick up config edits
   if (name === "databases") loadDatabases();
+  if (name === "code") loadCode();
   if (name === "config") renderConfigEditors();
 }
 
@@ -245,8 +246,8 @@ function renderDatabases(dbs) {
 }
 
 function timeAgo(ts) {
-  // odoo timestamps are naive UTC: "2026-06-11 12:34:56.789..."
-  const date = new Date(ts.replace(" ", "T") + "Z");
+  // either ISO8601 with timezone (git) or naive UTC "2026-06-11 12:34:56" (odoo)
+  const date = ts.includes("T") ? new Date(ts) : new Date(ts.replace(" ", "T") + "Z");
   if (isNaN(date)) return ts;
   const secs = Math.max(0, Math.floor((Date.now() - date) / 1000));
   if (secs < 60) return "just now";
@@ -412,6 +413,101 @@ const targetEditor = createListEditor({
 function renderConfigEditors() {
   repoEditor.render();
   targetEditor.render();
+}
+
+// ---------------------------------------------------------------------------
+// Code section: current branches of the active target + all branches
+// ---------------------------------------------------------------------------
+
+const codeCurrent = document.getElementById("code-current");
+const branchList = document.getElementById("branch-list");
+
+document.getElementById("btn-code-refresh").addEventListener("click", loadCode);
+
+async function loadCode() {
+  branchList.textContent = "Loading…";
+  codeCurrent.replaceChildren();
+  let repos;
+  try {
+    const resp = await fetch("/api/code/branches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repos: getConfig().repos }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+    repos = data.repos;
+  } catch (err) {
+    branchList.textContent = `Failed to load branches: ${err.message}`;
+    return;
+  }
+  renderCurrentBranches(repos);
+  renderBranchTable(repos);
+}
+
+function renderCurrentBranches(repos) {
+  codeCurrent.replaceChildren();
+  const targetId = lastStatus && lastStatus.target;
+  const target = targetId && getConfig().targets.find((t) => t.id === targetId);
+  if (!target) {
+    codeCurrent.innerHTML = '<span class="dim">No active target (server stopped).</span>';
+    return;
+  }
+  const title = document.createElement("div");
+  title.className = "dim";
+  title.textContent = `Active target: ${target.id}`;
+  codeCurrent.appendChild(title);
+  const byId = Object.fromEntries(repos.map((r) => [r.id, r]));
+  for (const repoId of target.repos) {
+    const line = document.createElement("div");
+    line.className = "current-branch-line";
+    const repo = byId[repoId];
+    const branch = repo ? (repo.error ? `error: ${repo.error}` : repo.current) : "?";
+    line.innerHTML = `${escapeHtml(repoId)} <span class="branch-name">${escapeHtml(branch)}</span>`;
+    codeCurrent.appendChild(line);
+  }
+}
+
+function renderBranchTable(repos) {
+  const rows = [];
+  for (const repo of repos) {
+    for (const b of repo.branches) {
+      rows.push({ branch: b.name, repo: repo.id, date: b.date });
+    }
+  }
+  rows.sort((a, b) => a.branch.localeCompare(b.branch) || a.repo.localeCompare(b.repo));
+
+  branchList.replaceChildren();
+  const errors = repos.filter((r) => r.error);
+  for (const r of errors) {
+    const div = document.createElement("div");
+    div.className = "dim";
+    div.textContent = `${r.id}: ${r.error}`;
+    branchList.appendChild(div);
+  }
+  if (!rows.length) {
+    branchList.appendChild(Object.assign(document.createElement("div"),
+      { className: "dim", textContent: "No branches." }));
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "db-table";
+  table.innerHTML = "<thead><tr><th>Branch</th><th>Repository</th><th>Last commit</th></tr></thead>";
+  const tbody = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const branch = document.createElement("td");
+    branch.textContent = row.branch;
+    const repo = document.createElement("td");
+    repo.textContent = row.repo;
+    const date = document.createElement("td");
+    date.textContent = row.date ? timeAgo(row.date) : "—";
+    if (row.date) date.title = row.date;
+    tr.append(branch, repo, date);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  branchList.appendChild(table);
 }
 
 // ---------------------------------------------------------------------------

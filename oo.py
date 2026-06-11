@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """oo - Odoo development helper, served as a local web app.
 
-Run `python3 oo.py`, open the printed URL. The frontend (static/) holds the
-configuration and posts it with each start request; the backend is stateless.
+Run `python3 oo.py`, open the printed URL (or pass --open to open it in the
+browser right away). The frontend (static/) holds the configuration and posts
+it with each start request; the backend is stateless.
 """
 
+import argparse
 import atexit
 import collections
 import json
@@ -17,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TAG = "[oo]"
@@ -183,6 +186,41 @@ def drop_database(db_name):
     if result.returncode != 0:
         return False, result.stderr.strip() or "dropdb failed"
     return True, None
+
+
+def git_branches(repos):
+    """For each repo {id, path}: the checked-out branch and all local
+    branches with their last-commit date."""
+    out = []
+    for repo in repos:
+        rid = repo.get("id")
+        path = os.path.expanduser(repo.get("path", ""))
+        if not rid or not path:
+            continue
+        entry = {"id": rid, "current": None, "branches": [], "error": None}
+        try:
+            r = subprocess.run(
+                ["git", "-C", path, "branch", "--show-current"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                entry["error"] = r.stderr.strip().split("\n")[0] or "not a git repository"
+                out.append(entry)
+                continue
+            entry["current"] = r.stdout.strip() or "(detached)"
+            r = subprocess.run(
+                ["git", "-C", path, "for-each-ref", "refs/heads",
+                 "--format=%(refname:short)%09%(committerdate:iso8601-strict)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in r.stdout.splitlines():
+                name, _, date = line.partition("\t")
+                if name:
+                    entry["branches"].append({"name": name, "date": date})
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            entry["error"] = str(e)
+        out.append(entry)
+    return out
 
 
 def build_odoo_cmd(config):
@@ -474,6 +512,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "state": "stopped"})
             else:
                 self._send_json(409, {"ok": False, "error": detail})
+        elif path == "/api/code/branches":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            self._send_json(200, {"ok": True, "repos": git_branches(repos)})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
             name = (body or {}).get("name")
@@ -575,13 +619,21 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="odoo development helper (web UI)")
+    parser.add_argument("--open", action="store_true",
+                        help="open the UI in the default browser")
+    args = parser.parse_args()
+
     try:
         httpd = Server((HOST, PORT), Handler)
     except OSError as e:
         print(f"{TAG} cannot bind {HOST}:{PORT}: {e}")
         return 1
 
-    print(f"{TAG} running at http://{HOST}:{PORT}", flush=True)
+    url = f"http://{HOST}:{PORT}"
+    print(f"{TAG} running at {url}", flush=True)
+    if args.open:
+        webbrowser.open(url)
 
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
     atexit.register(MANAGER.shutdown)
