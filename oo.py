@@ -196,7 +196,8 @@ def build_odoo_cmd(config):
         raise ValueError("no database configured (start.db)")
 
     repo_map = {
-        r["id"]: r for r in config.get("repos", [])
+        r["id"]: {**r, "path": os.path.expanduser(r["path"])}
+        for r in config.get("repos", [])
         if isinstance(r, dict) and "id" in r and "path" in r
     }
     community = repo_map.get("community")
@@ -261,6 +262,8 @@ class OdooManager:
         self.master_fd = None
         self.reader_thread = None
         self.db = None
+        self.target = None
+        self.cmd = None
         self.exited_unexpectedly = False
         self.returncode = None
 
@@ -271,6 +274,8 @@ class OdooManager:
                 "state": self.state,
                 "pid": self.process.pid if (active and self.process) else None,
                 "db": self.db if active else None,
+                "target": self.target if active else None,
+                "cmd": self.cmd if active else None,
             }
             if self.exited_unexpectedly:
                 status["exited_unexpectedly"] = True
@@ -296,6 +301,8 @@ class OdooManager:
             self.exited_unexpectedly = False
             self.returncode = None
             self.db = db
+            self.target = config.get("target")
+            self.cmd = cmd
             self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
             if is_new:
                 self.bus.publish_log(f"{TAG} database '{db}' not initialized, applying on_create_args")
@@ -352,6 +359,8 @@ class OdooManager:
                 self.process = None
                 self.master_fd = None
                 self.db = None
+                self.target = None
+                self.cmd = None
             self.bus.publish_log(f"{TAG} odoo stopped")
         elif port_busy(ODOO_PORT):
             kill_port(ODOO_PORT)
@@ -405,6 +414,8 @@ class OdooManager:
             self.process = None
             self.master_fd = None
             self.db = None
+            self.target = None
+            self.cmd = None
             self.exited_unexpectedly = True
             self.returncode = ret
         self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")

@@ -14,7 +14,9 @@ function showSection(name) {
   for (const btn of document.querySelectorAll(".nav-btn")) {
     btn.classList.toggle("active", btn.dataset.section === name);
   }
+  if (name === "server") populateTargetSelect(); // pick up config edits
   if (name === "databases") loadDatabases();
+  if (name === "config") renderConfigEditors();
 }
 
 function onHashChange() {
@@ -27,12 +29,70 @@ for (const btn of document.querySelectorAll(".nav-btn")) {
 window.addEventListener("hashchange", onHashChange);
 
 // ---------------------------------------------------------------------------
+// Config store: localStorage overrides on top of DEFAULT_CONFIG (config.js)
+// ---------------------------------------------------------------------------
+
+const STORAGE_KEY = "oo-config";
+
+function storedConfig() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function getConfig() {
+  return { ...DEFAULT_CONFIG, ...storedConfig() };
+}
+
+function updateStoredConfig(patch) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...storedConfig(), ...patch }));
+}
+
+// ---------------------------------------------------------------------------
 // Server section: status + controls
 // ---------------------------------------------------------------------------
 
 const badge = document.getElementById("status-badge");
 const serverDot = document.getElementById("server-dot");
 const serverInfo = document.getElementById("server-info");
+const targetBadge = document.getElementById("target-badge");
+const targetSelect = document.getElementById("target-select");
+let lastStatus = null;
+
+const LAST_TARGET_KEY = "oo-last-target";
+
+function populateTargetSelect() {
+  const current = targetSelect.value || localStorage.getItem(LAST_TARGET_KEY);
+  targetSelect.replaceChildren();
+  for (const t of getConfig().targets) {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = t.id;
+    opt.title = `${t.repos.join(",")} → ${t.db}`;
+    targetSelect.appendChild(opt);
+  }
+  if ([...targetSelect.options].some((o) => o.value === current)) {
+    targetSelect.value = current;
+  }
+}
+
+function buildStartConfig(targetId) {
+  const cfg = getConfig();
+  const target = cfg.targets.find((t) => t.id === targetId);
+  if (!target) return null;
+  return {
+    ...cfg,
+    target: target.id,
+    start: {
+      repos: target.repos,
+      db: target.db,
+      on_create_args: target.on_create_args || "",
+      other_args: cfg.start.other_args,
+    },
+  };
+}
 const hint = document.getElementById("server-hint");
 const btnStart = document.getElementById("btn-start");
 const btnStop = document.getElementById("btn-stop");
@@ -40,10 +100,15 @@ const btnRestart = document.getElementById("btn-restart");
 const logPane = document.getElementById("log-pane");
 
 function setStatus(status) {
+  lastStatus = status;
   const state = status.state;
   badge.textContent = state;
   badge.className = `badge ${state}`;
   serverDot.classList.toggle("on", state === "running");
+  targetBadge.hidden = !status.target;
+  targetBadge.textContent = status.target || "";
+  if (state === "stopped") populateTargetSelect();
+  targetSelect.hidden = state !== "stopped";
   document.getElementById("favicon").href =
     state === "running" ? "/static/favicon-on.svg" : "/static/favicon.svg";
 
@@ -61,6 +126,10 @@ function setStatus(status) {
   }
   serverInfo.textContent = info.join("  ·  ");
   serverInfo.hidden = !info.length;
+
+  const serverCmd = document.getElementById("server-cmd");
+  serverCmd.textContent = status.cmd ? `$ ${status.cmd}` : "";
+  serverCmd.hidden = !status.cmd;
 
   const newActiveDb = status.db || null;
   if (newActiveDb !== activeDb) {
@@ -95,9 +164,18 @@ async function post(path, body) {
   }
 }
 
-btnStart.addEventListener("click", () => post("/api/start", CONFIG));
+function startAction(path, targetId) {
+  const config = buildStartConfig(targetId);
+  if (!config) return appendLog(`[oo] no such target: "${targetId || ""}" — check the Config tab`);
+  localStorage.setItem(LAST_TARGET_KEY, config.target);
+  post(path, config);
+}
+
+btnStart.addEventListener("click", () => startAction("/api/start", targetSelect.value));
 btnStop.addEventListener("click", () => post("/api/stop"));
-btnRestart.addEventListener("click", () => post("/api/restart", CONFIG));
+// restart reuses the target the server was started with, not the selector
+btnRestart.addEventListener("click", () =>
+  startAction("/api/restart", lastStatus?.target ?? targetSelect.value));
 
 // ---------------------------------------------------------------------------
 // Databases section
@@ -194,6 +272,146 @@ async function dropDatabase(name, btn) {
     return;
   }
   loadDatabases();
+}
+
+// ---------------------------------------------------------------------------
+// Config section: list editors (repositories, targets)
+// ---------------------------------------------------------------------------
+
+function createListEditor({ prefix, storageKey, itemName, fields, validate }) {
+  const rowsEl = document.getElementById(`${prefix}-rows`);
+  const msgEl = document.getElementById(`${prefix}-msg`);
+
+  function flash(text, isError) {
+    msgEl.textContent = text;
+    msgEl.className = isError ? "error" : "ok";
+    if (!isError) setTimeout(() => { msgEl.textContent = ""; }, 2000);
+  }
+
+  function makeRow(item = {}) {
+    const row = document.createElement("div");
+    row.className = "edit-row";
+    for (const f of fields) {
+      const input = document.createElement("input");
+      input.placeholder = f.placeholder;
+      input.value = f.format ? f.format(item[f.key]) : item[f.key] || "";
+      input.className = f.className;
+      input.dataset.key = f.key;
+      row.appendChild(input);
+    }
+    const remove = document.createElement("button");
+    remove.textContent = "✕";
+    remove.title = "remove";
+    remove.className = "row-remove";
+    remove.addEventListener("click", () => row.remove());
+    row.appendChild(remove);
+    return row;
+  }
+
+  function render() {
+    rowsEl.replaceChildren();
+    for (const item of getConfig()[storageKey]) {
+      rowsEl.appendChild(makeRow(item));
+    }
+  }
+
+  function save() {
+    const items = [];
+    const seen = new Set();
+    for (const row of rowsEl.children) {
+      const raw = {};
+      for (const input of row.querySelectorAll("input")) {
+        raw[input.dataset.key] = input.value.trim();
+      }
+      if (fields.every((f) => !raw[f.key])) continue; // ignore empty rows
+      for (const f of fields) {
+        if (!f.optional && !raw[f.key]) {
+          return flash(`every ${itemName} needs a ${f.name}`, true);
+        }
+      }
+      if (seen.has(raw.id)) return flash(`duplicate ${fields[0].name} "${raw.id}"`, true);
+      seen.add(raw.id);
+      const item = {};
+      for (const f of fields) {
+        item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
+      }
+      items.push(item);
+    }
+    const error = validate && validate(items);
+    if (error) return flash(error, true);
+    updateStoredConfig({ [storageKey]: items });
+    render();
+    flash("saved");
+  }
+
+  document.getElementById(`btn-${prefix}-add`).addEventListener("click", () => {
+    rowsEl.appendChild(makeRow());
+    rowsEl.lastElementChild.querySelector("input").focus();
+  });
+  document.getElementById(`btn-${prefix}-save`).addEventListener("click", save);
+  document.getElementById(`btn-${prefix}-reset`).addEventListener("click", () => {
+    if (!confirm(`Reset ${itemName}s to the built-in defaults?`)) return;
+    const stored = storedConfig();
+    delete stored[storageKey];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+    render();
+    flash("reset to defaults");
+  });
+
+  return { render };
+}
+
+const commaList = {
+  format: (v) => (v || []).join(","),
+  parse: (s) => s.split(",").map((x) => x.trim()).filter(Boolean),
+};
+
+const repoEditor = createListEditor({
+  prefix: "repo",
+  storageKey: "repos",
+  itemName: "repository",
+  fields: [
+    { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
+    { key: "path", name: "path", placeholder: "path (e.g. ~/work/community)", className: "w-flex" },
+  ],
+  validate(repos) {
+    if (!repos.find((r) => r.id === "community")) {
+      return 'a "community" repository is required (odoo-bin lives there)';
+    }
+    const ids = new Set(repos.map((r) => r.id));
+    for (const t of getConfig().targets) {
+      const used = (t.repos || []).find((id) => !ids.has(id));
+      if (used) return `repository "${used}" is still used by target "${t.id}"`;
+    }
+    return null;
+  },
+});
+
+const targetEditor = createListEditor({
+  prefix: "target",
+  storageKey: "targets",
+  itemName: "target",
+  fields: [
+    { key: "id", name: "id", placeholder: "id (e.g. enterprise)", className: "w-name" },
+    { key: "repos", name: "repos list", placeholder: "repos (e.g. community,enterprise)",
+      className: "w-mid", ...commaList },
+    { key: "db", name: "db", placeholder: "db (e.g. test_db_e)", className: "w-name" },
+    { key: "on_create_args", name: "on-create args",
+      placeholder: "on create args (e.g. -i sale_management)", className: "w-flex", optional: true },
+  ],
+  validate(targets) {
+    const repoIds = new Set(getConfig().repos.map((r) => r.id));
+    for (const t of targets) {
+      const unknown = t.repos.find((id) => !repoIds.has(id));
+      if (unknown) return `target "${t.id}": unknown repository "${unknown}"`;
+    }
+    return null;
+  },
+});
+
+function renderConfigEditors() {
+  repoEditor.render();
+  targetEditor.render();
 }
 
 // ---------------------------------------------------------------------------

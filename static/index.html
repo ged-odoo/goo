@@ -22,8 +22,10 @@
       <header class="section-header">
         <h1>Server</h1>
         <span id="status-badge" class="badge disconnected">&hellip;</span>
+        <span id="target-badge" class="target-badge" hidden></span>
       </header>
       <div id="server-controls">
+        <select id="target-select" title="target to start"></select>
         <button id="btn-start" disabled>Start</button>
         <button id="btn-stop" disabled>Stop</button>
         <button id="btn-restart" disabled>Restart</button>
@@ -32,6 +34,7 @@
         <span id="server-hint"></span>
       </div>
       <div id="server-info" class="server-info" hidden></div>
+      <div id="server-cmd" class="server-cmd" hidden></div>
       <div id="log-pane"></div>
     </section>
     <section id="section-databases" class="hidden">
@@ -55,7 +58,26 @@
     </section>
     <section id="section-config" class="hidden">
       <header class="section-header"><h1>Config</h1></header>
-      <p class="placeholder">Coming soon.</p>
+      <div class="config-block">
+        <h2>Repositories</h2>
+        <div id="repo-rows"></div>
+        <div class="config-actions">
+          <button id="btn-repo-add">Add repository</button>
+          <button id="btn-repo-save">Save</button>
+          <button id="btn-repo-reset">Reset to defaults</button>
+          <span id="repo-msg"></span>
+        </div>
+      </div>
+      <div class="config-block">
+        <h2>Targets</h2>
+        <div id="target-rows"></div>
+        <div class="config-actions">
+          <button id="btn-target-add">Add target</button>
+          <button id="btn-target-save">Save</button>
+          <button id="btn-target-reset">Reset to defaults</button>
+          <span id="target-msg"></span>
+        </div>
+      </div>
     </section>
   </main>
   <script src="/static/config.js"></script>
