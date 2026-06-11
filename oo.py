@@ -118,22 +118,29 @@ def db_initialized(db_name):
 
 
 def odoo_info(db_name):
-    """(version, is_enterprise) of the odoo installed in a database.
-    (None, False) if it holds no odoo."""
+    """(version, is_enterprise, last_update) of the odoo installed in a
+    database. (None, False, None) if it holds no odoo.
+
+    last_update is a UTC timestamp of the last detectable activity: crons
+    are written whenever a server runs against the db, logins create
+    res_users_log rows."""
     try:
         result = subprocess.run(
             ["psql", "-d", db_name, "-tAc",
              "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
              " EXISTS (SELECT 1 FROM ir_module_module"
-             " WHERE name = 'web_enterprise' AND state = 'installed')"],
+             " WHERE name = 'web_enterprise' AND state = 'installed'),"
+             " GREATEST((SELECT max(write_date) FROM ir_cron),"
+             " (SELECT max(create_date) FROM res_users_log))"],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode != 0:
-            return None, False  # no ir_module_module table: not an odoo database
-        version, _, enterprise = result.stdout.strip().partition("|")
-        return version or None, enterprise == "t"
+        line = result.stdout.strip()
+        if result.returncode != 0 or not line:
+            return None, False, None  # no odoo tables: not an odoo database
+        version, enterprise, last_update = line.split("|", 2)
+        return version or None, enterprise == "t", last_update or None
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None, False
+        return None, False, None
 
 
 def list_databases():
@@ -155,8 +162,13 @@ def list_databases():
         name = line.strip()
         if not name:
             continue
-        version, enterprise = odoo_info(name)
-        dbs.append({"name": name, "odoo_version": version, "enterprise": enterprise})
+        version, enterprise, last_update = odoo_info(name)
+        dbs.append({
+            "name": name,
+            "odoo_version": version,
+            "enterprise": enterprise,
+            "last_update": last_update,
+        })
     return dbs
 
 
@@ -264,6 +276,10 @@ class OdooManager:
                 status["exited_unexpectedly"] = True
                 status["returncode"] = self.returncode
         status["odoo_port_busy"] = port_busy(ODOO_PORT)
+        if status["db"]:
+            version, enterprise, _ = odoo_info(status["db"])
+            status["odoo_version"] = version
+            status["enterprise"] = enterprise
         return status
 
     def start(self, config):

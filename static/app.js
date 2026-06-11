@@ -32,6 +32,7 @@ window.addEventListener("hashchange", onHashChange);
 
 const badge = document.getElementById("status-badge");
 const serverDot = document.getElementById("server-dot");
+const serverInfo = document.getElementById("server-info");
 const hint = document.getElementById("server-hint");
 const btnStart = document.getElementById("btn-start");
 const btnStop = document.getElementById("btn-stop");
@@ -50,6 +51,22 @@ function setStatus(status) {
   btnStart.disabled = state !== "stopped";
   btnStop.disabled = !active;
   btnRestart.disabled = !active;
+
+  const info = [];
+  if (status.db) {
+    info.push(`database: ${status.db}`);
+    if (status.odoo_version) {
+      info.push(`odoo ${status.odoo_version}${status.enterprise ? " (ent)" : ""}`);
+    }
+  }
+  serverInfo.textContent = info.join("  ·  ");
+  serverInfo.hidden = !info.length;
+
+  const newActiveDb = status.db || null;
+  if (newActiveDb !== activeDb) {
+    activeDb = newActiveDb;
+    if (lastDbs) renderDatabases(lastDbs);
+  }
 
   const hints = [];
   if (status.exited_unexpectedly) {
@@ -87,6 +104,8 @@ btnRestart.addEventListener("click", () => post("/api/restart", CONFIG));
 // ---------------------------------------------------------------------------
 
 const dbList = document.getElementById("db-list");
+let activeDb = null;  // db of the starting/running server, bolded + undroppable
+let lastDbs = null;
 
 document.getElementById("btn-db-refresh").addEventListener("click", loadDatabases);
 
@@ -96,7 +115,8 @@ async function loadDatabases() {
     const resp = await fetch("/api/databases");
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || resp.status);
-    renderDatabases(data.databases);
+    lastDbs = data.databases;
+    renderDatabases(lastDbs);
   } catch (err) {
     dbList.textContent = `Failed to load databases: ${err.message}`;
   }
@@ -110,29 +130,51 @@ function renderDatabases(dbs) {
   }
   const table = document.createElement("table");
   table.className = "db-table";
-  table.innerHTML = "<thead><tr><th>Name</th><th>Odoo version</th><th></th></tr></thead>";
+  table.innerHTML =
+    "<thead><tr><th>Name</th><th>Odoo version</th><th>Last update</th><th></th></tr></thead>";
   const tbody = document.createElement("tbody");
   for (const db of dbs) {
+    const isActive = db.name === activeDb;
     const tr = document.createElement("tr");
     const name = document.createElement("td");
     name.textContent = db.name;
+    if (isActive) name.className = "active-db";
     const version = document.createElement("td");
     version.textContent = db.odoo_version
       ? db.odoo_version + (db.enterprise ? " (ent)" : "")
       : "—";
     if (!db.odoo_version) version.className = "dim";
+    const lastUpdate = document.createElement("td");
+    lastUpdate.textContent = db.last_update ? timeAgo(db.last_update) : "—";
+    if (db.last_update) lastUpdate.title = `${db.last_update} (UTC)`;
+    else lastUpdate.className = "dim";
     const actions = document.createElement("td");
     actions.className = "db-actions";
     const btn = document.createElement("button");
     btn.textContent = "Drop";
     btn.className = "drop-btn";
+    if (isActive) {
+      btn.disabled = true;
+      btn.title = "in use by the running server";
+    }
     btn.addEventListener("click", () => dropDatabase(db.name, btn));
     actions.appendChild(btn);
-    tr.append(name, version, actions);
+    tr.append(name, version, lastUpdate, actions);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
   dbList.appendChild(table);
+}
+
+function timeAgo(ts) {
+  // odoo timestamps are naive UTC: "2026-06-11 12:34:56.789..."
+  const date = new Date(ts.replace(" ", "T") + "Z");
+  if (isNaN(date)) return ts;
+  const secs = Math.max(0, Math.floor((Date.now() - date) / 1000));
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 async function dropDatabase(name, btn) {
