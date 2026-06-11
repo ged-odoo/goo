@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>oo</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div id="logo">oo</div>
+    <button class="nav-btn" data-section="server">Server</button>
+    <button class="nav-btn" data-section="git">Git</button>
+    <button class="nav-btn" data-section="tasks">Tasks</button>
+    <button class="nav-btn" data-section="runbot">Runbot</button>
+    <button class="nav-btn" data-section="config">Config</button>
+  </nav>
+  <main>
+    <section id="section-server">
+      <header class="section-header">
+        <h1>Server</h1>
+        <span id="status-badge" class="badge disconnected">&hellip;</span>
+      </header>
+      <div id="server-controls">
+        <button id="btn-start" disabled>Start</button>
+        <button id="btn-stop" disabled>Stop</button>
+        <button id="btn-restart" disabled>Restart</button>
+        <span id="server-hint"></span>
+      </div>
+      <div id="log-pane"></div>
+    </section>
+    <section id="section-git" class="hidden">
+      <header class="section-header"><h1>Git</h1></header>
+      <p class="placeholder">Coming soon.</p>
+    </section>
+    <section id="section-tasks" class="hidden">
+      <header class="section-header"><h1>Tasks</h1></header>
+      <p class="placeholder">Coming soon.</p>
+    </section>
+    <section id="section-runbot" class="hidden">
+      <header class="section-header"><h1>Runbot</h1></header>
+      <p class="placeholder">Coming soon.</p>
+    </section>
+    <section id="section-config" class="hidden">
+      <header class="section-header"><h1>Config</h1></header>
+      <p class="placeholder">Coming soon.</p>
+    </section>
+  </main>
+  <script src="/static/config.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

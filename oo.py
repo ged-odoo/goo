@@ -1,374 +1,83 @@
 #!/usr/bin/env python3
-"""oo - Odoo development toolkit"""
+"""oo - Odoo development helper, served as a local web app.
 
-import argparse
-import os
-import pty
-import signal
-import subprocess
-import sys
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
-
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-CONFIG_DIR = os.path.expanduser("~/.config/oo")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.toml")
-STATE_FILE = os.path.join(CONFIG_DIR, "state.toml")
-PID_FILE = os.path.join(CONFIG_DIR, "server.pid")
-
-TAG = "\033[38;5;208m[oo]\033[0m"
-
-DEFAULT_ARGS = {
-    "on_create_args": "-i sale_management",
-    "other_args": "--dev all",
-}
-
-CONFIG_TEMPLATE = """\
-# oo configuration
-# Edit this file or run: oo config
-
-# ---------------------------------------------------------------------------
-# General settings
-# ---------------------------------------------------------------------------
-
-# Working directory containing your Odoo repos
-# work_dir = "/home/odoo/work"
-
-# Python virtualenv activation command (run before odoo-bin)
-# venv_activate = "source /home/odoo/work/env20/bin/activate"
-
-# ---------------------------------------------------------------------------
-# Database
-# ---------------------------------------------------------------------------
-
-# [database]
-# user = "odoo"
-# password = "odoo"
-
-# ---------------------------------------------------------------------------
-# Default server arguments
-# ---------------------------------------------------------------------------
-
-# [defaults]
-# on_create_args = "-i sale_management"   # applied only when db is new
-# other_args = "--dev all"                 # always applied
-
-# ---------------------------------------------------------------------------
-# Repositories
-# ---------------------------------------------------------------------------
-# Each [[repos]] entry defines a repo with an id and a filesystem path.
-
-# [[repos]]
-# id = "community"
-# path = "/home/odoo/work/community"
-
-# [[repos]]
-# id = "enterprise"
-# path = "/home/odoo/work/enterprise"
-
-# [[repos]]
-# id = "tutorials"
-# path = "/home/odoo/work/tutorials"
-
-# ---------------------------------------------------------------------------
-# Targets
-# ---------------------------------------------------------------------------
-# Targets define what "oo start" runs. Children inherit from parents.
-#
-# Fields:
-#   id             - unique name (required)
-#   parent         - id of parent target (optional, for inheritance)
-#   repos          - list of repo ids to use (inherited if omitted)
-#   branch         - git branch (inherited if omitted; if set without repos,
-#                    overrides branch for ALL inherited repos)
-#   db             - database name
-#   on_create_args - extra args when db is created for the first time
-#   other_args     - extra args always applied
-
-# [[targets]]
-# id = "community"
-# repos = ["community"]
-# branch = "master"
-# db = "test_db"
-
-# [[targets]]
-# id = "enterprise"
-# repos = ["community", "enterprise"]
-# branch = "master"
-# db = "test_db_e"
-
-# [[targets]]
-# id = "19.0"
-# repos = ["community"]
-# branch = "19.0"
-# db = "test_db_19"
-
-# [[targets]]
-# id = "19.0e"
-# repos = ["community", "enterprise"]
-# branch = "19.0"
-# db = "test_db_19e"
-
-# Example child target (inherits repos from parent, overrides branch):
-# [[targets]]
-# id = "my-task"
-# parent = "enterprise"
-# branch = "master-my-task-ged"
-# db = "test_db_task"
+Run `python3 oo.py`, open the printed URL. The frontend (static/) holds the
+configuration and posts it with each start request; the backend is stateless.
 """
 
+import atexit
+import collections
+import json
+import mimetypes
+import os
+import pty
+import queue
+import signal
+import socket
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# =============================================================================
-# Config
-# =============================================================================
-
-def ensure_config():
-    """Create config dir and template file if they don't exist."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "w") as f:
-            f.write(CONFIG_TEMPLATE)
-        print(f"{TAG} Config file created at {CONFIG_FILE}")
-        print(f"{TAG} Run 'oo config' to edit it.")
-        return True
-    return False
-
-
-def load_config():
-    """Load and parse the config file. Returns dict."""
-    ensure_config()
-    with open(CONFIG_FILE, "rb") as f:
-        return tomllib.load(f)
-
-
-def load_state():
-    """Load the state file. Returns dict."""
-    if not os.path.exists(STATE_FILE):
-        return {}
-    with open(STATE_FILE, "rb") as f:
-        return tomllib.load(f)
-
-
-def save_state(state):
-    """Write state to the state file (simple key=value TOML)."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        for key, value in state.items():
-            if isinstance(value, str):
-                f.write(f'{key} = "{value}"\n')
-            else:
-                f.write(f"{key} = {value}\n")
+TAG = "[oo]"
+HOST = "127.0.0.1"
+PORT = 8068
+ODOO_PORT = 8069
+READY_MARKER = "odoo.registry: Registry loaded"
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+LOG_BUFFER_SIZE = 2000
 
 
 # =============================================================================
-# Target resolution
+# Event bus: log ring buffer + SSE fan-out
 # =============================================================================
 
-def find_target(target_id, targets):
-    """Find a target by id in the target list."""
-    for t in targets:
-        if t.get("id") == target_id:
-            return t
-    return None
+class EventBus:
+    def __init__(self, maxlen=LOG_BUFFER_SIZE):
+        self._lock = threading.Lock()
+        self._buffer = collections.deque(maxlen=maxlen)
+        self._subscribers = []
 
+    def publish_log(self, line):
+        with self._lock:
+            self._buffer.append(line)
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("log", {"line": line}))
 
-def resolve_target(target_id, targets, defaults=None):
-    """Walk the parent chain and resolve repos, branches, db, args.
+    def publish_status(self, status):
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("status", status))
 
-    Resolution rules:
-    - repos: combined from all ancestors (root first, then down)
-    - branch per repo: determined by the target that listed that repo.
-      If a target has a branch but no repos, it overrides the branch
-      for ALL inherited repos (the "task/feature branch" case).
-    - db, on_create_args, other_args: first non-None value walking
-      from child up to root, then defaults.
-    """
-    if defaults is None:
-        defaults = DEFAULT_ARGS
+    def subscribe(self):
+        """Register a client queue. Returns (queue, log backlog) atomically so
+        no line is lost between the backlog replay and the live stream."""
+        q = queue.Queue()
+        with self._lock:
+            backlog = list(self._buffer)
+            self._subscribers.append(q)
+        return q, backlog
 
-    target = find_target(target_id, targets)
-    if not target:
-        return None
-
-    # Build chain from child to root
-    chain = []
-    current = target
-    seen = set()
-    while current:
-        if current["id"] in seen:
-            break
-        seen.add(current["id"])
-        chain.append(current)
-        parent_id = current.get("parent")
-        current = find_target(parent_id, targets) if parent_id else None
-
-    # Reverse: root first
-    chain.reverse()
-
-    # Resolve repos and their branches
-    repo_branches = {}
-    for level in chain:
-        level_repos = level.get("repos", [])
-        level_branch = level.get("branch")
-
-        if level_repos and level_branch:
-            for repo_id in level_repos:
-                repo_branches[repo_id] = level_branch
-        elif level_repos and not level_branch:
-            for repo_id in level_repos:
-                if repo_id not in repo_branches:
-                    repo_branches[repo_id] = _find_ancestor_branch(chain, level)
-        elif level_branch and not level_repos:
-            for repo_id in repo_branches:
-                repo_branches[repo_id] = level_branch
-
-    # Resolve scalar fields (child overrides parent, defaults as fallback)
-    resolved = {"id": target_id, "repos": []}
-    for field in ("db", "on_create_args", "other_args"):
-        for level in reversed(chain):  # child first
-            if field in level and level[field] is not None:
-                resolved[field] = level[field]
-                break
-        else:
-            if field in defaults:
-                resolved[field] = defaults[field]
-
-    # Build ordered repo list (root repos first)
-    seen_repos = []
-    for level in chain:
-        for repo_id in level.get("repos", []):
-            if repo_id not in seen_repos:
-                seen_repos.append(repo_id)
-    if not seen_repos:
-        seen_repos = list(repo_branches.keys())
-
-    for repo_id in seen_repos:
-        branch = repo_branches.get(repo_id, "master")
-        resolved["repos"].append({"id": repo_id, "branch": branch})
-
-    return resolved
-
-
-def _find_ancestor_branch(chain, current_level):
-    """Find the branch from the nearest ancestor in the chain."""
-    idx = chain.index(current_level)
-    for i in range(idx - 1, -1, -1):
-        if chain[i].get("branch"):
-            return chain[i]["branch"]
-    return "master"
+    def unsubscribe(self, q):
+        with self._lock:
+            try:
+                self._subscribers.remove(q)
+            except ValueError:
+                pass
 
 
 # =============================================================================
-# Server helpers
+# Helpers
 # =============================================================================
 
-def get_repo_map(config):
-    """Build a {id: repo_dict} map from config repos."""
-    return {r["id"]: r for r in config.get("repos", [])}
-
-
-def build_odoo_cmd(config, resolved):
-    """Build the odoo-bin shell command string. Returns (cmd, db) or (None, None)."""
-    repo_map = get_repo_map(config)
-
-    db = resolved.get("db")
-    if not db:
-        print(f"{TAG} No database configured for target '{resolved['id']}'.")
-        return None, None
-
-    community = repo_map.get("community")
-    if not community:
-        print(f"{TAG} No 'community' repo defined in config.")
-        return None, None
-
-    community_path = community["path"]
-
-    # Build addons path
-    addons_parts = []
-    for repo_entry in resolved["repos"]:
-        repo = repo_map.get(repo_entry["id"])
-        if not repo:
-            print(f"{TAG} Warning: repo '{repo_entry['id']}' not found in config, skipping.")
-            continue
-        if repo_entry["id"] == "community":
-            addons_parts.append("addons")
-        else:
-            addons_parts.append(os.path.relpath(repo["path"], community_path))
-    addons_path = ",".join(addons_parts)
-
-    db_user = config.get("database", {}).get("user", "odoo")
-    db_password = config.get("database", {}).get("password", "odoo")
-    venv_activate = config.get("general", {}).get("venv_activate", "")
-
-    parts = []
-    if venv_activate:
-        parts.append(venv_activate)
-    parts.append(f"cd {community_path}")
-    parts.append(
-        f"./odoo-bin "
-        f"-r {db_user} -w {db_password} -d {db} "
-        f"--database {db} --no-database-list --with-demo "
-        f"--addons-path {addons_path}"
-    )
-    return " && ".join(parts), db
-
-
-def db_exists(db_name):
-    """Check if a PostgreSQL database exists."""
+def port_busy(port):
     try:
-        result = subprocess.run(
-            ["psql", "-lqt"], capture_output=True, text=True, timeout=5,
-        )
-        existing = {
-            line.split("|")[0].strip()
-            for line in result.stdout.split("\n")
-            if "|" in line
-        }
-        return db_name in existing
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return True  # assume exists if we can't check
-
-
-def read_pid():
-    """Read PID from pid file. Returns int or None."""
-    if not os.path.exists(PID_FILE):
-        return None
-    try:
-        with open(PID_FILE) as f:
-            return int(f.read().strip())
-    except (ValueError, OSError):
-        return None
-
-
-def is_process_alive(pid):
-    """Check if a process is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
+        with socket.create_connection((HOST, port), timeout=0.3):
+            return True
+    except OSError:
         return False
-
-
-def write_pid(pid):
-    """Write PID to pid file."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(PID_FILE, "w") as f:
-        f.write(str(pid))
-
-
-def remove_pid():
-    """Remove the PID file."""
-    try:
-        os.remove(PID_FILE)
-    except FileNotFoundError:
-        pass
 
 
 def kill_port(port):
@@ -388,248 +97,404 @@ def kill_port(port):
         pass
 
 
-# =============================================================================
-# Commands
-# =============================================================================
+def db_initialized(db_name):
+    """Check if the database exists AND holds an initialized odoo schema.
 
-def cmd_start(args, config):
-    """Start the Odoo server for the active target."""
-    # Check if already running
-    pid = read_pid()
-    if pid and is_process_alive(pid):
-        print(f"{TAG} Server already running (PID {pid}). Use 'oo restart' or 'oo stop' first.")
-        return 1
-
-    state = load_state()
-    active = state.get("active_target")
-    if not active:
-        print(f"{TAG} No active target. Set one with 'oo target <id>'.")
-        return 1
-
-    targets = config.get("targets", [])
-    resolved = resolve_target(active, targets, config.get("defaults", {}))
-    if not resolved:
-        available = [t["id"] for t in targets]
-        print(f"{TAG} Target '{active}' not found. Available: {', '.join(available) or '(none)'}")
-        return 1
-
-    base_cmd, db = build_odoo_cmd(config, resolved)
-    if not base_cmd:
-        return 1
-
-    # Check if DB is new
-    is_new = not db_exists(db)
-    other_args = resolved.get("other_args", "")
-    on_create_args = resolved.get("on_create_args", "")
-
-    extra = f" {other_args}" if other_args else ""
-    if is_new and on_create_args:
-        extra += f" {on_create_args}"
-        print(f"{TAG} New database '{db}', applying on_create_args: {on_create_args}")
-
-    cmd = f"{base_cmd}{extra}"
-
-    print(f"{TAG} Starting Odoo ({resolved['id']})...")
-    print(f"{TAG} {cmd}")
-
-    # Spawn with PTY
-    master_fd, slave_fd = pty.openpty()
-    process = subprocess.Popen(
-        cmd, shell=True, executable="/bin/bash",
-        stdout=slave_fd, stderr=slave_fd, stdin=slave_fd,
-        preexec_fn=os.setsid,
-    )
-    os.close(slave_fd)
-    write_pid(process.pid)
-
-    # Handle signals for clean shutdown
-    def shutdown(signum, frame):
-        print(f"\n{TAG} Stopping server...")
-        try:
-            pgid = os.getpgid(process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(pgid, signal.SIGKILL)
-                process.wait(timeout=3)
-        except (ProcessLookupError, OSError):
-            pass
-        kill_port(8069)
-        remove_pid()
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
-        print(f"{TAG} Server stopped.")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-
-    # Stream output
-    server_ready = False
+    A database can exist as an empty shell (e.g. leftover from an aborted
+    run); odoo then refuses to load it without -i, so treat it as new.
+    """
     try:
+        result = subprocess.run(
+            ["psql", "-d", db_name, "-tAc",
+             "SELECT 1 FROM information_schema.tables"
+             " WHERE table_name = 'ir_module_module'"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False  # database doesn't exist
+        return result.stdout.strip() == "1"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True  # can't check: assume initialized, avoid surprise installs
+
+
+def build_odoo_cmd(config):
+    """Build the odoo-bin shell command from a client config.
+
+    Returns (cmd, db, is_new_db). Raises ValueError on invalid config.
+    """
+    start = config.get("start") or {}
+    db = start.get("db")
+    if not db:
+        raise ValueError("no database configured (start.db)")
+
+    repo_map = {
+        r["id"]: r for r in config.get("repos", [])
+        if isinstance(r, dict) and "id" in r and "path" in r
+    }
+    community = repo_map.get("community")
+    if not community:
+        raise ValueError("no 'community' repo defined in repos")
+    community_path = community["path"]
+
+    addons_parts = []
+    for repo_id in start.get("repos", []):
+        repo = repo_map.get(repo_id)
+        if not repo:
+            raise ValueError(f"unknown repo '{repo_id}' in start.repos")
+        if repo_id == "community":
+            addons_parts.append("addons")
+        else:
+            addons_parts.append(os.path.relpath(repo["path"], community_path))
+    if not addons_parts:
+        raise ValueError("no repos selected in start.repos")
+    addons_path = ",".join(addons_parts)
+
+    db_user = config.get("db_user", "odoo")
+    db_password = config.get("db_password", "odoo")
+    venv_activate = config.get("venv_activate", "")
+
+    parts = []
+    if venv_activate:
+        parts.append(venv_activate)
+    parts.append(f"cd {community_path}")
+    parts.append(
+        f"./odoo-bin "
+        f"-r {db_user} -w {db_password} -d {db} "
+        f"--database {db} --no-database-list --with-demo "
+        f"--addons-path {addons_path}"
+    )
+    cmd = " && ".join(parts)
+
+    other_args = start.get("other_args", "")
+    if other_args:
+        cmd += f" {other_args}"
+
+    is_new = not db_initialized(db)
+    on_create_args = start.get("on_create_args", "")
+    if is_new and on_create_args:
+        cmd += f" {on_create_args}"
+    return cmd, db, is_new
+
+
+# =============================================================================
+# Odoo process manager
+# =============================================================================
+
+class OdooManager:
+    """Owns the single odoo process. States:
+    stopped -> starting -> running -> stopping -> stopped
+    """
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.lock = threading.Lock()
+        self.state = "stopped"
+        self.process = None
+        self.master_fd = None
+        self.reader_thread = None
+        self.db = None
+        self.exited_unexpectedly = False
+        self.returncode = None
+
+    def status(self):
+        with self.lock:
+            active = self.state in ("starting", "running")
+            status = {
+                "state": self.state,
+                "pid": self.process.pid if (active and self.process) else None,
+                "db": self.db if active else None,
+            }
+            if self.exited_unexpectedly:
+                status["exited_unexpectedly"] = True
+                status["returncode"] = self.returncode
+        status["odoo_port_busy"] = port_busy(ODOO_PORT)
+        return status
+
+    def start(self, config):
+        """Returns (ok, detail). detail is the command on success, an error
+        code otherwise."""
+        with self.lock:
+            if self.state != "stopped":
+                return False, "already_running"
+            try:
+                cmd, db, is_new = build_odoo_cmd(config)
+            except ValueError as e:
+                return False, f"invalid_config: {e}"
+
+            self.exited_unexpectedly = False
+            self.returncode = None
+            self.db = db
+            self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
+            if is_new:
+                self.bus.publish_log(f"{TAG} database '{db}' not initialized, applying on_create_args")
+
+            master_fd, slave_fd = pty.openpty()
+            self.process = subprocess.Popen(
+                cmd, shell=True, executable="/bin/bash",
+                stdout=slave_fd, stderr=slave_fd, stdin=slave_fd,
+                preexec_fn=os.setsid,
+            )
+            os.close(slave_fd)
+            self.master_fd = master_fd
+            self.state = "starting"
+            self.reader_thread = threading.Thread(
+                target=self._reader, args=(master_fd, self.process), daemon=True,
+            )
+            self.reader_thread.start()
+        self.bus.publish_status(self.status())
+        return True, cmd
+
+    def stop(self):
+        """Stop the odoo process. Idempotent; when already stopped, still
+        kills whatever holds the odoo port (orphans, external servers)."""
+        with self.lock:
+            if self.state == "stopping":
+                return False, "already_stopping"
+            was_active = self.state in ("starting", "running")
+            process = self.process
+            reader = self.reader_thread
+            if was_active:
+                self.state = "stopping"
+
+        if was_active:
+            self.bus.publish_status(self.status())
+            self.bus.publish_log(f"{TAG} stopping odoo...")
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(pgid, signal.SIGKILL)
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        pass
+            except (ProcessLookupError, OSError):
+                pass
+            kill_port(ODOO_PORT)
+            if reader:
+                reader.join(timeout=2)
+            with self.lock:
+                self.state = "stopped"
+                self.process = None
+                self.master_fd = None
+                self.db = None
+            self.bus.publish_log(f"{TAG} odoo stopped")
+        elif port_busy(ODOO_PORT):
+            kill_port(ODOO_PORT)
+            self.bus.publish_log(f"{TAG} killed process on port {ODOO_PORT}")
+
+        self.bus.publish_status(self.status())
+        return True, "stopped"
+
+    def restart(self, config):
+        ok, detail = self.stop()
+        if not ok:
+            return ok, detail
+        return self.start(config)
+
+    def shutdown(self):
+        """Cleanup on oo exit: stop our own child, but never touch an
+        external odoo we didn't start."""
+        with self.lock:
+            active = self.state in ("starting", "running")
+        if active:
+            self.stop()
+
+    def _reader(self, fd, process):
+        """Read the PTY, publish lines, detect readiness and unexpected exit."""
+        buf = b""
         while True:
             try:
-                data = os.read(master_fd, 4096)
+                data = os.read(fd, 4096)
             except OSError:
                 break
             if not data:
                 break
-            text = data.decode("utf-8", errors="replace")
-            sys.stdout.write(text)
-            sys.stdout.flush()
-            if not server_ready and "odoo.registry: Registry loaded" in text:
-                server_ready = True
-                print(f"\n{TAG} Server ready.")
-    except KeyboardInterrupt:
-        shutdown(None, None)
+            buf += data
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                self._handle_line(raw.decode("utf-8", errors="replace").rstrip("\r"))
+        if buf:
+            self._handle_line(buf.decode("utf-8", errors="replace").rstrip("\r"))
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
-    # Process ended on its own
-    remove_pid()
-    try:
-        os.close(master_fd)
-    except OSError:
-        pass
-    ret = process.wait()
-    if ret != 0:
-        print(f"{TAG} Server exited with code {ret}.")
-    return ret
+        ret = process.wait()
+        with self.lock:
+            # stop() owns intentional exits; a stale reader (post-restart)
+            # must not touch the new process state
+            if self.state == "stopping" or process is not self.process:
+                return
+            self.state = "stopped"
+            self.process = None
+            self.master_fd = None
+            self.db = None
+            self.exited_unexpectedly = True
+            self.returncode = ret
+        self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
+        self.bus.publish_status(self.status())
 
-
-def cmd_stop(args, config):
-    """Stop the running Odoo server."""
-    pid = read_pid()
-    if not pid or not is_process_alive(pid):
-        print(f"{TAG} Server is not running.")
-        remove_pid()
-        return 0
-
-    print(f"{TAG} Stopping server (PID {pid})...")
-    try:
-        pgid = os.getpgid(pid)
-        os.killpg(pgid, signal.SIGTERM)
-        # Wait for process to exit
-        for _ in range(50):  # 5 seconds
-            if not is_process_alive(pid):
-                break
-            import time
-            time.sleep(0.1)
-        else:
-            os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        pass
-
-    kill_port(8069)
-    remove_pid()
-    print(f"{TAG} Server stopped.")
-    return 0
+    def _handle_line(self, line):
+        self.bus.publish_log(line)
+        if READY_MARKER in line:
+            with self.lock:
+                if self.state != "starting":
+                    return
+                self.state = "running"
+            self.bus.publish_status(self.status())
 
 
-def cmd_restart(args, config):
-    """Stop then start the server."""
-    cmd_stop(args, config)
-    return cmd_start(args, config)
-
-
-def cmd_config(args, config):
-    """Open the config file in $EDITOR."""
-    ensure_config()
-    editor = os.environ.get("EDITOR", "nano")
-    os.execvp(editor, [editor, CONFIG_FILE])
-
-
-def cmd_target(args, config):
-    """Show or set the active target."""
-    state = load_state()
-    targets = config.get("targets", [])
-
-    if args.target_id:
-        # Set active target
-        target = find_target(args.target_id, targets)
-        if not target:
-            available = [t["id"] for t in targets]
-            print(f"{TAG} Target '{args.target_id}' not found. Available: {', '.join(available) or '(none)'}")
-            return 1
-        state["active_target"] = args.target_id
-        save_state(state)
-        print(f"{TAG} Active target set to '{args.target_id}'.")
-        return 0
-
-    # Show active target
-    active = state.get("active_target")
-    if active:
-        resolved = resolve_target(active, targets, config.get("defaults", {}))
-        if resolved:
-            repos_info = ", ".join(f"{r['id']}@{r['branch']}" for r in resolved["repos"])
-            print(f"Active target: {active}")
-            print(f"  repos:  {repos_info}")
-            print(f"  db:     {resolved.get('db', '(not set)')}")
-        else:
-            print(f"Active target: {active} (not found in config)")
-    else:
-        print("No active target. Set one with 'oo target <id>'.")
-
-    if targets:
-        print(f"\nAvailable targets: {', '.join(t['id'] for t in targets)}")
-    return 0
-
-
-def cmd_status(config):
-    """Print a short status summary."""
-    state = load_state()
-    active = state.get("active_target", "(none)")
-    pid = read_pid()
-    running = pid and is_process_alive(pid)
-
-    print(f"target: {active}")
-    if running:
-        print(f"server: running (PID {pid})")
-    else:
-        print("server: stopped")
-    return 0
+BUS = EventBus()
+MANAGER = OdooManager(BUS)
 
 
 # =============================================================================
-# CLI
+# HTTP server
 # =============================================================================
+
+class Handler(BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        pass  # keep the terminal quiet
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/":
+            self._serve_static("index.html")
+        elif path.startswith("/static/"):
+            self._serve_static(path[len("/static/"):])
+        elif path == "/api/status":
+            self._send_json(200, MANAGER.status())
+        elif path == "/api/events":
+            self._handle_events()
+        else:
+            self._send_json(404, {"ok": False, "error": "not_found"})
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/api/start":
+            self._action_start(MANAGER.start)
+        elif path == "/api/restart":
+            self._action_start(MANAGER.restart)
+        elif path == "/api/stop":
+            ok, detail = MANAGER.stop()
+            if ok:
+                self._send_json(200, {"ok": True, "state": "stopped"})
+            else:
+                self._send_json(409, {"ok": False, "error": detail})
+        else:
+            self._send_json(404, {"ok": False, "error": "not_found"})
+
+    # --- API helpers ---
+
+    def _action_start(self, action):
+        config, err = self._read_json()
+        if err:
+            return self._send_json(400, {"ok": False, "error": err})
+        ok, detail = action(config)
+        if ok:
+            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
+        else:
+            code = 400 if detail.startswith("invalid_config") else 409
+            self._send_json(code, {"ok": False, "error": detail})
+
+    def _read_json(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError
+            return data, None
+        except (ValueError, OSError):
+            return None, "invalid_config: bad JSON body"
+
+    def _send_json(self, code, obj):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # --- static files ---
+
+    def _serve_static(self, name):
+        path = os.path.normpath(os.path.join(STATIC_DIR, name))
+        if not path.startswith(STATIC_DIR + os.sep):
+            return self._send_json(404, {"ok": False, "error": "not_found"})
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            return self._send_json(404, {"ok": False, "error": "not_found"})
+        ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    # --- SSE ---
+
+    def _handle_events(self):
+        q, backlog = BUS.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()  # no Content-Length: HTTP/1.0 read-until-close
+            self._send_event("status", MANAGER.status())
+            for line in backlog:
+                self._send_event("log", {"line": line})
+            while True:
+                try:
+                    event, payload = q.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    continue
+                self._send_event(event, payload)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # client gone
+        finally:
+            BUS.unsubscribe(q)
+
+    def _send_event(self, event, payload):
+        # json.dumps guarantees a single-line data field
+        msg = f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+        self.wfile.write(msg.encode("utf-8"))
+        self.wfile.flush()
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="oo",
-        description="Odoo development toolkit (by GED)",
-    )
-    subparsers = parser.add_subparsers(dest="command", title="commands", metavar="")
+    try:
+        httpd = Server((HOST, PORT), Handler)
+    except OSError as e:
+        print(f"{TAG} cannot bind {HOST}:{PORT}: {e}")
+        return 1
 
-    subparsers.add_parser("start", help="Start the Odoo server")
-    subparsers.add_parser("stop", help="Stop the Odoo server")
-    subparsers.add_parser("restart", help="Restart the Odoo server")
-    subparsers.add_parser("config", help="Open config file in $EDITOR")
+    print(f"{TAG} running at http://{HOST}:{PORT}", flush=True)
 
-    p_target = subparsers.add_parser("target", help="Show or set the active target")
-    p_target.add_argument("target_id", nargs="?", help="Target to activate")
-
-    args = parser.parse_args()
-
-    if args.command == "config":
-        # config doesn't need to load/parse the config
-        cmd_config(args, None)
-        return
-
-    config = load_config()
-
-    if args.command is None:
-        sys.exit(cmd_status(config))
-    elif args.command == "start":
-        sys.exit(cmd_start(args, config))
-    elif args.command == "stop":
-        sys.exit(cmd_stop(args, config))
-    elif args.command == "restart":
-        sys.exit(cmd_restart(args, config))
-    elif args.command == "target":
-        sys.exit(cmd_target(args, config))
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+    atexit.register(MANAGER.shutdown)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print(f"\n{TAG} shutting down...")
+    finally:
+        MANAGER.shutdown()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
