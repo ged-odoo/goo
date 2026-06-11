@@ -86,6 +86,56 @@ section.hidden { display: none; }
 }
 
 .placeholder { color: var(--fg-dim); }
+.dim { color: var(--fg-dim); }
+
+.section-header button {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.section-header button:hover { border-color: var(--accent); }
+
+/* --- databases --- */
+
+.db-list { color: var(--fg); font-size: 14px; }
+
+.db-table { border-collapse: collapse; min-width: 480px; }
+
+.db-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+  padding: 6px 16px 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-table td {
+  padding: 7px 16px 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-actions { text-align: right; }
+
+.drop-btn {
+  padding: 3px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: #e05561;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.drop-btn:hover:not(:disabled) { border-color: #e05561; background: rgba(224, 85, 97, 0.1); }
+.drop-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* --- status badge --- */
 

@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "git", "tasks", "runbot", "config"];
+const SECTIONS = ["server", "databases", "git", "tasks", "runbot", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -14,6 +14,7 @@ function showSection(name) {
   for (const btn of document.querySelectorAll(".nav-btn")) {
     btn.classList.toggle("active", btn.dataset.section === name);
   }
+  if (name === "databases") loadDatabases();
 }
 
 function onHashChange() {
@@ -24,7 +25,6 @@ for (const btn of document.querySelectorAll(".nav-btn")) {
   btn.addEventListener("click", () => { window.location.hash = btn.dataset.section; });
 }
 window.addEventListener("hashchange", onHashChange);
-onHashChange();
 
 // ---------------------------------------------------------------------------
 // Server section: status + controls
@@ -77,6 +77,78 @@ async function post(path, body) {
 btnStart.addEventListener("click", () => post("/api/start", CONFIG));
 btnStop.addEventListener("click", () => post("/api/stop"));
 btnRestart.addEventListener("click", () => post("/api/restart", CONFIG));
+
+// ---------------------------------------------------------------------------
+// Databases section
+// ---------------------------------------------------------------------------
+
+const dbList = document.getElementById("db-list");
+
+document.getElementById("btn-db-refresh").addEventListener("click", loadDatabases);
+
+async function loadDatabases() {
+  dbList.textContent = "Loading…";
+  try {
+    const resp = await fetch("/api/databases");
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+    renderDatabases(data.databases);
+  } catch (err) {
+    dbList.textContent = `Failed to load databases: ${err.message}`;
+  }
+}
+
+function renderDatabases(dbs) {
+  dbList.replaceChildren();
+  if (!dbs.length) {
+    dbList.textContent = "No databases.";
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "db-table";
+  table.innerHTML = "<thead><tr><th>Name</th><th>Odoo version</th><th></th></tr></thead>";
+  const tbody = document.createElement("tbody");
+  for (const db of dbs) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = db.name;
+    const version = document.createElement("td");
+    version.textContent = db.odoo_version
+      ? db.odoo_version + (db.enterprise ? " (ent)" : "")
+      : "—";
+    if (!db.odoo_version) version.className = "dim";
+    const actions = document.createElement("td");
+    actions.className = "db-actions";
+    const btn = document.createElement("button");
+    btn.textContent = "Drop";
+    btn.className = "drop-btn";
+    btn.addEventListener("click", () => dropDatabase(db.name, btn));
+    actions.appendChild(btn);
+    tr.append(name, version, actions);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  dbList.appendChild(table);
+}
+
+async function dropDatabase(name, btn) {
+  if (!confirm(`Drop database "${name}"? This cannot be undone.`)) return;
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/databases/drop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+  } catch (err) {
+    alert(`Drop failed: ${err.message}`);
+    btn.disabled = false;
+    return;
+  }
+  loadDatabases();
+}
 
 // ---------------------------------------------------------------------------
 // Live events (SSE)
@@ -169,3 +241,9 @@ function ansiToHtml(line) {
   }
   return html;
 }
+
+// ---------------------------------------------------------------------------
+// Initial render (last: section handlers above must be set up first)
+// ---------------------------------------------------------------------------
+
+onHashChange();

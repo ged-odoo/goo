@@ -117,6 +117,62 @@ def db_initialized(db_name):
         return True  # can't check: assume initialized, avoid surprise installs
 
 
+def odoo_info(db_name):
+    """(version, is_enterprise) of the odoo installed in a database.
+    (None, False) if it holds no odoo."""
+    try:
+        result = subprocess.run(
+            ["psql", "-d", db_name, "-tAc",
+             "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
+             " EXISTS (SELECT 1 FROM ir_module_module"
+             " WHERE name = 'web_enterprise' AND state = 'installed')"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None, False  # no ir_module_module table: not an odoo database
+        version, _, enterprise = result.stdout.strip().partition("|")
+        return version or None, enterprise == "t"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None, False
+
+
+def list_databases():
+    """All non-template databases with their odoo version. Raises RuntimeError."""
+    try:
+        result = subprocess.run(
+            ["psql", "-d", "postgres", "-tAc",
+             "SELECT datname FROM pg_database"
+             " WHERE NOT datistemplate AND datname <> 'postgres'"
+             " ORDER BY datname"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"cannot list databases: {e}")
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "psql failed")
+    dbs = []
+    for line in result.stdout.split("\n"):
+        name = line.strip()
+        if not name:
+            continue
+        version, enterprise = odoo_info(name)
+        dbs.append({"name": name, "odoo_version": version, "enterprise": enterprise})
+    return dbs
+
+
+def drop_database(db_name):
+    """Drop a database. Returns (ok, error)."""
+    try:
+        result = subprocess.run(
+            ["dropdb", db_name], capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, result.stderr.strip() or "dropdb failed"
+    return True, None
+
+
 def build_odoo_cmd(config):
     """Build the odoo-bin shell command from a client config.
 
@@ -369,6 +425,11 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
         elif path == "/api/status":
             self._send_json(200, MANAGER.status())
+        elif path == "/api/databases":
+            try:
+                self._send_json(200, {"ok": True, "databases": list_databases()})
+            except RuntimeError as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
         elif path == "/api/events":
             self._handle_events()
         else:
@@ -386,6 +447,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "state": "stopped"})
             else:
                 self._send_json(409, {"ok": False, "error": detail})
+        elif path == "/api/databases/drop":
+            body, err = self._read_json()
+            name = (body or {}).get("name")
+            if err or not name or not isinstance(name, str):
+                return self._send_json(400, {"ok": False, "error": "missing database name"})
+            ok, error = drop_database(name)
+            if ok:
+                self._send_json(200, {"ok": True})
+            else:
+                self._send_json(400, {"ok": False, "error": error})
         else:
             self._send_json(404, {"ok": False, "error": "not_found"})
 

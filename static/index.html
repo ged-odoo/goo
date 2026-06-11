@@ -4,12 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>oo</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <nav id="sidebar">
     <div id="logo">oo</div>
     <button class="nav-btn" data-section="server">Server</button>
+    <button class="nav-btn" data-section="databases">Databases</button>
     <button class="nav-btn" data-section="git">Git</button>
     <button class="nav-btn" data-section="tasks">Tasks</button>
     <button class="nav-btn" data-section="runbot">Runbot</button>
@@ -28,6 +30,13 @@
         <span id="server-hint"></span>
       </div>
       <div id="log-pane"></div>
+    </section>
+    <section id="section-databases" class="hidden">
+      <header class="section-header">
+        <h1>Databases</h1>
+        <button id="btn-db-refresh">Refresh</button>
+      </header>
+      <div id="db-list" class="db-list"></div>
     </section>
     <section id="section-git" class="hidden">
       <header class="section-header"><h1>Git</h1></header>
