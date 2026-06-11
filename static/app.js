@@ -31,6 +31,7 @@ window.addEventListener("hashchange", onHashChange);
 // ---------------------------------------------------------------------------
 
 const badge = document.getElementById("status-badge");
+const serverDot = document.getElementById("server-dot");
 const hint = document.getElementById("server-hint");
 const btnStart = document.getElementById("btn-start");
 const btnStop = document.getElementById("btn-stop");
@@ -41,6 +42,9 @@ function setStatus(status) {
   const state = status.state;
   badge.textContent = state;
   badge.className = `badge ${state}`;
+  serverDot.classList.toggle("on", state === "running");
+  document.getElementById("favicon").href =
+    state === "running" ? "/static/favicon-on.svg" : "/static/favicon.svg";
 
   const active = state === "starting" || state === "running";
   btnStart.disabled = state !== "stopped";

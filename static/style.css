@@ -40,6 +40,9 @@ body {
 }
 
 .nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   text-align: left;
   padding: 9px 12px;
   border: none;
@@ -52,6 +55,18 @@ body {
 
 .nav-btn:hover { background: var(--bg-panel); color: var(--fg); }
 .nav-btn.active { background: var(--accent); color: #fff; }
+
+.dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--fg-dim);
+}
+
+.dot.on { background: #2e8b57; border-color: #2e8b57; }
+.nav-btn.active .dot { border-color: rgba(255, 255, 255, 0.7); }
+.nav-btn.active .dot.on { background: #3fbf77; border-color: #3fbf77; }
 
 /* --- main area --- */
 
