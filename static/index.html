@@ -3,97 +3,171 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>oo</title>
+  <title>oo &middot; dev helper</title>
   <link id="favicon" rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header id="navbar">
-    <div class="nav-zone nav-left">
-      <div id="logo">oo</div>
-      <span id="status-badge" class="badge disconnected">&hellip;</span>
-      <span id="target-badge" class="target-badge" hidden></span>
+<div class="app">
+
+  <header class="topbar">
+    <div class="top-left">
+      <div class="logo">
+        <span class="rings"><span class="ring"></span><span class="ring b"></span></span>
+        <span class="name">oo</span>
+      </div>
+      <span id="status-pill" class="status-pill" hidden>
+        <span class="dot"></span><span id="status-pill-text"></span>
+      </span>
     </div>
-    <div class="nav-zone nav-center">
+
+    <div class="top-center">
       <select id="target-select" title="target to start"></select>
-      <button id="btn-start" disabled>Start</button>
-      <button id="btn-stop" disabled>Stop</button>
-      <button id="btn-restart" disabled>Restart</button>
+      <div class="controls">
+        <button id="btn-start" disabled><span class="play"></span>Start</button>
+        <button id="btn-stop" class="stop" disabled><span class="ic square"></span>Stop</button>
+        <button id="btn-restart" disabled><span class="restart"></span>Restart</button>
+      </div>
     </div>
-    <div class="nav-zone nav-right">
-      <a class="server-link" href="http://localhost:8069/odoo" target="_blank">/odoo</a>
-      <a class="server-link" href="http://localhost:8069/web/tests?debug=assets" target="_blank">/web/tests</a>
+
+    <div class="top-right">
+      <a class="route" href="http://localhost:8069/odoo" target="_blank">/odoo</a>
+      <a class="route" href="http://localhost:8069/web/tests?debug=assets" target="_blank">/web/tests</a>
     </div>
   </header>
-  <div id="layout">
-  <nav id="sidebar">
-    <button class="nav-btn" data-section="server">Server<span id="server-dot" class="dot"></span></button>
-    <button class="nav-btn" data-section="databases">Databases</button>
-    <button class="nav-btn" data-section="code">Code</button>
-    <button class="nav-btn" data-section="tasks">Tasks</button>
-    <button class="nav-btn" data-section="runbot">Runbot</button>
-    <button class="nav-btn" data-section="config">Config</button>
-  </nav>
-  <main>
-    <section id="section-server">
-      <header class="section-header">
-        <h1>Server</h1>
-        <span id="server-hint"></span>
-      </header>
-      <div id="server-info" class="server-info" hidden></div>
-      <div id="server-cmd" class="server-cmd" hidden></div>
-      <div id="log-pane"></div>
-    </section>
-    <section id="section-databases" class="hidden">
-      <header class="section-header">
-        <h1>Databases</h1>
-        <button id="btn-db-refresh">Refresh</button>
-      </header>
-      <div id="db-list" class="db-list"></div>
-    </section>
-    <section id="section-code" class="hidden">
-      <header class="section-header">
-        <h1>Code</h1>
-        <button id="btn-code-refresh">Refresh</button>
-      </header>
-      <div id="code-current" class="code-current"></div>
-      <h2 class="code-subtitle">Branches</h2>
-      <div id="branch-list"></div>
-    </section>
-    <section id="section-tasks" class="hidden">
-      <header class="section-header"><h1>Tasks</h1></header>
-      <p class="placeholder">Coming soon.</p>
-    </section>
-    <section id="section-runbot" class="hidden">
-      <header class="section-header"><h1>Runbot</h1></header>
-      <p class="placeholder">Coming soon.</p>
-    </section>
-    <section id="section-config" class="hidden">
-      <header class="section-header"><h1>Config</h1></header>
-      <div class="config-block">
-        <h2>Repositories</h2>
-        <div id="repo-rows"></div>
-        <div class="config-actions">
-          <button id="btn-repo-add">Add repository</button>
-          <button id="btn-repo-save">Save</button>
-          <button id="btn-repo-reset">Reset to defaults</button>
-          <span id="repo-msg"></span>
-        </div>
+
+  <div class="body">
+    <nav class="sidebar">
+      <button class="nav-item" data-section="server">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none"/></svg>
+        Server <span class="live" id="server-dot" hidden></span>
+      </button>
+      <button class="nav-item" data-section="databases">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>
+        Databases
+      </button>
+      <button class="nav-item" data-section="code">
+        <svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>
+        Code
+      </button>
+      <button class="nav-item" data-section="tasks">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><polyline points="8.5 12 11 14.5 15.5 9.5"/></svg>
+        Tasks
+      </button>
+      <button class="nav-item" data-section="runbot">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/></svg>
+        Runbot
+      </button>
+      <button class="nav-item" data-section="config">
+        <svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>
+        Config
+      </button>
+
+      <div class="spacer"></div>
+      <div class="env-card" id="env-card" hidden>
+        <div class="row"><span class="k">target</span><span class="v" id="env-target"></span></div>
+        <div class="row"><span class="k">db</span><span class="v" id="env-db"></span></div>
+        <div class="row"><span class="k">pid</span><span class="v" id="env-pid"></span></div>
       </div>
-      <div class="config-block">
-        <h2>Targets</h2>
-        <div id="target-rows"></div>
-        <div class="config-actions">
-          <button id="btn-target-add">Add target</button>
-          <button id="btn-target-save">Save</button>
-          <button id="btn-target-reset">Reset to defaults</button>
-          <span id="target-msg"></span>
+    </nav>
+
+    <main>
+      <section id="section-server">
+        <div class="page-head">
+          <div>
+            <h1>Server</h1>
+            <div class="sub" id="server-info" hidden></div>
+            <div class="sub hint" id="server-hint" hidden></div>
+          </div>
+          <div class="uptime" id="uptime" hidden>
+            <div class="big" id="uptime-val"></div>
+            <div class="lbl">uptime</div>
+          </div>
         </div>
-      </div>
-    </section>
-  </main>
+
+        <div class="cmd" id="server-cmd" hidden>
+          <span class="label">launch</span>
+          <div class="code" id="cmd-code"></div>
+          <button class="copy" id="copy-btn">
+            <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            <span id="copy-lbl">Copy</span>
+          </button>
+        </div>
+
+        <section class="console">
+          <div class="log-toolbar">
+            <span class="console-title"><span class="cdot" id="console-dot"></span>Server log</span>
+            <div class="toolbar-right">
+              <span class="linecount" id="linecount">0 lines</span>
+              <label class="toggle on" id="autoscroll"><span class="switch"></span>Autoscroll</label>
+              <button class="tool-btn" id="clear-btn">
+                <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="log-scroll" id="log-pane"></div>
+        </section>
+      </section>
+
+      <section id="section-databases" class="hidden">
+        <div class="page-head">
+          <div><h1>Databases</h1></div>
+          <button class="head-btn" id="btn-db-refresh">Refresh</button>
+        </div>
+        <div id="db-list" class="db-list"></div>
+      </section>
+
+      <section id="section-code" class="hidden">
+        <div class="page-head">
+          <div><h1>Code</h1></div>
+          <button class="head-btn" id="btn-code-refresh">Refresh</button>
+        </div>
+        <div id="code-current" class="code-current"></div>
+        <h2 class="subtitle">Branches</h2>
+        <div id="branch-list"></div>
+      </section>
+
+      <section id="section-tasks" class="hidden">
+        <div class="page-head"><div><h1>Tasks</h1></div></div>
+        <p class="placeholder">Coming soon.</p>
+      </section>
+
+      <section id="section-runbot" class="hidden">
+        <div class="page-head"><div><h1>Runbot</h1></div></div>
+        <p class="placeholder">Coming soon.</p>
+      </section>
+
+      <section id="section-config" class="hidden">
+        <div class="page-head"><div><h1>Config</h1></div></div>
+        <div class="config-block">
+          <h2 class="subtitle">Repositories</h2>
+          <div id="repo-rows"></div>
+          <div class="config-actions">
+            <button id="btn-repo-add">Add repository</button>
+            <button id="btn-repo-save">Save</button>
+            <button id="btn-repo-reset">Reset to defaults</button>
+            <span id="repo-msg"></span>
+          </div>
+        </div>
+        <div class="config-block">
+          <h2 class="subtitle">Targets</h2>
+          <div id="target-rows"></div>
+          <div class="config-actions">
+            <button id="btn-target-add">Add target</button>
+            <button id="btn-target-save">Save</button>
+            <button id="btn-target-reset">Reset to defaults</button>
+            <span id="target-msg"></span>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
-  <script src="/static/config.js"></script>
-  <script src="/static/app.js"></script>
+</div>
+<script src="/static/config.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

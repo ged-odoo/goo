@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -316,6 +317,7 @@ class OdooManager:
         self.db = None
         self.target = None
         self.cmd = None
+        self.started_at = None
         self.exited_unexpectedly = False
         self.returncode = None
 
@@ -328,6 +330,7 @@ class OdooManager:
                 "db": self.db if active else None,
                 "target": self.target if active else None,
                 "cmd": self.cmd if active else None,
+                "started_at": self.started_at if active else None,
             }
             if self.exited_unexpectedly:
                 status["exited_unexpectedly"] = True
@@ -355,6 +358,7 @@ class OdooManager:
             self.db = db
             self.target = config.get("target")
             self.cmd = cmd
+            self.started_at = time.time()
             self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
             if is_new:
                 self.bus.publish_log(f"{TAG} database '{db}' not initialized, applying on_create_args")
@@ -413,6 +417,7 @@ class OdooManager:
                 self.db = None
                 self.target = None
                 self.cmd = None
+                self.started_at = None
             self.bus.publish_log(f"{TAG} odoo stopped")
         elif port_busy(ODOO_PORT):
             kill_port(ODOO_PORT)
@@ -468,6 +473,7 @@ class OdooManager:
             self.db = None
             self.target = None
             self.cmd = None
+            self.started_at = None
             self.exited_unexpectedly = True
             self.returncode = ret
         self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")

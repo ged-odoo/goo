@@ -11,7 +11,7 @@ function showSection(name) {
   for (const section of SECTIONS) {
     document.getElementById(`section-${section}`).classList.toggle("hidden", section !== name);
   }
-  for (const btn of document.querySelectorAll(".nav-btn")) {
+  for (const btn of document.querySelectorAll(".nav-item")) {
     btn.classList.toggle("active", btn.dataset.section === name);
   }
   if (name === "server") populateTargetSelect(); // pick up config edits
@@ -24,7 +24,7 @@ function onHashChange() {
   showSection(window.location.hash.replace("#", "") || "server");
 }
 
-for (const btn of document.querySelectorAll(".nav-btn")) {
+for (const btn of document.querySelectorAll(".nav-item")) {
   btn.addEventListener("click", () => { window.location.hash = btn.dataset.section; });
 }
 window.addEventListener("hashchange", onHashChange);
@@ -52,17 +52,30 @@ function updateStoredConfig(patch) {
 }
 
 // ---------------------------------------------------------------------------
-// Server section: status + controls
+// Server section: status, controls, env card, uptime, command bar
 // ---------------------------------------------------------------------------
 
-const badge = document.getElementById("status-badge");
+const statusPill = document.getElementById("status-pill");
+const statusPillText = document.getElementById("status-pill-text");
 const serverDot = document.getElementById("server-dot");
+const consoleDot = document.getElementById("console-dot");
 const serverInfo = document.getElementById("server-info");
-const targetBadge = document.getElementById("target-badge");
+const serverHint = document.getElementById("server-hint");
 const targetSelect = document.getElementById("target-select");
+const btnStart = document.getElementById("btn-start");
+const btnStop = document.getElementById("btn-stop");
+const btnRestart = document.getElementById("btn-restart");
+const envCard = document.getElementById("env-card");
+const uptimeBox = document.getElementById("uptime");
+const uptimeVal = document.getElementById("uptime-val");
+const cmdBar = document.getElementById("server-cmd");
+const cmdCode = document.getElementById("cmd-code");
+const logPane = document.getElementById("log-pane");
 let lastStatus = null;
+let startedAt = null;
 
 const LAST_TARGET_KEY = "oo-last-target";
+const PILL_STATES = { starting: "STARTING", stopping: "STOPPING", disconnected: "DISCONNECTED" };
 
 function populateTargetSelect() {
   const current = targetSelect.value || localStorage.getItem(LAST_TARGET_KEY);
@@ -94,49 +107,38 @@ function buildStartConfig(targetId) {
     },
   };
 }
-const hint = document.getElementById("server-hint");
-const btnStart = document.getElementById("btn-start");
-const btnStop = document.getElementById("btn-stop");
-const btnRestart = document.getElementById("btn-restart");
-const logPane = document.getElementById("log-pane");
 
 function setStatus(status) {
   lastStatus = status;
   const state = status.state;
-  badge.textContent = state;
-  badge.className = `badge ${state}`;
-  serverDot.classList.toggle("on", state === "running");
-  targetBadge.hidden = !status.target;
-  targetBadge.textContent = status.target || "";
-  if (state === "stopped") populateTargetSelect();
-  targetSelect.hidden = state !== "stopped";
-  document.getElementById("favicon").href =
-    state === "running" ? "/static/favicon-on.svg" : "/static/favicon.svg";
-
   const active = state === "starting" || state === "running";
+
+  statusPill.hidden = !PILL_STATES[state];
+  if (PILL_STATES[state]) {
+    statusPill.className = `status-pill ${state}`;
+    statusPillText.textContent = PILL_STATES[state];
+  }
+
   btnStart.disabled = state !== "stopped";
   btnStop.disabled = !active;
   btnRestart.disabled = !active;
+  if (state === "stopped") populateTargetSelect();
+  targetSelect.hidden = state !== "stopped";
 
-  const info = [];
+  serverDot.hidden = state !== "running";
+  consoleDot.classList.toggle("on", state === "running");
+  document.getElementById("favicon").href =
+    state === "running" ? "/static/favicon-on.svg" : "/static/favicon.svg";
+
   if (status.db) {
-    info.push(`database: ${status.db}`);
+    let html = `database: <b>${escapeHtml(status.db)}</b>`;
     if (status.odoo_version) {
-      info.push(`odoo ${status.odoo_version}${status.enterprise ? " (ent)" : ""}`);
+      html += `<span class="sep">·</span>odoo <b>${escapeHtml(status.odoo_version)}</b>`;
+      if (status.enterprise) html += `<span class="sep">·</span>enterprise`;
     }
+    serverInfo.innerHTML = html;
   }
-  serverInfo.textContent = info.join("  ·  ");
-  serverInfo.hidden = !info.length;
-
-  const serverCmd = document.getElementById("server-cmd");
-  serverCmd.textContent = status.cmd ? `$ ${status.cmd}` : "";
-  serverCmd.hidden = !status.cmd;
-
-  const newActiveDb = status.db || null;
-  if (newActiveDb !== activeDb) {
-    activeDb = newActiveDb;
-    if (lastDbs) renderDatabases(lastDbs);
-  }
+  serverInfo.hidden = !status.db;
 
   const hints = [];
   if (status.exited_unexpectedly) {
@@ -146,8 +148,56 @@ function setStatus(status) {
     hints.push("port 8069 is busy (external odoo?) — Stop will kill it");
     btnStop.disabled = false;
   }
-  hint.textContent = hints.join(" — ");
+  serverHint.textContent = hints.join(" — ");
+  serverHint.hidden = !hints.length;
+
+  envCard.hidden = !active;
+  if (active) {
+    document.getElementById("env-target").textContent = status.target || "—";
+    document.getElementById("env-db").textContent = status.db || "—";
+    document.getElementById("env-pid").textContent = status.pid || "—";
+  }
+
+  startedAt = active ? status.started_at : null;
+  uptimeBox.hidden = !startedAt;
+  renderUptime();
+
+  cmdBar.hidden = !status.cmd;
+  if (status.cmd) cmdCode.innerHTML = tintCmd(status.cmd);
+
+  const newActiveDb = status.db || null;
+  if (newActiveDb !== activeDb) {
+    activeDb = newActiveDb;
+    if (lastDbs) renderDatabases(lastDbs);
+  }
 }
+
+function renderUptime() {
+  if (!startedAt) return;
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  uptimeVal.textContent = h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
+}
+
+setInterval(renderUptime, 1000);
+
+function tintCmd(cmd) {
+  const tokens = cmd.split(" ").map((tok) => {
+    const esc = escapeHtml(tok);
+    if (tok.startsWith("-")) return `<span class="flag">${esc}</span>`;
+    if (tok.includes("/")) return `<span class="path">${esc}</span>`;
+    return esc;
+  });
+  return `<span class="prompt">$</span>${tokens.join(" ")}`;
+}
+
+document.getElementById("copy-btn").addEventListener("click", () => {
+  if (!lastStatus?.cmd) return;
+  navigator.clipboard?.writeText(lastStatus.cmd);
+  const lbl = document.getElementById("copy-lbl");
+  lbl.textContent = "Copied";
+  setTimeout(() => { lbl.textContent = "Copy"; }, 1400);
+});
 
 async function post(path, body) {
   try {
@@ -557,7 +607,7 @@ async function deleteBranch(row, btn) {
 function connect() {
   const es = new EventSource("/api/events");
   // the server replays its full log buffer on connect, so start clean
-  es.onopen = () => logPane.replaceChildren();
+  es.onopen = () => { logPane.replaceChildren(); updateLineCount(); };
   es.onerror = () => setStatus({ state: "disconnected" });
   es.addEventListener("status", (e) => setStatus(JSON.parse(e.data)));
   es.addEventListener("log", (e) => appendLog(JSON.parse(e.data).line));
@@ -566,12 +616,39 @@ function connect() {
 connect();
 
 // ---------------------------------------------------------------------------
-// Log pane: batched appends, auto-scroll unless scrolled up
+// Log console: structured rows, autoscroll toggle, clear, line count
 // ---------------------------------------------------------------------------
 
 const MAX_LOG_LINES = 2000;
+const autoToggle = document.getElementById("autoscroll");
+let autoScroll = true;
 let pendingLines = [];
 let flushScheduled = false;
+
+autoToggle.addEventListener("click", () => {
+  setAutoScroll(!autoScroll);
+  if (autoScroll) logPane.scrollTop = logPane.scrollHeight;
+});
+
+function setAutoScroll(on) {
+  autoScroll = on;
+  autoToggle.classList.toggle("on", on);
+}
+
+// scrolling away from the bottom pauses following; scrolling back resumes it
+logPane.addEventListener("scroll", () => {
+  const atBottom = logPane.scrollTop + logPane.clientHeight >= logPane.scrollHeight - 4;
+  if (atBottom !== autoScroll) setAutoScroll(atBottom);
+});
+
+document.getElementById("clear-btn").addEventListener("click", () => {
+  logPane.replaceChildren();
+  updateLineCount();
+});
+
+function updateLineCount() {
+  document.getElementById("linecount").textContent = `${logPane.childElementCount} lines`;
+}
 
 function appendLog(line) {
   pendingLines.push(line);
@@ -585,19 +662,82 @@ function flushLog() {
   flushScheduled = false;
   const lines = pendingLines;
   pendingLines = [];
-  const atBottom = logPane.scrollTop + logPane.clientHeight >= logPane.scrollHeight - 4;
   const frag = document.createDocumentFragment();
   for (const line of lines) {
-    const div = document.createElement("div");
-    div.className = "log-line";
-    div.innerHTML = ansiToHtml(line);
-    frag.appendChild(div);
+    frag.appendChild(buildLogRow(line));
   }
   logPane.appendChild(frag);
   while (logPane.childElementCount > MAX_LOG_LINES) {
     logPane.firstElementChild.remove();
   }
-  if (atBottom) logPane.scrollTop = logPane.scrollHeight;
+  updateLineCount();
+  if (autoScroll) logPane.scrollTop = logPane.scrollHeight;
+}
+
+// ── odoo log line parsing ──
+
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const LOG_RE = /^(?:\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2},\d+) (\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) ([\w.]+): (.*)$/;
+const HTTP_RE = /^(.*?)"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ([^"]*) (HTTP\/[\d.]+)" (\d{3}) ?(.*)$/;
+
+const LVL_CLASS = { DEBUG: "info", INFO: "info", WARNING: "warn", ERROR: "err", CRITICAL: "err" };
+
+function buildLogRow(line) {
+  const div = document.createElement("div");
+  const text = line.replace(ANSI_RE, "");
+  const m = LOG_RE.exec(text);
+  if (!m) {
+    // tracebacks, [oo] messages, continuation lines
+    div.className = "row raw";
+    div.innerHTML = `<span class="msg">${ansiToHtml(line)}</span>`;
+    return div;
+  }
+  const [, ts, pid, lvl, , logger, msg] = m;
+  let rowCls = "row";
+  if (lvl === "ERROR" || lvl === "CRITICAL") rowCls += " err-row";
+  else if (lvl === "WARNING" || logger.includes("ir_cron")) rowCls += " warn-row";
+
+  let msgHtml;
+  const h = HTTP_RE.exec(msg);
+  if (h) {
+    const [, prefix, method, url, proto, status, rest] = h;
+    const qi = url.indexOf("?");
+    const path = qi === -1 ? url : url.slice(0, qi);
+    const query = qi === -1 ? "" : url.slice(qi);
+    const code = Number(status);
+    if (code >= 400) rowCls = "row err-row";
+    const cc = code < 200 ? "c1" : code < 300 ? "c2" : code < 400 ? "c3" : "c4";
+    msgHtml = `<span class="meta">${escapeHtml(prefix)}</span>` +
+      `<span class="quote">"</span><span class="method">${method}</span>` +
+      `<span class="urlpath">${escapeHtml(path)}</span><span class="query">${escapeHtml(query)}</span>` +
+      `<span class="proto">${proto}</span><span class="quote">"</span>` +
+      `<span class="code-chip ${cc}">${status}</span>${tintHttpMeta(rest)}`;
+  } else {
+    msgHtml = `<span class="plain">${escapeHtml(msg)}</span>`;
+  }
+
+  div.className = rowCls;
+  div.innerHTML =
+    `<span class="ts">${ts}</span><span class="pid">${pid}</span>` +
+    `<span class="lvl ${LVL_CLASS[lvl]}">${lvl === "WARNING" ? "WARN" : lvl === "CRITICAL" ? "CRIT" : lvl}</span>` +
+    `<span class="logger">${escapeHtml(logger)}:</span>` +
+    `<span class="msg">${msgHtml}</span>`;
+  return div;
+}
+
+function tintHttpMeta(rest) {
+  // trailing numbers: sizes then timings — highlight the last (total) timing
+  const tokens = rest.trim().split(/\s+/).filter(Boolean);
+  const floatIdx = tokens.flatMap((t, i) => (/^\d+\.\d+$/.test(t) ? [i] : []));
+  const last = floatIdx[floatIdx.length - 1];
+  return tokens.map((t, i) => {
+    if (i === last) {
+      const v = parseFloat(t);
+      const cls = v >= 100 ? "timing vslow" : v >= 1 ? "timing slow" : "timing";
+      return `<span class="${cls}">${escapeHtml(t)}</span>`;
+    }
+    return ` <span class="meta">${escapeHtml(t)}</span>`;
+  }).join("");
 }
 
 // ---------------------------------------------------------------------------
