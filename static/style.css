@@ -138,7 +138,8 @@ section.hidden { display: none; }
 }
 
 .db-actions { text-align: right; }
-.active-db { font-weight: 700; }
+.active-name { font-weight: 700; }
+.active-mark { color: var(--fg-dim); font-weight: 400; }
 
 .drop-btn {
   padding: 3px 12px;

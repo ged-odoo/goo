@@ -217,7 +217,7 @@ function renderDatabases(dbs) {
     const tr = document.createElement("tr");
     const name = document.createElement("td");
     name.textContent = db.name;
-    if (isActive) name.className = "active-db";
+    if (isActive) name.className = "active-name";
     const version = document.createElement("td");
     version.textContent = db.odoo_version
       ? db.odoo_version + (db.enterprise ? " (ent)" : "")
@@ -469,10 +469,12 @@ function renderCurrentBranches(repos) {
 }
 
 function renderBranchTable(repos) {
+  const repoPaths = Object.fromEntries(getConfig().repos.map((r) => [r.id, r.path]));
   const rows = [];
   for (const repo of repos) {
     for (const b of repo.branches) {
-      rows.push({ branch: b.name, repo: repo.id, date: b.date });
+      rows.push({ branch: b.name, repo: repo.id, date: b.date,
+                  path: repoPaths[repo.id], checkedOut: b.name === repo.current });
     }
   }
   rows.sort((a, b) => a.branch.localeCompare(b.branch) || a.repo.localeCompare(b.repo));
@@ -492,22 +494,60 @@ function renderBranchTable(repos) {
   }
   const table = document.createElement("table");
   table.className = "db-table";
-  table.innerHTML = "<thead><tr><th>Branch</th><th>Repository</th><th>Last commit</th></tr></thead>";
+  table.innerHTML =
+    "<thead><tr><th>Branch</th><th>Repository</th><th>Last commit</th><th></th></tr></thead>";
   const tbody = document.createElement("tbody");
   for (const row of rows) {
     const tr = document.createElement("tr");
     const branch = document.createElement("td");
     branch.textContent = row.branch;
+    if (row.checkedOut) {
+      branch.className = "active-name";
+      const mark = document.createElement("span");
+      mark.className = "active-mark";
+      mark.textContent = " (active)";
+      branch.appendChild(mark);
+    }
     const repo = document.createElement("td");
     repo.textContent = row.repo;
     const date = document.createElement("td");
     date.textContent = row.date ? timeAgo(row.date) : "—";
     if (row.date) date.title = row.date;
-    tr.append(branch, repo, date);
+    const actions = document.createElement("td");
+    actions.className = "db-actions";
+    const btn = document.createElement("button");
+    btn.textContent = "Delete";
+    btn.className = "drop-btn";
+    if (row.checkedOut) {
+      btn.disabled = true;
+      btn.title = "currently checked out";
+    }
+    btn.addEventListener("click", () => deleteBranch(row, btn));
+    actions.appendChild(btn);
+    tr.append(branch, repo, date, actions);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
   branchList.appendChild(table);
+}
+
+async function deleteBranch(row, btn) {
+  if (!confirm(`Force-delete branch "${row.branch}" in ${row.repo}? This cannot be undone.`)) return;
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/code/branches/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: row.path, branch: row.branch }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+  } catch (err) {
+    alert(`Delete failed: ${err.message}`);
+    btn.disabled = false;
+    return;
+  }
+  loadCode();
 }
 
 // ---------------------------------------------------------------------------

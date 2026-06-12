@@ -223,6 +223,20 @@ def git_branches(repos):
     return out
 
 
+def git_delete_branch(path, branch):
+    """Force-delete a local branch. Returns (ok, error)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "branch", "-D", branch],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, result.stderr.strip().split("\n")[0] or "git branch -D failed"
+    return True, None
+
+
 def build_odoo_cmd(config):
     """Build the odoo-bin shell command from a client config.
 
@@ -518,6 +532,17 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             self._send_json(200, {"ok": True, "repos": git_branches(repos)})
+        elif path == "/api/code/branches/delete":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            branch = (body or {}).get("branch")
+            if err or not repo_path or not branch:
+                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
+            ok, error = git_delete_branch(repo_path, branch)
+            if ok:
+                self._send_json(200, {"ok": True})
+            else:
+                self._send_json(400, {"ok": False, "error": error})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
             name = (body or {}).get("name")
