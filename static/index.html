@@ -8,8 +8,25 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <header id="navbar">
+    <div class="nav-zone nav-left">
+      <div id="logo">oo</div>
+      <span id="status-badge" class="badge disconnected">&hellip;</span>
+      <span id="target-badge" class="target-badge" hidden></span>
+    </div>
+    <div class="nav-zone nav-center">
+      <select id="target-select" title="target to start"></select>
+      <button id="btn-start" disabled>Start</button>
+      <button id="btn-stop" disabled>Stop</button>
+      <button id="btn-restart" disabled>Restart</button>
+    </div>
+    <div class="nav-zone nav-right">
+      <a class="server-link" href="http://localhost:8069/odoo" target="_blank">/odoo</a>
+      <a class="server-link" href="http://localhost:8069/web/tests?debug=assets" target="_blank">/web/tests</a>
+    </div>
+  </header>
+  <div id="layout">
   <nav id="sidebar">
-    <div id="logo">oo</div>
     <button class="nav-btn" data-section="server">Server<span id="server-dot" class="dot"></span></button>
     <button class="nav-btn" data-section="databases">Databases</button>
     <button class="nav-btn" data-section="code">Code</button>
@@ -21,18 +38,8 @@
     <section id="section-server">
       <header class="section-header">
         <h1>Server</h1>
-        <span id="status-badge" class="badge disconnected">&hellip;</span>
-        <span id="target-badge" class="target-badge" hidden></span>
-      </header>
-      <div id="server-controls">
-        <select id="target-select" title="target to start"></select>
-        <button id="btn-start" disabled>Start</button>
-        <button id="btn-stop" disabled>Stop</button>
-        <button id="btn-restart" disabled>Restart</button>
-        <a class="server-link" href="http://localhost:8069/odoo" target="_blank">/odoo</a>
-        <a class="server-link" href="http://localhost:8069/web/tests?debug=assets" target="_blank">/web/tests</a>
         <span id="server-hint"></span>
-      </div>
+      </header>
       <div id="server-info" class="server-info" hidden></div>
       <div id="server-cmd" class="server-cmd" hidden></div>
       <div id="log-pane"></div>
@@ -85,6 +92,7 @@
       </div>
     </section>
   </main>
+  </div>
   <script src="/static/config.js"></script>
   <script src="/static/app.js"></script>
 </body>
