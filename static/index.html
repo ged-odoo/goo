@@ -157,6 +157,26 @@
             <span id="target-msg"></span>
           </div>
         </div>
+        <div class="config-block">
+          <h2 class="subtitle">Storage</h2>
+          <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
+          <div class="config-actions">
+            <input type="text" id="data-file-input" class="w-flex" placeholder="e.g. ~/.config/oo/data.json">
+            <button id="btn-data-file-save">Use file</button>
+            <button id="btn-data-file-clear">Use browser</button>
+            <span id="data-file-msg"></span>
+          </div>
+        </div>
+        <div class="config-block">
+          <h2 class="subtitle">Backup</h2>
+          <p class="dim">Save your config and favorites to a file, or restore them from one.</p>
+          <div class="config-actions">
+            <button id="btn-export">Export</button>
+            <button id="btn-import">Import</button>
+            <input type="file" id="import-file" accept="application/json,.json" hidden>
+            <span id="backup-msg"></span>
+          </div>
+        </div>
       </section>
     </main>
   </div>

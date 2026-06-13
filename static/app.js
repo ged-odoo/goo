@@ -34,6 +34,11 @@ window.addEventListener("hashchange", onHashChange);
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = "oo-config";
+const DATA_FILE_KEY = "oo-data-file";  // optional path to a server-side JSON store
+
+function getDataFile() {
+  return localStorage.getItem(DATA_FILE_KEY) || "";
+}
 
 function storedConfig() {
   try {
@@ -51,6 +56,7 @@ const CACHE_TTL = 10 * 60 * 1000; // tab data (databases, branches/PRs)
 
 function updateStoredConfig(patch) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...storedConfig(), ...patch }));
+  persistToFile();
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +227,7 @@ function startAction(path, targetId) {
   const config = buildStartConfig(targetId);
   if (!config) return appendLog(`[oo] no such target: "${targetId || ""}" — check the Config tab`);
   localStorage.setItem(LAST_TARGET_KEY, config.target);
+  persistToFile();
   post(path, config);
 }
 
@@ -457,6 +464,7 @@ function createListEditor({ prefix, storageKey, itemName, fields, validate }) {
     const stored = storedConfig();
     delete stored[storageKey];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+    persistToFile();
     render();
     flash("reset to defaults");
   });
@@ -517,6 +525,7 @@ const targetEditor = createListEditor({
 function renderConfigEditors() {
   repoEditor.render();
   targetEditor.render();
+  document.getElementById("data-file-input").value = getDataFile();
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +554,7 @@ function toggleFavorite(branch) {
   const favs = readFavorites();
   favs.has(branch) ? favs.delete(branch) : favs.add(branch);
   localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favs]));
+  persistToFile();
 }
 
 // re-render from cache without refetching (used after toggling a favorite)
@@ -1010,7 +1020,150 @@ function ansiToHtml(line) {
 }
 
 // ---------------------------------------------------------------------------
+// Backup: export/import the persistent localStorage data as a JSON file
+// ---------------------------------------------------------------------------
+
+// config + favorites + last target; transient caches are intentionally skipped
+const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY];
+const backupMsg = document.getElementById("backup-msg");
+
+function exportData() {
+  const data = {};
+  for (const key of PERSISTENT_KEYS) {
+    const val = localStorage.getItem(key);
+    if (val !== null) data[key] = val;
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "oo-backup.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  backupMsg.textContent = "Exported.";
+}
+
+async function importData(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || typeof data !== "object") throw new Error("not a JSON object");
+    let n = 0;
+    for (const key of PERSISTENT_KEYS) {
+      if (typeof data[key] === "string") { localStorage.setItem(key, data[key]); n++; }
+    }
+    if (!n) throw new Error("no recognized data in file");
+    // when a data file is linked, push the import to it before reloading,
+    // otherwise the reload would re-read the file and discard the import
+    if (getDataFile()) await flushToFile(getDataFile());
+    backupMsg.textContent = `Imported ${n} item(s), reloading…`;
+    setTimeout(() => location.reload(), 700);
+  } catch (err) {
+    backupMsg.textContent = `Import failed: ${err.message}`;
+  }
+}
+
+document.getElementById("btn-export").addEventListener("click", exportData);
+document.getElementById("btn-import").addEventListener("click",
+  () => document.getElementById("import-file").click());
+document.getElementById("import-file").addEventListener("change", (e) => {
+  if (e.target.files[0]) importData(e.target.files[0]);
+  e.target.value = "";  // let the same file be re-imported later
+});
+
+// ---------------------------------------------------------------------------
+// Server-side persistence: mirror the persistent keys to a JSON file on disk
+// when one is configured. localStorage stays the working store; the file is
+// loaded into it at startup and written back (debounced) on every change.
+// ---------------------------------------------------------------------------
+
+function collectPersistent() {
+  const data = {};
+  for (const key of PERSISTENT_KEYS) {
+    const val = localStorage.getItem(key);
+    if (val !== null) data[key] = val;
+  }
+  return data;
+}
+
+async function flushToFile(path) {
+  const resp = await fetch("/api/data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, data: collectPersistent() }),
+  });
+  const res = await resp.json();
+  if (!res.ok) throw new Error(res.error || resp.status);
+}
+
+let persistTimer = null;
+function persistToFile() {
+  const path = getDataFile();
+  if (!path) return;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    flushToFile(path).catch((err) =>
+      console.error(`[oo] data file save failed: ${err.message}`));
+  }, 300);
+}
+
+// returns true if the file existed and its data was loaded into localStorage
+async function loadFromFile(path) {
+  const resp = await fetch(`/api/data?path=${encodeURIComponent(path)}`);
+  const res = await resp.json();
+  if (!res.ok) throw new Error(res.error || resp.status);
+  if (res.data && typeof res.data === "object") {
+    for (const key of PERSISTENT_KEYS) {
+      if (typeof res.data[key] === "string") localStorage.setItem(key, res.data[key]);
+    }
+    return true;
+  }
+  return false;
+}
+
+const dataFileMsg = document.getElementById("data-file-msg");
+
+async function saveDataFile(path) {
+  path = path.trim();
+  if (!path) return clearDataFile();
+  try {
+    const hydrated = await loadFromFile(path);  // validates the path is usable
+    localStorage.setItem(DATA_FILE_KEY, path);
+    if (hydrated) {
+      dataFileMsg.textContent = "Linked to existing file, reloading…";
+    } else {
+      await flushToFile(path);  // create it from the current data
+      dataFileMsg.textContent = "Linked — file created from current data. Reloading…";
+    }
+    setTimeout(() => location.reload(), 700);
+  } catch (err) {
+    dataFileMsg.textContent = `Could not use file: ${err.message}`;
+  }
+}
+
+function clearDataFile() {
+  localStorage.removeItem(DATA_FILE_KEY);
+  dataFileMsg.textContent = "Using browser storage.";
+  document.getElementById("data-file-input").value = "";
+}
+
+document.getElementById("btn-data-file-save").addEventListener("click",
+  () => saveDataFile(document.getElementById("data-file-input").value));
+document.getElementById("btn-data-file-clear").addEventListener("click", clearDataFile);
+
+// ---------------------------------------------------------------------------
 // Initial render (last: section handlers above must be set up first)
 // ---------------------------------------------------------------------------
 
-onHashChange();
+async function init() {
+  const path = getDataFile();
+  if (path) {
+    try {
+      // load the file into localStorage; create it if it doesn't exist yet
+      if (!await loadFromFile(path)) await flushToFile(path);
+    } catch (err) {
+      console.error(`[oo] data file load failed, using browser storage: ${err.message}`);
+    }
+  }
+  onHashChange();
+}
+
+init();

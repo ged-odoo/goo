@@ -193,6 +193,33 @@ def drop_database(db_name):
     return True, None
 
 
+def read_data_file(path):
+    """Read a JSON data file. Returns (data, error). A missing file is not an
+    error: it returns (None, None) so the caller can create it on first use."""
+    p = os.path.expanduser(path)
+    if not os.path.exists(p):
+        return None, None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f), None
+    except (OSError, ValueError) as e:
+        return None, str(e)
+
+
+def write_data_file(path, data):
+    """Write data as pretty JSON to a file, creating parent dirs. (ok, error)."""
+    p = os.path.expanduser(path)
+    try:
+        parent = os.path.dirname(p)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True, None
+    except OSError as e:
+        return False, str(e)
+
+
 def git_branches(repos):
     """For each repo {id, path}: the checked-out branch and all local
     branches with their last-commit date."""
@@ -587,6 +614,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
         elif path == "/api/events":
             self._handle_events()
+        elif path == "/api/data":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            fpath = (qs.get("path") or [""])[0]
+            if not fpath:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            data, error = read_data_file(fpath)
+            if error:
+                return self._send_json(400, {"ok": False, "error": error})
+            self._send_json(200, {"ok": True, "data": data})
         else:
             self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -631,6 +667,16 @@ class Handler(BaseHTTPRequestHandler):
             if err or not name or not isinstance(name, str):
                 return self._send_json(400, {"ok": False, "error": "missing database name"})
             ok, error = drop_database(name)
+            if ok:
+                self._send_json(200, {"ok": True})
+            else:
+                self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/data":
+            body, err = self._read_json()
+            fpath = (body or {}).get("path")
+            if err or not fpath:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            ok, error = write_data_file(fpath, (body or {}).get("data"))
             if ok:
                 self._send_json(200, {"ok": True})
             else:
