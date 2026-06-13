@@ -14,13 +14,17 @@ import mimetypes
 import os
 import pty
 import queue
+import re
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TAG = "[oo]"
@@ -221,6 +225,17 @@ def git_branches(repos):
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
         out.append(entry)
+
+    # enrich work branches with their runbot status (one badge per unique
+    # name, fetched in parallel); base branches are skipped — see frontend.
+    names = {b["name"] for e in out for b in e["branches"]
+             if not BASE_BRANCH_RE.match(b["name"])}
+    if names:
+        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
+            status = dict(zip(names, pool.map(runbot_badge_status, names)))
+        for e in out:
+            for b in e["branches"]:
+                b["runbot"] = status.get(b["name"], "")
     return out
 
 
@@ -236,6 +251,61 @@ def git_delete_branch(path, branch):
     if result.returncode != 0:
         return False, result.stderr.strip().split("\n")[0] or "git branch -D failed"
     return True, None
+
+
+BASE_BRANCH_RE = re.compile(r"^(saas-\d+\.\d+|\d+\.\d+|master)$")
+
+
+def runbot_badge_status(branch):
+    """Fetch the runbot status badge for a branch and parse its result.
+
+    Returns "success", "failure", "pending", or "" (no build / unreachable).
+    The badge SVG carries the status as its right-hand <text> label, e.g.
+    <text ...>success</text>.
+    """
+    url = f"https://runbot.odoo.com/runbot/badge/1/{urllib.parse.quote(branch)}.svg"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "oo/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            svg = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    texts = re.findall(r"<text[^>]*>([^<]*)</text>", svg)
+    label = texts[-1].strip().lower() if texts else ""
+    if "success" in label:
+        return "success"
+    if any(k in label for k in ("fail", "ko", "error", "killed")):
+        return "failure"
+    if any(k in label for k in ("pending", "running", "testing", "progress")):
+        return "pending"
+    return ""
+
+
+def github_prs(repos):
+    """For each repo {id, github}: the user's PRs (all states) via the gh CLI."""
+    out = []
+    for repo in repos:
+        rid, gh_repo = repo.get("id"), repo.get("github")
+        if not rid or not gh_repo:
+            continue
+        entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
+        try:
+            r = subprocess.run(
+                ["gh", "pr", "list", "--repo", gh_repo, "--author", "@me",
+                 "--state", "all", "--limit", "200",
+                 "--json", "number,url,state,isDraft,headRefName,updatedAt"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
+            else:
+                entry["prs"] = json.loads(r.stdout)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            entry["error"] = str(e)
+        except json.JSONDecodeError:
+            entry["error"] = "unexpected gh output"
+        out.append(entry)
+    return out
 
 
 def build_odoo_cmd(config):
@@ -538,6 +608,12 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             self._send_json(200, {"ok": True, "repos": git_branches(repos)})
+        elif path == "/api/prs":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            self._send_json(200, {"ok": True, "repos": github_prs(repos)})
         elif path == "/api/code/branches/delete":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")
