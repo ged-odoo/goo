@@ -569,7 +569,7 @@ function rerenderPrs() {
 
 // Branch actions popover: a single floating menu, opened from a branch name.
 // Actions are passed in as {label, onClick, disabled, title, danger} objects so
-// new branch actions can be added in one place (buildBranchActions) over time.
+// new branch actions can be added in one place (openBranchActions) over time.
 const branchPopover = document.createElement("div");
 branchPopover.className = "branch-popover hidden";
 document.body.appendChild(branchPopover);
@@ -579,19 +579,65 @@ function closeBranchActions() {
   branchPopover.replaceChildren();
 }
 
-function openBranchActions(actions, anchor) {
+// a popover row whose props can be updated later (for async-resolved actions)
+function makePopoverItem(props) {
+  const el = document.createElement("button");
+  el.update = (p) => {
+    el.className = `branch-popover-item${p.danger ? " danger" : ""}`;
+    el.textContent = p.label;
+    el.disabled = !!p.disabled;
+    el.title = p.title || "";
+    el.onclick = (!p.disabled && p.onClick)
+      ? () => { closeBranchActions(); p.onClick(); }
+      : null;
+  };
+  el.update(props);
+  return el;
+}
+
+function openBranchActions(group, ctx, anchor) {
   branchPopover.replaceChildren();
-  for (const action of actions) {
-    const item = document.createElement("button");
-    item.className = `branch-popover-item${action.danger ? " danger" : ""}`;
-    item.textContent = action.label;
-    item.disabled = !!action.disabled;
-    if (action.title) item.title = action.title;
-    if (!action.disabled && action.onClick) {
-      item.addEventListener("click", () => { closeBranchActions(); action.onClick(); });
+
+  for (const r of group.rows) {
+    const github = ctx.githubByRepo[r.repo];
+    if (!github) continue;
+    const path = ctx.pathByRepo[r.repo];
+    const pr = ctx.prIndex[`${r.repo}:${group.branch}`];
+
+    // GitHub branch slot: link if the branch is on the fork, else offer to
+    // push it. A PR (or known remote-tracking ref) means it's there already;
+    // otherwise check the remote live — see resolveGithubAction.
+    const ghItem = makePopoverItem({ label: `Checking GitHub… — ${r.repo}`, disabled: true });
+    branchPopover.appendChild(ghItem);
+    resolveGithubAction(ghItem, { repo: r.repo, github, path, branch: group.branch,
+      known: !!(pr || r.remote) });
+
+    if (!pr) {
+      branchPopover.appendChild(makePopoverItem({
+        label: `Create PR — ${r.repo}`,
+        onClick: () => window.open(createPrUrl(github, group.branch), "_blank"),
+      }));
+    } else if (pr.state === "OPEN") {
+      branchPopover.appendChild(makePopoverItem({
+        label: `Close PR #${pr.number} — ${r.repo}`,
+        danger: true,
+        onClick: () => closePr(github, pr.number),
+      }));
     }
-    branchPopover.appendChild(item);
   }
+
+  for (const r of group.rows) {
+    branchPopover.appendChild(makePopoverItem({
+      label: `Delete local branch — ${r.repo}`,
+      danger: true,
+      disabled: r.checkedOut,
+      title: r.checkedOut ? "currently checked out" : "",
+      onClick: () => deleteBranch(
+        { branch: group.branch, repo: r.repo, path: ctx.pathByRepo[r.repo] }),
+    }));
+  }
+  // upcoming actions (kept visible but disabled to show what's coming)
+  branchPopover.appendChild(makePopoverItem({ label: "Rebase onto base", disabled: true, title: "coming soon" }));
 
   // show first (so it has a size), then position below the branch name,
   // nudging left if it would overflow the viewport
@@ -603,47 +649,28 @@ function openBranchActions(actions, anchor) {
   branchPopover.style.left = `${Math.max(12, left)}px`;
 }
 
-// build the action list for a branch group (closure-free; needs lookups passed in)
-function buildBranchActions(group, ctx) {
-  const actions = [];
-  for (const r of group.rows) {
-    const github = ctx.githubByRepo[r.repo];
-    if (!github) continue;
-    const pr = ctx.prIndex[`${r.repo}:${group.branch}`];
-    // only link to the fork when the branch was actually pushed there
-    // (a remote-tracking ref exists, or a PR — which implies one — exists)
-    if (r.remote || pr) {
-      actions.push({
-        label: `Branch on GitHub — ${r.repo}`,
-        onClick: () => window.open(branchUrl(github, group.branch), "_blank"),
-      });
-    }
-    if (!pr) {
-      actions.push({
-        label: `Create PR — ${r.repo}`,
-        onClick: () => window.open(createPrUrl(github, group.branch), "_blank"),
-      });
-    } else if (pr.state === "OPEN") {
-      actions.push({
-        label: `Close PR #${pr.number} — ${r.repo}`,
-        danger: true,
-        onClick: () => closePr(github, pr.number),
-      });
-    }
-  }
-  for (const r of group.rows) {
-    actions.push({
-      label: `Delete local branch — ${r.repo}`,
-      danger: true,
-      disabled: r.checkedOut,
-      title: r.checkedOut ? "currently checked out" : "",
-      onClick: () => deleteBranch(
-        { branch: group.branch, repo: r.repo, path: ctx.pathByRepo[r.repo] }),
+// resolve the GitHub branch slot to either a link or a "push branch" action
+async function resolveGithubAction(item, { repo, github, path, branch, known }) {
+  const linkAction = {
+    label: `Branch on GitHub — ${repo}`,
+    onClick: () => window.open(branchUrl(github, branch), "_blank"),
+  };
+  if (known) return item.update(linkAction);
+  try {
+    const resp = await fetch("/api/code/branch/remote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, branch }),
     });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+    item.update(data.exists ? linkAction : {
+      label: `Push branch to GitHub — ${repo}`,
+      onClick: () => pushBranch(path, branch),
+    });
+  } catch (err) {
+    item.update({ label: `GitHub check failed — ${repo}`, disabled: true, title: err.message });
   }
-  // upcoming actions (kept visible but disabled to show what's coming)
-  actions.push({ label: "Rebase onto base", disabled: true, title: "coming soon" });
-  return actions;
 }
 
 // close on outside click or Escape
@@ -833,10 +860,9 @@ function renderPrTable(branchRepos, prRepos, repos) {
           branchName.className = "branch-trigger";
           branchName.textContent = group.branch;
           branchName.title = "branch actions";
-          const actions = buildBranchActions(group, ctx);
           branchName.addEventListener("click", (e) => {
             e.stopPropagation();
-            openBranchActions(actions, branchName);
+            openBranchActions(group, ctx, branchName);
           });
         }
         name.appendChild(branchName);
@@ -899,6 +925,27 @@ function renderPrTable(branchRepos, prRepos, repos) {
   }
   table.appendChild(tbody);
   prsList.appendChild(table);
+}
+
+async function pushBranch(path, branch) {
+  if (!confirm(`Push "${branch}" to the dev remote (odoo-dev)?`)) return;
+  prsList.classList.add("busy");
+  prsStamp.textContent = `pushing ${branch}…`;
+  try {
+    const resp = await fetch("/api/code/branch/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, branch }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+    await fetchPrs(reposWithGithub()); // re-render; branch now has a remote ref
+  } catch (err) {
+    alert(`Push failed: ${err.message}`);
+    setPrsStamp(readPrsCache()?.at);
+  } finally {
+    prsList.classList.remove("busy");
+  }
 }
 
 async function closePr(github, number) {

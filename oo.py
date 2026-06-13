@@ -344,6 +344,56 @@ def github_prs(repos):
     return out
 
 
+def dev_remote(path):
+    """Name of the remote pointing at the odoo-dev fork. (remote, error)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "remote", "-v"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return None, str(e)
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and "odoo-dev" in parts[1]:
+            return parts[0], None
+    return None, "no odoo-dev remote configured"
+
+
+def remote_branch_exists(path, branch):
+    """Whether <branch> exists on the odoo-dev remote. (exists, error)."""
+    remote, err = dev_remote(path)
+    if err:
+        return None, err
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return None, str(e)
+    if r.returncode != 0:
+        return None, r.stderr.strip().split("\n")[0] or "git ls-remote failed"
+    return bool(r.stdout.strip()), None
+
+
+def push_branch(path, branch):
+    """Push <branch> to the odoo-dev remote, setting upstream. (ok, error)."""
+    remote, err = dev_remote(path)
+    if err:
+        return False, err
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "push", "--set-upstream", remote, branch],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if r.returncode != 0:
+        return False, r.stderr.strip().split("\n")[-1] or "git push failed"
+    return True, None
+
+
 def close_pr(github, number):
     """Close a GitHub PR via the gh CLI. Returns (ok, error)."""
     try:
@@ -711,6 +761,28 @@ class Handler(BaseHTTPRequestHandler):
             if err or not repo or not number:
                 return self._send_json(400, {"ok": False, "error": "missing repo or number"})
             ok, error = close_pr(repo, number)
+            if ok:
+                self._send_json(200, {"ok": True})
+            else:
+                self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/code/branch/remote":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            branch = (body or {}).get("branch")
+            if err or not repo_path or not branch:
+                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
+            exists, error = remote_branch_exists(repo_path, branch)
+            if error:
+                self._send_json(400, {"ok": False, "error": error})
+            else:
+                self._send_json(200, {"ok": True, "exists": exists})
+        elif path == "/api/code/branch/push":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            branch = (body or {}).get("branch")
+            if err or not repo_path or not branch:
+                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
+            ok, error = push_branch(repo_path, branch)
             if ok:
                 self._send_json(200, {"ok": True})
             else:
