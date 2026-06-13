@@ -314,9 +314,12 @@ function renderDatabases(dbs) {
   const table = document.createElement("table");
   table.className = "db-table";
   table.innerHTML =
-    "<thead><tr><th>Name</th><th>Odoo version</th><th>Last update</th><th></th></tr></thead>";
+    "<thead><tr><th>Name</th><th>Odoo version</th><th>Last activity</th><th></th></tr></thead>";
   const tbody = document.createElement("tbody");
-  for (const db of dbs) {
+  // most recently active first; databases with no activity sort last
+  const ordered = [...dbs].sort((a, b) =>
+    (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0));
+  for (const db of ordered) {
     const isActive = db.name === activeDb;
     const tr = document.createElement("tr");
     const name = document.createElement("td");
