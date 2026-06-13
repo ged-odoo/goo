@@ -24,18 +24,9 @@
       </span>
     </div>
 
-    <div class="top-center">
-      <select id="target-select" title="target to start"></select>
-      <div class="controls">
-        <button id="btn-start" disabled><span class="play"></span>Start</button>
-        <button id="btn-stop" class="stop" disabled><span class="ic square"></span>Stop</button>
-        <button id="btn-restart" disabled><span class="restart"></span>Restart</button>
-      </div>
-    </div>
-
     <div class="top-right">
-      <a class="route" href="http://localhost:8069/odoo" target="_blank">/odoo</a>
-      <a class="route" href="http://localhost:8069/web/tests?debug=assets" target="_blank">/web/tests</a>
+      <a class="route" href="http://localhost:8069/odoo?debug=assets" target="_blank">/odoo</a>
+      <a class="route" href="http://localhost:8069/web/tests?debug=assets&amp;timeout=500000" target="_blank">/web/tests</a>
     </div>
   </header>
 
@@ -82,9 +73,17 @@
             <div class="sub" id="server-info" hidden></div>
             <div class="sub hint" id="server-hint" hidden></div>
           </div>
-          <div class="uptime" id="uptime" hidden>
-            <div class="big" id="uptime-val"></div>
-            <div class="lbl">uptime</div>
+          <div class="head-right">
+            <select id="target-select" title="target to start"></select>
+            <div class="controls">
+              <button id="btn-start" disabled><span class="play"></span>Start</button>
+              <button id="btn-stop" class="stop" disabled><span class="ic square"></span>Stop</button>
+              <button id="btn-restart" disabled><span class="restart"></span>Restart</button>
+            </div>
+            <div class="uptime" id="uptime" hidden>
+              <div class="big" id="uptime-val"></div>
+              <div class="lbl">uptime</div>
+            </div>
           </div>
         </div>
 
