@@ -6,9 +6,9 @@ const DEFAULT_CONFIG = {
   db_user: "odoo",
   db_password: "odoo",
   repos: [
-    { id: "community", path: "/home/odoo/work/community" },
-    { id: "enterprise", path: "/home/odoo/work/enterprise" },
-    { id: "tutorials", path: "/home/odoo/work/tutorials" },
+    { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo" },
+    { id: "enterprise", path: "/home/odoo/work/enterprise", github: "odoo/enterprise" },
+    { id: "tutorials", path: "/home/odoo/work/tutorials", github: "odoo/tutorials" },
   ],
   targets: [
     { id: "community", repos: ["community"], db: "test_db", on_create_args: "-i sale_management" },

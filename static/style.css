@@ -319,12 +319,40 @@ section.hidden { display: none; }
 .drop-btn:hover:not(:disabled) { border-color: oklch(0.68 0.2 22 / .5); background: var(--red-bg); }
 .drop-btn:disabled { opacity: 0.35; cursor: default; }
 
-/* ───────────────── CODE TAB ───────────────── */
+/* ───────────────── BRANCHES & PRS ───────────────── */
 
-.code-current { font-size: 13.5px; flex: none; }
-.code-current .dim { font-size: 12.5px; margin-bottom: 6px; display: block; }
-.current-branch-line { margin-bottom: 4px; }
-.branch-name { color: var(--accent); font-weight: 600; font-family: var(--mono); font-size: 12.5px; }
+.pr-table td { border-bottom: none; vertical-align: middle; }
+.pr-table tbody tr.group-start td { border-top: 1px solid var(--line-soft); }
+.pr-table td.pr-branch { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); vertical-align: top; }
+.pr-link { font-family: var(--mono); font-size: 12.5px; color: var(--accent); }
+.pr-link:hover { text-decoration: underline; }
+.pr-state {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  padding: 1px 7px; border-radius: 4px; margin-left: 8px;
+}
+.pr-state.open { color: var(--green); background: var(--green-bg); }
+.pr-state.merged { color: var(--accent); background: var(--accent-soft); }
+.pr-state.closed { color: var(--red); background: var(--red-bg); }
+.pr-state.draft { color: var(--text-dim); background: oklch(0.5 0.01 264 / .18); }
+.pr-create { font-size: 12.5px; color: var(--text-dim); border-bottom: 1px dashed var(--line); }
+.pr-create:hover { color: var(--accent); border-bottom-color: var(--accent-line); }
+.runbot-inline {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: 8px; font-family: var(--mono); font-size: 11.5px; font-weight: 400;
+}
+.runbot-paren { color: var(--text-dim); }
+.runbot-link { color: var(--accent); }
+.runbot-link:hover { text-decoration: underline; }
+.runbot-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-dim); flex: none;
+}
+.runbot-dot.success { background: var(--green); }
+.runbot-dot.failure { background: var(--red); }
+.runbot-dot.pending { background: oklch(0.78 0.15 85); }
+.runbot-dot.staged { background: var(--accent); }
+.runbot-dot.merged { background: var(--accent); }
+.runbot-dot.unknown { background: var(--text-dim); opacity: .5; }
 
 /* ───────────────── CONFIG TAB ───────────────── */
 

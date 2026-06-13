@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "databases", "code", "tasks", "runbot", "config"];
+const SECTIONS = ["server", "code", "tests", "databases", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -16,7 +16,7 @@ function showSection(name) {
   }
   if (name === "server") populateTargetSelect(); // pick up config edits
   if (name === "databases") loadDatabases();
-  if (name === "code") loadCode();
+  if (name === "code") loadPrs();
   if (name === "config") renderConfigEditors();
 }
 
@@ -476,6 +476,8 @@ const repoEditor = createListEditor({
   fields: [
     { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
     { key: "path", name: "path", placeholder: "path (e.g. ~/work/community)", className: "w-flex" },
+    { key: "github", name: "github repo", placeholder: "github (e.g. odoo/odoo)",
+      className: "w-name", optional: true },
   ],
   validate(repos) {
     if (!repos.find((r) => r.id === "community")) {
@@ -518,124 +520,252 @@ function renderConfigEditors() {
 }
 
 // ---------------------------------------------------------------------------
-// Code section: current branches of the active target + all branches
+// Code section: branches & PRs
 // ---------------------------------------------------------------------------
 
-const codeCurrent = document.getElementById("code-current");
-const branchList = document.getElementById("branch-list");
+const prsList = document.getElementById("prs-list");
+const prsStamp = document.getElementById("prs-stamp");
+const BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
+const RUNBOT = "https://runbot.odoo.com";
+const PRS_CACHE_KEY = "oo-prs-cache";
 
-document.getElementById("btn-code-refresh").addEventListener("click", loadCode);
+document.getElementById("btn-prs-refresh").addEventListener("click", () => loadPrs(true));
 
-async function loadCode() {
-  branchList.textContent = "Loading…";
-  codeCurrent.replaceChildren();
-  let repos;
+function readPrsCache() {
   try {
-    const resp = await fetch("/api/code/branches", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repos: getConfig().repos }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || resp.status);
-    repos = data.repos;
+    const cache = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
+    return cache && cache.at && cache.branchRepos && cache.prRepos ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+function setPrsStamp(at) {
+  prsStamp.textContent = at ? `updated ${timeAgo(new Date(at).toISOString())}` : "";
+}
+
+// repos saved before the github field existed fall back to the default mapping
+function reposWithGithub() {
+  return getConfig().repos.map((r) => ({
+    ...r,
+    github: r.github ?? DEFAULT_CONFIG.repos.find((d) => d.id === r.id)?.github,
+  }));
+}
+
+function baseBranchOf(branch) {
+  const m = /^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch);
+  return m ? m[1] : "master";
+}
+
+function createPrUrl(github, branch) {
+  // odoo dev branches live on the odoo-dev fork
+  const name = github.split("/")[1];
+  return `https://github.com/${github}/compare/${baseBranchOf(branch)}...odoo-dev:${name}:${branch}?expand=1`;
+}
+
+async function loadPrs(force = false) {
+  const repos = reposWithGithub();
+  const cache = readPrsCache();
+
+  if (!force && cache && Date.now() - cache.at < CACHE_TTL) {
+    renderPrTable(cache.branchRepos, cache.prRepos, repos);
+    setPrsStamp(cache.at);
+    return;
+  }
+
+  // keep showing cached data while refreshing
+  if (cache) {
+    renderPrTable(cache.branchRepos, cache.prRepos, repos);
+    prsStamp.textContent = "refreshing…";
+  } else {
+    prsList.textContent = "Loading…";
+  }
+
+  try {
+    await fetchPrs(repos);
   } catch (err) {
-    branchList.textContent = `Failed to load branches: ${err.message}`;
-    return;
-  }
-  renderCurrentBranches(repos);
-  renderBranchTable(repos);
-}
-
-function renderCurrentBranches(repos) {
-  codeCurrent.replaceChildren();
-  const targetId = lastStatus && lastStatus.target;
-  const target = targetId && getConfig().targets.find((t) => t.id === targetId);
-  if (!target) {
-    codeCurrent.innerHTML = '<span class="dim">No active target (server stopped).</span>';
-    return;
-  }
-  const title = document.createElement("div");
-  title.className = "dim";
-  title.textContent = `Active target: ${target.id}`;
-  codeCurrent.appendChild(title);
-  const byId = Object.fromEntries(repos.map((r) => [r.id, r]));
-  for (const repoId of target.repos) {
-    const line = document.createElement("div");
-    line.className = "current-branch-line";
-    const repo = byId[repoId];
-    const branch = repo ? (repo.error ? `error: ${repo.error}` : repo.current) : "?";
-    line.innerHTML = `${escapeHtml(repoId)} <span class="branch-name">${escapeHtml(branch)}</span>`;
-    codeCurrent.appendChild(line);
-  }
-}
-
-function renderBranchTable(repos) {
-  const repoPaths = Object.fromEntries(getConfig().repos.map((r) => [r.id, r.path]));
-  const rows = [];
-  for (const repo of repos) {
-    for (const b of repo.branches) {
-      rows.push({ branch: b.name, repo: repo.id, date: b.date,
-                  path: repoPaths[repo.id], checkedOut: b.name === repo.current });
+    if (cache) {
+      setPrsStamp(cache.at);
+      prsStamp.textContent += ` — refresh failed: ${err.message}`;
+    } else {
+      prsList.textContent = `Failed to load: ${err.message}`;
     }
   }
-  rows.sort((a, b) => a.branch.localeCompare(b.branch) || a.repo.localeCompare(b.repo));
+}
 
-  branchList.replaceChildren();
-  const errors = repos.filter((r) => r.error);
-  for (const r of errors) {
+async function fetchPrs(repos) {
+  // fetch fresh data, cache it, render once; throws on failure
+  const post = (path, body) => fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const [bResp, pResp] = await Promise.all([
+    post("/api/code/branches", { repos }),
+    post("/api/prs", { repos: repos.filter((r) => r.github) }),
+  ]);
+  const bData = await bResp.json();
+  const pData = await pResp.json();
+  if (!bResp.ok) throw new Error(bData.error || bResp.status);
+  if (!pResp.ok) throw new Error(pData.error || pResp.status);
+  const at = Date.now();
+  localStorage.setItem(PRS_CACHE_KEY,
+    JSON.stringify({ at, branchRepos: bData.repos, prRepos: pData.repos }));
+  renderPrTable(bData.repos, pData.repos, repos);
+  setPrsStamp(at);
+}
+
+function renderPrTable(branchRepos, prRepos, repos) {
+  const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
+  const prIndex = {};
+  for (const repo of prRepos) {
+    for (const pr of repo.prs) {
+      prIndex[`${repo.id}:${pr.headRefName}`] = pr;
+    }
+  }
+
+  const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
+
+  // group work branches by name across repos
+  const groups = new Map();
+  for (const repo of branchRepos) {
+    for (const b of repo.branches) {
+      if (BASE_BRANCH_RE.test(b.name)) continue;
+      if (!groups.has(b.name)) groups.set(b.name, []);
+      groups.get(b.name).push({
+        repo: repo.id, date: b.date, runbot: b.runbot,
+        checkedOut: b.name === repo.current,
+      });
+    }
+  }
+
+  const sorted = [...groups.entries()].map(([branch, rows]) => {
+    let activity = 0;
+    for (const r of rows) {
+      activity = Math.max(activity, Date.parse(r.date) || 0);
+      const pr = prIndex[`${r.repo}:${branch}`];
+      if (pr) activity = Math.max(activity, Date.parse(pr.updatedAt) || 0);
+    }
+    return { branch, rows, activity };
+  }).sort((a, b) => b.activity - a.activity);
+
+  prsList.replaceChildren();
+  for (const repo of prRepos.filter((r) => r.error)) {
     const div = document.createElement("div");
     div.className = "dim";
-    div.textContent = `${r.id}: ${r.error}`;
-    branchList.appendChild(div);
+    div.textContent = `${repo.id}: ${repo.error}`;
+    prsList.appendChild(div);
   }
-  if (!rows.length) {
-    branchList.appendChild(Object.assign(document.createElement("div"),
-      { className: "dim", textContent: "No branches." }));
+  if (!sorted.length) {
+    prsList.appendChild(Object.assign(document.createElement("div"),
+      { className: "dim", textContent: "No work branches." }));
     return;
   }
+
   const table = document.createElement("table");
-  table.className = "db-table";
+  table.className = "db-table pr-table";
   table.innerHTML =
-    "<thead><tr><th>Branch</th><th>Repository</th><th>Last commit</th><th></th></tr></thead>";
+    "<thead><tr><th>Branch</th><th>Repo</th><th>Last update</th><th>PR</th><th></th></tr></thead>";
   const tbody = document.createElement("tbody");
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    const branch = document.createElement("td");
-    branch.textContent = row.branch;
-    if (row.checkedOut) {
-      branch.className = "active-name";
-      const mark = document.createElement("span");
-      mark.className = "active-mark";
-      mark.textContent = " (active)";
-      branch.appendChild(mark);
-    }
-    const repo = document.createElement("td");
-    repo.textContent = row.repo;
-    const date = document.createElement("td");
-    date.textContent = row.date ? timeAgo(row.date) : "—";
-    if (row.date) date.title = row.date;
-    const actions = document.createElement("td");
-    actions.className = "db-actions";
-    const btn = document.createElement("button");
-    btn.textContent = "Delete";
-    btn.className = "drop-btn";
-    if (row.checkedOut) {
-      btn.disabled = true;
-      btn.title = "currently checked out";
-    }
-    btn.addEventListener("click", () => deleteBranch(row, btn));
-    actions.appendChild(btn);
-    tr.append(branch, repo, date, actions);
-    tbody.appendChild(tr);
+
+  for (const group of sorted) {
+    group.rows.forEach((row, i) => {
+      const tr = document.createElement("tr");
+      if (i === 0) {
+        tr.className = "group-start";
+        const name = document.createElement("td");
+        name.rowSpan = group.rows.length;
+        name.className = "pr-branch";
+        const branchName = document.createElement("span");
+        branchName.textContent = group.branch;
+        name.appendChild(branchName);
+
+        const status = group.rows.map((r) => r.runbot).find(Boolean) || "";
+        const runbot = document.createElement("span");
+        runbot.className = "runbot-inline";
+        const open = document.createElement("span");
+        open.className = "runbot-paren";
+        open.textContent = "(";
+        const a = document.createElement("a");
+        a.href = `${RUNBOT}/runbot/bundle/${encodeURIComponent(group.branch)}`;
+        a.target = "_blank";
+        a.className = "runbot-link";
+        a.textContent = "runbot";
+        const dot = document.createElement("span");
+        dot.className = `runbot-dot ${status || "unknown"}`;
+        dot.title = `runbot: ${status || "unknown"}`;
+        const close = document.createElement("span");
+        close.className = "runbot-paren";
+        close.textContent = ")";
+        runbot.append(open, a, dot, close);
+        name.appendChild(runbot);
+        tr.appendChild(name);
+      }
+
+      const repoTd = document.createElement("td");
+      repoTd.textContent = row.repo;
+      repoTd.className = "dim";
+      tr.appendChild(repoTd);
+
+      const dateTd = document.createElement("td");
+      dateTd.textContent = row.date ? timeAgo(row.date) : "—";
+      if (row.date) dateTd.title = row.date;
+      tr.appendChild(dateTd);
+
+      const prTd = document.createElement("td");
+      const pr = prIndex[`${row.repo}:${group.branch}`];
+      const github = githubByRepo[row.repo];
+      if (pr) {
+        const a = document.createElement("a");
+        a.href = pr.url;
+        a.target = "_blank";
+        a.className = "pr-link";
+        a.textContent = `#${pr.number}`;
+        const state = document.createElement("span");
+        const st = pr.isDraft && pr.state === "OPEN" ? "DRAFT" : pr.state;
+        state.className = `pr-state ${st.toLowerCase()}`;
+        state.textContent = st.toLowerCase();
+        prTd.append(a, state);
+      } else if (github) {
+        const a = document.createElement("a");
+        a.href = createPrUrl(github, group.branch);
+        a.target = "_blank";
+        a.className = "pr-create";
+        a.textContent = "create PR";
+        prTd.appendChild(a);
+      } else {
+        prTd.textContent = "—";
+        prTd.className = "dim";
+      }
+      tr.appendChild(prTd);
+
+      const delTd = document.createElement("td");
+      delTd.className = "db-actions";
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "Delete";
+      delBtn.className = "drop-btn";
+      if (row.checkedOut) {
+        delBtn.disabled = true;
+        delBtn.title = "currently checked out";
+      }
+      delBtn.addEventListener("click", () => deleteBranch(
+        { branch: group.branch, repo: row.repo, path: pathByRepo[row.repo] }, delBtn));
+      delTd.appendChild(delBtn);
+      tr.appendChild(delTd);
+
+      tbody.appendChild(tr);
+    });
   }
   table.appendChild(tbody);
-  branchList.appendChild(table);
+  prsList.appendChild(table);
 }
 
 async function deleteBranch(row, btn) {
   if (!confirm(`Force-delete branch "${row.branch}" in ${row.repo}? This cannot be undone.`)) return;
+  // keep the table on screen, just frozen, until the new list is ready
   btn.disabled = true;
+  prsList.classList.add("busy");
+  prsStamp.textContent = `deleting ${row.branch}…`;
   try {
     const resp = await fetch("/api/code/branches/delete", {
       method: "POST",
@@ -644,12 +774,14 @@ async function deleteBranch(row, btn) {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || resp.status);
+    await fetchPrs(reposWithGithub()); // single re-render with the final list
   } catch (err) {
     alert(`Delete failed: ${err.message}`);
     btn.disabled = false;
-    return;
+    setPrsStamp(readPrsCache()?.at);
+  } finally {
+    prsList.classList.remove("busy");
   }
-  loadCode();
 }
 
 // ---------------------------------------------------------------------------
