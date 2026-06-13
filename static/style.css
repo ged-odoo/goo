@@ -324,6 +324,13 @@ section.hidden { display: none; }
 .pr-table td { border-bottom: none; vertical-align: middle; }
 .pr-table tbody tr.group-start td { border-top: 1px solid var(--line-soft); }
 .pr-table td.pr-branch { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); vertical-align: top; }
+.fav-star {
+  vertical-align: middle; margin-right: 7px; padding: 0; line-height: 0;
+  color: var(--text-faint); transition: color .12s;
+}
+.fav-star svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.fav-star:hover { color: var(--amber); }
+.fav-star.is-fav, .fav-star.is-fav svg { color: var(--amber); fill: currentColor; }
 .pr-link { font-family: var(--mono); font-size: 12.5px; color: var(--accent); }
 .pr-link:hover { text-decoration: underline; }
 .pr-state {

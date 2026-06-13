@@ -528,8 +528,30 @@ const prsStamp = document.getElementById("prs-stamp");
 const BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
 const RUNBOT = "https://runbot.odoo.com";
 const PRS_CACHE_KEY = "oo-prs-cache";
+const FAVORITES_KEY = "oo-prs-favorites";
 
 document.getElementById("btn-prs-refresh").addEventListener("click", () => loadPrs(true));
+
+function readFavorites() {
+  try {
+    const favs = JSON.parse(localStorage.getItem(FAVORITES_KEY));
+    return new Set(Array.isArray(favs) ? favs : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function toggleFavorite(branch) {
+  const favs = readFavorites();
+  favs.has(branch) ? favs.delete(branch) : favs.add(branch);
+  localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favs]));
+}
+
+// re-render from cache without refetching (used after toggling a favorite)
+function rerenderPrs() {
+  const cache = readPrsCache();
+  if (cache) renderPrTable(cache.branchRepos, cache.prRepos, reposWithGithub());
+}
 
 function readPrsCache() {
   try {
@@ -626,11 +648,10 @@ function renderPrTable(branchRepos, prRepos, repos) {
 
   const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
 
-  // group work branches by name across repos
+  // group branches by name across repos
   const groups = new Map();
   for (const repo of branchRepos) {
     for (const b of repo.branches) {
-      if (BASE_BRANCH_RE.test(b.name)) continue;
       if (!groups.has(b.name)) groups.set(b.name, []);
       groups.get(b.name).push({
         repo: repo.id, date: b.date, runbot: b.runbot,
@@ -639,6 +660,7 @@ function renderPrTable(branchRepos, prRepos, repos) {
     }
   }
 
+  const favorites = readFavorites();
   const sorted = [...groups.entries()].map(([branch, rows]) => {
     let activity = 0;
     for (const r of rows) {
@@ -646,8 +668,13 @@ function renderPrTable(branchRepos, prRepos, repos) {
       const pr = prIndex[`${r.repo}:${branch}`];
       if (pr) activity = Math.max(activity, Date.parse(pr.updatedAt) || 0);
     }
-    return { branch, rows, activity };
-  }).sort((a, b) => b.activity - a.activity);
+    return {
+      branch, rows, activity,
+      base: BASE_BRANCH_RE.test(branch),
+      favorite: favorites.has(branch),
+    };
+  }).sort((a, b) =>
+    (b.favorite - a.favorite) || (a.base - b.base) || (b.activity - a.activity));
 
   prsList.replaceChildren();
   for (const repo of prRepos.filter((r) => r.error)) {
@@ -676,29 +703,43 @@ function renderPrTable(branchRepos, prRepos, repos) {
         const name = document.createElement("td");
         name.rowSpan = group.rows.length;
         name.className = "pr-branch";
+
+        const star = document.createElement("button");
+        star.className = `fav-star${group.favorite ? " is-fav" : ""}`;
+        star.title = group.favorite ? "unfavorite" : "favorite";
+        star.innerHTML =
+          '<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>';
+        star.addEventListener("click", () => {
+          toggleFavorite(group.branch);
+          rerenderPrs();
+        });
+        name.appendChild(star);
+
         const branchName = document.createElement("span");
         branchName.textContent = group.branch;
         name.appendChild(branchName);
 
-        const status = group.rows.map((r) => r.runbot).find(Boolean) || "";
-        const runbot = document.createElement("span");
-        runbot.className = "runbot-inline";
-        const open = document.createElement("span");
-        open.className = "runbot-paren";
-        open.textContent = "(";
-        const a = document.createElement("a");
-        a.href = `${RUNBOT}/runbot/bundle/${encodeURIComponent(group.branch)}`;
-        a.target = "_blank";
-        a.className = "runbot-link";
-        a.textContent = "runbot";
-        const dot = document.createElement("span");
-        dot.className = `runbot-dot ${status || "unknown"}`;
-        dot.title = `runbot: ${status || "unknown"}`;
-        const close = document.createElement("span");
-        close.className = "runbot-paren";
-        close.textContent = ")";
-        runbot.append(open, a, dot, close);
-        name.appendChild(runbot);
+        if (!group.base) {
+          const status = group.rows.map((r) => r.runbot).find(Boolean) || "";
+          const runbot = document.createElement("span");
+          runbot.className = "runbot-inline";
+          const open = document.createElement("span");
+          open.className = "runbot-paren";
+          open.textContent = "(";
+          const a = document.createElement("a");
+          a.href = `${RUNBOT}/runbot/bundle/${encodeURIComponent(group.branch)}`;
+          a.target = "_blank";
+          a.className = "runbot-link";
+          a.textContent = "runbot";
+          const dot = document.createElement("span");
+          dot.className = `runbot-dot ${status || "unknown"}`;
+          dot.title = `runbot: ${status || "unknown"}`;
+          const close = document.createElement("span");
+          close.className = "runbot-paren";
+          close.textContent = ")";
+          runbot.append(open, a, dot, close);
+          name.appendChild(runbot);
+        }
         tr.appendChild(name);
       }
 
@@ -726,7 +767,7 @@ function renderPrTable(branchRepos, prRepos, repos) {
         state.className = `pr-state ${st.toLowerCase()}`;
         state.textContent = st.toLowerCase();
         prTd.append(a, state);
-      } else if (github) {
+      } else if (github && !group.base) {
         const a = document.createElement("a");
         a.href = createPrUrl(github, group.branch);
         a.target = "_blank";
@@ -741,16 +782,18 @@ function renderPrTable(branchRepos, prRepos, repos) {
 
       const delTd = document.createElement("td");
       delTd.className = "db-actions";
-      const delBtn = document.createElement("button");
-      delBtn.textContent = "Delete";
-      delBtn.className = "drop-btn";
-      if (row.checkedOut) {
-        delBtn.disabled = true;
-        delBtn.title = "currently checked out";
+      if (!group.base) {
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "Delete";
+        delBtn.className = "drop-btn";
+        if (row.checkedOut) {
+          delBtn.disabled = true;
+          delBtn.title = "currently checked out";
+        }
+        delBtn.addEventListener("click", () => deleteBranch(
+          { branch: group.branch, repo: row.repo, path: pathByRepo[row.repo] }, delBtn));
+        delTd.appendChild(delBtn);
       }
-      delBtn.addEventListener("click", () => deleteBranch(
-        { branch: group.branch, repo: row.repo, path: pathByRepo[row.repo] }, delBtn));
-      delTd.appendChild(delBtn);
       tr.appendChild(delTd);
 
       tbody.appendChild(tr);
