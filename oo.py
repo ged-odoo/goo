@@ -335,6 +335,20 @@ def github_prs(repos):
     return out
 
 
+def close_pr(github, number):
+    """Close a GitHub PR via the gh CLI. Returns (ok, error)."""
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "close", str(number), "--repo", github],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if r.returncode != 0:
+        return False, r.stderr.strip().split("\n")[0] or "gh pr close failed"
+    return True, None
+
+
 def build_odoo_cmd(config):
     """Build the odoo-bin shell command from a client config.
 
@@ -677,6 +691,17 @@ class Handler(BaseHTTPRequestHandler):
             if err or not fpath:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             ok, error = write_data_file(fpath, (body or {}).get("data"))
+            if ok:
+                self._send_json(200, {"ok": True})
+            else:
+                self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/prs/close":
+            body, err = self._read_json()
+            repo = (body or {}).get("repo")
+            number = (body or {}).get("number")
+            if err or not repo or not number:
+                return self._send_json(400, {"ok": False, "error": "missing repo or number"})
+            ok, error = close_pr(repo, number)
             if ok:
                 self._send_json(200, {"ok": True})
             else:

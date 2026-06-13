@@ -567,6 +567,89 @@ function rerenderPrs() {
   if (cache) renderPrTable(cache.branchRepos, cache.prRepos, reposWithGithub());
 }
 
+// Branch actions popover: a single floating menu, opened from a branch name.
+// Actions are passed in as {label, onClick, disabled, title, danger} objects so
+// new branch actions can be added in one place (buildBranchActions) over time.
+const branchPopover = document.createElement("div");
+branchPopover.className = "branch-popover hidden";
+document.body.appendChild(branchPopover);
+
+function closeBranchActions() {
+  branchPopover.classList.add("hidden");
+  branchPopover.replaceChildren();
+}
+
+function openBranchActions(actions, anchor) {
+  branchPopover.replaceChildren();
+  for (const action of actions) {
+    const item = document.createElement("button");
+    item.className = `branch-popover-item${action.danger ? " danger" : ""}`;
+    item.textContent = action.label;
+    item.disabled = !!action.disabled;
+    if (action.title) item.title = action.title;
+    if (!action.disabled && action.onClick) {
+      item.addEventListener("click", () => { closeBranchActions(); action.onClick(); });
+    }
+    branchPopover.appendChild(item);
+  }
+
+  // show first (so it has a size), then position below the branch name,
+  // nudging left if it would overflow the viewport
+  branchPopover.classList.remove("hidden");
+  const a = anchor.getBoundingClientRect();
+  const w = branchPopover.offsetWidth;
+  const left = Math.min(a.left, window.innerWidth - w - 12);
+  branchPopover.style.top = `${a.bottom + 4}px`;
+  branchPopover.style.left = `${Math.max(12, left)}px`;
+}
+
+// build the action list for a branch group (closure-free; needs lookups passed in)
+function buildBranchActions(group, ctx) {
+  const actions = [];
+  for (const r of group.rows) {
+    const github = ctx.githubByRepo[r.repo];
+    if (!github) continue;
+    actions.push({
+      label: `Branch on GitHub — ${r.repo}`,
+      onClick: () => window.open(branchUrl(github, group.branch), "_blank"),
+    });
+    const pr = ctx.prIndex[`${r.repo}:${group.branch}`];
+    if (!pr) {
+      actions.push({
+        label: `Create PR — ${r.repo}`,
+        onClick: () => window.open(createPrUrl(github, group.branch), "_blank"),
+      });
+    } else if (pr.state === "OPEN") {
+      actions.push({
+        label: `Close PR #${pr.number} — ${r.repo}`,
+        danger: true,
+        onClick: () => closePr(github, pr.number),
+      });
+    }
+  }
+  for (const r of group.rows) {
+    actions.push({
+      label: `Delete local branch — ${r.repo}`,
+      danger: true,
+      disabled: r.checkedOut,
+      title: r.checkedOut ? "currently checked out" : "",
+      onClick: () => deleteBranch(
+        { branch: group.branch, repo: r.repo, path: ctx.pathByRepo[r.repo] }),
+    });
+  }
+  // upcoming actions (kept visible but disabled to show what's coming)
+  actions.push({ label: "Rebase onto base", disabled: true, title: "coming soon" });
+  return actions;
+}
+
+// close on outside click or Escape
+document.addEventListener("click", (e) => {
+  if (!branchPopover.contains(e.target) && !e.target.closest(".branch-trigger")) {
+    closeBranchActions();
+  }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeBranchActions(); });
+
 function readPrsCache() {
   try {
     const cache = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
@@ -597,6 +680,12 @@ function createPrUrl(github, branch) {
   // odoo dev branches live on the odoo-dev fork
   const name = github.split("/")[1];
   return `https://github.com/${github}/compare/${baseBranchOf(branch)}...odoo-dev:${name}:${branch}?expand=1`;
+}
+
+function branchUrl(github, branch) {
+  // dev branches live on the odoo-dev fork
+  const name = github.split("/")[1];
+  return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
 }
 
 async function loadPrs(force = false) {
@@ -706,8 +795,9 @@ function renderPrTable(branchRepos, prRepos, repos) {
   const table = document.createElement("table");
   table.className = "db-table pr-table";
   table.innerHTML =
-    "<thead><tr><th>Branch</th><th>Repo</th><th>Last update</th><th>PR</th><th></th></tr></thead>";
+    "<thead><tr><th>Branch</th><th>Repo</th><th>Last update</th><th>PR</th></tr></thead>";
   const tbody = document.createElement("tbody");
+  const ctx = { prIndex, githubByRepo, pathByRepo };
 
   for (const group of sorted) {
     group.rows.forEach((row, i) => {
@@ -729,8 +819,22 @@ function renderPrTable(branchRepos, prRepos, repos) {
         });
         name.appendChild(star);
 
-        const branchName = document.createElement("span");
-        branchName.textContent = group.branch;
+        let branchName;
+        if (group.base) {
+          // base branches have no actions; render the name as plain text
+          branchName = document.createElement("span");
+          branchName.textContent = group.branch;
+        } else {
+          branchName = document.createElement("button");
+          branchName.className = "branch-trigger";
+          branchName.textContent = group.branch;
+          branchName.title = "branch actions";
+          const actions = buildBranchActions(group, ctx);
+          branchName.addEventListener("click", (e) => {
+            e.stopPropagation();
+            openBranchActions(actions, branchName);
+          });
+        }
         name.appendChild(branchName);
 
         if (!group.base) {
@@ -769,7 +873,6 @@ function renderPrTable(branchRepos, prRepos, repos) {
 
       const prTd = document.createElement("td");
       const pr = prIndex[`${row.repo}:${group.branch}`];
-      const github = githubByRepo[row.repo];
       if (pr) {
         const a = document.createElement("a");
         a.href = pr.url;
@@ -781,34 +884,11 @@ function renderPrTable(branchRepos, prRepos, repos) {
         state.className = `pr-state ${st.toLowerCase()}`;
         state.textContent = st.toLowerCase();
         prTd.append(a, state);
-      } else if (github && !group.base) {
-        const a = document.createElement("a");
-        a.href = createPrUrl(github, group.branch);
-        a.target = "_blank";
-        a.className = "pr-create";
-        a.textContent = "create PR";
-        prTd.appendChild(a);
       } else {
         prTd.textContent = "—";
         prTd.className = "dim";
       }
       tr.appendChild(prTd);
-
-      const delTd = document.createElement("td");
-      delTd.className = "db-actions";
-      if (!group.base) {
-        const delBtn = document.createElement("button");
-        delBtn.textContent = "Delete";
-        delBtn.className = "drop-btn";
-        if (row.checkedOut) {
-          delBtn.disabled = true;
-          delBtn.title = "currently checked out";
-        }
-        delBtn.addEventListener("click", () => deleteBranch(
-          { branch: group.branch, repo: row.repo, path: pathByRepo[row.repo] }, delBtn));
-        delTd.appendChild(delBtn);
-      }
-      tr.appendChild(delTd);
 
       tbody.appendChild(tr);
     });
@@ -817,10 +897,31 @@ function renderPrTable(branchRepos, prRepos, repos) {
   prsList.appendChild(table);
 }
 
+async function closePr(github, number) {
+  if (!confirm(`Close PR #${number} in ${github}?`)) return;
+  prsList.classList.add("busy");
+  prsStamp.textContent = `closing #${number}…`;
+  try {
+    const resp = await fetch("/api/prs/close", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: github, number }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+    await fetchPrs(reposWithGithub()); // single re-render with the final list
+  } catch (err) {
+    alert(`Close PR failed: ${err.message}`);
+    setPrsStamp(readPrsCache()?.at);
+  } finally {
+    prsList.classList.remove("busy");
+  }
+}
+
 async function deleteBranch(row, btn) {
   if (!confirm(`Force-delete branch "${row.branch}" in ${row.repo}? This cannot be undone.`)) return;
   // keep the table on screen, just frozen, until the new list is ready
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   prsList.classList.add("busy");
   prsStamp.textContent = `deleting ${row.branch}…`;
   try {
@@ -834,7 +935,7 @@ async function deleteBranch(row, btn) {
     await fetchPrs(reposWithGithub()); // single re-render with the final list
   } catch (err) {
     alert(`Delete failed: ${err.message}`);
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
     setPrsStamp(readPrsCache()?.at);
   } finally {
     prsList.classList.remove("busy");

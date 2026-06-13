@@ -341,8 +341,6 @@ section.hidden { display: none; }
 .pr-state.merged { color: var(--accent); background: var(--accent-soft); }
 .pr-state.closed { color: var(--red); background: var(--red-bg); }
 .pr-state.draft { color: var(--text-dim); background: oklch(0.5 0.01 264 / .18); }
-.pr-create { font-size: 12.5px; color: var(--text-dim); border-bottom: 1px dashed var(--line); }
-.pr-create:hover { color: var(--accent); border-bottom-color: var(--accent-line); }
 .runbot-inline {
   display: inline-flex; align-items: center; gap: 5px;
   margin-left: 8px; font-family: var(--mono); font-size: 11.5px; font-weight: 400;
@@ -360,6 +358,27 @@ section.hidden { display: none; }
 .runbot-dot.staged { background: var(--accent); }
 .runbot-dot.merged { background: var(--accent); }
 .runbot-dot.unknown { background: var(--text-dim); opacity: .5; }
+
+.branch-trigger {
+  font: inherit; color: var(--text); padding: 0; cursor: pointer;
+  border-bottom: 1px dashed transparent; transition: border-color .12s;
+}
+.branch-trigger:hover { border-bottom-color: var(--accent-line); }
+
+.branch-popover {
+  position: fixed; z-index: 50; min-width: 220px; max-width: 320px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  padding: 5px; box-shadow: 0 8px 28px oklch(0 0 0 / .35);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.branch-popover.hidden { display: none; }
+.branch-popover-item {
+  text-align: left; font-size: 12.5px; color: var(--text-mid);
+  padding: 7px 9px; border-radius: 6px; transition: .12s;
+}
+.branch-popover-item:hover:not(:disabled) { background: var(--bg-sidebar); color: var(--text); }
+.branch-popover-item.danger:hover:not(:disabled) { background: var(--red-bg); color: var(--red); }
+.branch-popover-item:disabled { opacity: .4; cursor: default; }
 
 /* ───────────────── TODO TAB ───────────────── */
 
