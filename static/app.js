@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "code", "tests", "databases", "config"];
+const SECTIONS = ["server", "code", "todo", "databases", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -17,6 +17,7 @@ function showSection(name) {
   if (name === "server") populateTargetSelect(); // pick up config edits
   if (name === "databases") loadDatabases();
   if (name === "code") loadPrs();
+  if (name === "todo") renderTodos();
   if (name === "config") renderConfigEditors();
 }
 
@@ -1023,11 +1024,85 @@ function ansiToHtml(line) {
 }
 
 // ---------------------------------------------------------------------------
+// Todo section: a simple persisted task list
+// ---------------------------------------------------------------------------
+
+const TODO_KEY = "oo-todos";
+const todoList = document.getElementById("todo-list");
+const todoForm = document.getElementById("todo-form");
+const todoInput = document.getElementById("todo-input");
+
+function readTodos() {
+  try {
+    const todos = JSON.parse(localStorage.getItem(TODO_KEY));
+    return Array.isArray(todos) ? todos : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeTodos(todos) {
+  localStorage.setItem(TODO_KEY, JSON.stringify(todos));
+  persistToFile();
+}
+
+function renderTodos() {
+  const todos = readTodos();
+  todoList.replaceChildren();
+  if (!todos.length) {
+    todoList.appendChild(Object.assign(document.createElement("li"),
+      { className: "dim todo-empty", textContent: "Nothing to do." }));
+    return;
+  }
+  todos.forEach((todo, i) => {
+    const li = document.createElement("li");
+    li.className = `todo-item${todo.done ? " done" : ""}`;
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = todo.done;
+    check.addEventListener("change", () => {
+      const next = readTodos();
+      next[i].done = check.checked;
+      writeTodos(next);
+      renderTodos();
+    });
+
+    const text = document.createElement("span");
+    text.className = "todo-text";
+    text.textContent = todo.text;
+
+    const del = document.createElement("button");
+    del.className = "todo-del";
+    del.title = "delete";
+    del.textContent = "×";
+    del.addEventListener("click", () => {
+      const next = readTodos();
+      next.splice(i, 1);
+      writeTodos(next);
+      renderTodos();
+    });
+
+    li.append(check, text, del);
+    todoList.appendChild(li);
+  });
+}
+
+todoForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = todoInput.value.trim();
+  if (!text) return;
+  writeTodos([...readTodos(), { text, done: false }]);
+  todoInput.value = "";
+  renderTodos();
+});
+
+// ---------------------------------------------------------------------------
 // Backup: export/import the persistent localStorage data as a JSON file
 // ---------------------------------------------------------------------------
 
-// config + favorites + last target; transient caches are intentionally skipped
-const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY];
+// config + favorites + last target + todos; transient caches are skipped
+const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY, TODO_KEY];
 const backupMsg = document.getElementById("backup-msg");
 
 function exportData() {

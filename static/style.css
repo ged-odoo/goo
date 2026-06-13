@@ -361,6 +361,37 @@ section.hidden { display: none; }
 .runbot-dot.merged { background: var(--accent); }
 .runbot-dot.unknown { background: var(--text-dim); opacity: .5; }
 
+/* ───────────────── TODO TAB ───────────────── */
+
+.todo-form { display: flex; gap: 8px; max-width: 560px; flex: none; margin-bottom: 16px; }
+.todo-form input {
+  flex: 1; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); color: var(--text); font-size: 13.5px; font-family: inherit;
+}
+.todo-form input::placeholder { color: var(--text-faint); }
+.todo-form input:focus { outline: none; border-color: var(--accent-line); }
+.todo-form button {
+  flex: none; font-size: 12.5px; color: var(--text-mid);
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+  padding: 6px 16px; transition: .13s;
+}
+.todo-form button:hover { color: var(--text); border-color: var(--accent-line); }
+
+.todo-list { list-style: none; max-width: 560px; flex: none; display: flex; flex-direction: column; }
+.todo-empty { padding: 6px 2px; }
+.todo-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 4px; border-bottom: 1px solid var(--line-soft);
+}
+.todo-item input[type="checkbox"] { flex: none; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.todo-text { flex: 1; font-size: 13.5px; color: var(--text); word-break: break-word; }
+.todo-item.done .todo-text { color: var(--text-dim); text-decoration: line-through; }
+.todo-del {
+  flex: none; width: 24px; height: 24px; border-radius: 6px; line-height: 1;
+  font-size: 17px; color: var(--text-faint); transition: .12s;
+}
+.todo-del:hover { color: var(--red); background: var(--red-bg); }
+
 /* ───────────────── CONFIG TAB ───────────────── */
 
 .config-block { flex: none; display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
