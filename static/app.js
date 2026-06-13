@@ -47,6 +47,8 @@ function getConfig() {
   return { ...DEFAULT_CONFIG, ...storedConfig() };
 }
 
+const CACHE_TTL = 10 * 60 * 1000; // tab data (databases, branches/PRs)
+
 function updateStoredConfig(patch) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...storedConfig(), ...patch }));
 }
@@ -233,21 +235,66 @@ btnRestart.addEventListener("click", () =>
 // ---------------------------------------------------------------------------
 
 const dbList = document.getElementById("db-list");
+const dbStamp = document.getElementById("db-stamp");
+const DB_CACHE_KEY = "oo-db-cache";
 let activeDb = null;  // db of the starting/running server, bolded + undroppable
 let lastDbs = null;
 
-document.getElementById("btn-db-refresh").addEventListener("click", loadDatabases);
+document.getElementById("btn-db-refresh").addEventListener("click", () => loadDatabases(true));
 
-async function loadDatabases() {
-  dbList.textContent = "Loading…";
+function readDbCache() {
   try {
-    const resp = await fetch("/api/databases");
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || resp.status);
-    lastDbs = data.databases;
+    const cache = JSON.parse(localStorage.getItem(DB_CACHE_KEY));
+    return cache && cache.at && cache.databases ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+function setDbStamp(at) {
+  dbStamp.textContent = at ? `updated ${timeAgo(new Date(at).toISOString())}` : "";
+}
+
+async function fetchDatabases() {
+  // fetch fresh data, cache it, render once; throws on failure
+  const resp = await fetch("/api/databases");
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || resp.status);
+  const at = Date.now();
+  localStorage.setItem(DB_CACHE_KEY, JSON.stringify({ at, databases: data.databases }));
+  lastDbs = data.databases;
+  renderDatabases(lastDbs);
+  setDbStamp(at);
+}
+
+async function loadDatabases(force = false) {
+  const cache = readDbCache();
+
+  if (!force && cache && Date.now() - cache.at < CACHE_TTL) {
+    lastDbs = cache.databases;
     renderDatabases(lastDbs);
+    setDbStamp(cache.at);
+    return;
+  }
+
+  // keep showing cached data while refreshing
+  if (cache) {
+    lastDbs = cache.databases;
+    renderDatabases(lastDbs);
+    dbStamp.textContent = "refreshing…";
+  } else {
+    dbList.textContent = "Loading…";
+  }
+
+  try {
+    await fetchDatabases();
   } catch (err) {
-    dbList.textContent = `Failed to load databases: ${err.message}`;
+    if (cache) {
+      setDbStamp(cache.at);
+      dbStamp.textContent += ` — refresh failed: ${err.message}`;
+    } else {
+      dbList.textContent = `Failed to load databases: ${err.message}`;
+    }
   }
 }
 
@@ -308,7 +355,10 @@ function timeAgo(ts) {
 
 async function dropDatabase(name, btn) {
   if (!confirm(`Drop database "${name}"? This cannot be undone.`)) return;
+  // keep the table on screen, just frozen, until the new list is ready
   btn.disabled = true;
+  dbList.classList.add("busy");
+  dbStamp.textContent = `dropping ${name}…`;
   try {
     const resp = await fetch("/api/databases/drop", {
       method: "POST",
@@ -317,12 +367,14 @@ async function dropDatabase(name, btn) {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || resp.status);
+    await fetchDatabases(); // single re-render with the final list
   } catch (err) {
     alert(`Drop failed: ${err.message}`);
     btn.disabled = false;
-    return;
+    setDbStamp(readDbCache()?.at);
+  } finally {
+    dbList.classList.remove("busy");
   }
-  loadDatabases();
 }
 
 // ---------------------------------------------------------------------------
