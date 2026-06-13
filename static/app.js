@@ -609,11 +609,15 @@ function buildBranchActions(group, ctx) {
   for (const r of group.rows) {
     const github = ctx.githubByRepo[r.repo];
     if (!github) continue;
-    actions.push({
-      label: `Branch on GitHub — ${r.repo}`,
-      onClick: () => window.open(branchUrl(github, group.branch), "_blank"),
-    });
     const pr = ctx.prIndex[`${r.repo}:${group.branch}`];
+    // only link to the fork when the branch was actually pushed there
+    // (a remote-tracking ref exists, or a PR — which implies one — exists)
+    if (r.remote || pr) {
+      actions.push({
+        label: `Branch on GitHub — ${r.repo}`,
+        onClick: () => window.open(branchUrl(github, group.branch), "_blank"),
+      });
+    }
     if (!pr) {
       actions.push({
         label: `Create PR — ${r.repo}`,
@@ -757,7 +761,7 @@ function renderPrTable(branchRepos, prRepos, repos) {
     for (const b of repo.branches) {
       if (!groups.has(b.name)) groups.set(b.name, []);
       groups.get(b.name).push({
-        repo: repo.id, date: b.date, runbot: b.runbot,
+        repo: repo.id, date: b.date, runbot: b.runbot, remote: b.remote,
         checkedOut: b.name === repo.current,
       });
     }

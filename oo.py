@@ -240,6 +240,14 @@ def git_branches(repos):
                 out.append(entry)
                 continue
             entry["current"] = r.stdout.strip() or "(detached)"
+            # branch names that have a remote-tracking ref, i.e. were pushed to
+            # some remote from this clone (refname minus refs/remotes/<remote>/)
+            rr = subprocess.run(
+                ["git", "-C", path, "for-each-ref", "refs/remotes",
+                 "--format=%(refname:lstrip=3)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            remote_branches = set(rr.stdout.split())
             r = subprocess.run(
                 ["git", "-C", path, "for-each-ref", "refs/heads",
                  "--format=%(refname:short)%09%(committerdate:iso8601-strict)"],
@@ -248,7 +256,8 @@ def git_branches(repos):
             for line in r.stdout.splitlines():
                 name, _, date = line.partition("\t")
                 if name:
-                    entry["branches"].append({"name": name, "date": date})
+                    entry["branches"].append(
+                        {"name": name, "date": date, "remote": name in remote_branches})
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
         out.append(entry)
