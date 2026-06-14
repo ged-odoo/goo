@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "code", "todo", "databases", "config"];
+const SECTIONS = ["server", "code", "tests", "todo", "databases", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -17,6 +17,7 @@ function showSection(name) {
   if (name === "server") populateTargetSelect(); // pick up config edits
   if (name === "databases") loadDatabases();
   if (name === "code") loadPrs();
+  if (name === "tests") renderTests();
   if (name === "todo") renderTodos();
   if (name === "config") renderConfigEditors();
 }
@@ -179,6 +180,8 @@ function setStatus(status) {
     activeDb = newActiveDb;
     if (lastDbs) renderDatabases(lastDbs);
   }
+
+  updateTestControls(status);
 }
 
 function renderUptime() {
@@ -994,6 +997,96 @@ async function deleteBranch(row, btn) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests section: run `odoo-bin --test-tags …` against a target, stream output
+// ---------------------------------------------------------------------------
+
+const testTargetSelect = document.getElementById("test-target-select");
+const testTagsInput = document.getElementById("test-tags-input");
+const testForm = document.getElementById("test-form");
+const btnTestRun = document.getElementById("btn-test-run");
+const btnTestStop = document.getElementById("btn-test-stop");
+const testStatusEl = document.getElementById("test-status");
+const testLogPane = document.getElementById("test-log-pane");
+const testDot = document.getElementById("test-dot");
+let testRunActive = false;  // capturing log lines into the test pane
+let sawTesting = false;     // saw the run actually reach test mode
+
+function renderTests() {
+  const cur = testTargetSelect.value;
+  testTargetSelect.replaceChildren();
+  for (const t of getConfig().targets) {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = t.id;
+    opt.title = `${t.repos.join(",")} → ${t.db}`;
+    testTargetSelect.appendChild(opt);
+  }
+  if ([...testTargetSelect.options].some((o) => o.value === cur)) testTargetSelect.value = cur;
+}
+
+testForm.addEventListener("submit", (e) => { e.preventDefault(); runTests(); });
+btnTestStop.addEventListener("click", () => post("/api/stop"));
+document.getElementById("test-clear-btn").addEventListener("click", () => {
+  testLogPane.replaceChildren();
+  updateTestLineCount();
+});
+
+async function runTests() {
+  const config = buildStartConfig(testTargetSelect.value);
+  if (!config) return appendLog(`[oo] no such target: "${testTargetSelect.value}"`);
+  const tags = testTagsInput.value.trim();
+  if (!tags) return testTagsInput.focus();
+  config.start.test_tags = tags;
+  testLogPane.replaceChildren();
+  updateTestLineCount();
+  testRunActive = true;
+  sawTesting = false;
+  testStatusEl.textContent = "starting…";
+  try {
+    const resp = await fetch("/api/tests/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+  } catch (err) {
+    testRunActive = false;
+    testStatusEl.textContent = `failed to start: ${err.message}`;
+  }
+}
+
+function appendTestLog(line) {
+  testLogPane.appendChild(buildLogRow(line));
+  while (testLogPane.childElementCount > MAX_LOG_LINES) testLogPane.firstElementChild.remove();
+  updateTestLineCount();
+  testLogPane.scrollTop = testLogPane.scrollHeight;
+}
+
+function updateTestLineCount() {
+  document.getElementById("test-linecount").textContent = `${testLogPane.childElementCount} lines`;
+}
+
+// reflect the shared process state onto the Tests tab (called from setStatus)
+function updateTestControls(status) {
+  const active = status.state === "starting" || status.state === "running";
+  const testing = active && status.mode === "test";
+  if (testing) sawTesting = true;
+  btnTestRun.disabled = testing;     // a test is already running
+  btnTestStop.disabled = !testing;   // only a test run is ours to stop
+  testDot.classList.toggle("on", testing);
+  if (testing) {
+    testStatusEl.textContent = "running…";
+  } else if (testRunActive && sawTesting && status.state === "stopped") {
+    testRunActive = false;
+    sawTesting = false;
+    testStatusEl.textContent = status.exited_unexpectedly
+      ? (status.returncode ? `failed — exit ${status.returncode}` : "passed")
+      : "stopped";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Live events (SSE)
 // ---------------------------------------------------------------------------
 
@@ -1003,7 +1096,11 @@ function connect() {
   es.onopen = () => { logPane.replaceChildren(); updateLineCount(); };
   es.onerror = () => setStatus({ state: "disconnected" });
   es.addEventListener("status", (e) => setStatus(JSON.parse(e.data)));
-  es.addEventListener("log", (e) => appendLog(JSON.parse(e.data).line));
+  es.addEventListener("log", (e) => {
+    const { line } = JSON.parse(e.data);
+    appendLog(line);
+    if (testRunActive) appendTestLog(line);
+  });
 }
 
 connect();

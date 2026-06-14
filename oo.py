@@ -457,6 +457,13 @@ def build_odoo_cmd(config):
     )
     cmd = " && ".join(parts)
 
+    # test mode: run the given --test-tags and exit, skipping the server-only
+    # extras (other_args / on_create_args), mirroring the old odev behaviour
+    test_tags = start.get("test_tags")
+    if test_tags:
+        cmd += f" --test-tags {test_tags} --stop-after-init"
+        return cmd, db, False
+
     other_args = start.get("other_args", "")
     if other_args:
         cmd += f" {other_args}"
@@ -487,6 +494,7 @@ class OdooManager:
         self.db = None
         self.target = None
         self.cmd = None
+        self.mode = "server"  # "server" or "test"
         self.started_at = None
         self.exited_unexpectedly = False
         self.returncode = None
@@ -500,6 +508,7 @@ class OdooManager:
                 "db": self.db if active else None,
                 "target": self.target if active else None,
                 "cmd": self.cmd if active else None,
+                "mode": self.mode if active else None,
                 "started_at": self.started_at if active else None,
             }
             if self.exited_unexpectedly:
@@ -528,6 +537,7 @@ class OdooManager:
             self.db = db
             self.target = config.get("target")
             self.cmd = cmd
+            self.mode = "test" if (config.get("start") or {}).get("test_tags") else "server"
             self.started_at = time.time()
             self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
             if is_new:
@@ -705,6 +715,17 @@ class Handler(BaseHTTPRequestHandler):
             self._action_start(MANAGER.start)
         elif path == "/api/restart":
             self._action_start(MANAGER.restart)
+        elif path == "/api/tests/run":
+            config, err = self._read_json()
+            if err:
+                return self._send_json(400, {"ok": False, "error": err})
+            MANAGER.stop()  # tests need the odoo port; free it first
+            ok, detail = MANAGER.start(config)
+            if ok:
+                self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
+            else:
+                code = 400 if detail.startswith("invalid_config") else 409
+                self._send_json(code, {"ok": False, "error": detail})
         elif path == "/api/stop":
             ok, detail = MANAGER.stop()
             if ok:

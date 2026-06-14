@@ -380,6 +380,37 @@ section.hidden { display: none; }
 .branch-popover-item.danger:hover:not(:disabled) { background: var(--red-bg); color: var(--red); }
 .branch-popover-item:disabled { opacity: .4; cursor: default; }
 
+/* ───────────────── TESTS TAB ───────────────── */
+
+.test-form { display: flex; align-items: center; gap: 10px; flex: none; }
+.test-form select {
+  font-family: var(--mono); font-size: 12px; color: var(--text-mid);
+  background: var(--chrome-inset); border: 1px solid var(--chrome-line);
+  border-radius: 7px; padding: 7px 8px; cursor: pointer;
+}
+.test-form input {
+  flex: 1; max-width: 520px; padding: 7px 11px; border: 1px solid var(--line);
+  border-radius: 7px; background: var(--panel); color: var(--text);
+  font-family: var(--mono); font-size: 12.5px; min-width: 0;
+}
+.test-form input::placeholder { color: var(--text-faint); }
+.test-form input:focus, .test-form select:focus { outline: none; border-color: var(--accent-line); }
+.test-form button {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 15px; border-radius: 7px; font-size: 13px; font-weight: 500;
+  color: var(--text-mid); border: 1px solid var(--chrome-line);
+  background: var(--chrome-inset); transition: .13s;
+}
+.test-form button:hover:not(:disabled) { background: var(--chrome-hover); color: var(--text); }
+.test-form button:disabled { color: var(--text-faint); cursor: default; }
+.test-form button.stop:hover:not(:disabled) { color: var(--red); }
+.test-form .ic { width: 8px; height: 8px; border-radius: 2px; }
+.test-form .play {
+  width: 0; height: 0; border-left: 7px solid currentColor;
+  border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; border-radius: 1px;
+}
+.test-form .square { background: currentColor; border-radius: 1.5px; }
+
 /* ───────────────── TODO TAB ───────────────── */
 
 .todo-form { display: flex; gap: 8px; max-width: 560px; flex: none; margin-bottom: 16px; }

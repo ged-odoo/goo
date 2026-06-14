@@ -43,6 +43,10 @@
         <svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>
         Code
       </button>
+      <button class="nav-item" data-section="tests">
+        <svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>
+        Tests
+      </button>
       <button class="nav-item" data-section="todo">
         <svg viewBox="0 0 24 24"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><polyline points="4 5.5 5 6.5 6.5 4.5"/><polyline points="4 11.5 5 12.5 6.5 10.5"/><polyline points="4 17.5 5 18.5 6.5 16.5"/></svg>
         Todo
@@ -131,6 +135,33 @@
           </div>
         </div>
         <div id="prs-list"></div>
+      </section>
+
+      <section id="section-tests" class="hidden">
+        <div class="page-head">
+          <div><h1>Tests</h1></div>
+          <div class="head-actions"><span id="test-status" class="dim"></span></div>
+        </div>
+        <form id="test-form" class="test-form">
+          <select id="test-target-select" title="target (database + addons)"></select>
+          <input type="text" id="test-tags-input" autocomplete="off"
+                 placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour">
+          <button type="submit" id="btn-test-run"><span class="play"></span>Run</button>
+          <button type="button" id="btn-test-stop" class="stop" disabled><span class="ic square"></span>Stop</button>
+        </form>
+        <section class="console">
+          <div class="log-toolbar">
+            <span class="console-title"><span class="cdot" id="test-dot"></span>Test output</span>
+            <div class="toolbar-right">
+              <span class="linecount" id="test-linecount">0 lines</span>
+              <button class="tool-btn" id="test-clear-btn">
+                <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="log-scroll" id="test-log-pane"></div>
+        </section>
       </section>
 
       <section id="section-todo" class="hidden">
