@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "code", "tests", "todo", "databases", "config"];
+const SECTIONS = ["server", "code", "tests", "todo", "databases", "addons", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -16,6 +16,7 @@ function showSection(name) {
   }
   if (name === "server") populateTargetSelect(); // pick up config edits
   if (name === "databases") loadDatabases();
+  if (name === "addons") renderAddons();
   if (name === "code") loadPrs();
   if (name === "tests") renderTests();
   if (name === "todo") renderTodos();
@@ -182,6 +183,7 @@ function setStatus(status) {
   }
 
   updateTestControls(status);
+  updateAddonsControls(status);
 }
 
 function renderUptime() {
@@ -1087,6 +1089,195 @@ function updateTestControls(status) {
 }
 
 // ---------------------------------------------------------------------------
+// Addons section: browse modules of a target, install/upgrade one (streamed)
+// ---------------------------------------------------------------------------
+
+const addonsTargetSelect = document.getElementById("addons-target-select");
+const addonsFilter = document.getElementById("addons-filter");
+const addonsListEl = document.getElementById("addons-list");
+const addonsStatusEl = document.getElementById("addons-status");
+const addonsLogPane = document.getElementById("addons-log-pane");
+const addonsDot = document.getElementById("addons-dot");
+const btnAddonsStop = document.getElementById("btn-addons-stop");
+const ADDONS_MAX_ROWS = 200;
+let addonsRunActive = false;
+let sawAddonsRun = false;
+let addonsCache = null;  // { targetId, modules }
+
+function targetRepoPaths(target) {
+  const paths = Object.fromEntries(getConfig().repos.map((r) => [r.id, r.path]));
+  return target.repos.map((id) => ({ id, path: paths[id] })).filter((r) => r.path);
+}
+
+function renderAddons() {
+  const cur = addonsTargetSelect.value;
+  addonsTargetSelect.replaceChildren();
+  for (const t of getConfig().targets) {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = t.id;
+    addonsTargetSelect.appendChild(opt);
+  }
+  if ([...addonsTargetSelect.options].some((o) => o.value === cur)) addonsTargetSelect.value = cur;
+  if (addonsCache && addonsCache.targetId === addonsTargetSelect.value) {
+    renderAddonsTable();
+  } else {
+    loadAddons();
+  }
+}
+
+async function loadAddons() {
+  const targetId = addonsTargetSelect.value;
+  const target = getConfig().targets.find((t) => t.id === targetId);
+  if (!target) { addonsListEl.textContent = "No target."; return; }
+  addonsListEl.textContent = "Loading…";
+  try {
+    const resp = await fetch("/api/addons", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repos: targetRepoPaths(target), db: target.db }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+    addonsCache = { targetId, modules: data.modules };
+    renderAddonsTable();
+  } catch (err) {
+    addonsListEl.textContent = `Failed to load: ${err.message}`;
+  }
+}
+
+function renderAddonsTable() {
+  const q = addonsFilter.value.trim().toLowerCase();
+  const all = addonsCache.modules;
+  const matched = all.filter((m) => !q
+    || m.name.toLowerCase().includes(q)
+    || m.summary.toLowerCase().includes(q)
+    || m.category.toLowerCase().includes(q));
+  // installed first, then by name
+  matched.sort((a, b) =>
+    (b.state === "installed") - (a.state === "installed") || a.name.localeCompare(b.name));
+  const shown = matched.slice(0, ADDONS_MAX_ROWS);
+
+  addonsListEl.replaceChildren();
+  if (!matched.length) {
+    addonsListEl.appendChild(Object.assign(document.createElement("div"),
+      { className: "dim", textContent: "No modules match." }));
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "db-table addons-table";
+  table.innerHTML = "<thead><tr><th>Module</th><th>Repo</th><th>State</th><th></th></tr></thead>";
+  const tbody = document.createElement("tbody");
+  const busy = addonsRunActive;
+  for (const m of shown) {
+    const tr = document.createElement("tr");
+
+    const name = document.createElement("td");
+    name.textContent = m.name;
+    name.className = "addon-name";
+    if (m.summary) name.title = m.summary;
+    if (m.state === "installed") name.classList.add("active-name");
+    tr.appendChild(name);
+
+    const repo = document.createElement("td");
+    repo.textContent = m.repo;
+    repo.className = "dim";
+    tr.appendChild(repo);
+
+    const state = document.createElement("td");
+    const st = m.state || "—";
+    state.innerHTML = `<span class="addon-state ${(m.state || "none").replace(/\s+/g, "-")}">${st}</span>`;
+    tr.appendChild(state);
+
+    const actions = document.createElement("td");
+    actions.className = "db-actions";
+    const op = m.state === "installed" ? "upgrade" : "install";
+    const btn = document.createElement("button");
+    btn.className = "drop-btn";
+    btn.textContent = op === "upgrade" ? "Upgrade" : "Install";
+    btn.disabled = busy || m.installable === false;
+    if (m.installable === false) btn.title = "not installable";
+    btn.addEventListener("click", () => runAddon(op, m.name));
+    actions.appendChild(btn);
+    tr.appendChild(actions);
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  addonsListEl.appendChild(table);
+  if (matched.length > shown.length) {
+    addonsListEl.appendChild(Object.assign(document.createElement("div"),
+      { className: "dim addons-more",
+        textContent: `Showing ${shown.length} of ${matched.length} — refine the filter to see more.` }));
+  }
+}
+
+async function runAddon(op, name) {
+  const config = buildStartConfig(addonsTargetSelect.value);
+  if (!config) return appendLog(`[oo] no such target: "${addonsTargetSelect.value}"`);
+  if (!confirm(`${op === "upgrade" ? "Upgrade" : "Install"} "${name}" on ${config.start.db}?`)) return;
+  config.start[op] = name;
+  addonsLogPane.replaceChildren();
+  updateAddonsLineCount();
+  addonsRunActive = true;
+  sawAddonsRun = false;
+  addonsStatusEl.textContent = `${op === "upgrade" ? "upgrading" : "installing"} ${name}…`;
+  renderAddonsTable();  // disable buttons
+  try {
+    const resp = await fetch("/api/addons/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.status);
+  } catch (err) {
+    addonsRunActive = false;
+    addonsStatusEl.textContent = `failed to start: ${err.message}`;
+    renderAddonsTable();
+  }
+}
+
+function appendAddonsLog(line) {
+  addonsLogPane.appendChild(buildLogRow(line));
+  while (addonsLogPane.childElementCount > MAX_LOG_LINES) addonsLogPane.firstElementChild.remove();
+  updateAddonsLineCount();
+  addonsLogPane.scrollTop = addonsLogPane.scrollHeight;
+}
+
+function updateAddonsLineCount() {
+  document.getElementById("addons-linecount").textContent = `${addonsLogPane.childElementCount} lines`;
+}
+
+function updateAddonsControls(status) {
+  const active = status.state === "starting" || status.state === "running";
+  const running = active && (status.mode === "install" || status.mode === "upgrade");
+  if (running) sawAddonsRun = true;
+  btnAddonsStop.disabled = !running;
+  addonsDot.classList.toggle("on", running);
+  if (running) {
+    addonsStatusEl.textContent = `${status.mode === "upgrade" ? "upgrading" : "installing"}…`;
+  } else if (addonsRunActive && sawAddonsRun && status.state === "stopped") {
+    addonsRunActive = false;
+    sawAddonsRun = false;
+    addonsStatusEl.textContent = status.exited_unexpectedly
+      ? (status.returncode ? `failed — exit ${status.returncode}` : "done")
+      : "stopped";
+    loadAddons();  // refresh installed states
+  }
+}
+
+addonsFilter.addEventListener("input", () => { if (addonsCache) renderAddonsTable(); });
+addonsTargetSelect.addEventListener("change", loadAddons);
+document.getElementById("btn-addons-refresh").addEventListener("click", loadAddons);
+btnAddonsStop.addEventListener("click", () => post("/api/stop"));
+document.getElementById("addons-clear-btn").addEventListener("click", () => {
+  addonsLogPane.replaceChildren();
+  updateAddonsLineCount();
+});
+
+// ---------------------------------------------------------------------------
 // Live events (SSE)
 // ---------------------------------------------------------------------------
 
@@ -1100,6 +1291,7 @@ function connect() {
     const { line } = JSON.parse(e.data);
     appendLog(line);
     if (testRunActive) appendTestLog(line);
+    if (addonsRunActive) appendAddonsLog(line);
   });
 }
 

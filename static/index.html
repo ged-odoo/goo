@@ -55,6 +55,10 @@
         <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>
         Databases
       </button>
+      <button class="nav-item" data-section="addons">
+        <svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>
+        Addons
+      </button>
       <button class="nav-item" data-section="config">
         <svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>
         Config
@@ -124,6 +128,35 @@
           </div>
         </div>
         <div id="db-list" class="db-list"></div>
+      </section>
+
+      <section id="section-addons" class="hidden">
+        <div class="page-head">
+          <div><h1>Addons</h1></div>
+          <div class="head-actions">
+            <span id="addons-status" class="dim"></span>
+            <button class="head-btn" id="btn-addons-refresh">Refresh</button>
+          </div>
+        </div>
+        <div class="addons-bar">
+          <select id="addons-target-select" title="target (database + addons)"></select>
+          <input type="text" id="addons-filter" placeholder="Filter modules…" autocomplete="off">
+          <button type="button" id="btn-addons-stop" class="addons-stop" disabled>Stop</button>
+        </div>
+        <div id="addons-list" class="addons-list"></div>
+        <section class="console addons-console">
+          <div class="log-toolbar">
+            <span class="console-title"><span class="cdot" id="addons-dot"></span>Install / upgrade output</span>
+            <div class="toolbar-right">
+              <span class="linecount" id="addons-linecount">0 lines</span>
+              <button class="tool-btn" id="addons-clear-btn">
+                <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="log-scroll" id="addons-log-pane"></div>
+        </section>
       </section>
 
       <section id="section-code" class="hidden">

@@ -411,6 +411,42 @@ section.hidden { display: none; }
 }
 .test-form .square { background: currentColor; border-radius: 1.5px; }
 
+/* ───────────────── ADDONS TAB ───────────────── */
+
+.addons-bar { display: flex; align-items: center; gap: 10px; flex: none; }
+.addons-bar select {
+  font-family: var(--mono); font-size: 12px; color: var(--text-mid);
+  background: var(--chrome-inset); border: 1px solid var(--chrome-line);
+  border-radius: 7px; padding: 7px 8px; cursor: pointer;
+}
+.addons-bar input {
+  flex: 1; max-width: 420px; padding: 7px 11px; border: 1px solid var(--line);
+  border-radius: 7px; background: var(--panel); color: var(--text);
+  font-size: 12.5px; min-width: 0;
+}
+.addons-bar input::placeholder { color: var(--text-faint); }
+.addons-bar input:focus, .addons-bar select:focus { outline: none; border-color: var(--accent-line); }
+.addons-stop {
+  font-size: 12.5px; color: var(--text-mid); border: 1px solid var(--chrome-line);
+  background: var(--chrome-inset); border-radius: 7px; padding: 7px 14px; transition: .13s;
+}
+.addons-stop:hover:not(:disabled) { color: var(--red); }
+.addons-stop:disabled { color: var(--text-faint); cursor: default; }
+
+.addons-list { flex: 1; min-height: 0; overflow: auto; }
+.addon-name { font-family: var(--mono); font-size: 12.5px; }
+.addons-more { padding: 8px 2px; }
+.addon-state {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: .03em;
+  padding: 1px 7px; border-radius: 4px; color: var(--text-dim);
+  background: oklch(0.5 0.01 264 / .18);
+}
+.addon-state.installed { color: var(--green); background: var(--green-bg); }
+.addon-state.to-upgrade, .addon-state.to-install { color: var(--amber); background: var(--amber-bg); }
+.addon-state.uninstallable { color: var(--red); background: var(--red-bg); }
+
+.addons-console { flex: none; height: 220px; }
+
 /* ───────────────── TODO TAB ───────────────── */
 
 .todo-form { display: flex; gap: 8px; max-width: 560px; flex: none; margin-bottom: 16px; }

@@ -7,6 +7,7 @@ it with each start request; the backend is stateless.
 """
 
 import argparse
+import ast
 import atexit
 import collections
 import json
@@ -344,6 +345,80 @@ def github_prs(repos):
     return out
 
 
+def _addon_roots(repo_id, path):
+    """Directories that hold modules for a repo, matching the addons-path."""
+    p = os.path.expanduser(path)
+    if repo_id == "community":
+        return [os.path.join(p, "addons"), os.path.join(p, "odoo", "addons")]
+    return [p]
+
+
+def module_manifest(module_path):
+    """Parse a module's __manifest__.py into a dict, or None."""
+    manifest = os.path.join(module_path, "__manifest__.py")
+    try:
+        with open(manifest, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError):
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            try:
+                return ast.literal_eval(node)
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
+def installed_modules(db):
+    """Map of module name -> state from a database (empty if unreadable)."""
+    try:
+        r = subprocess.run(
+            ["psql", "-d", db, "-tAc", "SELECT name, state FROM ir_module_module"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        if "|" in line:
+            name, state = line.split("|", 1)
+            out[name] = state
+    return out
+
+
+def list_addons(repos):
+    """Scan each repo {id, path} for modules with a manifest. A module name
+    found in an earlier repo wins (community before enterprise, etc.)."""
+    mods = []
+    seen = set()
+    for repo in repos:
+        rid, path = repo.get("id"), repo.get("path")
+        if not rid or not path:
+            continue
+        for root in _addon_roots(rid, path):
+            if not os.path.isdir(root):
+                continue
+            for name in sorted(os.listdir(root)):
+                if name.startswith((".", "_")) or name in seen:
+                    continue
+                man = module_manifest(os.path.join(root, name))
+                if not man:
+                    continue
+                seen.add(name)
+                mods.append({
+                    "name": name,
+                    "repo": rid,
+                    "category": man.get("category") or "",
+                    "summary": man.get("summary") or "",
+                    "application": bool(man.get("application")),
+                    "installable": man.get("installable", True),
+                })
+    return mods
+
+
 def dev_remote(path):
     """Name of the remote pointing at the odoo-dev fork. (remote, error)."""
     try:
@@ -464,6 +539,16 @@ def build_odoo_cmd(config):
         cmd += f" --test-tags {test_tags} --stop-after-init"
         return cmd, db, False
 
+    # install / upgrade modules and exit
+    install, upgrade = start.get("install"), start.get("upgrade")
+    if install or upgrade:
+        if install:
+            cmd += f" -i {install}"
+        if upgrade:
+            cmd += f" -u {upgrade}"
+        cmd += " --stop-after-init"
+        return cmd, db, False
+
     other_args = start.get("other_args", "")
     if other_args:
         cmd += f" {other_args}"
@@ -537,7 +622,11 @@ class OdooManager:
             self.db = db
             self.target = config.get("target")
             self.cmd = cmd
-            self.mode = "test" if (config.get("start") or {}).get("test_tags") else "server"
+            s = config.get("start") or {}
+            self.mode = ("test" if s.get("test_tags")
+                         else "install" if s.get("install")
+                         else "upgrade" if s.get("upgrade")
+                         else "server")
             self.started_at = time.time()
             self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
             if is_new:
@@ -715,17 +804,8 @@ class Handler(BaseHTTPRequestHandler):
             self._action_start(MANAGER.start)
         elif path == "/api/restart":
             self._action_start(MANAGER.restart)
-        elif path == "/api/tests/run":
-            config, err = self._read_json()
-            if err:
-                return self._send_json(400, {"ok": False, "error": err})
-            MANAGER.stop()  # tests need the odoo port; free it first
-            ok, detail = MANAGER.start(config)
-            if ok:
-                self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
-            else:
-                code = 400 if detail.startswith("invalid_config") else 409
-                self._send_json(code, {"ok": False, "error": detail})
+        elif path in ("/api/tests/run", "/api/addons/run"):
+            self._action_oneshot()
         elif path == "/api/stop":
             ok, detail = MANAGER.stop()
             if ok:
@@ -744,6 +824,17 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             self._send_json(200, {"ok": True, "repos": github_prs(repos)})
+        elif path == "/api/addons":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            db = (body or {}).get("db")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            mods = list_addons(repos)
+            state = installed_modules(db) if db else {}
+            for m in mods:
+                m["state"] = state.get(m["name"])
+            self._send_json(200, {"ok": True, "modules": mods, "db": db})
         elif path == "/api/code/branches/delete":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")
@@ -818,6 +909,20 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self._send_json(400, {"ok": False, "error": err})
         ok, detail = action(config)
+        if ok:
+            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
+        else:
+            code = 400 if detail.startswith("invalid_config") else 409
+            self._send_json(code, {"ok": False, "error": detail})
+
+    def _action_oneshot(self):
+        """Stop whatever holds the odoo port, then start a one-shot run
+        (tests / install / upgrade). Shares the manager with the server."""
+        config, err = self._read_json()
+        if err:
+            return self._send_json(400, {"ok": False, "error": err})
+        MANAGER.stop()
+        ok, detail = MANAGER.start(config)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
         else:
