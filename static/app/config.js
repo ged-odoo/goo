@@ -1,6 +1,6 @@
 // Default configuration. Anything edited in the Config tab is stored in
-// localStorage and overrides these values (see getConfig() in app.js).
-const DEFAULT_CONFIG = {
+// localStorage (via ConfigPlugin) and overrides these values.
+export const DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
   venv_activate: "source /home/odoo/work/env20/bin/activate",
   db_user: "odoo",
@@ -23,3 +23,8 @@ const DEFAULT_CONFIG = {
     other_args: "--dev all",
   },
 };
+
+export const SECTIONS = ["server", "code", "tests", "databases", "addons", "config"];
+export const RUNBOT = "https://runbot.odoo.com";
+export const BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
+export const CACHE_TTL = 10 * 60 * 1000;
