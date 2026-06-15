@@ -183,14 +183,14 @@ class ServerScreen extends Component {
   static components = { LogConsole };
   static template = xml`
     <section>
-      <div class="panel server-panel">
+      <div class="panel">
         <div class="panel-top">
           <div class="server-head">
             <h1>Server</h1>
             <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
             <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
           </div>
-          <div t-if="this.uptime" class="uptime"><div class="big" t-out="this.uptime"/><div class="lbl">uptime</div></div>
+          <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
         </div>
         <div class="panel-actions">
           <button class="pbtn primary" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>

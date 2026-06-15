@@ -331,13 +331,10 @@ section.hidden {
 /* control panel: full-bleed light toolbar */
 .panel {
   flex: none;
+  height: 100px;
   background: var(--l-panel);
   border-bottom: 1px solid var(--l-panel-line);
   padding: 11px 24px 13px;
-}
-/* fixed height so the server panel doesn't jump as info/uptime appear */
-.server-panel {
-  height: 132px;
 }
 .panel-top {
   display: flex;
@@ -380,15 +377,24 @@ section.hidden {
 .panel-top .sub.hint {
   color: var(--l-amber);
 }
-/* server: title + db/odoo info inline on one row */
+/* server: title + db/odoo info inline on one row (no wrap, so the panel keeps a
+   fixed height; overflowing info is truncated rather than pushed to a 2nd line) */
 .server-head {
   display: flex;
   align-items: baseline;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 14px;
+  min-width: 0;
+}
+.server-head h1 {
+  flex-shrink: 0;
 }
 .server-head .sub {
   margin-top: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .panel-actions {
   display: flex;
@@ -436,21 +442,15 @@ section.hidden {
 }
 
 .uptime {
-  text-align: right;
+  flex-shrink: 0;
   font-family: var(--mono);
-}
-.uptime .big {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--l-text);
+  font-size: 12.5px;
+  color: var(--l-text-faint);
   white-space: nowrap;
 }
-.uptime .lbl {
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--l-text-faint);
-  margin-top: 2px;
+.uptime b {
+  color: var(--l-text-mid);
+  font-weight: 600;
 }
 
 /* scrollable content area */
