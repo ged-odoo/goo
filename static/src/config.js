@@ -34,7 +34,7 @@ export const DEFAULT_CONFIG = {
   },
 };
 
-export const SECTIONS = ["server", "code", "tests", "databases", "addons", "config"];
+export const SECTIONS = ["server", "code", "branches", "tests", "databases", "addons", "config"];
 export const RUNBOT = "https://runbot.odoo.com";
 export const BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
 export const CACHE_TTL = 10 * 60 * 1000;

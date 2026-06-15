@@ -41,6 +41,7 @@ const ICONS = {
   star: `<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>`,
   server: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none"/></svg>`,
   code: `<svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>`,
+  branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
@@ -49,6 +50,7 @@ const ICONS = {
 const NAV = [
   { id: "server", label: "Server", icon: ICONS.server, live: true },
   { id: "code", label: "Code", icon: ICONS.code },
+  { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "addons", label: "Addons", icon: ICONS.addons },
@@ -489,6 +491,82 @@ class CodeScreen extends Component {
   }
 }
 
+// ─────────────────────────── Branches screen ───────────────────────────
+// flat list (one row per branch × repo) over the same data the Code tab loads
+
+class BranchesScreen extends Component {
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top"><h1>Branches</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-actions">
+          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </div>
+      </div>
+      <div class="content">
+        <div t-att-class="{busy: this.code.busy()}">
+          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.rows().length" class="dim">No branches.</div>
+          <table t-else="" class="db-table pr-table">
+            <thead><tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th></tr></thead>
+            <tbody>
+              <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch">
+                <td class="pr-branch" t-out="row.branch"/>
+                <td class="dim" t-out="row.repo"/>
+                <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                <td t-att-class="{dim: !row.pr}">
+                  <t t-if="row.pr">
+                    <a class="pr-link" target="_blank" t-att-href="row.pr.url" t-out="'#' + row.pr.number"/>
+                    <span class="pr-state" t-att-class="this.prState(row.pr)" t-out="this.prState(row.pr)"/>
+                  </t>
+                  <t t-else="">—</t>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
+
+  code = plugin(CodePlugin);
+  refreshIcon = m(ICONS.refresh);
+  // flat, view-ready rows sorted most-recently-updated first
+  rows = computed(() => {
+    const prIndex = this.code.groups().prIndex;
+    const list = [];
+    for (const repo of this.code.branchRepos()) {
+      if (repo.error) continue;
+      for (const b of repo.branches) {
+        list.push({
+          branch: b.name,
+          repo: repo.id,
+          date: b.date,
+          pr: prIndex[`${repo.id}:${b.name}`],
+        });
+      }
+    }
+    return list.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
+  });
+
+  setup() {
+    this.code.load();
+  }
+
+  get stamp() {
+    if (this.code.loading()) return "refreshing…";
+    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+  }
+
+  cell(date) {
+    return timeAgo(date);
+  }
+
+  prState(p) {
+    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
+    return st.toLowerCase();
+  }
+}
+
 // ─────────────────────────── Tests screen ───────────────────────────
 
 class TestsScreen extends Component {
@@ -902,6 +980,7 @@ class BranchMenu extends Component {
 const SCREENS = {
   server: ServerScreen,
   code: CodeScreen,
+  branches: BranchesScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
   addons: AddonsScreen,
@@ -914,6 +993,7 @@ export class App extends Component {
     Sidebar,
     ServerScreen,
     CodeScreen,
+    BranchesScreen,
     TestsScreen,
     DatabasesScreen,
     AddonsScreen,
