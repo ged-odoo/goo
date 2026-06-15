@@ -2,6 +2,7 @@
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
+import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, effect, signal, computed } = owl;
@@ -12,6 +13,7 @@ export class AddonsPlugin extends Plugin {
 
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
+  output = new LogBuffer();
   targetId = signal("");
   modules = signal([]);
   loadedFor = signal("");
@@ -26,6 +28,7 @@ export class AddonsPlugin extends Plugin {
 
   setup() {
     effect(() => this._onStatus(this.server.status()));
+    this.server.onLine((line) => { if (this.runActive()) this.output.append(line); });
   }
 
   _target(id) { return this.config.config.targets.find((t) => t.id === id); }
@@ -77,6 +80,7 @@ export class AddonsPlugin extends Plugin {
     if (!cfg) return;
     if (!confirm(`${op === "upgrade" ? "Upgrade" : "Install"} "${name}" on ${cfg.start.db}?`)) return;
     cfg.start[op] = name;
+    this.output.clear();
     this.runActive.set(true); this.sawRun.set(false);
     this.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}…`);
     try { await postJSON("/api/addons/run", cfg); }

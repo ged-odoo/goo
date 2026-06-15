@@ -11,9 +11,9 @@ import { DatabasePlugin } from "./database_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
-import { timeAgo, tintCmd, buildLogRow } from "./utils.js";
+import { timeAgo, tintCmd } from "./utils.js";
 
-const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, computed, props, t } = owl;
+const { Component, xml, plugin, proxy, markup, onMounted, effect, EventBus, signal, computed, props, t } = owl;
 
 // app-wide event bus (Owl 3 has no `this.env`); used to open the branch popover
 const appBus = new EventBus();
@@ -102,9 +102,9 @@ class Sidebar extends Component {
   }
 }
 
-// ─────────────────────────── Log console (manual DOM) ───────────────────────────
-
-let consoleUid = 0;
+// ─────────────────────────── Log console ───────────────────────────
+// Hosts a plugin-owned LogBuffer element while mounted; the element (with all
+// its rows + scroll position) lives on the plugin and survives unmount.
 
 class LogConsole extends Component {
   static template = xml`
@@ -112,47 +112,27 @@ class LogConsole extends Component {
       <div class="log-toolbar">
         <span class="console-title"><span class="cdot" t-att-class="{on: this.live}"/><t t-out="this.props.title"/></span>
         <div class="toolbar-right">
-          <span class="linecount"><t t-out="this.count()"/> lines</span>
-          <label t-if="this.props.mode === 'server'" class="toggle" t-att-class="{on: this.auto()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
-          <button class="tool-btn" t-on-click="() => this.clear()"><t t-out="this.clearIcon"/>Clear</button>
+          <span class="linecount"><t t-out="this.props.buffer.count()"/> lines</span>
+          <label class="toggle" t-att-class="{on: this.props.buffer.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+          <button class="tool-btn" t-on-click="() => this.props.buffer.clear()"><t t-out="this.clearIcon"/>Clear</button>
         </div>
       </div>
-      <div class="log-scroll" t-att-id="this.paneId"/>
+      <div class="log-host" t-ref="this.host"/>
     </section>`;
-  props = props({ title: t.string(), mode: t.string(), task: t.any().optional(), extraClass: t.string().optional() });
+  props = props({ title: t.string(), buffer: t.any(), extraClass: t.string().optional() });
   server = plugin(ServerPlugin);
-  count = signal(0);
-  auto = signal(true);
-  paneId = `log-pane-${consoleUid++}`;
+  host = signal.ref(HTMLElement);
   clearIcon = m(ICONS.clear);
 
   setup() {
-    onMounted(() => {
-      this.pane = document.getElementById(this.paneId);
-      this.unsub = this.server.onLog((ev) => this.onLog(ev));
-      if (this.props.mode === "task") {
-        effect(() => { if (this.props.task.runActive()) this.clear(); });
-      }
-    });
-    onWillUnmount(() => this.unsub && this.unsub());
+    onMounted(() => this.host().appendChild(this.props.buffer.el));
   }
-  get live() {
-    return this.props.mode === "server" ? this.server.status().state === "running" : this.props.task.running;
-  }
-  shouldAppend() { return this.props.mode === "server" || this.props.task.runActive(); }
-  onLog(ev) {
-    if (ev.type === "reset") { if (this.props.mode === "server") this.clear(); return; }
-    if (!this.shouldAppend() || !this.pane) return;
-    this.pane.appendChild(buildLogRow(ev.line));
-    while (this.pane.childElementCount > 2000) this.pane.firstElementChild.remove();
-    this.count.set(this.pane.childElementCount);
-    if (this.props.mode !== "server" || this.auto()) this.pane.scrollTop = this.pane.scrollHeight;
-  }
+  get live() { return this.server.status().state === "running"; }
   toggleAuto() {
-    this.auto.set(!this.auto());
-    if (this.auto() && this.pane) this.pane.scrollTop = this.pane.scrollHeight;
+    const b = this.props.buffer;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.el.scrollTop = b.el.scrollHeight;
   }
-  clear() { if (this.pane) { this.pane.replaceChildren(); this.count.set(0); } }
 }
 
 // ─────────────────────────── Server screen ───────────────────────────
@@ -160,7 +140,7 @@ class LogConsole extends Component {
 class ServerScreen extends Component {
   static components = { LogConsole };
   static template = xml`
-    <section t-att-class="{hidden: this.router.section() !== 'server'}">
+    <section>
       <div class="panel">
         <div class="panel-top">
           <div>
@@ -187,10 +167,9 @@ class ServerScreen extends Component {
           <div class="code" t-out="this.cmdMarkup"/>
           <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
         </div>
-        <LogConsole title="'Server log'" mode="'server'"/>
+        <LogConsole title="'Server log'" buffer="this.server.output"/>
       </div>
     </section>`;
-  router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
   copyIcon = m(ICONS.copy);
@@ -239,7 +218,7 @@ class ServerScreen extends Component {
 
 class DatabasesScreen extends Component {
   static template = xml`
-    <section t-att-class="{hidden: this.router.section() !== 'databases'}">
+    <section>
       <div class="panel">
         <div class="panel-top"><h1>Databases</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
@@ -271,7 +250,6 @@ class DatabasesScreen extends Component {
         </div>
       </div>
     </section>`;
-  router = plugin(RouterPlugin);
   db = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
   // sorted, view-ready rows — recomputed only when the db list / active db change
@@ -286,7 +264,7 @@ class DatabasesScreen extends Component {
         last: d.last_update, lastAgo: d.last_update && timeAgo(d.last_update), lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
       }));
   });
-  setup() { lazyLoad("databases", () => this.db.load()); }
+  setup() { this.db.load(); }
   get stamp() {
     if (this.db.loading()) return "refreshing…";
     return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
@@ -297,7 +275,7 @@ class DatabasesScreen extends Component {
 
 class CodeScreen extends Component {
   static template = xml`
-    <section t-att-class="{hidden: this.router.section() !== 'code'}">
+    <section>
       <div class="panel">
         <div class="panel-top"><h1>Code</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
@@ -343,11 +321,10 @@ class CodeScreen extends Component {
         </div>
       </div>
     </section>`;
-  router = plugin(RouterPlugin);
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
   starIcon = m(ICONS.star);
-  setup() { lazyLoad("code", () => this.code.load()); }
+  setup() { this.code.load(); }
   get stamp() {
     if (this.code.loading()) return "refreshing…";
     return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
@@ -364,7 +341,7 @@ class CodeScreen extends Component {
 class TestsScreen extends Component {
   static components = { LogConsole };
   static template = xml`
-    <section t-att-class="{hidden: this.router.section() !== 'tests'}">
+    <section>
       <div class="panel">
         <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.tests.status()"/></div>
         <div class="panel-actions">
@@ -380,10 +357,9 @@ class TestsScreen extends Component {
         </div>
       </div>
       <div class="content">
-        <LogConsole title="'Test output'" mode="'task'" task="this.tests"/>
+        <LogConsole title="'Test output'" buffer="this.tests.output"/>
       </div>
     </section>`;
-  router = plugin(RouterPlugin);
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
@@ -398,7 +374,7 @@ class TestsScreen extends Component {
 class AddonsScreen extends Component {
   static components = { LogConsole };
   static template = xml`
-    <section t-att-class="{hidden: this.router.section() !== 'addons'}">
+    <section>
       <div class="panel">
         <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.addons.status()"/></div>
         <div class="panel-actions">
@@ -435,10 +411,9 @@ class AddonsScreen extends Component {
                  t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
           </t>
         </div>
-        <LogConsole title="'Install / upgrade output'" mode="'task'" task="this.addons" extraClass="'addons-console'"/>
+        <LogConsole title="'Install / upgrade output'" buffer="this.addons.output" extraClass="'addons-console'"/>
       </div>
     </section>`;
-  router = plugin(RouterPlugin);
   addons = plugin(AddonsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
@@ -448,9 +423,7 @@ class AddonsScreen extends Component {
       const tgt = this.config.config.targets[0];
       this.addons.targetId.set(tgt ? tgt.id : "");
     }
-    lazyLoad("addons", () => {
-      if (this.addons.loadedFor() !== this.addons.targetId()) this.addons.load(this.addons.targetId());
-    });
+    if (this.addons.loadedFor() !== this.addons.targetId()) this.addons.load(this.addons.targetId());
   }
   get targets() { return this.config.config.targets; }
   get view() { return this.addons.filtered(); }
@@ -530,7 +503,7 @@ class ListEditor extends Component {
 class ConfigScreen extends Component {
   static components = { ListEditor };
   static template = xml`
-    <section t-att-class="{hidden: this.router.section() !== 'config'}">
+    <section>
       <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
       <div class="content">
         <ListEditor kind="'repos'"/>
@@ -557,7 +530,6 @@ class ConfigScreen extends Component {
         </div>
       </div>
     </section>`;
-  router = plugin(RouterPlugin);
   config = plugin(ConfigPlugin);
   path = signal(this.config.getDataFile());
   msg = signal("");
@@ -671,6 +643,11 @@ class BranchMenu extends Component {
 
 // ─────────────────────────── Root ───────────────────────────
 
+const SCREENS = {
+  server: ServerScreen, code: CodeScreen, tests: TestsScreen,
+  databases: DatabasesScreen, addons: AddonsScreen, config: ConfigScreen,
+};
+
 export class App extends Component {
   static components = { Topbar, Sidebar, ServerScreen, CodeScreen, TestsScreen, DatabasesScreen, AddonsScreen, ConfigScreen, BranchMenu };
   static template = xml`
@@ -678,18 +655,14 @@ export class App extends Component {
       <Topbar/>
       <div class="body">
         <Sidebar/>
-        <main>
-          <ServerScreen/>
-          <CodeScreen/>
-          <TestsScreen/>
-          <DatabasesScreen/>
-          <AddonsScreen/>
-          <ConfigScreen/>
-        </main>
+        <main><t t-component="this.currentScreen()"/></main>
       </div>
       <BranchMenu/>
     </div>`;
+  router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
+  // the active screen's component class (a class, not an instance)
+  currentScreen = computed(() => SCREENS[this.router.section()] || ServerScreen);
   setup() {
     effect(() => {
       const running = this.server.status().state === "running";
@@ -700,12 +673,6 @@ export class App extends Component {
 }
 
 // ─────────────────────────── helpers ───────────────────────────
-
-function lazyLoad(section, fn) {
-  const router = plugin(RouterPlugin);
-  let done = false;
-  effect(() => { if (!done && router.section() === section) { done = true; fn(); } });
-}
 
 const commaList = {
   format: (v) => (v || []).join(","),

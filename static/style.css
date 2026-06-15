@@ -265,6 +265,8 @@ section.hidden { display: none; }
 .tool-btn:hover { background: var(--panel); color: var(--text); }
 .tool-btn svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 1.7; fill: none; }
 
+.log-host { min-height: 0; overflow: hidden; }
+.log-host > .log-scroll { height: 100%; }
 .log-scroll {
   overflow-y: auto; overflow-x: auto;
   font-family: var(--mono); font-size: 12.5px; line-height: 1.2;

@@ -1,6 +1,7 @@
 // The single odoo process: live status, SSE log fan-out, start/stop/restart.
 
 import { ConfigPlugin, LAST_TARGET_KEY } from "./config_plugin.js";
+import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, signal } = owl;
@@ -11,30 +12,23 @@ export class ServerPlugin extends Plugin {
   config = plugin(ConfigPlugin);
   status = signal({ state: "stopped" });   // whole status object, replaced wholesale
   now = signal(Date.now());
-  buffer = [];                              // recent log lines (replayed to late subscribers)
-  logListeners = new Set();
+  output = new LogBuffer();                 // the persistent server-log element
+  lineListeners = new Set();                // tests/addons mirror lines from here
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
     this._connect();
   }
 
-  // log fan-out: console components subscribe; cb({type:'reset'} | {type:'line',line})
-  onLog(cb) {
-    for (const line of this.buffer) cb({ type: "line", line });
-    this.logListeners.add(cb);
-    return () => this.logListeners.delete(cb);
-  }
-  _emit(ev) { for (const cb of this.logListeners) cb(ev); }
+  onLine(cb) { this.lineListeners.add(cb); return () => this.lineListeners.delete(cb); }
   log(line) {
-    this.buffer.push(line);
-    if (this.buffer.length > 2000) this.buffer.shift();
-    this._emit({ type: "line", line });
+    this.output.append(line);
+    for (const cb of this.lineListeners) cb(line);
   }
 
   _connect() {
     const es = new EventSource("/api/events");
-    es.onopen = () => { this.buffer = []; this._emit({ type: "reset" }); };
+    es.onopen = () => this.output.clear();   // server replays its buffer on connect
     es.onerror = () => this.status.set({ ...this.status(), state: "disconnected" });
     es.addEventListener("status", (e) => this.status.set(JSON.parse(e.data)));
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
