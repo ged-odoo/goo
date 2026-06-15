@@ -82,7 +82,7 @@ class Topbar extends Component {
   routes = ROUTES;
   get pill() {
     const s = this.server.status().state;
-    const map = { starting: "STARTING", stopping: "STOPPING", disconnected: "DISCONNECTED" };
+    const map = { starting: "STARTING", stopping: "STOPPING" };
     return map[s] ? { cls: `status-pill ${s}`, text: map[s] } : null;
   }
 }
@@ -98,6 +98,7 @@ class Sidebar extends Component {
         <t t-out="this.icon(item.icon)"/>
         <t t-out="item.label"/>
         <span t-if="item.live and this.serverRunning" class="live"/>
+        <span t-elif="item.live and this.serverDown" class="live down"/>
       </button>
       <div class="spacer"/>
       <div t-if="this.env" class="env-card">
@@ -116,6 +117,10 @@ class Sidebar extends Component {
 
   get serverRunning() {
     return this.server.status().state === "running";
+  }
+
+  get serverDown() {
+    return this.server.status().state === "disconnected";
   }
 
   get env() {
@@ -191,7 +196,8 @@ class ServerScreen extends Component {
         </div>
       </div>
       <div class="content" t-att-class="{ flush: !this.stopped }">
-        <LogConsole t-if="!this.stopped" title="'Server log'" buffer="this.server.output"/>
+        <div t-if="this.disconnected" class="offline">server is offline</div>
+        <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output"/>
         <div t-else="" class="launch-form">
           <div class="launch-field">
             <label>Target</label>
@@ -247,6 +253,10 @@ class ServerScreen extends Component {
 
   get stopped() {
     return this.status().state === "stopped";
+  }
+
+  get disconnected() {
+    return this.status().state === "disconnected";
   }
 
   get active() {

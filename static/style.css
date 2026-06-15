@@ -273,6 +273,10 @@ a {
   background: var(--green);
   box-shadow: 0 0 0 3px var(--green-bg);
 }
+.nav-item .live.down {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-bg);
+}
 .sidebar .spacer {
   flex: 1;
 }
@@ -435,6 +439,14 @@ section.hidden {
 }
 
 /* server launch form (shown while stopped) */
+.offline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--l-text-faint);
+  font-size: 14px;
+}
 .launch-form {
   flex: none;
   display: flex;
