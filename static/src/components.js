@@ -645,10 +645,12 @@ class AddonsScreen extends Component {
             <t t-else="">
               <div class="addons-grid">
                 <div t-foreach="this.view.shown" t-as="mod" t-key="mod.name" class="addon-card" t-att-class="{installed: mod.state === 'installed'}">
-                  <div class="addon-card-name" t-att-title="mod.summary" t-out="mod.name"/>
-                  <div class="addon-card-repo" t-out="mod.repo"/>
-                  <div class="addon-card-foot">
+                  <div class="addon-card-row">
+                    <div class="addon-card-name" t-att-title="mod.summary" t-out="mod.name"/>
                     <span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/>
+                  </div>
+                  <div class="addon-card-row">
+                    <div class="addon-card-repo" t-out="mod.repo"/>
                     <button class="addon-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
                             t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name)"
                             t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>

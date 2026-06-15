@@ -1418,10 +1418,10 @@ section.hidden {
   gap: 12px;
 }
 .addon-card {
-  width: 220px;
+  width: 340px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
   padding: 12px 14px;
   border: 1px solid var(--l-panel-line);
   border-radius: 10px;
@@ -1430,24 +1430,34 @@ section.hidden {
 .addon-card.installed {
   border-color: var(--l-accent-line);
 }
+.addon-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
 .addon-card-name {
   font-family: var(--mono);
   font-size: 13px;
   font-weight: 600;
   color: var(--l-text);
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .addon-card-repo {
+  flex: 1;
+  min-width: 0;
   font-size: 11px;
   color: var(--l-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.addon-card-foot {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 6px;
+.addon-state {
+  flex: none;
+  white-space: nowrap;
 }
 .addon-btn {
   flex: none;
