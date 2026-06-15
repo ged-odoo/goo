@@ -327,9 +327,19 @@ function renderDatabases(dbs) {
   for (const db of ordered) {
     const isActive = db.name === activeDb;
     const tr = document.createElement("tr");
+    if (isActive) tr.className = "db-active";
     const name = document.createElement("td");
-    name.textContent = db.name;
-    if (isActive) name.className = "active-name";
+    if (isActive) {
+      name.className = "active-name";
+      const label = document.createElement("span");
+      label.textContent = db.name;
+      const badge = document.createElement("span");
+      badge.className = "db-badge";
+      badge.innerHTML = '<span class="pulse"></span>Active';
+      name.append(label, badge);
+    } else {
+      name.textContent = db.name;
+    }
     const version = document.createElement("td");
     version.textContent = db.odoo_version
       ? db.odoo_version + (db.enterprise ? " (ent)" : "")
