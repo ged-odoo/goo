@@ -586,15 +586,12 @@ class TestsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.tests.status()"/></div>
+        <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.meta"/></div>
         <div class="panel-actions">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
-            <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)" title="target (database + addons)">
-              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
-            </select>
             <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
-            <button type="submit"><span class="play"/>Run</button>
+            <button type="submit" t-att-disabled="!this.tests.target"><span class="play"/>Run</button>
             <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
             <div class="log-controls">
               <label class="toggle" t-att-class="{on: this.tests.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
@@ -610,16 +607,18 @@ class TestsScreen extends Component {
 
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
   clearIcon = m(ICONS.clear);
-  target = signal((this.config.config.targets[0] && this.config.config.targets[0].id) || "");
   tags = signal("");
-  get targets() {
-    return this.config.config.targets;
+
+  get meta() {
+    const t = this.tests.target;
+    if (!t) return "start a server to run tests against its target";
+    const st = this.tests.status();
+    return `target: ${t}${st ? " · " + st : ""}`;
   }
 
   run() {
-    this.tests.run(this.target(), this.tags());
+    this.tests.run(this.tags());
   }
 
   toggleAuto() {

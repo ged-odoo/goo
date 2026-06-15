@@ -14,6 +14,13 @@ export class TestsPlugin extends Plugin {
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
+  _resumeAfter = false; // a real server was running and got stopped to test
+
+  // the target of the running/starting server — tests apply to it ("" if none)
+  get target() {
+    const s = this.server.status();
+    return s.state === "running" || s.state === "starting" ? s.target || "" : "";
+  }
 
   setup() {
     effect(() => this._onStatus(this.server.status()));
@@ -38,6 +45,10 @@ export class TestsPlugin extends Plugin {
             : "passed"
           : "stopped",
       );
+      if (this._resumeAfter) {
+        this._resumeAfter = false;
+        this.server.resume(); // bring back the server that was stopped to test
+      }
     }
   }
 
@@ -46,10 +57,13 @@ export class TestsPlugin extends Plugin {
     return (s.state === "starting" || s.state === "running") && s.mode === "test";
   }
 
-  async run(targetId, tags) {
-    const cfg = this.server.buildStartConfig(targetId);
-    if (!cfg) return this.server.log(`[oo] no such target: "${targetId}"`);
+  async run(tags) {
     if (!tags.trim()) return;
+    const s = this.server.status();
+    const cfg = this.server.buildStartConfig(this.target);
+    if (!cfg) return this.server.log(`[oo] no running server target to test`);
+    // a real server is up; it will be stopped for the one-shot test — resume after
+    this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
     cfg.start.test_tags = tags.trim();
     this.output.clear();
     this.runActive.set(true);
