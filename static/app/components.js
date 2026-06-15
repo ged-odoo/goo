@@ -1,9 +1,8 @@
 // Owl 3 components. Screens stay mounted (toggled via the `hidden` class) so
-// the log console keeps its streamed lines across tab switches. All state is
-// read from plugins; components hold only ephemeral UI state (proxy()).
-//
-// Note: Owl 3 templates require `this.` to reach component members; bare
-// identifiers are loop variables (t-as / t-set) only.
+// the log console keeps its streamed lines across tab switches. Plugin refs,
+// signals and constants are class fields; setup() is only for lifecycle. State
+// is held in individual signals (read via signal() in templates); component
+// props use the props({...}) helper with `t` types.
 
 import {
   ConfigPlugin, RouterPlugin, ServerPlugin, DatabasePlugin,
@@ -11,7 +10,7 @@ import {
 } from "./plugins.js";
 import { timeAgo, tintCmd, buildLogRow } from "./utils.js";
 
-const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal } = owl;
+const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, props, t } = owl;
 
 // app-wide event bus (Owl 3 has no `this.env`); used to open the branch popover
 const appBus = new EventBus();
@@ -60,9 +59,10 @@ class Topbar extends Component {
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
       </div>
     </header>`;
-  setup() { this.server = plugin(ServerPlugin); this.routes = ROUTES; }
+  server = plugin(ServerPlugin);
+  routes = ROUTES;
   get pill() {
-    const s = this.server.status.state;
+    const s = this.server.status().state;
     const map = { starting: "STARTING", stopping: "STOPPING", disconnected: "DISCONNECTED" };
     return map[s] ? { cls: `status-pill ${s}`, text: map[s] } : null;
   }
@@ -74,7 +74,7 @@ class Sidebar extends Component {
   static template = xml`
     <nav class="sidebar">
       <button t-foreach="this.nav" t-as="item" t-key="item.id" class="nav-item"
-              t-att-class="{active: this.router.state().section === item.id}"
+              t-att-class="{active: this.router.section() === item.id}"
               t-on-click="() => this.router.go(item.id)">
         <t t-out="this.icon(item.icon)"/>
         <t t-out="item.label"/>
@@ -87,11 +87,13 @@ class Sidebar extends Component {
         <div class="row"><span class="k">pid</span><span class="v" t-out="this.env.pid"/></div>
       </div>
     </nav>`;
-  setup() { this.router = plugin(RouterPlugin); this.server = plugin(ServerPlugin); this.nav = NAV; }
+  router = plugin(RouterPlugin);
+  server = plugin(ServerPlugin);
+  nav = NAV;
   icon(s) { return m(s); }
-  get serverRunning() { return this.server.status.state === "running"; }
+  get serverRunning() { return this.server.status().state === "running"; }
   get env() {
-    const s = this.server.status;
+    const s = this.server.status();
     if (s.state !== "starting" && s.state !== "running") return null;
     return { target: s.target || "—", db: s.db || "—", pid: s.pid || "—" };
   }
@@ -102,52 +104,52 @@ class Sidebar extends Component {
 let consoleUid = 0;
 
 class LogConsole extends Component {
-  // props: title, mode ("server" | "task"), task (TestsPlugin|AddonsPlugin for "task"), extraClass
   static template = xml`
     <section class="console" t-att-class="this.props.extraClass">
       <div class="log-toolbar">
         <span class="console-title"><span class="cdot" t-att-class="{on: this.live}"/><t t-out="this.props.title"/></span>
         <div class="toolbar-right">
-          <span class="linecount"><t t-out="this.state().count"/> lines</span>
-          <label t-if="this.props.mode === 'server'" class="toggle" t-att-class="{on: this.state().auto}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+          <span class="linecount"><t t-out="this.count()"/> lines</span>
+          <label t-if="this.props.mode === 'server'" class="toggle" t-att-class="{on: this.auto()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
           <button class="tool-btn" t-on-click="() => this.clear()"><t t-out="this.clearIcon"/>Clear</button>
         </div>
       </div>
       <div class="log-scroll" t-att-id="this.paneId"/>
     </section>`;
+  props = props({ title: t.string(), mode: t.string(), task: t.any().optional(), extraClass: t.string().optional() });
+  server = plugin(ServerPlugin);
+  count = signal(0);
+  auto = signal(true);
+  paneId = `log-pane-${consoleUid++}`;
+  clearIcon = m(ICONS.clear);
 
   setup() {
-    this.props = this.__owl__.props;
-    this.server = plugin(ServerPlugin);
-    this.state = signal.Object({ count: 0, auto: true });
-    this.paneId = `log-pane-${consoleUid++}`;
-    this.clearIcon = m(ICONS.clear);
     onMounted(() => {
       this.pane = document.getElementById(this.paneId);
       this.unsub = this.server.onLog((ev) => this.onLog(ev));
       if (this.props.mode === "task") {
-        effect(() => { if (this.props.task.state().runActive) this.clear(); });
+        effect(() => { if (this.props.task.runActive()) this.clear(); });
       }
     });
     onWillUnmount(() => this.unsub && this.unsub());
   }
   get live() {
-    return this.props.mode === "server" ? this.server.status.state === "running" : this.props.task.running;
+    return this.props.mode === "server" ? this.server.status().state === "running" : this.props.task.running;
   }
-  shouldAppend() { return this.props.mode === "server" || this.props.task.state().runActive; }
+  shouldAppend() { return this.props.mode === "server" || this.props.task.runActive(); }
   onLog(ev) {
     if (ev.type === "reset") { if (this.props.mode === "server") this.clear(); return; }
     if (!this.shouldAppend() || !this.pane) return;
     this.pane.appendChild(buildLogRow(ev.line));
     while (this.pane.childElementCount > 2000) this.pane.firstElementChild.remove();
-    this.state().count = this.pane.childElementCount;
-    if (this.props.mode !== "server" || this.state().auto) this.pane.scrollTop = this.pane.scrollHeight;
+    this.count.set(this.pane.childElementCount);
+    if (this.props.mode !== "server" || this.auto()) this.pane.scrollTop = this.pane.scrollHeight;
   }
   toggleAuto() {
-    this.state().auto = !this.state().auto;
-    if (this.state().auto && this.pane) this.pane.scrollTop = this.pane.scrollHeight;
+    this.auto.set(!this.auto());
+    if (this.auto() && this.pane) this.pane.scrollTop = this.pane.scrollHeight;
   }
-  clear() { if (this.pane) { this.pane.replaceChildren(); this.state().count = 0; } }
+  clear() { if (this.pane) { this.pane.replaceChildren(); this.count.set(0); } }
 }
 
 // ─────────────────────────── Server screen ───────────────────────────
@@ -155,7 +157,7 @@ class LogConsole extends Component {
 class ServerScreen extends Component {
   static components = { LogConsole };
   static template = xml`
-    <section t-att-class="{hidden: this.router.state().section !== 'server'}">
+    <section t-att-class="{hidden: this.router.section() !== 'server'}">
       <div class="panel">
         <div class="panel-top">
           <div>
@@ -166,42 +168,40 @@ class ServerScreen extends Component {
           <div t-if="this.uptime" class="uptime"><div class="big" t-out="this.uptime"/><div class="lbl">uptime</div></div>
         </div>
         <div class="panel-actions">
-          <select t-if="this.stopped" t-att-value="this.ui().target" t-on-change="ev => this.ui().target = ev.target.value" title="target to start">
-            <option t-foreach="this.targets" t-as="t" t-key="t.id" t-att-value="t.id" t-out="t.id"/>
+          <select t-if="this.stopped" t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)" title="target to start">
+            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
           </select>
           <div class="controls">
-            <button t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.ui().target)"><span class="play"/>Start</button>
+            <button t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target())"><span class="play"/>Start</button>
             <button class="stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-            <button t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.ui().target)"><span class="restart"/>Restart</button>
+            <button t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target())"><span class="restart"/>Restart</button>
           </div>
         </div>
       </div>
       <div class="content">
-        <div t-if="this.status.cmd" class="cmd">
+        <div t-if="this.status().cmd" class="cmd">
           <span class="label">launch</span>
           <div class="code" t-out="this.cmdMarkup"/>
-          <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl"/></button>
+          <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
         </div>
         <LogConsole title="'Server log'" mode="'server'"/>
       </div>
     </section>`;
-  setup() {
-    this.router = plugin(RouterPlugin);
-    this.server = plugin(ServerPlugin);
-    this.config = plugin(ConfigPlugin);
-    this.copyIcon = m(ICONS.copy);
-    this.copyLbl = "Copy";
-    const targets = this.config.config.targets;
-    this.ui = signal.Object({ target: this.server.lastTarget() || (targets[0] && targets[0].id) || "" });
-  }
+  router = plugin(RouterPlugin);
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  copyIcon = m(ICONS.copy);
+  copyLbl = signal("Copy");
+  target = signal(this.server.lastTarget() || (this.config.config.targets[0] && this.config.config.targets[0].id) || "");
+
   get targets() { return this.config.config.targets; }
-  get status() { return this.server.status; }
-  get stopped() { return this.status.state === "stopped"; }
-  get active() { return this.status.state === "starting" || this.status.state === "running"; }
-  get canStop() { return this.active || (this.stopped && this.status.odoo_port_busy); }
-  get cmdMarkup() { return m(tintCmd(this.status.cmd)); }
+  status() { return this.server.status(); }
+  get stopped() { return this.status().state === "stopped"; }
+  get active() { return this.status().state === "starting" || this.status().state === "running"; }
+  get canStop() { return this.active || (this.stopped && this.status().odoo_port_busy); }
+  get cmdMarkup() { return m(tintCmd(this.status().cmd)); }
   get info() {
-    const s = this.status;
+    const s = this.status();
     if (!s.db) return null;
     let html = `database: <b>${s.db}</b>`;
     if (s.odoo_version) {
@@ -211,25 +211,24 @@ class ServerScreen extends Component {
     return m(html);
   }
   get hint() {
-    const s = this.status;
+    const s = this.status();
     const hints = [];
     if (s.exited_unexpectedly) hints.push(`odoo exited unexpectedly (code ${s.returncode})`);
     if (s.state === "stopped" && s.odoo_port_busy) hints.push("port 8069 is busy (external odoo?) — Stop will kill it");
     return hints.join(" — ") || null;
   }
   get uptime() {
-    const s = this.status;
+    const s = this.status();
     if ((s.state !== "starting" && s.state !== "running") || !s.started_at) return null;
-    const secs = Math.max(0, Math.floor(this.server.state().now / 1000 - s.started_at));
+    const secs = Math.max(0, Math.floor(this.server.now() / 1000 - s.started_at));
     const h = Math.floor(secs / 3600), mn = Math.floor((secs % 3600) / 60), sec = secs % 60;
     return h ? `${h}h ${mn}m` : mn ? `${mn}m ${sec}s` : `${sec}s`;
   }
   copy() {
-    if (!this.status.cmd) return;
-    navigator.clipboard?.writeText(this.status.cmd);
-    this.copyLbl = "Copied";
-    this.render();
-    setTimeout(() => { this.copyLbl = "Copy"; this.render(); }, 1400);
+    if (!this.status().cmd) return;
+    navigator.clipboard?.writeText(this.status().cmd);
+    this.copyLbl.set("Copied");
+    setTimeout(() => this.copyLbl.set("Copy"), 1400);
   }
 }
 
@@ -237,7 +236,7 @@ class ServerScreen extends Component {
 
 class DatabasesScreen extends Component {
   static template = xml`
-    <section t-att-class="{hidden: this.router.state().section !== 'databases'}">
+    <section t-att-class="{hidden: this.router.section() !== 'databases'}">
       <div class="panel">
         <div class="panel-top"><h1>Databases</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
@@ -245,9 +244,9 @@ class DatabasesScreen extends Component {
         </div>
       </div>
       <div class="content">
-        <div class="db-list" t-att-class="{busy: this.db.state().dropping}">
-          <div t-if="this.db.state().error" class="dim" t-out="'Failed to load: ' + this.db.state().error"/>
-          <div t-elif="!this.db.state().databases.length" class="dim">No databases.</div>
+        <div class="db-list" t-att-class="{busy: this.db.dropping()}">
+          <div t-if="this.db.error()" class="dim" t-out="'Failed to load: ' + this.db.error()"/>
+          <div t-elif="!this.db.databases().length" class="dim">No databases.</div>
           <table t-else="" class="db-table">
             <thead><tr><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/></tr></thead>
             <tbody>
@@ -269,19 +268,17 @@ class DatabasesScreen extends Component {
         </div>
       </div>
     </section>`;
-  setup() {
-    this.router = plugin(RouterPlugin);
-    this.db = plugin(DatabasePlugin);
-    this.refreshIcon = m(ICONS.refresh);
-    lazyLoad("databases", () => this.db.load());
-  }
+  router = plugin(RouterPlugin);
+  db = plugin(DatabasePlugin);
+  refreshIcon = m(ICONS.refresh);
+  setup() { lazyLoad("databases", () => this.db.load()); }
   get stamp() {
-    if (this.db.state().loading) return "refreshing…";
-    return this.db.state().at ? `updated ${timeAgo(new Date(this.db.state().at).toISOString())}` : "";
+    if (this.db.loading()) return "refreshing…";
+    return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
   }
   get rows() {
     const activeDb = this.db.activeDb;
-    return [...this.db.state().databases]
+    return [...this.db.databases()]
       .sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0))
       .map((d) => ({
         name: d.name, active: d.name === activeDb,
@@ -296,7 +293,7 @@ class DatabasesScreen extends Component {
 
 class CodeScreen extends Component {
   static template = xml`
-    <section t-att-class="{hidden: this.router.state().section !== 'code'}">
+    <section t-att-class="{hidden: this.router.section() !== 'code'}">
       <div class="panel">
         <div class="panel-top"><h1>Code</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
@@ -304,9 +301,9 @@ class CodeScreen extends Component {
         </div>
       </div>
       <div class="content">
-        <div t-att-class="{busy: this.code.state().busy}">
+        <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.vm.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-          <div t-if="this.code.state().error" class="dim" t-out="'Failed to load: ' + this.code.state().error"/>
+          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.vm.list.length" class="dim">No branches.</div>
           <table t-else="" class="db-table pr-table">
             <thead><tr><th>Branch</th><th>Repo</th><th>Last update</th><th>PR</th><th/></tr></thead>
@@ -342,16 +339,14 @@ class CodeScreen extends Component {
         </div>
       </div>
     </section>`;
-  setup() {
-    this.router = plugin(RouterPlugin);
-    this.code = plugin(CodePlugin);
-    this.refreshIcon = m(ICONS.refresh);
-    this.starIcon = m(ICONS.star);
-    lazyLoad("code", () => this.code.load());
-  }
+  router = plugin(RouterPlugin);
+  code = plugin(CodePlugin);
+  refreshIcon = m(ICONS.refresh);
+  starIcon = m(ICONS.star);
+  setup() { lazyLoad("code", () => this.code.load()); }
   get stamp() {
-    if (this.code.state().loading) return "refreshing…";
-    return this.code.state().at ? `updated ${timeAgo(new Date(this.code.state().at).toISOString())}` : "";
+    if (this.code.loading()) return "refreshing…";
+    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
   }
   get vm() { return this.code.groups(); }
   cell(date) { return timeAgo(date); }
@@ -365,15 +360,15 @@ class CodeScreen extends Component {
 class TestsScreen extends Component {
   static components = { LogConsole };
   static template = xml`
-    <section t-att-class="{hidden: this.router.state().section !== 'tests'}">
+    <section t-att-class="{hidden: this.router.section() !== 'tests'}">
       <div class="panel">
-        <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.tests.state().status"/></div>
+        <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.tests.status()"/></div>
         <div class="panel-actions">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
-            <select t-att-value="this.ui().target" t-on-change="ev => this.ui().target = ev.target.value" title="target (database + addons)">
-              <option t-foreach="this.targets" t-as="t" t-key="t.id" t-att-value="t.id" t-out="t.id"/>
+            <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)" title="target (database + addons)">
+              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
             </select>
-            <input type="text" t-att-value="this.ui().tags" t-on-input="ev => this.ui().tags = ev.target.value" autocomplete="off"
+            <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
             <button type="submit"><span class="play"/>Run</button>
             <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
@@ -384,16 +379,14 @@ class TestsScreen extends Component {
         <LogConsole title="'Test output'" mode="'task'" task="this.tests"/>
       </div>
     </section>`;
-  setup() {
-    this.router = plugin(RouterPlugin);
-    this.tests = plugin(TestsPlugin);
-    this.server = plugin(ServerPlugin);
-    this.config = plugin(ConfigPlugin);
-    const targets = this.config.config.targets;
-    this.ui = signal.Object({ target: (targets[0] && targets[0].id) || "", tags: "" });
-  }
+  router = plugin(RouterPlugin);
+  tests = plugin(TestsPlugin);
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  target = signal((this.config.config.targets[0] && this.config.config.targets[0].id) || "");
+  tags = signal("");
   get targets() { return this.config.config.targets; }
-  run() { this.tests.run(this.ui().target, this.ui().tags); }
+  run() { this.tests.run(this.target(), this.tags()); }
 }
 
 // ─────────────────────────── Addons screen ───────────────────────────
@@ -401,22 +394,22 @@ class TestsScreen extends Component {
 class AddonsScreen extends Component {
   static components = { LogConsole };
   static template = xml`
-    <section t-att-class="{hidden: this.router.state().section !== 'addons'}">
+    <section t-att-class="{hidden: this.router.section() !== 'addons'}">
       <div class="panel">
-        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.addons.state().status"/></div>
+        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.addons.status()"/></div>
         <div class="panel-actions">
-          <select t-att-value="this.addons.state().targetId" t-on-change="ev => this.onTargetChange(ev)" title="target (database + addons)">
-            <option t-foreach="this.targets" t-as="t" t-key="t.id" t-att-value="t.id" t-out="t.id"/>
+          <select t-att-value="this.addons.targetId()" t-on-change="ev => this.onTargetChange(ev)" title="target (database + addons)">
+            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
           </select>
-          <input type="text" t-att-value="this.addons.state().filter" t-on-input="ev => this.addons.state().filter = ev.target.value" placeholder="Filter modules…" autocomplete="off"/>
-          <button class="pbtn" t-on-click="() => this.addons.load(this.addons.state().targetId)"><t t-out="this.refreshIcon"/>Refresh</button>
+          <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
+          <button class="pbtn" t-on-click="() => this.addons.load(this.addons.targetId())"><t t-out="this.refreshIcon"/>Refresh</button>
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
       </div>
       <div class="content">
         <div class="addons-list">
-          <div t-if="this.addons.state().loading" class="dim">Loading…</div>
-          <div t-elif="this.addons.state().error" class="dim" t-out="'Failed to load: ' + this.addons.state().error"/>
+          <div t-if="this.addons.loading()" class="dim">Loading…</div>
+          <div t-elif="this.addons.error()" class="dim" t-out="'Failed to load: ' + this.addons.error()"/>
           <div t-elif="!this.view.total" class="dim">No modules match.</div>
           <t t-else="">
             <table class="db-table addons-table">
@@ -427,8 +420,8 @@ class AddonsScreen extends Component {
                   <td class="dim" t-out="mod.repo"/>
                   <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || '—'"/></td>
                   <td class="db-actions">
-                    <button class="drop-btn" t-att-disabled="this.addons.state().runActive or mod.installable === false"
-                            t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.addons.state().targetId)"
+                    <button class="drop-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
+                            t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.addons.targetId())"
                             t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
                   </td>
                 </tr>
@@ -441,35 +434,34 @@ class AddonsScreen extends Component {
         <LogConsole title="'Install / upgrade output'" mode="'task'" task="this.addons" extraClass="'addons-console'"/>
       </div>
     </section>`;
+  router = plugin(RouterPlugin);
+  addons = plugin(AddonsPlugin);
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  refreshIcon = m(ICONS.refresh);
   setup() {
-    this.router = plugin(RouterPlugin);
-    this.addons = plugin(AddonsPlugin);
-    this.server = plugin(ServerPlugin);
-    this.config = plugin(ConfigPlugin);
-    this.refreshIcon = m(ICONS.refresh);
-    if (!this.addons.state().targetId) {
-      const t = this.config.config.targets[0];
-      this.addons.state().targetId = t ? t.id : "";
+    if (!this.addons.targetId()) {
+      const tgt = this.config.config.targets[0];
+      this.addons.targetId.set(tgt ? tgt.id : "");
     }
     lazyLoad("addons", () => {
-      if (this.addons.state().loadedFor !== this.addons.state().targetId) this.addons.load(this.addons.state().targetId);
+      if (this.addons.loadedFor() !== this.addons.targetId()) this.addons.load(this.addons.targetId());
     });
   }
   get targets() { return this.config.config.targets; }
   get view() { return this.addons.filtered(); }
   stateClass(mod) { return (mod.state || "none").replace(/\s+/g, "-"); }
-  onTargetChange(ev) { this.addons.state().targetId = ev.target.value; this.addons.load(ev.target.value); }
+  onTargetChange(ev) { this.addons.targetId.set(ev.target.value); this.addons.load(ev.target.value); }
 }
 
 // ─────────────────────────── Config screen ───────────────────────────
 
 class ListEditor extends Component {
-  // props: kind ("repos"|"targets")
   static template = xml`
     <div class="config-block">
       <h2 class="subtitle" t-out="this.spec.title"/>
       <div class="rows">
-        <div t-foreach="this.state().rows" t-as="row" t-key="row_index" class="edit-row">
+        <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row">
           <input t-foreach="this.spec.fields" t-as="f" t-key="f.key" t-att-class="f.className"
                  t-att-placeholder="f.placeholder" t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"/>
           <button class="row-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
@@ -479,33 +471,32 @@ class ListEditor extends Component {
         <button t-on-click="() => this.addRow()" t-out="'Add ' + this.spec.itemName"/>
         <button t-on-click="() => this.save()">Save</button>
         <button t-on-click="() => this.reset()">Reset to defaults</button>
-        <span t-att-class="this.msg().cls" t-out="this.msg().text"/>
+        <span t-att-class="this.msgCls()" t-out="this.msgText()"/>
       </div>
     </div>`;
-  setup() {
-    this.props = this.__owl__.props;
-    this.config = plugin(ConfigPlugin);
-    this.spec = SPECS[this.props.kind];
-    this.state = signal.Object({ rows: [] });
-    this.msg = signal.Object({ text: "", cls: "" });
-    this.load();
-  }
+  props = props({ kind: t.string() });
+  config = plugin(ConfigPlugin);
+  spec = SPECS[this.props.kind];
+  rows = signal([]);
+  msgText = signal("");
+  msgCls = signal("");
+  setup() { this.load(); }
   load() {
-    this.state().rows = this.config.config[this.spec.key].map((item) => {
+    this.rows.set(this.config.config[this.spec.key].map((item) => {
       const r = {};
       for (const f of this.spec.fields) r[f.key] = f.format ? f.format(item[f.key]) : (item[f.key] || "");
       return r;
-    });
+    }));
   }
-  addRow() { const r = {}; for (const f of this.spec.fields) r[f.key] = ""; this.state().rows = [...this.state().rows, r]; }
-  removeRow(i) { this.state().rows = this.state().rows.filter((_, j) => j !== i); }
+  addRow() { const r = {}; for (const f of this.spec.fields) r[f.key] = ""; this.rows.set([...this.rows(), r]); }
+  removeRow(i) { this.rows.set(this.rows().filter((_, j) => j !== i)); }
   flash(text, isError) {
-    this.msg().text = text; this.msg().cls = isError ? "error" : "ok";
-    if (!isError) setTimeout(() => { this.msg().text = ""; }, 2000);
+    this.msgText.set(text); this.msgCls.set(isError ? "error" : "ok");
+    if (!isError) setTimeout(() => this.msgText.set(""), 2000);
   }
   save() {
     const items = []; const seen = new Set();
-    for (const row of this.state().rows) {
+    for (const row of this.rows()) {
       const raw = {};
       for (const f of this.spec.fields) raw[f.key] = (row[f.key] || "").trim();
       if (this.spec.fields.every((f) => !raw[f.key])) continue;
@@ -535,7 +526,7 @@ class ListEditor extends Component {
 class ConfigScreen extends Component {
   static components = { ListEditor };
   static template = xml`
-    <section t-att-class="{hidden: this.router.state().section !== 'config'}">
+    <section t-att-class="{hidden: this.router.section() !== 'config'}">
       <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
       <div class="content">
         <ListEditor kind="'repos'"/>
@@ -544,10 +535,10 @@ class ConfigScreen extends Component {
           <h2 class="subtitle">Storage</h2>
           <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
           <div class="config-actions">
-            <input type="text" class="w-flex" t-att-value="this.ui().path" t-on-input="ev => this.ui().path = ev.target.value" placeholder="e.g. ~/.config/oo/data.json"/>
+            <input type="text" class="w-flex" t-att-value="this.path()" t-on-input="ev => this.path.set(ev.target.value)" placeholder="e.g. ~/.config/oo/data.json"/>
             <button t-on-click="() => this.useFile()">Use file</button>
             <button t-on-click="() => this.clearFile()">Use browser</button>
-            <span t-out="this.ui().msg"/>
+            <span t-out="this.msg()"/>
           </div>
         </div>
         <div class="config-block">
@@ -557,22 +548,22 @@ class ConfigScreen extends Component {
             <button t-on-click="() => this.exportData()">Export</button>
             <button t-on-click="() => this.triggerImport()">Import</button>
             <input type="file" id="oo-import-file" accept="application/json,.json" hidden="hidden" t-on-change="(ev) => this.importData(ev)"/>
-            <span t-out="this.ui().backupMsg"/>
+            <span t-out="this.backupMsg()"/>
           </div>
         </div>
       </div>
     </section>`;
-  setup() {
-    this.router = plugin(RouterPlugin);
-    this.config = plugin(ConfigPlugin);
-    this.ui = signal.Object({ path: this.config.getDataFile(), msg: "", backupMsg: "" });
-  }
+  router = plugin(RouterPlugin);
+  config = plugin(ConfigPlugin);
+  path = signal(this.config.getDataFile());
+  msg = signal("");
+  backupMsg = signal("");
   triggerImport() { document.getElementById("oo-import-file").click(); }
   async useFile() {
-    try { this.ui().msg = await this.config.useFile(this.ui().path); setTimeout(() => location.reload(), 700); }
-    catch (e) { this.ui().msg = `Could not use file: ${e.message}`; }
+    try { this.msg.set(await this.config.useFile(this.path())); setTimeout(() => location.reload(), 700); }
+    catch (e) { this.msg.set(`Could not use file: ${e.message}`); }
   }
-  clearFile() { this.config.clearFile(); this.ui().path = ""; this.ui().msg = "Using browser storage."; }
+  clearFile() { this.config.clearFile(); this.path.set(""); this.msg.set("Using browser storage."); }
   exportData() {
     const data = {};
     for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target"]) {
@@ -581,7 +572,7 @@ class ConfigScreen extends Component {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = "oo-backup.json"; a.click();
-    URL.revokeObjectURL(a.href); this.ui().backupMsg = "Exported.";
+    URL.revokeObjectURL(a.href); this.backupMsg.set("Exported.");
   }
   async importData(ev) {
     const file = ev.target.files[0]; ev.target.value = "";
@@ -595,9 +586,9 @@ class ConfigScreen extends Component {
       }
       if (!n) throw new Error("no recognized data in file");
       if (this.config.getDataFile()) await this.config.flush(this.config.getDataFile());
-      this.ui().backupMsg = `Imported ${n} item(s), reloading…`;
+      this.backupMsg.set(`Imported ${n} item(s), reloading…`);
       setTimeout(() => location.reload(), 700);
-    } catch (e) { this.ui().backupMsg = `Import failed: ${e.message}`; }
+    } catch (e) { this.backupMsg.set(`Import failed: ${e.message}`); }
   }
 }
 
@@ -605,34 +596,35 @@ class ConfigScreen extends Component {
 
 class BranchMenu extends Component {
   static template = xml`
-    <div class="branch-popover" t-att-class="{hidden: !this.state().open}" t-on-click.stop="() => {}">
-      <button t-foreach="this.state().actions" t-as="a" t-key="a_index" class="branch-popover-item"
+    <div class="branch-popover" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button t-foreach="this.actions()" t-as="a" t-key="a_index" class="branch-popover-item"
               t-att-class="{danger: a.danger}" t-att-disabled="a.disabled" t-att-title="a.title || ''"
               t-on-click="() => this.select(a)" t-out="a.label"/>
     </div>`;
+  code = plugin(CodePlugin);
+  open = signal(false);
+  actions = signal([]);
+  el = null;
   setup() {
-    this.code = plugin(CodePlugin);
-    this.state = signal.Object({ open: false, actions: [] });
-    this.el = null;
     onMounted(() => {
       this.el = document.querySelector(".branch-popover");
-      appBus.addEventListener("branch-menu", (e) => this.open(e.detail));
+      appBus.addEventListener("branch-menu", (e) => this.openMenu(e.detail));
       document.addEventListener("click", () => this.close());
       document.addEventListener("keydown", (e) => { if (e.key === "Escape") this.close(); });
     });
   }
-  close() { this.state().open = false; }
-  async open({ ev, group, vm }) {
+  close() { this.open.set(false); }
+  async openMenu({ ev, group, vm }) {
     const { actions, resolvers } = this.buildActions(group, vm);
-    this.state().actions = actions;
-    this.state().open = true;
+    this.actions.set(actions);   // a deep proxy array
+    this.open.set(true);
     await Promise.resolve();
     const r = ev.currentTarget.getBoundingClientRect();
     const w = this.el.offsetWidth;
     this.el.style.top = `${r.bottom + 4}px`;
     this.el.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
     for (const { index, run } of resolvers) {
-      run().then((patch) => Object.assign(this.state().actions[index], patch));
+      run().then((patch) => Object.assign(this.actions()[index], patch));
     }
   }
   select(a) { if (!a.disabled && a.onClick) { this.close(); a.onClick(); } }
@@ -693,10 +685,10 @@ export class App extends Component {
       </div>
       <BranchMenu/>
     </div>`;
+  server = plugin(ServerPlugin);
   setup() {
-    this.server = plugin(ServerPlugin);
     effect(() => {
-      const running = this.server.status.state === "running";
+      const running = this.server.status().state === "running";
       const el = document.getElementById("favicon");
       if (el) el.href = running ? "/static/favicon-on.svg" : "/static/favicon.svg";
     });
@@ -708,7 +700,7 @@ export class App extends Component {
 function lazyLoad(section, fn) {
   const router = plugin(RouterPlugin);
   let done = false;
-  effect(() => { if (!done && router.state().section === section) { done = true; fn(); } });
+  effect(() => { if (!done && router.section() === section) { done = true; fn(); } });
 }
 
 const commaList = {
@@ -726,9 +718,9 @@ const SPECS = {
     validate(repos, config) {
       if (!repos.find((r) => r.id === "community")) return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
-      for (const t of config.targets) {
-        const used = (t.repos || []).find((id) => !ids.has(id));
-        if (used) return `repository "${used}" is still used by target "${t.id}"`;
+      for (const tt of config.targets) {
+        const used = (tt.repos || []).find((id) => !ids.has(id));
+        if (used) return `repository "${used}" is still used by target "${tt.id}"`;
       }
       return null;
     },
@@ -743,9 +735,9 @@ const SPECS = {
     ],
     validate(targets, config) {
       const repoIds = new Set(config.repos.map((r) => r.id));
-      for (const t of targets) {
-        const unknown = t.repos.find((id) => !repoIds.has(id));
-        if (unknown) return `target "${t.id}": unknown repository "${unknown}"`;
+      for (const tt of targets) {
+        const unknown = tt.repos.find((id) => !repoIds.has(id));
+        if (unknown) return `target "${tt.id}": unknown repository "${unknown}"`;
       }
       return null;
     },
