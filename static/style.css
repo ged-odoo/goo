@@ -211,7 +211,7 @@ a {
 }
 
 .sidebar {
-  background: var(--bg-sidebar);
+  background: oklch(0.36 0.012 258);
   border-right: 1px solid var(--chrome-line);
   padding: 14px 12px;
   display: flex;
@@ -233,7 +233,7 @@ a {
   width: 100%;
 }
 .nav-item:hover {
-  background: var(--chrome-hover);
+  background: oklch(0.43 0.014 258);
   color: var(--text);
 }
 .nav-item.active {
