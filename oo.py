@@ -298,7 +298,7 @@ def git_branches(repos):
         path = os.path.expanduser(repo.get("path", ""))
         if not rid or not path:
             continue
-        entry = {"id": rid, "current": None, "branches": [], "error": None}
+        entry = {"id": rid, "current": None, "dirty": False, "branches": [], "error": None}
         try:
             r = subprocess.run(
                 ["git", "-C", path, "branch", "--show-current"],
@@ -311,6 +311,14 @@ def git_branches(repos):
                 out.append(entry)
                 continue
             entry["current"] = r.stdout.strip() or "(detached)"
+            # uncommitted changes in the working tree (only the current branch)
+            st = subprocess.run(
+                ["git", "-C", path, "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            entry["dirty"] = bool(st.stdout.strip())
             # branch names that have a remote-tracking ref, i.e. were pushed to
             # some remote from this clone (refname minus refs/remotes/<remote>/)
             rr = subprocess.run(

@@ -1066,6 +1066,11 @@ section.hidden {
   font-weight: 600;
   color: var(--l-accent);
 }
+.dirty-mark {
+  margin-left: 6px;
+  font-weight: 700;
+  color: var(--l-amber);
+}
 .active-mark {
   color: var(--l-text-dim);
   font-weight: 400;

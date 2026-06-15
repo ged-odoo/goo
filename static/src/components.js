@@ -513,6 +513,7 @@ class BranchesScreen extends Component {
               <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch" t-att-class="{'db-active': row.active}">
                 <td class="pr-branch" t-att-class="{'active-name': row.active}">
                   <span t-out="row.branch"/>
+                  <span t-if="row.dirty" class="dirty-mark" title="uncommitted changes">(*)</span>
                   <span t-if="row.active" class="db-badge"><span class="pulse"/>Active</span>
                 </td>
                 <td class="dim" t-out="row.repo"/>
@@ -545,6 +546,7 @@ class BranchesScreen extends Component {
           repo: repo.id,
           date: b.date,
           active: b.name === repo.current,
+          dirty: b.name === repo.current && repo.dirty,
           pr: prIndex[`${repo.id}:${b.name}`],
         });
       }
