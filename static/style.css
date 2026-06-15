@@ -1420,17 +1420,17 @@ section.hidden {
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
-  gap: 12px;
+  gap: 8px;
 }
 .addon-card {
   width: 340px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 5px;
+  padding: 8px 11px;
   border: 1px solid var(--l-panel-line);
-  border-radius: 10px;
-  background: var(--l-card);
+  border-radius: 9px;
+  background: oklch(0.975 0.002 264);
 }
 .addon-card.installed {
   border-color: var(--l-accent-line);
