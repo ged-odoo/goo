@@ -1,0 +1,28 @@
+# One-time setup:  pip install pre-commit  &&  pre-commit install
+# Runs the same formatters/linters on changed files before each commit.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        entry: python3 -m ruff check --fix
+        language: system
+        types: [python]
+        exclude: ^old_odev\.py$
+      - id: ruff-format
+        name: ruff (format)
+        entry: python3 -m ruff format
+        language: system
+        types: [python]
+        exclude: ^old_odev\.py$
+      - id: prettier
+        name: prettier
+        entry: npx --yes prettier@3 --write
+        language: system
+        files: \.(js|css|html|json|md)$
+        exclude: ^static/lib/
+      - id: eslint
+        name: eslint
+        entry: npx --yes eslint --fix
+        language: system
+        files: ^static/src/.*\.js$
