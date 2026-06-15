@@ -188,7 +188,7 @@ a {
   gap: 6px;
   font-family: var(--mono);
   font-size: 12px;
-  color: var(--text-mid);
+  color: #fff;
   white-space: nowrap;
   padding: 6px 12px;
   border-radius: 7px;
