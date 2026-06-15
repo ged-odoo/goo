@@ -638,7 +638,7 @@ class AddonsScreen extends Component {
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
       </div>
-      <div class="content">
+      <div class="content addons-content">
         <div t-if="!this.databases.length" class="dim addons-empty">No databases found.</div>
         <t t-else="">
           <div class="addons-grid-wrap">

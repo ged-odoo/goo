@@ -26,7 +26,7 @@ export class AddonsPlugin extends Plugin {
   error = signal("");
   filter = signal("");
   stateFilter = signal(""); // "" | "installed" | "uninstalled"
-  appOnly = signal(false); // only modules flagged as an application
+  appOnly = signal(true); // only modules flagged as an application (on by default)
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);

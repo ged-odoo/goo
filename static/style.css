@@ -1404,10 +1404,14 @@ section.hidden {
   opacity: 0.6;
 }
 
+.content.addons-content {
+  padding: 0;
+}
 .addons-grid-wrap {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  padding: 18px 30px;
 }
 .addons-empty {
   flex: 1;
