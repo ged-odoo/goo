@@ -37,6 +37,12 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 LOG_BUFFER_SIZE = 2000
 
 
+def log_request(target):
+    """Announce an outgoing network request on the terminal, so the user can
+    see what oo is reaching out to (runbot, GitHub, git remotes)."""
+    print(f"{TAG} {time.strftime('%H:%M:%S')} → {target}", flush=True)
+
+
 # =============================================================================
 # Event bus: log ring buffer + SSE fan-out
 # =============================================================================
@@ -376,6 +382,7 @@ def runbot_badge_status(branch):
     <text ...>success</text>.
     """
     url = f"https://runbot.odoo.com/runbot/badge/1/{urllib.parse.quote(branch)}.svg"
+    log_request(f"GET {url}")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "oo/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -401,6 +408,7 @@ def github_prs(repos):
         if not rid or not gh_repo:
             continue
         entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
+        log_request(f"gh pr list --repo {gh_repo} --author @me")
         try:
             r = subprocess.run(
                 [
@@ -535,6 +543,7 @@ def remote_branch_exists(path, branch):
     remote, err = dev_remote(path)
     if err:
         return None, err
+    log_request(f"git ls-remote {remote} {branch}")
     try:
         r = subprocess.run(
             ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
@@ -554,6 +563,7 @@ def push_branch(path, branch):
     remote, err = dev_remote(path)
     if err:
         return False, err
+    log_request(f"git push {remote} {branch}")
     try:
         r = subprocess.run(
             ["git", "-C", os.path.expanduser(path), "push", "--set-upstream", remote, branch],
@@ -570,6 +580,7 @@ def push_branch(path, branch):
 
 def close_pr(github, number):
     """Close a GitHub PR via the gh CLI. Returns (ok, error)."""
+    log_request(f"gh pr close {number} --repo {github}")
     try:
         r = subprocess.run(
             ["gh", "pr", "close", str(number), "--repo", github],
