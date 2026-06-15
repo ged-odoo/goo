@@ -640,7 +640,6 @@ class AddonsScreen extends Component {
             <option t-foreach="this.databases" t-as="d" t-key="d.name" t-att-value="d.name" t-out="this.dbLabel(d)"/>
           </select>
           <button class="pbtn" t-att-disabled="!this.addons.selectedDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
-          <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
       </div>
       <div class="content addons-content">
@@ -675,7 +674,6 @@ class AddonsScreen extends Component {
     </section>`;
 
   addons = plugin(AddonsPlugin);
-  server = plugin(ServerPlugin);
   database = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
 
