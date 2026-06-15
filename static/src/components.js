@@ -302,9 +302,10 @@ class ServerScreen extends Component {
     if (!s.db) return null;
     let html = `database: <b>${s.db}</b>`;
     if (s.odoo_version) {
-      html += `<span class="sep">·</span>odoo <b>${s.odoo_version}</b>`;
-      if (s.enterprise) html += `<span class="sep">·</span>enterprise`;
+      html += `<span class="sep">·</span>odoo: <b>${s.odoo_version}</b>`;
+      if (s.enterprise) html += ` (enterprise)`;
     }
+    if (s.target) html += `<span class="sep">·</span>target: <b>${s.target}</b>`;
     return m(html);
   }
 
