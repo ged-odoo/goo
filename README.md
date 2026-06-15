@@ -78,4 +78,4 @@ oo/
 
 ## Current status
 
-Early design phase. The existing `old_odev.py` is included as reference for the rewrite.
+Working: a stdlib Python server (`oo.py`) with an Owl 3 frontend (`static/`).
