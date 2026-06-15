@@ -69,22 +69,13 @@ class Topbar extends Component {
     <header class="topbar">
       <div class="top-left">
         <div class="logo"><span class="name">oo</span></div>
-        <span t-if="this.pill" class="status-pill" t-att-class="this.pill.cls">
-          <span class="dot"/><t t-out="this.pill.text"/>
-        </span>
       </div>
       <div class="top-right">
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
       </div>
     </header>`;
 
-  server = plugin(ServerPlugin);
   routes = ROUTES;
-  get pill() {
-    const s = this.server.status().state;
-    const map = { starting: "STARTING", stopping: "STOPPING" };
-    return map[s] ? { cls: `status-pill ${s}`, text: map[s] } : null;
-  }
 }
 
 // ─────────────────────────── Sidebar ───────────────────────────
@@ -180,7 +171,7 @@ class ServerScreen extends Component {
   static components = { LogConsole };
   static template = xml`
     <section>
-      <div class="panel">
+      <div class="panel server-panel">
         <div class="panel-top">
           <div class="server-head">
             <h1>Server</h1>
@@ -193,6 +184,7 @@ class ServerScreen extends Component {
           <button class="pbtn primary" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
+          <span t-if="this.transient" class="run-state" t-out="this.transient"/>
         </div>
       </div>
       <div class="content" t-att-class="{ flush: !this.stopped }">
@@ -257,6 +249,11 @@ class ServerScreen extends Component {
 
   get disconnected() {
     return this.status().state === "disconnected";
+  }
+
+  get transient() {
+    const s = this.status().state;
+    return s === "starting" ? "starting…" : s === "stopping" ? "stopping…" : null;
   }
 
   get active() {

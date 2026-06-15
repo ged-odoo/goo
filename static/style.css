@@ -333,6 +333,10 @@ section.hidden {
   border-bottom: 1px solid var(--l-panel-line);
   padding: 11px 24px 13px;
 }
+/* fixed height so the server panel doesn't jump as info/uptime appear */
+.server-panel {
+  height: 132px;
+}
 .panel-top {
   display: flex;
   align-items: flex-start;
@@ -394,6 +398,24 @@ section.hidden {
 .panel-actions:empty {
   display: none;
 }
+.run-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--l-amber);
+}
+.run-state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--l-amber);
+  animation: pulse 1.8s ease-out infinite;
+}
 
 .uptime {
   text-align: right;
@@ -445,7 +467,9 @@ section.hidden {
   align-items: center;
   justify-content: center;
   color: var(--l-text-faint);
-  font-size: 14px;
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 .launch-form {
   flex: none;
