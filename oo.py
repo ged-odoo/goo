@@ -127,12 +127,13 @@ def db_initialized(db_name):
 
 
 def odoo_info(db_name):
-    """(version, is_enterprise, last_update) of the odoo installed in a
-    database. (None, False, None) if it holds no odoo.
+    """(version, is_enterprise, last_update, install_date) of the odoo installed
+    in a database. (None, False, None, None) if it holds no odoo.
 
     last_update is a UTC timestamp of the last detectable activity: crons
     are written whenever a server runs against the db, logins create
-    res_users_log rows."""
+    res_users_log rows. install_date is when the database was first
+    initialized, taken from the oldest res_users row (the bootstrap users)."""
     try:
         result = subprocess.run(
             ["psql", "-d", db_name, "-tAc",
@@ -140,16 +141,17 @@ def odoo_info(db_name):
              " EXISTS (SELECT 1 FROM ir_module_module"
              " WHERE name = 'web_enterprise' AND state = 'installed'),"
              " GREATEST((SELECT max(write_date) FROM ir_cron),"
-             " (SELECT max(create_date) FROM res_users_log))"],
+             " (SELECT max(create_date) FROM res_users_log)),"
+             " (SELECT min(create_date) FROM res_users)"],
             capture_output=True, text=True, timeout=5,
         )
         line = result.stdout.strip()
         if result.returncode != 0 or not line:
-            return None, False, None  # no odoo tables: not an odoo database
-        version, enterprise, last_update = line.split("|", 2)
-        return version or None, enterprise == "t", last_update or None
+            return None, False, None, None  # no odoo tables: not an odoo database
+        version, enterprise, last_update, install_date = line.split("|", 3)
+        return version or None, enterprise == "t", last_update or None, install_date or None
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None, False, None
+        return None, False, None, None
 
 
 def list_databases():
@@ -171,12 +173,13 @@ def list_databases():
         name = line.strip()
         if not name:
             continue
-        version, enterprise, last_update = odoo_info(name)
+        version, enterprise, last_update, install_date = odoo_info(name)
         dbs.append({
             "name": name,
             "odoo_version": version,
             "enterprise": enterprise,
             "last_update": last_update,
+            "install_date": install_date,
         })
     return dbs
 
@@ -601,7 +604,7 @@ class OdooManager:
                 status["returncode"] = self.returncode
         status["odoo_port_busy"] = port_busy(ODOO_PORT)
         if status["db"]:
-            version, enterprise, _ = odoo_info(status["db"])
+            version, enterprise, _, _ = odoo_info(status["db"])
             status["odoo_version"] = version
             status["enterprise"] = enterprise
         return status

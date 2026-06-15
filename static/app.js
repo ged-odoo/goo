@@ -320,7 +320,7 @@ function renderDatabases(dbs) {
   const table = document.createElement("table");
   table.className = "db-table";
   table.innerHTML =
-    "<thead><tr><th>Name</th><th>Odoo version</th><th>Last activity</th><th></th></tr></thead>";
+    "<thead><tr><th>Name</th><th>Odoo version</th><th>Installed</th><th>Last activity</th><th></th></tr></thead>";
   const tbody = document.createElement("tbody");
   // most recently active first; databases with no activity sort last
   const ordered = [...dbs].sort((a, b) =>
@@ -336,6 +336,10 @@ function renderDatabases(dbs) {
       ? db.odoo_version + (db.enterprise ? " (ent)" : "")
       : "—";
     if (!db.odoo_version) version.className = "dim";
+    const installed = document.createElement("td");
+    installed.textContent = db.install_date ? timeAgo(db.install_date) : "—";
+    if (db.install_date) installed.title = `${db.install_date} (UTC)`;
+    else installed.className = "dim";
     const lastUpdate = document.createElement("td");
     lastUpdate.textContent = db.last_update ? timeAgo(db.last_update) : "—";
     if (db.last_update) lastUpdate.title = `${db.last_update} (UTC)`;
@@ -351,7 +355,7 @@ function renderDatabases(dbs) {
     }
     btn.addEventListener("click", () => dropDatabase(db.name, btn));
     actions.appendChild(btn);
-    tr.append(name, version, lastUpdate, actions);
+    tr.append(name, version, installed, lastUpdate, actions);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
