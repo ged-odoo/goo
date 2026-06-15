@@ -30,6 +30,15 @@ export class LogBuffer {
     if (this.autoScroll()) this.toBottom();
   }
 
+  // a horizontal rule, e.g. to mark the end of a run
+  separator() {
+    const hr = document.createElement("div");
+    hr.className = "log-sep";
+    this.el.appendChild(hr);
+    while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild.remove();
+    if (this.autoScroll()) this.toBottom();
+  }
+
   clear() {
     this.el.replaceChildren();
     this.count.set(0);

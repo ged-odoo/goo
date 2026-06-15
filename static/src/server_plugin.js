@@ -28,6 +28,8 @@ export class ServerPlugin extends Plugin {
 
   log(line) {
     this.output.append(line);
+    // mark the end of a run with a separator for easier visual scanning
+    if (/^\[oo\] odoo (stopped|exited)/.test(line)) this.output.separator();
     for (const cb of this.lineListeners) cb(line);
   }
 
