@@ -631,7 +631,8 @@ class AddonsScreen extends Component {
             <option t-foreach="this.databases" t-as="d" t-key="d.name" t-att-value="d.name" t-out="this.dbLabel(d)"/>
           </select>
           <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
-          <button class="pbtn" t-att-class="{active: this.addons.installedOnly()}" t-on-click="() => this.addons.installedOnly.set(!this.addons.installedOnly())">Installed only</button>
+          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
           <button class="pbtn" t-att-disabled="!this.addons.selectedDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
@@ -691,6 +692,10 @@ class AddonsScreen extends Component {
 
   dbLabel(d) {
     return d.name === this.database.activeDb ? `${d.name} (running)` : d.name;
+  }
+
+  toggleState(value) {
+    this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
   }
 
   stateClass(mod) {

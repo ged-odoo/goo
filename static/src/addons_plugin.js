@@ -25,7 +25,7 @@ export class AddonsPlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   filter = signal("");
-  installedOnly = signal(false);
+  stateFilter = signal(""); // "" | "installed" | "uninstalled"
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
@@ -82,15 +82,18 @@ export class AddonsPlugin extends Plugin {
 
   _filtered() {
     const q = this.filter().trim().toLowerCase();
-    const installedOnly = this.installedOnly();
-    const matched = this.modules().filter(
-      (mod) =>
-        (!installedOnly || mod.state === "installed") &&
-        (!q ||
-          mod.name.toLowerCase().includes(q) ||
-          mod.summary.toLowerCase().includes(q) ||
-          mod.category.toLowerCase().includes(q)),
-    );
+    const sf = this.stateFilter();
+    const matched = this.modules().filter((mod) => {
+      const installed = mod.state === "installed";
+      if (sf === "installed" && !installed) return false;
+      if (sf === "uninstalled" && installed) return false;
+      return (
+        !q ||
+        mod.name.toLowerCase().includes(q) ||
+        mod.summary.toLowerCase().includes(q) ||
+        mod.category.toLowerCase().includes(q)
+      );
+    });
     matched.sort(
       (a, b) =>
         (b.state === "installed") - (a.state === "installed") || a.name.localeCompare(b.name),
