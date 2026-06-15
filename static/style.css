@@ -552,6 +552,11 @@ section.hidden {
   cursor: default;
   opacity: 0.6;
 }
+.pbtn.active {
+  color: var(--l-accent);
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
 .pbtn svg {
   width: 14px;
   height: 14px;

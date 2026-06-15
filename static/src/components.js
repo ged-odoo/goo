@@ -631,6 +631,7 @@ class AddonsScreen extends Component {
             <option t-foreach="this.databases" t-as="d" t-key="d.name" t-att-value="d.name" t-out="this.dbLabel(d)"/>
           </select>
           <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
+          <button class="pbtn" t-att-class="{active: this.addons.installedOnly()}" t-on-click="() => this.addons.installedOnly.set(!this.addons.installedOnly())">Installed only</button>
           <button class="pbtn" t-att-disabled="!this.addons.selectedDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>

@@ -25,6 +25,7 @@ export class AddonsPlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   filter = signal("");
+  installedOnly = signal(false);
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
@@ -81,12 +82,14 @@ export class AddonsPlugin extends Plugin {
 
   _filtered() {
     const q = this.filter().trim().toLowerCase();
+    const installedOnly = this.installedOnly();
     const matched = this.modules().filter(
       (mod) =>
-        !q ||
-        mod.name.toLowerCase().includes(q) ||
-        mod.summary.toLowerCase().includes(q) ||
-        mod.category.toLowerCase().includes(q),
+        (!installedOnly || mod.state === "installed") &&
+        (!q ||
+          mod.name.toLowerCase().includes(q) ||
+          mod.summary.toLowerCase().includes(q) ||
+          mod.category.toLowerCase().includes(q)),
     );
     matched.sort(
       (a, b) =>
