@@ -13,7 +13,7 @@ import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { timeAgo, tintCmd, buildLogRow } from "./utils.js";
 
-const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, props, t } = owl;
+const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, computed, props, t } = owl;
 
 // app-wide event bus (Owl 3 has no `this.env`); used to open the branch popover
 const appBus = new EventBus();
@@ -253,7 +253,7 @@ class DatabasesScreen extends Component {
           <table t-else="" class="db-table">
             <thead><tr><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/></tr></thead>
             <tbody>
-              <tr t-foreach="this.rows" t-as="d" t-key="d.name" t-att-class="{'db-active': d.active}">
+              <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{'db-active': d.active}">
                 <td t-att-class="{'active-name': d.active}">
                   <span t-out="d.name"/>
                   <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
@@ -274,12 +274,8 @@ class DatabasesScreen extends Component {
   router = plugin(RouterPlugin);
   db = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
-  setup() { lazyLoad("databases", () => this.db.load()); }
-  get stamp() {
-    if (this.db.loading()) return "refreshing…";
-    return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
-  }
-  get rows() {
+  // sorted, view-ready rows — recomputed only when the db list / active db change
+  rows = computed(() => {
     const activeDb = this.db.activeDb;
     return [...this.db.databases()]
       .sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0))
@@ -289,6 +285,11 @@ class DatabasesScreen extends Component {
         created: d.created, createdAgo: d.created && timeAgo(d.created), createdTitle: d.created ? `${d.created} (UTC)` : "",
         last: d.last_update, lastAgo: d.last_update && timeAgo(d.last_update), lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
       }));
+  });
+  setup() { lazyLoad("databases", () => this.db.load()); }
+  get stamp() {
+    if (this.db.loading()) return "refreshing…";
+    return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
   }
 }
 

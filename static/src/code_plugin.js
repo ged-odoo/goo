@@ -5,27 +5,23 @@ import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, CACHE_TTL } from "./config.js";
 import { ConfigPlugin, FAVORITES_KEY } from "./config_plugin.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+const { Plugin, plugin, signal, computed } = owl;
 
 const PRS_CACHE_KEY = "oo-prs-cache";
 
 export class CodePlugin extends Plugin {
   static sequence = 3;
 
-  branchRepos = signal([]);
-  prRepos = signal([]);
-  at = signal(0);
+  config = plugin(ConfigPlugin);
+  branchRepos = signal((this._cache() || {}).branchRepos || []);
+  prRepos = signal((this._cache() || {}).prRepos || []);
+  at = signal((this._cache() || {}).at || 0);
   loading = signal(false);
   error = signal("");
   busy = signal(false);
-  favorites = signal([]);
-
-  setup() {
-    this.config = plugin(ConfigPlugin);
-    this.favorites.set(this._readFavorites());
-    const cache = this._cache();
-    if (cache) { this.branchRepos.set(cache.branchRepos); this.prRepos.set(cache.prRepos); this.at.set(cache.at); }
-  }
+  favorites = signal(this._readFavorites());
+  // grouped, sorted view model — recomputed only when its inputs change
+  groups = computed(() => this._groups());
 
   reposWithGithub() {
     return this.config.config.repos.map((r) => ({
@@ -68,8 +64,7 @@ export class CodePlugin extends Plugin {
     finally { this.loading.set(false); }
   }
 
-  // grouped, sorted view model for the table
-  groups() {
+  _groups() {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));

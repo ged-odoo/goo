@@ -8,12 +8,12 @@ const { Plugin, plugin, effect, signal } = owl;
 export class TestsPlugin extends Plugin {
   static sequence = 3;
 
+  server = plugin(ServerPlugin);
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
 
   setup() {
-    this.server = plugin(ServerPlugin);
     effect(() => this._onStatus(this.server.status()));
   }
 

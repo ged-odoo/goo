@@ -4,12 +4,14 @@ import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, effect, signal } = owl;
+const { Plugin, plugin, effect, signal, computed } = owl;
 
 export class AddonsPlugin extends Plugin {
   static sequence = 3;
   static MAX_ROWS = 200;
 
+  config = plugin(ConfigPlugin);
+  server = plugin(ServerPlugin);
   targetId = signal("");
   modules = signal([]);
   loadedFor = signal("");
@@ -19,10 +21,10 @@ export class AddonsPlugin extends Plugin {
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
+  // filtered + sorted modules — recomputed only when modules/filter change
+  filtered = computed(() => this._filtered());
 
   setup() {
-    this.config = plugin(ConfigPlugin);
-    this.server = plugin(ServerPlugin);
     effect(() => this._onStatus(this.server.status()));
   }
 
@@ -43,7 +45,7 @@ export class AddonsPlugin extends Plugin {
     finally { this.loading.set(false); }
   }
 
-  filtered() {
+  _filtered() {
     const q = this.filter().trim().toLowerCase();
     const matched = this.modules().filter((mod) => !q
       || mod.name.toLowerCase().includes(q)

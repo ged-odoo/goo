@@ -11,17 +11,12 @@ const DB_CACHE_KEY = "oo-db-cache";
 export class DatabasePlugin extends Plugin {
   static sequence = 3;
 
-  databases = signal([]);
-  at = signal(0);
+  server = plugin(ServerPlugin);
+  databases = signal((this._cache() || {}).databases || []);
+  at = signal((this._cache() || {}).at || 0);
   loading = signal(false);
   error = signal("");
   dropping = signal("");
-
-  setup() {
-    this.server = plugin(ServerPlugin);
-    const cache = this._cache();
-    if (cache) { this.databases.set(cache.databases); this.at.set(cache.at); }
-  }
 
   get activeDb() { return this.server.status().db || null; }
   _cache() {

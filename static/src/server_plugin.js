@@ -8,13 +8,13 @@ const { Plugin, plugin, signal } = owl;
 export class ServerPlugin extends Plugin {
   static sequence = 2;
 
+  config = plugin(ConfigPlugin);
   status = signal({ state: "stopped" });   // whole status object, replaced wholesale
   now = signal(Date.now());
   buffer = [];                              // recent log lines (replayed to late subscribers)
   logListeners = new Set();
 
   setup() {
-    this.config = plugin(ConfigPlugin);
     setInterval(() => this.now.set(Date.now()), 1000);
     this._connect();
   }
