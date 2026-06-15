@@ -596,17 +596,22 @@ class TestsScreen extends Component {
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
             <button type="submit"><span class="play"/>Run</button>
             <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
+            <div class="log-controls">
+              <label class="toggle" t-att-class="{on: this.tests.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+              <button type="button" class="tool-btn" t-on-click="() => this.tests.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
+            </div>
           </form>
         </div>
       </div>
-      <div class="content">
-        <LogConsole title="'Test output'" buffer="this.tests.output"/>
+      <div class="content flush">
+        <LogConsole title="'Test output'" buffer="this.tests.output" bare="true"/>
       </div>
     </section>`;
 
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
+  clearIcon = m(ICONS.clear);
   target = signal((this.config.config.targets[0] && this.config.config.targets[0].id) || "");
   tags = signal("");
   get targets() {
@@ -615,6 +620,12 @@ class TestsScreen extends Component {
 
   run() {
     this.tests.run(this.target(), this.tags());
+  }
+
+  toggleAuto() {
+    const b = this.tests.output;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
   }
 }
 
