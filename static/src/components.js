@@ -512,6 +512,7 @@ class BranchesScreen extends Component {
             <tbody>
               <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch" t-att-class="{'db-active': row.active}">
                 <td class="pr-branch" t-att-class="{'active-name': row.active}">
+                  <button class="fav-star" t-att-class="{'is-fav': row.favorite}" t-on-click="() => this.code.toggleFavorite(row.branch)"><t t-out="this.starIcon"/></button>
                   <span t-out="row.branch"/>
                   <span t-if="row.dirty" class="dirty-mark" title="uncommitted changes">(*)</span>
                   <span t-if="row.active" class="db-badge"><span class="pulse"/>Active</span>
@@ -534,9 +535,11 @@ class BranchesScreen extends Component {
 
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
-  // flat, view-ready rows sorted most-recently-updated first
+  starIcon = m(ICONS.star);
+  // flat, view-ready rows: favorites first, then most-recently-updated
   rows = computed(() => {
     const prIndex = this.code.groups().prIndex;
+    const favs = this.code.favorites();
     const list = [];
     for (const repo of this.code.branchRepos()) {
       if (repo.error) continue;
@@ -547,11 +550,14 @@ class BranchesScreen extends Component {
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
+          favorite: favs.includes(b.name),
           pr: prIndex[`${repo.id}:${b.name}`],
         });
       }
     }
-    return list.sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0));
+    return list.sort(
+      (a, b) => b.favorite - a.favorite || (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0),
+    );
   });
 
   setup() {
