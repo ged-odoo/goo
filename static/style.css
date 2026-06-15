@@ -59,11 +59,8 @@ a { text-decoration: none; color: inherit; }
   border-bottom: 1px solid var(--chrome-line);
 }
 .top-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.logo { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
-.logo .rings { display: flex; gap: 3px; }
-.logo .ring { width: 13px; height: 13px; border-radius: 50%; border: 2.5px solid var(--accent); }
-.logo .ring.b { border-color: var(--green); }
-.logo .name { font-family: var(--mono); font-weight: 600; font-size: 14px; letter-spacing: .04em; color: var(--text-mid); }
+.logo { display: flex; align-items: center; flex-shrink: 0; }
+.logo .name { font-family: var(--mono); font-weight: 800; font-size: 20px; letter-spacing: .02em; color: var(--text); }
 
 .status-pill {
   display: inline-flex; align-items: center; gap: 8px;
