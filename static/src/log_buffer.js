@@ -14,8 +14,8 @@ export class LogBuffer {
     this.el = document.createElement("div");
     this.el.className = "log-scroll";
     this.count = signal(0);
-    this.autoScroll = signal(true);   // true == "following the tail"
-    this.savedScroll = 0;             // scrollTop preserved across detach/re-host
+    this.autoScroll = signal(true); // true == "following the tail"
+    this.savedScroll = 0; // scrollTop preserved across detach/re-host
     // scrolling away from the bottom stops following; scrolling back resumes it
     this.el.addEventListener("scroll", () => {
       const atBottom = this.el.scrollTop + this.el.clientHeight >= this.el.scrollHeight - 4;
@@ -32,7 +32,9 @@ export class LogBuffer {
     this.el.replaceChildren();
     this.count.set(0);
   }
-  toBottom() { this.el.scrollTop = this.el.scrollHeight; }
+  toBottom() {
+    this.el.scrollTop = this.el.scrollHeight;
+  }
   // called by the host console on (re)mount to restore the scroll position,
   // since detaching the element resets scrollTop
   restore() {

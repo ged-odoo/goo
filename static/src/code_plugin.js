@@ -25,18 +25,25 @@ export class CodePlugin extends Plugin {
 
   reposWithGithub() {
     return this.config.config.repos.map((r) => ({
-      ...r, github: r.github ?? DEFAULT_CONFIG.repos.find((d) => d.id === r.id)?.github,
+      ...r,
+      github: r.github ?? DEFAULT_CONFIG.repos.find((d) => d.id === r.id)?.github,
     }));
   }
   _cache() {
     try {
       const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
       return c && c.at && c.branchRepos && c.prRepos ? c : null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
   _readFavorites() {
-    try { const f = JSON.parse(this.config.read(FAVORITES_KEY)); return Array.isArray(f) ? f : []; }
-    catch { return []; }
+    try {
+      const f = JSON.parse(this.config.read(FAVORITES_KEY));
+      return Array.isArray(f) ? f : [];
+    } catch {
+      return [];
+    }
   }
   toggleFavorite(branch) {
     const favs = new Set(this.favorites());
@@ -48,9 +55,13 @@ export class CodePlugin extends Plugin {
   async load(force = false) {
     const cache = this._cache();
     if (!force && cache && Date.now() - cache.at < CACHE_TTL) {
-      this.branchRepos.set(cache.branchRepos); this.prRepos.set(cache.prRepos); this.at.set(cache.at); return;
+      this.branchRepos.set(cache.branchRepos);
+      this.prRepos.set(cache.prRepos);
+      this.at.set(cache.at);
+      return;
     }
-    this.loading.set(true); this.error.set("");
+    this.loading.set(true);
+    this.error.set("");
     const repos = this.reposWithGithub();
     try {
       const [b, p] = await Promise.all([
@@ -58,10 +69,18 @@ export class CodePlugin extends Plugin {
         postJSON("/api/prs", { repos: repos.filter((r) => r.github) }),
       ]);
       const at = Date.now();
-      localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b.repos, prRepos: p.repos }));
-      this.branchRepos.set(b.repos); this.prRepos.set(p.repos); this.at.set(at);
-    } catch (e) { this.error.set(e.message); }
-    finally { this.loading.set(false); }
+      localStorage.setItem(
+        PRS_CACHE_KEY,
+        JSON.stringify({ at, branchRepos: b.repos, prRepos: p.repos }),
+      );
+      this.branchRepos.set(b.repos);
+      this.prRepos.set(p.repos);
+      this.at.set(at);
+    } catch (e) {
+      this.error.set(e.message);
+    } finally {
+      this.loading.set(false);
+    }
   }
 
   _groups() {
@@ -77,34 +96,43 @@ export class CodePlugin extends Plugin {
       for (const b of repo.branches) {
         if (!map.has(b.name)) map.set(b.name, []);
         map.get(b.name).push({
-          repo: repo.id, date: b.date, runbot: b.runbot, remote: b.remote,
+          repo: repo.id,
+          date: b.date,
+          runbot: b.runbot,
+          remote: b.remote,
           checkedOut: b.name === repo.current,
         });
       }
     }
     const favs = this.favorites();
     return {
-      githubByRepo, pathByRepo, prIndex,
+      githubByRepo,
+      pathByRepo,
+      prIndex,
       errors: this.prRepos().filter((r) => r.error),
-      list: [...map.entries()].map(([branch, rows]) => {
-        let activity = 0;
-        for (const r of rows) {
-          activity = Math.max(activity, Date.parse(r.date) || 0);
-          const pr = prIndex[`${r.repo}:${branch}`];
-          if (pr) activity = Math.max(activity, Date.parse(pr.updatedAt) || 0);
-        }
-        return {
-          branch, rows, activity,
-          base: BASE_BRANCH_RE.test(branch),
-          favorite: favs.includes(branch),
-          runbot: rows.map((r) => r.runbot).find(Boolean) || "",
-        };
-      }).sort((a, b) => (b.favorite - a.favorite) || (a.base - b.base) || (b.activity - a.activity)),
+      list: [...map.entries()]
+        .map(([branch, rows]) => {
+          let activity = 0;
+          for (const r of rows) {
+            activity = Math.max(activity, Date.parse(r.date) || 0);
+            const pr = prIndex[`${r.repo}:${branch}`];
+            if (pr) activity = Math.max(activity, Date.parse(pr.updatedAt) || 0);
+          }
+          return {
+            branch,
+            rows,
+            activity,
+            base: BASE_BRANCH_RE.test(branch),
+            favorite: favs.includes(branch),
+            runbot: rows.map((r) => r.runbot).find(Boolean) || "",
+          };
+        })
+        .sort((a, b) => b.favorite - a.favorite || a.base - b.base || b.activity - a.activity),
     };
   }
 
   prCreateUrl(github, branch) {
-    const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || [, "master"])[1];
+    const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
     const name = github.split("/")[1];
     return `https://github.com/${github}/compare/${base}...odoo-dev:${name}:${branch}?expand=1`;
   }
@@ -112,7 +140,9 @@ export class CodePlugin extends Plugin {
     const name = github.split("/")[1];
     return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
   }
-  bundleUrl(branch) { return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`; }
+  bundleUrl(branch) {
+    return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`;
+  }
 
   async remoteExists(path, branch) {
     const res = await postJSON("/api/code/branch/remote", { path, branch });
@@ -120,9 +150,14 @@ export class CodePlugin extends Plugin {
   }
   async _mutate(label, fn) {
     this.busy.set(true);
-    try { await fn(); await this.load(true); }
-    catch (e) { alert(`${label} failed: ${e.message}`); }
-    finally { this.busy.set(false); }
+    try {
+      await fn();
+      await this.load(true);
+    } catch (e) {
+      alert(`${label} failed: ${e.message}`);
+    } finally {
+      this.busy.set(false);
+    }
   }
   deleteBranch(branch, repo, path) {
     if (!confirm(`Force-delete branch "${branch}" in ${repo}? This cannot be undone.`)) return;

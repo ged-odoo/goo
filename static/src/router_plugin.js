@@ -14,5 +14,7 @@ export class RouterPlugin extends Plugin {
     const s = location.hash.replace("#", "");
     return SECTIONS.includes(s) ? s : "server";
   }
-  go(section) { location.hash = section; }
+  go(section) {
+    location.hash = section;
+  }
 }

@@ -10,14 +10,23 @@ import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 
 const PLUGINS = [
-  ConfigPlugin, RouterPlugin, ServerPlugin, DatabasePlugin, CodePlugin, TestsPlugin, AddonsPlugin,
+  ConfigPlugin,
+  RouterPlugin,
+  ServerPlugin,
+  DatabasePlugin,
+  CodePlugin,
+  TestsPlugin,
+  AddonsPlugin,
 ];
 
 async function boot() {
   const path = dataFilePath();
   if (path) {
-    try { await loadDataFile(path); }
-    catch (e) { console.error(`[oo] data file load failed, using browser storage: ${e.message}`); }
+    try {
+      await loadDataFile(path);
+    } catch (e) {
+      console.error(`[oo] data file load failed, using browser storage: ${e.message}`);
+    }
   }
   owl.mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });
 }

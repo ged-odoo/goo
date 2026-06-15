@@ -18,12 +18,14 @@ The current `odev` tool is a single-file Python TUI (~1600 lines) that handles:
 ## Goals for oo
 
 ### Keep what works
+
 - The target/inheritance model is the core abstraction and should be preserved
 - The TUI with bottom chrome (status bar + prompt) is effective
 - Background fetching and sync indicators are valuable
 - PR tracking with mergebot integration is unique and useful
 
 ### Improve
+
 - **Architecture** — Break the monolith into modules (config, git, server, tui, targets, pr tracking)
 - **Configuration** — Move hardcoded paths, repos, and credentials to a config file (`~/.config/oo/config.toml` or similar)
 - **Error handling** — The current tool silently swallows many errors; surface them clearly
@@ -32,6 +34,7 @@ The current `odev` tool is a single-file Python TUI (~1600 lines) that handles:
 - **Startup time** — Lazy-load expensive operations (git status, repo sync) to keep the TUI snappy
 
 ### New ideas to explore
+
 - **Workspace profiles** — Support multiple Odoo work directories (not just `/home/odoo/work`)
 - **Smart server restart** — Watch for file changes and auto-restart (or leverage `--dev all` more intelligently)
 - **Log filtering/search** — Parse Odoo logs, highlight errors, filter by module

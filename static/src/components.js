@@ -13,7 +13,21 @@ import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { timeAgo, tintCmd } from "./utils.js";
 
-const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, computed, props, t } = owl;
+const {
+  Component,
+  xml,
+  plugin,
+  proxy,
+  markup,
+  onMounted,
+  onWillUnmount,
+  effect,
+  EventBus,
+  signal,
+  computed,
+  props,
+  t,
+} = owl;
 
 // app-wide event bus (Owl 3 has no `this.env`); used to open the branch popover
 const appBus = new EventBus();
@@ -93,8 +107,12 @@ class Sidebar extends Component {
   router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
   nav = NAV;
-  icon(s) { return m(s); }
-  get serverRunning() { return this.server.status().state === "running"; }
+  icon(s) {
+    return m(s);
+  }
+  get serverRunning() {
+    return this.server.status().state === "running";
+  }
   get env() {
     const s = this.server.status();
     if (s.state !== "starting" && s.state !== "running") return null;
@@ -129,9 +147,13 @@ class LogConsole extends Component {
       this.host().appendChild(this.props.buffer.el);
       this.props.buffer.restore();
     });
-    onWillUnmount(() => { this.props.buffer.savedScroll = this.props.buffer.el.scrollTop; });
+    onWillUnmount(() => {
+      this.props.buffer.savedScroll = this.props.buffer.el.scrollTop;
+    });
   }
-  get live() { return this.server.status().state === "running"; }
+  get live() {
+    return this.server.status().state === "running";
+  }
   toggleAuto() {
     const b = this.props.buffer;
     b.autoScroll.set(!b.autoScroll());
@@ -178,14 +200,30 @@ class ServerScreen extends Component {
   config = plugin(ConfigPlugin);
   copyIcon = m(ICONS.copy);
   copyLbl = signal("Copy");
-  target = signal(this.server.lastTarget() || (this.config.config.targets[0] && this.config.config.targets[0].id) || "");
+  target = signal(
+    this.server.lastTarget() ||
+      (this.config.config.targets[0] && this.config.config.targets[0].id) ||
+      "",
+  );
 
-  get targets() { return this.config.config.targets; }
-  status() { return this.server.status(); }
-  get stopped() { return this.status().state === "stopped"; }
-  get active() { return this.status().state === "starting" || this.status().state === "running"; }
-  get canStop() { return this.active || (this.stopped && this.status().odoo_port_busy); }
-  get cmdMarkup() { return m(tintCmd(this.status().cmd)); }
+  get targets() {
+    return this.config.config.targets;
+  }
+  status() {
+    return this.server.status();
+  }
+  get stopped() {
+    return this.status().state === "stopped";
+  }
+  get active() {
+    return this.status().state === "starting" || this.status().state === "running";
+  }
+  get canStop() {
+    return this.active || (this.stopped && this.status().odoo_port_busy);
+  }
+  get cmdMarkup() {
+    return m(tintCmd(this.status().cmd));
+  }
   get info() {
     const s = this.status();
     if (!s.db) return null;
@@ -200,14 +238,17 @@ class ServerScreen extends Component {
     const s = this.status();
     const hints = [];
     if (s.exited_unexpectedly) hints.push(`odoo exited unexpectedly (code ${s.returncode})`);
-    if (s.state === "stopped" && s.odoo_port_busy) hints.push("port 8069 is busy (external odoo?) — Stop will kill it");
+    if (s.state === "stopped" && s.odoo_port_busy)
+      hints.push("port 8069 is busy (external odoo?) — Stop will kill it");
     return hints.join(" — ") || null;
   }
   get uptime() {
     const s = this.status();
     if ((s.state !== "starting" && s.state !== "running") || !s.started_at) return null;
     const secs = Math.max(0, Math.floor(this.server.now() / 1000 - s.started_at));
-    const h = Math.floor(secs / 3600), mn = Math.floor((secs % 3600) / 60), sec = secs % 60;
+    const h = Math.floor(secs / 3600),
+      mn = Math.floor((secs % 3600) / 60),
+      sec = secs % 60;
     return h ? `${h}h ${mn}m` : mn ? `${mn}m ${sec}s` : `${sec}s`;
   }
   copy() {
@@ -262,13 +303,21 @@ class DatabasesScreen extends Component {
     return [...this.db.databases()]
       .sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0))
       .map((d) => ({
-        name: d.name, active: d.name === activeDb,
-        version: d.odoo_version, enterprise: d.enterprise,
-        created: d.created, createdAgo: d.created && timeAgo(d.created), createdTitle: d.created ? `${d.created} (UTC)` : "",
-        last: d.last_update, lastAgo: d.last_update && timeAgo(d.last_update), lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
+        name: d.name,
+        active: d.name === activeDb,
+        version: d.odoo_version,
+        enterprise: d.enterprise,
+        created: d.created,
+        createdAgo: d.created && timeAgo(d.created),
+        createdTitle: d.created ? `${d.created} (UTC)` : "",
+        last: d.last_update,
+        lastAgo: d.last_update && timeAgo(d.last_update),
+        lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
       }));
   });
-  setup() { this.db.load(); }
+  setup() {
+    this.db.load();
+  }
   get stamp() {
     if (this.db.loading()) return "refreshing…";
     return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
@@ -328,16 +377,29 @@ class CodeScreen extends Component {
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
   starIcon = m(ICONS.star);
-  setup() { this.code.load(); }
+  setup() {
+    this.code.load();
+  }
   get stamp() {
     if (this.code.loading()) return "refreshing…";
     return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
   }
-  get vm() { return this.code.groups(); }
-  cell(date) { return timeAgo(date); }
-  pr(g, row) { return this.vm.prIndex[`${row.repo}:${g.branch}`]; }
-  prState(p) { const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state; return st.toLowerCase(); }
-  openMenu(ev, g) { appBus.trigger("branch-menu", { ev, group: g, vm: this.vm }); }
+  get vm() {
+    return this.code.groups();
+  }
+  cell(date) {
+    return timeAgo(date);
+  }
+  pr(g, row) {
+    return this.vm.prIndex[`${row.repo}:${g.branch}`];
+  }
+  prState(p) {
+    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
+    return st.toLowerCase();
+  }
+  openMenu(ev, g) {
+    appBus.trigger("branch-menu", { ev, group: g, vm: this.vm });
+  }
 }
 
 // ─────────────────────────── Tests screen ───────────────────────────
@@ -369,8 +431,12 @@ class TestsScreen extends Component {
   config = plugin(ConfigPlugin);
   target = signal((this.config.config.targets[0] && this.config.config.targets[0].id) || "");
   tags = signal("");
-  get targets() { return this.config.config.targets; }
-  run() { this.tests.run(this.target(), this.tags()); }
+  get targets() {
+    return this.config.config.targets;
+  }
+  run() {
+    this.tests.run(this.target(), this.tags());
+  }
 }
 
 // ─────────────────────────── Addons screen ───────────────────────────
@@ -427,12 +493,22 @@ class AddonsScreen extends Component {
       const tgt = this.config.config.targets[0];
       this.addons.targetId.set(tgt ? tgt.id : "");
     }
-    if (this.addons.loadedFor() !== this.addons.targetId()) this.addons.load(this.addons.targetId());
+    if (this.addons.loadedFor() !== this.addons.targetId())
+      this.addons.load(this.addons.targetId());
   }
-  get targets() { return this.config.config.targets; }
-  get view() { return this.addons.filtered(); }
-  stateClass(mod) { return (mod.state || "none").replace(/\s+/g, "-"); }
-  onTargetChange(ev) { this.addons.targetId.set(ev.target.value); this.addons.load(ev.target.value); }
+  get targets() {
+    return this.config.config.targets;
+  }
+  get view() {
+    return this.addons.filtered();
+  }
+  stateClass(mod) {
+    return (mod.state || "none").replace(/\s+/g, "-");
+  }
+  onTargetChange(ev) {
+    this.addons.targetId.set(ev.target.value);
+    this.addons.load(ev.target.value);
+  }
 }
 
 // ─────────────────────────── Config screen ───────────────────────────
@@ -461,30 +537,45 @@ class ListEditor extends Component {
   rows = signal([]);
   msgText = signal("");
   msgCls = signal("");
-  setup() { this.load(); }
-  load() {
-    this.rows.set(this.config.config[this.spec.key].map((item) => {
-      const r = {};
-      for (const f of this.spec.fields) r[f.key] = f.format ? f.format(item[f.key]) : (item[f.key] || "");
-      return r;
-    }));
+  setup() {
+    this.load();
   }
-  addRow() { const r = {}; for (const f of this.spec.fields) r[f.key] = ""; this.rows.set([...this.rows(), r]); }
-  removeRow(i) { this.rows.set(this.rows().filter((_, j) => j !== i)); }
+  load() {
+    this.rows.set(
+      this.config.config[this.spec.key].map((item) => {
+        const r = {};
+        for (const f of this.spec.fields)
+          r[f.key] = f.format ? f.format(item[f.key]) : item[f.key] || "";
+        return r;
+      }),
+    );
+  }
+  addRow() {
+    const r = {};
+    for (const f of this.spec.fields) r[f.key] = "";
+    this.rows.set([...this.rows(), r]);
+  }
+  removeRow(i) {
+    this.rows.set(this.rows().filter((_, j) => j !== i));
+  }
   flash(text, isError) {
-    this.msgText.set(text); this.msgCls.set(isError ? "error" : "ok");
+    this.msgText.set(text);
+    this.msgCls.set(isError ? "error" : "ok");
     if (!isError) setTimeout(() => this.msgText.set(""), 2000);
   }
   save() {
-    const items = []; const seen = new Set();
+    const items = [];
+    const seen = new Set();
     for (const row of this.rows()) {
       const raw = {};
       for (const f of this.spec.fields) raw[f.key] = (row[f.key] || "").trim();
       if (this.spec.fields.every((f) => !raw[f.key])) continue;
       for (const f of this.spec.fields) {
-        if (!f.optional && !raw[f.key]) return this.flash(`every ${this.spec.itemName} needs a ${f.name}`, true);
+        if (!f.optional && !raw[f.key])
+          return this.flash(`every ${this.spec.itemName} needs a ${f.name}`, true);
       }
-      if (seen.has(raw.id)) return this.flash(`duplicate ${this.spec.fields[0].name} "${raw.id}"`, true);
+      if (seen.has(raw.id))
+        return this.flash(`duplicate ${this.spec.fields[0].name} "${raw.id}"`, true);
       seen.add(raw.id);
       const item = {};
       for (const f of this.spec.fields) item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
@@ -538,37 +629,57 @@ class ConfigScreen extends Component {
   path = signal(this.config.getDataFile());
   msg = signal("");
   backupMsg = signal("");
-  triggerImport() { document.getElementById("oo-import-file").click(); }
-  async useFile() {
-    try { this.msg.set(await this.config.useFile(this.path())); setTimeout(() => location.reload(), 700); }
-    catch (e) { this.msg.set(`Could not use file: ${e.message}`); }
+  triggerImport() {
+    document.getElementById("oo-import-file").click();
   }
-  clearFile() { this.config.clearFile(); this.path.set(""); this.msg.set("Using browser storage."); }
+  async useFile() {
+    try {
+      this.msg.set(await this.config.useFile(this.path()));
+      setTimeout(() => location.reload(), 700);
+    } catch (e) {
+      this.msg.set(`Could not use file: ${e.message}`);
+    }
+  }
+  clearFile() {
+    this.config.clearFile();
+    this.path.set("");
+    this.msg.set("Using browser storage.");
+  }
   exportData() {
     const data = {};
     for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target"]) {
-      const v = localStorage.getItem(k); if (v !== null) data[k] = v;
+      const v = localStorage.getItem(k);
+      if (v !== null) data[k] = v;
     }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob); a.download = "oo-backup.json"; a.click();
-    URL.revokeObjectURL(a.href); this.backupMsg.set("Exported.");
+    a.href = URL.createObjectURL(blob);
+    a.download = "oo-backup.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    this.backupMsg.set("Exported.");
   }
   async importData(ev) {
-    const file = ev.target.files[0]; ev.target.value = "";
+    const file = ev.target.files[0];
+    ev.target.value = "";
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
       if (!data || typeof data !== "object") throw new Error("not a JSON object");
       let n = 0;
       for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target"]) {
-        if (typeof data[k] === "string") { localStorage.setItem(k, data[k]); n++; }
+        if (typeof data[k] === "string") {
+          localStorage.setItem(k, data[k]);
+          n++;
+        }
       }
       if (!n) throw new Error("no recognized data in file");
       if (this.config.getDataFile()) await this.config.flush(this.config.getDataFile());
       this.backupMsg.set(`Imported ${n} item(s), reloading…`);
       setTimeout(() => location.reload(), 700);
-    } catch (e) { this.backupMsg.set(`Import failed: ${e.message}`); }
+    } catch (e) {
+      this.backupMsg.set(`Import failed: ${e.message}`);
+    }
   }
 }
 
@@ -590,13 +701,17 @@ class BranchMenu extends Component {
       this.el = document.querySelector(".branch-popover");
       appBus.addEventListener("branch-menu", (e) => this.openMenu(e.detail));
       document.addEventListener("click", () => this.close());
-      document.addEventListener("keydown", (e) => { if (e.key === "Escape") this.close(); });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.close();
+      });
     });
   }
-  close() { this.open.set(false); }
+  close() {
+    this.open.set(false);
+  }
   async openMenu({ ev, group, vm }) {
     const { actions, resolvers } = this.buildActions(group, vm);
-    this.actions.set(actions);   // a deep proxy array
+    this.actions.set(actions); // a deep proxy array
     this.open.set(true);
     await Promise.resolve();
     const r = ev.currentTarget.getBoundingClientRect();
@@ -607,7 +722,12 @@ class BranchMenu extends Component {
       run().then((patch) => Object.assign(this.actions()[index], patch));
     }
   }
-  select(a) { if (!a.disabled && a.onClick) { this.close(); a.onClick(); } }
+  select(a) {
+    if (!a.disabled && a.onClick) {
+      this.close();
+      a.onClick();
+    }
+  }
   buildActions(group, vm) {
     const code = this.code;
     const actions = [];
@@ -617,7 +737,11 @@ class BranchMenu extends Component {
       if (!github) continue;
       const path = vm.pathByRepo[r.repo];
       const pr = vm.prIndex[`${r.repo}:${group.branch}`];
-      const linkAction = { label: `Branch on GitHub — ${r.repo}`, disabled: false, onClick: () => window.open(code.forkBranchUrl(github, group.branch), "_blank") };
+      const linkAction = {
+        label: `Branch on GitHub — ${r.repo}`,
+        disabled: false,
+        onClick: () => window.open(code.forkBranchUrl(github, group.branch), "_blank"),
+      };
       actions.push({ label: `Checking GitHub… — ${r.repo}`, disabled: true });
       resolvers.push({
         index: actions.length - 1,
@@ -626,17 +750,34 @@ class BranchMenu extends Component {
           try {
             return (await code.remoteExists(path, group.branch))
               ? linkAction
-              : { label: `Push branch to GitHub — ${r.repo}`, disabled: false, onClick: () => code.pushBranch(path, group.branch) };
-          } catch (e) { return { label: `GitHub check failed — ${r.repo}`, disabled: true, title: e.message }; }
+              : {
+                  label: `Push branch to GitHub — ${r.repo}`,
+                  disabled: false,
+                  onClick: () => code.pushBranch(path, group.branch),
+                };
+          } catch (e) {
+            return { label: `GitHub check failed — ${r.repo}`, disabled: true, title: e.message };
+          }
         },
       });
-      if (!pr) actions.push({ label: `Create PR — ${r.repo}`, onClick: () => window.open(code.prCreateUrl(github, group.branch), "_blank") });
-      else if (pr.state === "OPEN") actions.push({ label: `Close PR #${pr.number} — ${r.repo}`, danger: true, onClick: () => code.closePr(github, pr.number) });
+      if (!pr)
+        actions.push({
+          label: `Create PR — ${r.repo}`,
+          onClick: () => window.open(code.prCreateUrl(github, group.branch), "_blank"),
+        });
+      else if (pr.state === "OPEN")
+        actions.push({
+          label: `Close PR #${pr.number} — ${r.repo}`,
+          danger: true,
+          onClick: () => code.closePr(github, pr.number),
+        });
     }
     for (const r of group.rows) {
       actions.push({
-        label: `Delete local branch — ${r.repo}`, danger: true,
-        disabled: r.checkedOut, title: r.checkedOut ? "currently checked out" : "",
+        label: `Delete local branch — ${r.repo}`,
+        danger: true,
+        disabled: r.checkedOut,
+        title: r.checkedOut ? "currently checked out" : "",
         onClick: () => code.deleteBranch(group.branch, r.repo, vm.pathByRepo[r.repo]),
       });
     }
@@ -648,12 +789,26 @@ class BranchMenu extends Component {
 // ─────────────────────────── Root ───────────────────────────
 
 const SCREENS = {
-  server: ServerScreen, code: CodeScreen, tests: TestsScreen,
-  databases: DatabasesScreen, addons: AddonsScreen, config: ConfigScreen,
+  server: ServerScreen,
+  code: CodeScreen,
+  tests: TestsScreen,
+  databases: DatabasesScreen,
+  addons: AddonsScreen,
+  config: ConfigScreen,
 };
 
 export class App extends Component {
-  static components = { Topbar, Sidebar, ServerScreen, CodeScreen, TestsScreen, DatabasesScreen, AddonsScreen, ConfigScreen, BranchMenu };
+  static components = {
+    Topbar,
+    Sidebar,
+    ServerScreen,
+    CodeScreen,
+    TestsScreen,
+    DatabasesScreen,
+    AddonsScreen,
+    ConfigScreen,
+    BranchMenu,
+  };
   static template = xml`
     <div class="app">
       <Topbar/>
@@ -680,18 +835,36 @@ export class App extends Component {
 
 const commaList = {
   format: (v) => (v || []).join(","),
-  parse: (s) => s.split(",").map((x) => x.trim()).filter(Boolean),
+  parse: (s) =>
+    s
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
 };
 const SPECS = {
   repos: {
-    key: "repos", title: "Repositories", itemName: "repository",
+    key: "repos",
+    title: "Repositories",
+    itemName: "repository",
     fields: [
       { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
-      { key: "path", name: "path", placeholder: "path (e.g. ~/work/community)", className: "w-flex" },
-      { key: "github", name: "github repo", placeholder: "github (e.g. odoo/odoo)", className: "w-name", optional: true },
+      {
+        key: "path",
+        name: "path",
+        placeholder: "path (e.g. ~/work/community)",
+        className: "w-flex",
+      },
+      {
+        key: "github",
+        name: "github repo",
+        placeholder: "github (e.g. odoo/odoo)",
+        className: "w-name",
+        optional: true,
+      },
     ],
     validate(repos, config) {
-      if (!repos.find((r) => r.id === "community")) return 'a "community" repository is required (odoo-bin lives there)';
+      if (!repos.find((r) => r.id === "community"))
+        return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
       for (const tt of config.targets) {
         const used = (tt.repos || []).find((id) => !ids.has(id));
@@ -701,12 +874,26 @@ const SPECS = {
     },
   },
   targets: {
-    key: "targets", title: "Targets", itemName: "target",
+    key: "targets",
+    title: "Targets",
+    itemName: "target",
     fields: [
       { key: "id", name: "id", placeholder: "id (e.g. enterprise)", className: "w-name" },
-      { key: "repos", name: "repos list", placeholder: "repos (e.g. community,enterprise)", className: "w-mid", ...commaList },
+      {
+        key: "repos",
+        name: "repos list",
+        placeholder: "repos (e.g. community,enterprise)",
+        className: "w-mid",
+        ...commaList,
+      },
       { key: "db", name: "db", placeholder: "db (e.g. test_db_e)", className: "w-name" },
-      { key: "on_create_args", name: "on-create args", placeholder: "on create args (e.g. -i sale_management)", className: "w-flex", optional: true },
+      {
+        key: "on_create_args",
+        name: "on-create args",
+        placeholder: "on create args (e.g. -i sale_management)",
+        className: "w-flex",
+        optional: true,
+      },
     ],
     validate(targets, config) {
       const repoIds = new Set(config.repos.map((r) => r.id));

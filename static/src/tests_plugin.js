@@ -17,18 +17,27 @@ export class TestsPlugin extends Plugin {
 
   setup() {
     effect(() => this._onStatus(this.server.status()));
-    this.server.onLine((line) => { if (this.runActive()) this.output.append(line); });
+    this.server.onLine((line) => {
+      if (this.runActive()) this.output.append(line);
+    });
   }
 
   _onStatus(status) {
     const active = status.state === "starting" || status.state === "running";
     const testing = active && status.mode === "test";
-    if (testing) { this.sawRun.set(true); this.status.set("running…"); }
-    else if (this.runActive() && this.sawRun() && status.state === "stopped") {
-      this.runActive.set(false); this.sawRun.set(false);
-      this.status.set(status.exited_unexpectedly
-        ? (status.returncode ? `failed — exit ${status.returncode}` : "passed")
-        : "stopped");
+    if (testing) {
+      this.sawRun.set(true);
+      this.status.set("running…");
+    } else if (this.runActive() && this.sawRun() && status.state === "stopped") {
+      this.runActive.set(false);
+      this.sawRun.set(false);
+      this.status.set(
+        status.exited_unexpectedly
+          ? status.returncode
+            ? `failed — exit ${status.returncode}`
+            : "passed"
+          : "stopped",
+      );
     }
   }
   get running() {
@@ -41,8 +50,14 @@ export class TestsPlugin extends Plugin {
     if (!tags.trim()) return;
     cfg.start.test_tags = tags.trim();
     this.output.clear();
-    this.runActive.set(true); this.sawRun.set(false); this.status.set("starting…");
-    try { await postJSON("/api/tests/run", cfg); }
-    catch (e) { this.runActive.set(false); this.status.set(`failed to start: ${e.message}`); }
+    this.runActive.set(true);
+    this.sawRun.set(false);
+    this.status.set("starting…");
+    try {
+      await postJSON("/api/tests/run", cfg);
+    } catch (e) {
+      this.runActive.set(false);
+      this.status.set(`failed to start: ${e.message}`);
+    }
   }
 }

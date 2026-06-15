@@ -14,17 +14,25 @@ export const FAVORITES_KEY = "oo-prs-favorites";
 const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY];
 
 export class ConfigPlugin extends Plugin {
-  static sequence = 1;  // everything else may depend on config
+  static sequence = 1; // everything else may depend on config
 
-  cfg = signal(this._merged());          // the merged config object (replaced wholesale)
+  cfg = signal(this._merged()); // the merged config object (replaced wholesale)
   dataFileSig = signal(this.getDataFile());
   _timer = null;
 
   _stored() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+    } catch {
+      return {};
+    }
   }
-  _merged() { return { ...DEFAULT_CONFIG, ...this._stored() }; }
-  get config() { return this.cfg(); }    // read in render -> tracked
+  _merged() {
+    return { ...DEFAULT_CONFIG, ...this._stored() };
+  }
+  get config() {
+    return this.cfg();
+  } // read in render -> tracked
 
   updateConfig(patch) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this._stored(), ...patch }));
@@ -40,11 +48,18 @@ export class ConfigPlugin extends Plugin {
   }
 
   // generic persistent key/value (favorites, last target)
-  read(key) { return localStorage.getItem(key); }
-  write(key, value) { localStorage.setItem(key, value); this.persist(); }
+  read(key) {
+    return localStorage.getItem(key);
+  }
+  write(key, value) {
+    localStorage.setItem(key, value);
+    this.persist();
+  }
 
   // ── server-side data file ──
-  getDataFile() { return localStorage.getItem(DATA_FILE_KEY) || ""; }
+  getDataFile() {
+    return localStorage.getItem(DATA_FILE_KEY) || "";
+  }
   _collect() {
     const data = {};
     for (const k of PERSISTENT_KEYS) {
@@ -61,17 +76,27 @@ export class ConfigPlugin extends Plugin {
       this.flush(path).catch((e) => console.error(`[oo] data file save failed: ${e.message}`));
     }, 300);
   }
-  async flush(path) { await postJSON("/api/data", { path, data: this._collect() }); }
+  async flush(path) {
+    await postJSON("/api/data", { path, data: this._collect() });
+  }
   async useFile(path) {
     path = path.trim();
-    if (!path) { this.clearFile(); return "Using browser storage."; }
+    if (!path) {
+      this.clearFile();
+      return "Using browser storage.";
+    }
     const hydrated = await loadDataFile(path);
     localStorage.setItem(DATA_FILE_KEY, path);
     this.dataFileSig.set(path);
     if (!hydrated) await this.flush(path);
-    return hydrated ? "Linked to existing file, reloading…" : "Linked — file created from current data. Reloading…";
+    return hydrated
+      ? "Linked to existing file, reloading…"
+      : "Linked — file created from current data. Reloading…";
   }
-  clearFile() { localStorage.removeItem(DATA_FILE_KEY); this.dataFileSig.set(""); }
+  clearFile() {
+    localStorage.removeItem(DATA_FILE_KEY);
+    this.dataFileSig.set("");
+  }
 }
 
 // load a data file into localStorage (used at bootstrap and by useFile/import)
@@ -87,4 +112,6 @@ export async function loadDataFile(path) {
   }
   return false;
 }
-export function dataFilePath() { return localStorage.getItem(DATA_FILE_KEY) || ""; }
+export function dataFilePath() {
+  return localStorage.getItem(DATA_FILE_KEY) || "";
+}

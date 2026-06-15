@@ -41,6 +41,7 @@ LOG_BUFFER_SIZE = 2000
 # Event bus: log ring buffer + SSE fan-out
 # =============================================================================
 
+
 class EventBus:
     def __init__(self, maxlen=LOG_BUFFER_SIZE):
         self._lock = threading.Lock()
@@ -81,6 +82,7 @@ class EventBus:
 # Helpers
 # =============================================================================
 
+
 def port_busy(port):
     try:
         with socket.create_connection((HOST, port), timeout=0.3):
@@ -94,7 +96,9 @@ def kill_port(port):
     try:
         result = subprocess.run(
             ["lsof", "-ti", f":{port}"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
         for pid_str in result.stdout.strip().split("\n"):
             if pid_str.strip():
@@ -114,10 +118,16 @@ def db_initialized(db_name):
     """
     try:
         result = subprocess.run(
-            ["psql", "-d", db_name, "-tAc",
-             "SELECT 1 FROM information_schema.tables"
-             " WHERE table_name = 'ir_module_module'"],
-            capture_output=True, text=True, timeout=5,
+            [
+                "psql",
+                "-d",
+                db_name,
+                "-tAc",
+                "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module'",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return False  # database doesn't exist
@@ -135,13 +145,20 @@ def odoo_info(db_name):
     res_users_log rows."""
     try:
         result = subprocess.run(
-            ["psql", "-d", db_name, "-tAc",
-             "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
-             " EXISTS (SELECT 1 FROM ir_module_module"
-             " WHERE name = 'web_enterprise' AND state = 'installed'),"
-             " GREATEST((SELECT max(write_date) FROM ir_cron),"
-             " (SELECT max(create_date) FROM res_users_log))"],
-            capture_output=True, text=True, timeout=5,
+            [
+                "psql",
+                "-d",
+                db_name,
+                "-tAc",
+                "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
+                " EXISTS (SELECT 1 FROM ir_module_module"
+                " WHERE name = 'web_enterprise' AND state = 'installed'),"
+                " GREATEST((SELECT max(write_date) FROM ir_cron),"
+                " (SELECT max(create_date) FROM res_users_log))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         line = result.stdout.strip()
         if result.returncode != 0 or not line:
@@ -158,11 +175,18 @@ def db_creation_times():
     returns {} if unavailable."""
     try:
         r = subprocess.run(
-            ["psql", "-d", "postgres", "-tAc",
-             "SELECT datname,"
-             " (pg_stat_file('base/' || oid || '/PG_VERSION')).modification AT TIME ZONE 'UTC'"
-             " FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'"],
-            capture_output=True, text=True, timeout=5,
+            [
+                "psql",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT datname,"
+                " (pg_stat_file('base/' || oid || '/PG_VERSION')).modification AT TIME ZONE 'UTC'"
+                " FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
@@ -180,14 +204,21 @@ def list_databases():
     """All non-template databases with their odoo version. Raises RuntimeError."""
     try:
         result = subprocess.run(
-            ["psql", "-d", "postgres", "-tAc",
-             "SELECT datname FROM pg_database"
-             " WHERE NOT datistemplate AND datname <> 'postgres'"
-             " ORDER BY datname"],
-            capture_output=True, text=True, timeout=5,
+            [
+                "psql",
+                "-d",
+                "postgres",
+                "-tAc",
+                "SELECT datname FROM pg_database"
+                " WHERE NOT datistemplate AND datname <> 'postgres'"
+                " ORDER BY datname",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        raise RuntimeError(f"cannot list databases: {e}")
+        raise RuntimeError(f"cannot list databases: {e}") from e
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "psql failed")
     created = db_creation_times()
@@ -197,13 +228,15 @@ def list_databases():
         if not name:
             continue
         version, enterprise, last_update = odoo_info(name)
-        dbs.append({
-            "name": name,
-            "odoo_version": version,
-            "enterprise": enterprise,
-            "last_update": last_update,
-            "created": created.get(name),
-        })
+        dbs.append(
+            {
+                "name": name,
+                "odoo_version": version,
+                "enterprise": enterprise,
+                "last_update": last_update,
+                "created": created.get(name),
+            }
+        )
     return dbs
 
 
@@ -211,7 +244,10 @@ def drop_database(db_name):
     """Drop a database. Returns (ok, error)."""
     try:
         result = subprocess.run(
-            ["dropdb", db_name], capture_output=True, text=True, timeout=15,
+            ["dropdb", db_name],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, str(e)
@@ -227,7 +263,7 @@ def read_data_file(path):
     if not os.path.exists(p):
         return None, None
     try:
-        with open(p, "r", encoding="utf-8") as f:
+        with open(p, encoding="utf-8") as f:
             return json.load(f), None
     except (OSError, ValueError) as e:
         return None, str(e)
@@ -260,7 +296,9 @@ def git_branches(repos):
         try:
             r = subprocess.run(
                 ["git", "-C", path, "branch", "--show-current"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if r.returncode != 0:
                 entry["error"] = r.stderr.strip().split("\n")[0] or "not a git repository"
@@ -270,32 +308,41 @@ def git_branches(repos):
             # branch names that have a remote-tracking ref, i.e. were pushed to
             # some remote from this clone (refname minus refs/remotes/<remote>/)
             rr = subprocess.run(
-                ["git", "-C", path, "for-each-ref", "refs/remotes",
-                 "--format=%(refname:lstrip=3)"],
-                capture_output=True, text=True, timeout=10,
+                ["git", "-C", path, "for-each-ref", "refs/remotes", "--format=%(refname:lstrip=3)"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             remote_branches = set(rr.stdout.split())
             r = subprocess.run(
-                ["git", "-C", path, "for-each-ref", "refs/heads",
-                 "--format=%(refname:short)%09%(committerdate:iso8601-strict)"],
-                capture_output=True, text=True, timeout=10,
+                [
+                    "git",
+                    "-C",
+                    path,
+                    "for-each-ref",
+                    "refs/heads",
+                    "--format=%(refname:short)%09%(committerdate:iso8601-strict)",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             for line in r.stdout.splitlines():
                 name, _, date = line.partition("\t")
                 if name:
                     entry["branches"].append(
-                        {"name": name, "date": date, "remote": name in remote_branches})
+                        {"name": name, "date": date, "remote": name in remote_branches}
+                    )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
         out.append(entry)
 
     # enrich work branches with their runbot status (one badge per unique
     # name, fetched in parallel); base branches are skipped — see frontend.
-    names = {b["name"] for e in out for b in e["branches"]
-             if not BASE_BRANCH_RE.match(b["name"])}
+    names = {b["name"] for e in out for b in e["branches"] if not BASE_BRANCH_RE.match(b["name"])}
     if names:
         with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
-            status = dict(zip(names, pool.map(runbot_badge_status, names)))
+            status = dict(zip(names, pool.map(runbot_badge_status, names), strict=False))
         for e in out:
             for b in e["branches"]:
                 b["runbot"] = status.get(b["name"], "")
@@ -307,7 +354,9 @@ def git_delete_branch(path, branch):
     try:
         result = subprocess.run(
             ["git", "-C", os.path.expanduser(path), "branch", "-D", branch],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, str(e)
@@ -354,10 +403,24 @@ def github_prs(repos):
         entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
         try:
             r = subprocess.run(
-                ["gh", "pr", "list", "--repo", gh_repo, "--author", "@me",
-                 "--state", "all", "--limit", "200",
-                 "--json", "number,url,state,isDraft,headRefName,updatedAt"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    gh_repo,
+                    "--author",
+                    "@me",
+                    "--state",
+                    "all",
+                    "--limit",
+                    "200",
+                    "--json",
+                    "number,url,state,isDraft,headRefName,updatedAt",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if r.returncode != 0:
                 entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
@@ -401,7 +464,9 @@ def installed_modules(db):
     try:
         r = subprocess.run(
             ["psql", "-d", db, "-tAc", "SELECT name, state FROM ir_module_module"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
@@ -434,14 +499,16 @@ def list_addons(repos):
                 if not man:
                     continue
                 seen.add(name)
-                mods.append({
-                    "name": name,
-                    "repo": rid,
-                    "category": man.get("category") or "",
-                    "summary": man.get("summary") or "",
-                    "application": bool(man.get("application")),
-                    "installable": man.get("installable", True),
-                })
+                mods.append(
+                    {
+                        "name": name,
+                        "repo": rid,
+                        "category": man.get("category") or "",
+                        "summary": man.get("summary") or "",
+                        "application": bool(man.get("application")),
+                        "installable": man.get("installable", True),
+                    }
+                )
     return mods
 
 
@@ -450,7 +517,9 @@ def dev_remote(path):
     try:
         r = subprocess.run(
             ["git", "-C", os.path.expanduser(path), "remote", "-v"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return None, str(e)
@@ -469,7 +538,9 @@ def remote_branch_exists(path, branch):
     try:
         r = subprocess.run(
             ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return None, str(e)
@@ -486,7 +557,9 @@ def push_branch(path, branch):
     try:
         r = subprocess.run(
             ["git", "-C", os.path.expanduser(path), "push", "--set-upstream", remote, branch],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, str(e)
@@ -500,7 +573,9 @@ def close_pr(github, number):
     try:
         r = subprocess.run(
             ["gh", "pr", "close", str(number), "--repo", github],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, str(e)
@@ -590,6 +665,7 @@ def build_odoo_cmd(config):
 # Odoo process manager
 # =============================================================================
 
+
 class OdooManager:
     """Owns the single odoo process. States:
     stopped -> starting -> running -> stopping -> stopped
@@ -649,26 +725,39 @@ class OdooManager:
             self.target = config.get("target")
             self.cmd = cmd
             s = config.get("start") or {}
-            self.mode = ("test" if s.get("test_tags")
-                         else "install" if s.get("install")
-                         else "upgrade" if s.get("upgrade")
-                         else "server")
+            self.mode = (
+                "test"
+                if s.get("test_tags")
+                else "install"
+                if s.get("install")
+                else "upgrade"
+                if s.get("upgrade")
+                else "server"
+            )
             self.started_at = time.time()
             self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
             if is_new:
-                self.bus.publish_log(f"{TAG} database '{db}' not initialized, applying on_create_args")
+                self.bus.publish_log(
+                    f"{TAG} database '{db}' not initialized, applying on_create_args"
+                )
 
             master_fd, slave_fd = pty.openpty()
             self.process = subprocess.Popen(
-                cmd, shell=True, executable="/bin/bash",
-                stdout=slave_fd, stderr=slave_fd, stdin=slave_fd,
+                cmd,
+                shell=True,
+                executable="/bin/bash",
+                stdout=slave_fd,
+                stderr=slave_fd,
+                stdin=slave_fd,
                 preexec_fn=os.setsid,
             )
             os.close(slave_fd)
             self.master_fd = master_fd
             self.state = "starting"
             self.reader_thread = threading.Thread(
-                target=self._reader, args=(master_fd, self.process), daemon=True,
+                target=self._reader,
+                args=(master_fd, self.process),
+                daemon=True,
             )
             self.reader_thread.start()
         self.bus.publish_status(self.status())
@@ -792,8 +881,8 @@ MANAGER = OdooManager(BUS)
 # HTTP server
 # =============================================================================
 
-class Handler(BaseHTTPRequestHandler):
 
+class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # keep the terminal quiet
 
@@ -802,7 +891,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._serve_static("index.html")
         elif path.startswith("/static/"):
-            self._serve_static(path[len("/static/"):])
+            self._serve_static(path[len("/static/") :])
         elif path == "/api/status":
             self._send_json(200, MANAGER.status())
         elif path == "/api/databases":
@@ -1031,8 +1120,7 @@ class Server(ThreadingHTTPServer):
 
 def main():
     parser = argparse.ArgumentParser(description="odoo development helper (web UI)")
-    parser.add_argument("--open", action="store_true",
-                        help="open the UI in the default browser")
+    parser.add_argument("--open", action="store_true", help="open the UI in the default browser")
     args = parser.parse_args()
 
     try:

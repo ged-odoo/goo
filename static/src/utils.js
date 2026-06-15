@@ -28,22 +28,26 @@ export function tintCmd(cmd) {
 }
 
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const LOG_RE = /^(?:\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2},\d+) (\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) ([\w.]+): (.*)$/;
-const HTTP_RE = /^(.*?)"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ([^"]*) (HTTP\/[\d.]+)" (\d{3}) ?(.*)$/;
+const LOG_RE =
+  /^(?:\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2},\d+) (\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) ([\w.]+): (.*)$/;
+const HTTP_RE =
+  /^(.*?)"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ([^"]*) (HTTP\/[\d.]+)" (\d{3}) ?(.*)$/;
 const LVL_CLASS = { DEBUG: "info", INFO: "info", WARNING: "warn", ERROR: "err", CRITICAL: "err" };
 
 function tintHttpMeta(rest) {
   const tokens = rest.trim().split(/\s+/).filter(Boolean);
   const floatIdx = tokens.flatMap((t, i) => (/^\d+\.\d+$/.test(t) ? [i] : []));
   const last = floatIdx[floatIdx.length - 1];
-  return tokens.map((t, i) => {
-    if (i === last) {
-      const v = parseFloat(t);
-      const cls = v >= 100 ? "timing vslow" : v >= 1 ? "timing slow" : "timing";
-      return `<span class="${cls}">${escapeHtml(t)}</span>`;
-    }
-    return ` <span class="meta">${escapeHtml(t)}</span>`;
-  }).join("");
+  return tokens
+    .map((t, i) => {
+      if (i === last) {
+        const v = parseFloat(t);
+        const cls = v >= 100 ? "timing vslow" : v >= 1 ? "timing slow" : "timing";
+        return `<span class="${cls}">${escapeHtml(t)}</span>`;
+      }
+      return ` <span class="meta">${escapeHtml(t)}</span>`;
+    })
+    .join("");
 }
 
 export function ansiToHtml(line) {
@@ -66,8 +70,10 @@ export function ansiToHtml(line) {
       const params = parts[i] === "" ? [0] : parts[i].split(";").map(Number);
       for (let j = 0; j < params.length; j++) {
         const p = params[j];
-        if (p === 0) { fg = null; bold = false; }
-        else if (p === 1) bold = true;
+        if (p === 0) {
+          fg = null;
+          bold = false;
+        } else if (p === 1) bold = true;
         else if (p === 22) bold = false;
         else if ((p >= 30 && p <= 37) || (p >= 90 && p <= 97)) fg = p;
         else if (p === 39) fg = null;
@@ -103,7 +109,8 @@ export function buildLogRow(line) {
     const code = Number(status);
     if (code >= 400) rowCls = "row err-row";
     const cc = code < 200 ? "c1" : code < 300 ? "c2" : code < 400 ? "c3" : "c4";
-    msgHtml = `<span class="meta">${escapeHtml(prefix)}</span>` +
+    msgHtml =
+      `<span class="meta">${escapeHtml(prefix)}</span>` +
       `<span class="quote">"</span><span class="method">${method}</span>` +
       `<span class="urlpath">${escapeHtml(path)}</span><span class="query">${escapeHtml(query)}</span>` +
       `<span class="proto">${proto}</span><span class="quote">"</span>` +

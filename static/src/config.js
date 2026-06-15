@@ -12,9 +12,19 @@ export const DEFAULT_CONFIG = {
   ],
   targets: [
     { id: "community", repos: ["community"], db: "test_db", on_create_args: "-i sale_management" },
-    { id: "enterprise", repos: ["community", "enterprise"], db: "test_db_e", on_create_args: "-i sale_management" },
+    {
+      id: "enterprise",
+      repos: ["community", "enterprise"],
+      db: "test_db_e",
+      on_create_args: "-i sale_management",
+    },
     { id: "19.0", repos: ["community"], db: "test_db_19", on_create_args: "-i sale_management" },
-    { id: "19.0e", repos: ["community", "enterprise"], db: "test_db_19e", on_create_args: "-i sale_management" },
+    {
+      id: "19.0e",
+      repos: ["community", "enterprise"],
+      db: "test_db_19e",
+      on_create_args: "-i sale_management",
+    },
   ],
   start: {
     repos: ["community"],
