@@ -625,15 +625,18 @@ class AddonsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.meta"/></div>
+        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.addons.status()"/></div>
         <div class="panel-actions">
-          <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off" t-att-disabled="!this.addons.db()"/>
-          <button class="pbtn" t-att-disabled="!this.addons.db()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
+          <select t-att-value="this.addons.selectedDb()" t-on-change="ev => this.addons.selectedDb.set(ev.target.value)" title="database" t-att-disabled="!this.databases.length">
+            <option t-foreach="this.databases" t-as="d" t-key="d.name" t-att-value="d.name" t-out="this.dbLabel(d)"/>
+          </select>
+          <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
+          <button class="pbtn" t-att-disabled="!this.addons.selectedDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
       </div>
       <div class="content">
-        <div t-if="!this.addons.db()" class="dim addons-empty">Start a server to view and manage the addons of its database.</div>
+        <div t-if="!this.databases.length" class="dim addons-empty">No databases found.</div>
         <t t-else="">
           <div class="addons-list">
             <div t-if="this.addons.loading()" class="dim">Loading…</div>
@@ -666,18 +669,28 @@ class AddonsScreen extends Component {
 
   addons = plugin(AddonsPlugin);
   server = plugin(ServerPlugin);
+  database = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
 
-  get meta() {
-    const a = this.addons;
-    const parts = [];
-    if (a.db()) parts.push(`db: ${a.db()}${a.serverRunning ? "" : " (server stopped)"}`);
-    if (a.status()) parts.push(a.status());
-    return parts.join(" · ");
+  setup() {
+    this.database.load();
+    // load (and reload on selection change) only while this screen is mounted
+    effect(() => {
+      const db = this.addons.selectedDb();
+      if (db && db !== this.addons.loadedDb() && !this.addons.loading()) this.addons.load();
+    });
+  }
+
+  get databases() {
+    return this.database.databases();
   }
 
   get view() {
     return this.addons.filtered();
+  }
+
+  dbLabel(d) {
+    return d.name === this.database.activeDb ? `${d.name} (running)` : d.name;
   }
 
   stateClass(mod) {
