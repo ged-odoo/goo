@@ -1407,6 +1407,16 @@ section.hidden {
 .content.addons-content {
   padding: 0;
 }
+.addons-top {
+  align-items: center;
+}
+.addons-filters {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
 .addons-grid-wrap {
   flex: 1;
   min-height: 0;

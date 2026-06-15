@@ -625,15 +625,20 @@ class AddonsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.addons.status()"/></div>
+        <div class="panel-top addons-top">
+          <h1>Addons</h1>
+          <div class="addons-filters">
+            <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
+            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
+            <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
+          </div>
+          <span class="meta" t-out="this.addons.status()"/>
+        </div>
         <div class="panel-actions">
           <select t-att-value="this.addons.selectedDb()" t-on-change="ev => this.addons.selectedDb.set(ev.target.value)" title="database" t-att-disabled="!this.databases.length">
             <option t-foreach="this.databases" t-as="d" t-key="d.name" t-att-value="d.name" t-out="this.dbLabel(d)"/>
           </select>
-          <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
-          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
-          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
-          <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
           <button class="pbtn" t-att-disabled="!this.addons.selectedDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
