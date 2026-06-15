@@ -90,7 +90,8 @@ export function buildLogRow(line) {
   const text = line.replace(ANSI_RE, "");
   const m = LOG_RE.exec(text);
   if (!m) {
-    div.className = "row raw";
+    // oo's own events ("[oo] …") get a gray background to stand out from odoo logs
+    div.className = text.startsWith("[oo]") ? "row raw oo-line" : "row raw";
     div.innerHTML = `<span class="msg">${ansiToHtml(line)}</span>`;
     return div;
   }

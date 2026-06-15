@@ -880,9 +880,8 @@ section.hidden {
   white-space: nowrap;
   border-left: 2px solid transparent;
 }
-.log-sep {
-  margin: 4px 14px;
-  border-top: 1px solid var(--l-panel-line);
+.row.oo-line {
+  background: oklch(0.93 0.004 264);
 }
 .row:hover {
   background: oklch(0.66 0.16 300 / 0.06);
