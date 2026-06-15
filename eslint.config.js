@@ -14,6 +14,8 @@ export default [
     rules: {
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
       "no-control-regex": "off", // the log parser matches ANSI escape sequences
+      // blank line between methods, but keep single-line field stanzas compact
+      "lines-between-class-members": ["error", "always", { exceptAfterSingleLine: true }],
     },
   },
 ];

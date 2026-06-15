@@ -29,6 +29,7 @@ export class CodePlugin extends Plugin {
       github: r.github ?? DEFAULT_CONFIG.repos.find((d) => d.id === r.id)?.github,
     }));
   }
+
   _cache() {
     try {
       const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
@@ -37,6 +38,7 @@ export class CodePlugin extends Plugin {
       return null;
     }
   }
+
   _readFavorites() {
     try {
       const f = JSON.parse(this.config.read(FAVORITES_KEY));
@@ -45,6 +47,7 @@ export class CodePlugin extends Plugin {
       return [];
     }
   }
+
   toggleFavorite(branch) {
     const favs = new Set(this.favorites());
     favs.has(branch) ? favs.delete(branch) : favs.add(branch);
@@ -136,10 +139,12 @@ export class CodePlugin extends Plugin {
     const name = github.split("/")[1];
     return `https://github.com/${github}/compare/${base}...odoo-dev:${name}:${branch}?expand=1`;
   }
+
   forkBranchUrl(github, branch) {
     const name = github.split("/")[1];
     return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
   }
+
   bundleUrl(branch) {
     return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`;
   }
@@ -148,6 +153,7 @@ export class CodePlugin extends Plugin {
     const res = await postJSON("/api/code/branch/remote", { path, branch });
     return res.exists;
   }
+
   async _mutate(label, fn) {
     this.busy.set(true);
     try {
@@ -159,14 +165,17 @@ export class CodePlugin extends Plugin {
       this.busy.set(false);
     }
   }
+
   deleteBranch(branch, repo, path) {
     if (!confirm(`Force-delete branch "${branch}" in ${repo}? This cannot be undone.`)) return;
     return this._mutate("Delete", () => postJSON("/api/code/branches/delete", { path, branch }));
   }
+
   closePr(github, number) {
     if (!confirm(`Close PR #${number} in ${github}?`)) return;
     return this._mutate("Close PR", () => postJSON("/api/prs/close", { repo: github, number }));
   }
+
   pushBranch(path, branch) {
     if (!confirm(`Push "${branch}" to the dev remote (odoo-dev)?`)) return;
     return this._mutate("Push", () => postJSON("/api/code/branch/push", { path, branch }));

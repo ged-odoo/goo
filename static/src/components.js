@@ -76,6 +76,7 @@ class Topbar extends Component {
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
       </div>
     </header>`;
+
   server = plugin(ServerPlugin);
   routes = ROUTES;
   get pill() {
@@ -104,15 +105,18 @@ class Sidebar extends Component {
         <div class="row"><span class="k">pid</span><span class="v" t-out="this.env.pid"/></div>
       </div>
     </nav>`;
+
   router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
   nav = NAV;
   icon(s) {
     return m(s);
   }
+
   get serverRunning() {
     return this.server.status().state === "running";
   }
+
   get env() {
     const s = this.server.status();
     if (s.state !== "starting" && s.state !== "running") return null;
@@ -137,6 +141,7 @@ class LogConsole extends Component {
       </div>
       <div class="log-host" t-ref="this.host"/>
     </section>`;
+
   props = props({ title: t.string(), buffer: t.any(), extraClass: t.string().optional() });
   server = plugin(ServerPlugin);
   host = signal.ref(HTMLElement);
@@ -151,9 +156,11 @@ class LogConsole extends Component {
       this.props.buffer.savedScroll = this.props.buffer.el.scrollTop;
     });
   }
+
   get live() {
     return this.server.status().state === "running";
   }
+
   toggleAuto() {
     const b = this.props.buffer;
     b.autoScroll.set(!b.autoScroll());
@@ -196,6 +203,7 @@ class ServerScreen extends Component {
         <LogConsole title="'Server log'" buffer="this.server.output"/>
       </div>
     </section>`;
+
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
   copyIcon = m(ICONS.copy);
@@ -209,21 +217,27 @@ class ServerScreen extends Component {
   get targets() {
     return this.config.config.targets;
   }
+
   status() {
     return this.server.status();
   }
+
   get stopped() {
     return this.status().state === "stopped";
   }
+
   get active() {
     return this.status().state === "starting" || this.status().state === "running";
   }
+
   get canStop() {
     return this.active || (this.stopped && this.status().odoo_port_busy);
   }
+
   get cmdMarkup() {
     return m(tintCmd(this.status().cmd));
   }
+
   get info() {
     const s = this.status();
     if (!s.db) return null;
@@ -234,6 +248,7 @@ class ServerScreen extends Component {
     }
     return m(html);
   }
+
   get hint() {
     const s = this.status();
     const hints = [];
@@ -242,6 +257,7 @@ class ServerScreen extends Component {
       hints.push("port 8069 is busy (external odoo?) — Stop will kill it");
     return hints.join(" — ") || null;
   }
+
   get uptime() {
     const s = this.status();
     if ((s.state !== "starting" && s.state !== "running") || !s.started_at) return null;
@@ -251,6 +267,7 @@ class ServerScreen extends Component {
       sec = secs % 60;
     return h ? `${h}h ${mn}m` : mn ? `${mn}m ${sec}s` : `${sec}s`;
   }
+
   copy() {
     if (!this.status().cmd) return;
     navigator.clipboard?.writeText(this.status().cmd);
@@ -295,6 +312,7 @@ class DatabasesScreen extends Component {
         </div>
       </div>
     </section>`;
+
   db = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
   // sorted, view-ready rows — recomputed only when the db list / active db change
@@ -315,9 +333,11 @@ class DatabasesScreen extends Component {
         lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
       }));
   });
+
   setup() {
     this.db.load();
   }
+
   get stamp() {
     if (this.db.loading()) return "refreshing…";
     return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
@@ -374,29 +394,36 @@ class CodeScreen extends Component {
         </div>
       </div>
     </section>`;
+
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
   starIcon = m(ICONS.star);
   setup() {
     this.code.load();
   }
+
   get stamp() {
     if (this.code.loading()) return "refreshing…";
     return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
   }
+
   get vm() {
     return this.code.groups();
   }
+
   cell(date) {
     return timeAgo(date);
   }
+
   pr(g, row) {
     return this.vm.prIndex[`${row.repo}:${g.branch}`];
   }
+
   prState(p) {
     const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
     return st.toLowerCase();
   }
+
   openMenu(ev, g) {
     appBus.trigger("branch-menu", { ev, group: g, vm: this.vm });
   }
@@ -426,6 +453,7 @@ class TestsScreen extends Component {
         <LogConsole title="'Test output'" buffer="this.tests.output"/>
       </div>
     </section>`;
+
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
@@ -434,6 +462,7 @@ class TestsScreen extends Component {
   get targets() {
     return this.config.config.targets;
   }
+
   run() {
     this.tests.run(this.target(), this.tags());
   }
@@ -484,6 +513,7 @@ class AddonsScreen extends Component {
         <LogConsole title="'Install / upgrade output'" buffer="this.addons.output" extraClass="'addons-console'"/>
       </div>
     </section>`;
+
   addons = plugin(AddonsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
@@ -496,15 +526,19 @@ class AddonsScreen extends Component {
     if (this.addons.loadedFor() !== this.addons.targetId())
       this.addons.load(this.addons.targetId());
   }
+
   get targets() {
     return this.config.config.targets;
   }
+
   get view() {
     return this.addons.filtered();
   }
+
   stateClass(mod) {
     return (mod.state || "none").replace(/\s+/g, "-");
   }
+
   onTargetChange(ev) {
     this.addons.targetId.set(ev.target.value);
     this.addons.load(ev.target.value);
@@ -531,6 +565,7 @@ class ListEditor extends Component {
         <span t-att-class="this.msgCls()" t-out="this.msgText()"/>
       </div>
     </div>`;
+
   props = props({ kind: t.string() });
   config = plugin(ConfigPlugin);
   spec = SPECS[this.props.kind];
@@ -540,6 +575,7 @@ class ListEditor extends Component {
   setup() {
     this.load();
   }
+
   load() {
     this.rows.set(
       this.config.config[this.spec.key].map((item) => {
@@ -550,19 +586,23 @@ class ListEditor extends Component {
       }),
     );
   }
+
   addRow() {
     const r = {};
     for (const f of this.spec.fields) r[f.key] = "";
     this.rows.set([...this.rows(), r]);
   }
+
   removeRow(i) {
     this.rows.set(this.rows().filter((_, j) => j !== i));
   }
+
   flash(text, isError) {
     this.msgText.set(text);
     this.msgCls.set(isError ? "error" : "ok");
     if (!isError) setTimeout(() => this.msgText.set(""), 2000);
   }
+
   save() {
     const items = [];
     const seen = new Set();
@@ -587,6 +627,7 @@ class ListEditor extends Component {
     this.load();
     this.flash("saved");
   }
+
   reset() {
     if (!confirm(`Reset ${this.spec.itemName}s to the built-in defaults?`)) return;
     this.config.resetKey(this.spec.key);
@@ -625,6 +666,7 @@ class ConfigScreen extends Component {
         </div>
       </div>
     </section>`;
+
   config = plugin(ConfigPlugin);
   path = signal(this.config.getDataFile());
   msg = signal("");
@@ -632,6 +674,7 @@ class ConfigScreen extends Component {
   triggerImport() {
     document.getElementById("oo-import-file").click();
   }
+
   async useFile() {
     try {
       this.msg.set(await this.config.useFile(this.path()));
@@ -640,11 +683,13 @@ class ConfigScreen extends Component {
       this.msg.set(`Could not use file: ${e.message}`);
     }
   }
+
   clearFile() {
     this.config.clearFile();
     this.path.set("");
     this.msg.set("Using browser storage.");
   }
+
   exportData() {
     const data = {};
     for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target"]) {
@@ -659,6 +704,7 @@ class ConfigScreen extends Component {
     URL.revokeObjectURL(a.href);
     this.backupMsg.set("Exported.");
   }
+
   async importData(ev) {
     const file = ev.target.files[0];
     ev.target.value = "";
@@ -692,6 +738,7 @@ class BranchMenu extends Component {
               t-att-class="{danger: a.danger}" t-att-disabled="a.disabled" t-att-title="a.title || ''"
               t-on-click="() => this.select(a)" t-out="a.label"/>
     </div>`;
+
   code = plugin(CodePlugin);
   open = signal(false);
   actions = signal([]);
@@ -706,9 +753,11 @@ class BranchMenu extends Component {
       });
     });
   }
+
   close() {
     this.open.set(false);
   }
+
   async openMenu({ ev, group, vm }) {
     const { actions, resolvers } = this.buildActions(group, vm);
     this.actions.set(actions); // a deep proxy array
@@ -722,12 +771,14 @@ class BranchMenu extends Component {
       run().then((patch) => Object.assign(this.actions()[index], patch));
     }
   }
+
   select(a) {
     if (!a.disabled && a.onClick) {
       this.close();
       a.onClick();
     }
   }
+
   buildActions(group, vm) {
     const code = this.code;
     const actions = [];
@@ -809,6 +860,7 @@ export class App extends Component {
     ConfigScreen,
     BranchMenu,
   };
+
   static template = xml`
     <div class="app">
       <Topbar/>
@@ -818,6 +870,7 @@ export class App extends Component {
       </div>
       <BranchMenu/>
     </div>`;
+
   router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
   // the active screen's component class (a class, not an instance)

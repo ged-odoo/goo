@@ -21,6 +21,7 @@ export class DatabasePlugin extends Plugin {
   get activeDb() {
     return this.server.status().db || null;
   }
+
   _cache() {
     try {
       const c = JSON.parse(localStorage.getItem(DB_CACHE_KEY));

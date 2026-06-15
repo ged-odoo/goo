@@ -40,10 +40,12 @@ export class TestsPlugin extends Plugin {
       );
     }
   }
+
   get running() {
     const s = this.server.status();
     return (s.state === "starting" || s.state === "running") && s.mode === "test";
   }
+
   async run(targetId, tags) {
     const cfg = this.server.buildStartConfig(targetId);
     if (!cfg) return this.server.log(`[oo] no such target: "${targetId}"`);

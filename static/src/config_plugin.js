@@ -27,9 +27,11 @@ export class ConfigPlugin extends Plugin {
       return {};
     }
   }
+
   _merged() {
     return { ...DEFAULT_CONFIG, ...this._stored() };
   }
+
   get config() {
     return this.cfg();
   } // read in render -> tracked
@@ -39,6 +41,7 @@ export class ConfigPlugin extends Plugin {
     this.cfg.set(this._merged());
     this.persist();
   }
+
   resetKey(key) {
     const stored = this._stored();
     delete stored[key];
@@ -51,6 +54,7 @@ export class ConfigPlugin extends Plugin {
   read(key) {
     return localStorage.getItem(key);
   }
+
   write(key, value) {
     localStorage.setItem(key, value);
     this.persist();
@@ -60,6 +64,7 @@ export class ConfigPlugin extends Plugin {
   getDataFile() {
     return localStorage.getItem(DATA_FILE_KEY) || "";
   }
+
   _collect() {
     const data = {};
     for (const k of PERSISTENT_KEYS) {
@@ -68,6 +73,7 @@ export class ConfigPlugin extends Plugin {
     }
     return data;
   }
+
   persist() {
     const path = this.getDataFile();
     if (!path) return;
@@ -76,9 +82,11 @@ export class ConfigPlugin extends Plugin {
       this.flush(path).catch((e) => console.error(`[oo] data file save failed: ${e.message}`));
     }, 300);
   }
+
   async flush(path) {
     await postJSON("/api/data", { path, data: this._collect() });
   }
+
   async useFile(path) {
     path = path.trim();
     if (!path) {
@@ -93,6 +101,7 @@ export class ConfigPlugin extends Plugin {
       ? "Linked to existing file, reloading…"
       : "Linked — file created from current data. Reloading…";
   }
+
   clearFile() {
     localStorage.removeItem(DATA_FILE_KEY);
     this.dataFileSig.set("");

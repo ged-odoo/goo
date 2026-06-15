@@ -22,19 +22,23 @@ export class LogBuffer {
       if (atBottom !== this.autoScroll()) this.autoScroll.set(atBottom);
     });
   }
+
   append(line) {
     this.el.appendChild(buildLogRow(line));
     while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild.remove();
     this.count.set(this.el.childElementCount);
     if (this.autoScroll()) this.toBottom();
   }
+
   clear() {
     this.el.replaceChildren();
     this.count.set(0);
   }
+
   toBottom() {
     this.el.scrollTop = this.el.scrollHeight;
   }
+
   // called by the host console on (re)mount to restore the scroll position,
   // since detaching the element resets scrollTop
   restore() {

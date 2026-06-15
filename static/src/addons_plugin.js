@@ -36,6 +36,7 @@ export class AddonsPlugin extends Plugin {
   _target(id) {
     return this.config.config.targets.find((t) => t.id === id);
   }
+
   _repoPaths(target) {
     const paths = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
     return target.repos.map((id) => ({ id, path: paths[id] })).filter((r) => r.path);
@@ -92,6 +93,7 @@ export class AddonsPlugin extends Plugin {
       this.load(this.targetId()); // refresh install states
     }
   }
+
   get running() {
     const s = this.server.status();
     return (
@@ -99,6 +101,7 @@ export class AddonsPlugin extends Plugin {
       (s.mode === "install" || s.mode === "upgrade")
     );
   }
+
   async run(op, name, targetId) {
     const cfg = this.server.buildStartConfig(targetId);
     if (!cfg) return;

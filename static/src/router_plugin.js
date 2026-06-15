@@ -10,10 +10,12 @@ export class RouterPlugin extends Plugin {
   setup() {
     window.addEventListener("hashchange", () => this.section.set(this._fromHash()));
   }
+
   _fromHash() {
     const s = location.hash.replace("#", "");
     return SECTIONS.includes(s) ? s : "server";
   }
+
   go(section) {
     location.hash = section;
   }

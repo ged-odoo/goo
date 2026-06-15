@@ -24,6 +24,7 @@ export class ServerPlugin extends Plugin {
     this.lineListeners.add(cb);
     return () => this.lineListeners.delete(cb);
   }
+
   log(line) {
     this.output.append(line);
     for (const cb of this.lineListeners) cb(line);
@@ -52,6 +53,7 @@ export class ServerPlugin extends Plugin {
       },
     };
   }
+
   lastTarget() {
     return this.config.read(LAST_TARGET_KEY) || "";
   }
@@ -63,18 +65,21 @@ export class ServerPlugin extends Plugin {
       this.log(`[oo] ${label} failed: ${e.message}`);
     }
   }
+
   async start(targetId) {
     const cfg = this.buildStartConfig(targetId);
     if (!cfg) return this.log(`[oo] no such target: "${targetId}"`);
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/start", cfg, "start");
   }
+
   async restart(targetId) {
     const cfg = this.buildStartConfig(targetId);
     if (!cfg) return;
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/restart", cfg, "restart");
   }
+
   async stop() {
     await this._run("/api/stop", undefined, "stop");
   }
