@@ -127,13 +127,12 @@ def db_initialized(db_name):
 
 
 def odoo_info(db_name):
-    """(version, is_enterprise, last_update, install_date) of the odoo installed
-    in a database. (None, False, None, None) if it holds no odoo.
+    """(version, is_enterprise, last_update) of the odoo installed in a
+    database. (None, False, None) if it holds no odoo.
 
     last_update is a UTC timestamp of the last detectable activity: crons
     are written whenever a server runs against the db, logins create
-    res_users_log rows. install_date is when the database was first
-    initialized, taken from the oldest res_users row (the bootstrap users)."""
+    res_users_log rows."""
     try:
         result = subprocess.run(
             ["psql", "-d", db_name, "-tAc",
@@ -141,17 +140,40 @@ def odoo_info(db_name):
              " EXISTS (SELECT 1 FROM ir_module_module"
              " WHERE name = 'web_enterprise' AND state = 'installed'),"
              " GREATEST((SELECT max(write_date) FROM ir_cron),"
-             " (SELECT max(create_date) FROM res_users_log)),"
-             " (SELECT min(create_date) FROM res_users)"],
+             " (SELECT max(create_date) FROM res_users_log))"],
             capture_output=True, text=True, timeout=5,
         )
         line = result.stdout.strip()
         if result.returncode != 0 or not line:
-            return None, False, None, None  # no odoo tables: not an odoo database
-        version, enterprise, last_update, install_date = line.split("|", 3)
-        return version or None, enterprise == "t", last_update or None, install_date or None
+            return None, False, None  # no odoo tables: not an odoo database
+        version, enterprise, last_update = line.split("|", 2)
+        return version or None, enterprise == "t", last_update or None
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None, False, None, None
+        return None, False, None
+
+
+def db_creation_times():
+    """Map db name -> creation timestamp (naive UTC ISO), from the mtime of
+    each database's PG_VERSION file. Needs superuser / pg_read_server_files;
+    returns {} if unavailable."""
+    try:
+        r = subprocess.run(
+            ["psql", "-d", "postgres", "-tAc",
+             "SELECT datname,"
+             " (pg_stat_file('base/' || oid || '/PG_VERSION')).modification AT TIME ZONE 'UTC'"
+             " FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        if "|" in line:
+            name, ts = line.split("|", 1)
+            out[name] = ts or None
+    return out
 
 
 def list_databases():
@@ -168,18 +190,19 @@ def list_databases():
         raise RuntimeError(f"cannot list databases: {e}")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "psql failed")
+    created = db_creation_times()
     dbs = []
     for line in result.stdout.split("\n"):
         name = line.strip()
         if not name:
             continue
-        version, enterprise, last_update, install_date = odoo_info(name)
+        version, enterprise, last_update = odoo_info(name)
         dbs.append({
             "name": name,
             "odoo_version": version,
             "enterprise": enterprise,
             "last_update": last_update,
-            "install_date": install_date,
+            "created": created.get(name),
         })
     return dbs
 
@@ -604,7 +627,7 @@ class OdooManager:
                 status["returncode"] = self.returncode
         status["odoo_port_busy"] = port_busy(ODOO_PORT)
         if status["db"]:
-            version, enterprise, _, _ = odoo_info(status["db"])
+            version, enterprise, _ = odoo_info(status["db"])
             status["odoo_version"] = version
             status["enterprise"] = enterprise
         return status

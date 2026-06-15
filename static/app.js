@@ -4,7 +4,7 @@
 // Sidebar navigation (hash-based)
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ["server", "code", "tests", "todo", "databases", "addons", "config"];
+const SECTIONS = ["server", "code", "tests", "databases", "addons", "config"];
 
 function showSection(name) {
   if (!SECTIONS.includes(name)) name = "server";
@@ -19,7 +19,6 @@ function showSection(name) {
   if (name === "addons") renderAddons();
   if (name === "code") loadPrs();
   if (name === "tests") renderTests();
-  if (name === "todo") renderTodos();
   if (name === "config") renderConfigEditors();
 }
 
@@ -320,7 +319,7 @@ function renderDatabases(dbs) {
   const table = document.createElement("table");
   table.className = "db-table";
   table.innerHTML =
-    "<thead><tr><th>Name</th><th>Odoo version</th><th>Installed</th><th>Last activity</th><th></th></tr></thead>";
+    "<thead><tr><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th></th></tr></thead>";
   const tbody = document.createElement("tbody");
   // most recently active first; databases with no activity sort last
   const ordered = [...dbs].sort((a, b) =>
@@ -336,10 +335,10 @@ function renderDatabases(dbs) {
       ? db.odoo_version + (db.enterprise ? " (ent)" : "")
       : "—";
     if (!db.odoo_version) version.className = "dim";
-    const installed = document.createElement("td");
-    installed.textContent = db.install_date ? timeAgo(db.install_date) : "—";
-    if (db.install_date) installed.title = `${db.install_date} (UTC)`;
-    else installed.className = "dim";
+    const created = document.createElement("td");
+    created.textContent = db.created ? timeAgo(db.created) : "—";
+    if (db.created) created.title = `${db.created} (UTC)`;
+    else created.className = "dim";
     const lastUpdate = document.createElement("td");
     lastUpdate.textContent = db.last_update ? timeAgo(db.last_update) : "—";
     if (db.last_update) lastUpdate.title = `${db.last_update} (UTC)`;
@@ -355,7 +354,7 @@ function renderDatabases(dbs) {
     }
     btn.addEventListener("click", () => dropDatabase(db.name, btn));
     actions.appendChild(btn);
-    tr.append(name, version, installed, lastUpdate, actions);
+    tr.append(name, version, created, lastUpdate, actions);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -1469,85 +1468,11 @@ function ansiToHtml(line) {
 }
 
 // ---------------------------------------------------------------------------
-// Todo section: a simple persisted task list
-// ---------------------------------------------------------------------------
-
-const TODO_KEY = "oo-todos";
-const todoList = document.getElementById("todo-list");
-const todoForm = document.getElementById("todo-form");
-const todoInput = document.getElementById("todo-input");
-
-function readTodos() {
-  try {
-    const todos = JSON.parse(localStorage.getItem(TODO_KEY));
-    return Array.isArray(todos) ? todos : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeTodos(todos) {
-  localStorage.setItem(TODO_KEY, JSON.stringify(todos));
-  persistToFile();
-}
-
-function renderTodos() {
-  const todos = readTodos();
-  todoList.replaceChildren();
-  if (!todos.length) {
-    todoList.appendChild(Object.assign(document.createElement("li"),
-      { className: "dim todo-empty", textContent: "Nothing to do." }));
-    return;
-  }
-  todos.forEach((todo, i) => {
-    const li = document.createElement("li");
-    li.className = `todo-item${todo.done ? " done" : ""}`;
-
-    const check = document.createElement("input");
-    check.type = "checkbox";
-    check.checked = todo.done;
-    check.addEventListener("change", () => {
-      const next = readTodos();
-      next[i].done = check.checked;
-      writeTodos(next);
-      renderTodos();
-    });
-
-    const text = document.createElement("span");
-    text.className = "todo-text";
-    text.textContent = todo.text;
-
-    const del = document.createElement("button");
-    del.className = "todo-del";
-    del.title = "delete";
-    del.textContent = "×";
-    del.addEventListener("click", () => {
-      const next = readTodos();
-      next.splice(i, 1);
-      writeTodos(next);
-      renderTodos();
-    });
-
-    li.append(check, text, del);
-    todoList.appendChild(li);
-  });
-}
-
-todoForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = todoInput.value.trim();
-  if (!text) return;
-  writeTodos([...readTodos(), { text, done: false }]);
-  todoInput.value = "";
-  renderTodos();
-});
-
-// ---------------------------------------------------------------------------
 // Backup: export/import the persistent localStorage data as a JSON file
 // ---------------------------------------------------------------------------
 
-// config + favorites + last target + todos; transient caches are skipped
-const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY, TODO_KEY];
+// config + favorites + last target; transient caches are skipped
+const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY];
 const backupMsg = document.getElementById("backup-msg");
 
 function exportData() {
