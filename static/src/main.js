@@ -25,7 +25,7 @@ async function boot() {
     try {
       await loadDataFile(path);
     } catch (e) {
-      console.error(`[oo] data file load failed, using browser storage: ${e.message}`);
+      console.error(`[goo] data file load failed, using browser storage: ${e.message}`);
     }
   }
   owl.mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });

@@ -1,6 +1,6 @@
-# oo — Odoo Development Toolkit
+# goo — GED Odoo Overseer
 
-`oo` is a next-generation CLI tool for Odoo development, replacing `odev`. It provides a terminal UI for managing Odoo server instances, git workflows across multiple repositories, test execution, and PR tracking — all from a single command.
+`goo` is a local web app for Odoo development, replacing `odev`. It manages Odoo server instances, git workflows across multiple repositories, test execution, and PR tracking — all from the browser, backed by a single stdlib Python server.
 
 ## What it does today (odev)
 
@@ -78,4 +78,4 @@ oo/
 
 ## Current status
 
-Working: a stdlib Python server (`oo.py`) with an Owl 3 frontend (`static/`).
+Working: a stdlib Python server (`goo.py`) with an Owl 3 frontend (`static/`).

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""oo - Odoo development helper, served as a local web app.
+"""goo - GED Odoo Overseer, a local web app for Odoo development.
 
-Run `python3 oo.py`, open the printed URL (or pass --open to open it in the
+Run `python3 goo.py`, open the printed URL (or pass --open to open it in the
 browser right away). The frontend (static/) holds the configuration and posts
 it with each start request; the backend is stateless.
 """
@@ -28,7 +28,7 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TAG = "[oo]"
+TAG = "[goo]"
 HOST = "127.0.0.1"
 PORT = 8068
 ODOO_PORT = 8069
@@ -39,7 +39,7 @@ LOG_BUFFER_SIZE = 2000
 
 def log_request(target):
     """Announce an outgoing network request on the terminal, so the user can
-    see what oo is reaching out to (runbot, GitHub, git remotes)."""
+    see what goo is reaching out to (runbot, GitHub, git remotes)."""
     print(f"{TAG} {time.strftime('%H:%M:%S')} → {target}", flush=True)
 
 
@@ -392,7 +392,7 @@ def runbot_badge_status(branch):
     url = f"https://runbot.odoo.com/runbot/badge/1/{urllib.parse.quote(branch)}.svg"
     log_request(f"GET {url}")
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "oo/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             svg = resp.read().decode("utf-8", errors="replace")
     except Exception:
@@ -662,7 +662,7 @@ class AutoReloader:
     """Fetches master for opted-in repos every INTERVAL seconds, in the
     background. The repo set is pushed by the frontend (config lives there).
     Each repo's first fetch is one interval after it is first registered, so
-    starting oo never triggers a fetch storm."""
+    starting goo never triggers a fetch storm."""
 
     INTERVAL = 4 * 3600
 
@@ -924,7 +924,7 @@ class OdooManager:
         return self.start(config)
 
     def shutdown(self):
-        """Cleanup on oo exit: stop our own child, but never touch an
+        """Cleanup on goo exit: stop our own child, but never touch an
         external odoo we didn't start."""
         with self.lock:
             active = self.state in ("starting", "running")

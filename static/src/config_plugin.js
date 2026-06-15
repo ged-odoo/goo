@@ -90,7 +90,7 @@ export class ConfigPlugin extends Plugin {
     if (!path) return;
     clearTimeout(this._timer);
     this._timer = setTimeout(() => {
-      this.flush(path).catch((e) => console.error(`[oo] data file save failed: ${e.message}`));
+      this.flush(path).catch((e) => console.error(`[goo] data file save failed: ${e.message}`));
     }, 300);
   }
 

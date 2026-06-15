@@ -61,7 +61,7 @@ export class TestsPlugin extends Plugin {
     if (!tags.trim()) return;
     const s = this.server.status();
     const cfg = this.server.buildStartConfig(this.target);
-    if (!cfg) return this.server.log(`[oo] no running server target to test`);
+    if (!cfg) return this.server.log(`[goo] no running server target to test`);
     // a real server is up; it will be stopped for the one-shot test — resume after
     this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
     cfg.start.test_tags = tags.trim();

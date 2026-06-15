@@ -74,13 +74,13 @@ export class ServerPlugin extends Plugin {
     try {
       await postJSON(path, body);
     } catch (e) {
-      this.log(`[oo] ${label} failed: ${e.message}`);
+      this.log(`[goo] ${label} failed: ${e.message}`);
     }
   }
 
   async start(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
-    if (!cfg) return this.log(`[oo] no such target: "${targetId}"`);
+    if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
     this.lastConfig = cfg;
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/start", cfg, "start");

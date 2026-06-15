@@ -73,7 +73,7 @@ class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><span class="name">oo</span></div>
+        <div class="logo"><span class="name">goo</span></div>
       </div>
       <div class="top-right">
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
@@ -844,7 +844,7 @@ class ConfigScreen extends Component {
           <div class="config-actions">
             <button t-on-click="() => this.exportData()">Export</button>
             <button t-on-click="() => this.triggerImport()">Import</button>
-            <input type="file" id="oo-import-file" accept="application/json,.json" hidden="hidden" t-on-change="(ev) => this.importData(ev)"/>
+            <input type="file" id="goo-import-file" accept="application/json,.json" hidden="hidden" t-on-change="(ev) => this.importData(ev)"/>
             <span t-out="this.backupMsg()"/>
           </div>
         </div>
@@ -856,7 +856,7 @@ class ConfigScreen extends Component {
   msg = signal("");
   backupMsg = signal("");
   triggerImport() {
-    document.getElementById("oo-import-file").click();
+    document.getElementById("goo-import-file").click();
   }
 
   async useFile() {
@@ -883,7 +883,7 @@ class ConfigScreen extends Component {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "oo-backup.json";
+    a.download = "goo-backup.json";
     a.click();
     URL.revokeObjectURL(a.href);
     this.backupMsg.set("Exported.");

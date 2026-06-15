@@ -880,7 +880,7 @@ section.hidden {
   white-space: nowrap;
   border-left: 2px solid transparent;
 }
-.row.oo-line {
+.row.goo-line {
   background: oklch(0.93 0.004 264);
 }
 .row:hover {
