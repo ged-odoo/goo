@@ -38,7 +38,7 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
   }
 
-  buildStartConfig(targetId) {
+  buildStartConfig(targetId, otherArgs) {
     const cfg = this.config.config;
     const target = cfg.targets.find((t) => t.id === targetId);
     if (!target) return null;
@@ -49,13 +49,24 @@ export class ServerPlugin extends Plugin {
         repos: target.repos,
         db: target.db,
         on_create_args: target.on_create_args || "",
-        other_args: cfg.start.other_args,
+        other_args: otherArgs ?? cfg.start.other_args,
       },
     };
   }
 
   lastTarget() {
     return this.config.read(LAST_TARGET_KEY) || "";
+  }
+
+  // the command that would launch this target (built by the backend); "" if invalid
+  async previewCommand(targetId, otherArgs) {
+    const cfg = this.buildStartConfig(targetId, otherArgs);
+    if (!cfg) return "";
+    try {
+      return (await postJSON("/api/command", cfg)).cmd;
+    } catch (e) {
+      return `# ${e.message}`;
+    }
   }
 
   async _run(path, body, label) {
@@ -66,15 +77,15 @@ export class ServerPlugin extends Plugin {
     }
   }
 
-  async start(targetId) {
-    const cfg = this.buildStartConfig(targetId);
+  async start(targetId, otherArgs) {
+    const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return this.log(`[oo] no such target: "${targetId}"`);
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/start", cfg, "start");
   }
 
-  async restart(targetId) {
-    const cfg = this.buildStartConfig(targetId);
+  async restart(targetId, otherArgs) {
+    const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return;
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/restart", cfg, "restart");

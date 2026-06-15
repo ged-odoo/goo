@@ -22,6 +22,7 @@ const {
   onMounted,
   onWillUnmount,
   effect,
+  useEffect,
   EventBus,
   signal,
   computed,
@@ -184,21 +185,33 @@ class ServerScreen extends Component {
           <div t-if="this.uptime" class="uptime"><div class="big" t-out="this.uptime"/><div class="lbl">uptime</div></div>
         </div>
         <div class="panel-actions">
-          <select t-if="this.stopped" t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)" title="target to start">
-            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
-          </select>
-          <button class="pbtn primary" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target())"><span class="play"/>Start</button>
+          <button class="pbtn primary" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-          <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target())"><span class="restart"/>Restart</button>
+          <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
         </div>
       </div>
-      <div class="content">
-        <div t-if="this.status().cmd" class="cmd">
-          <span class="label">launch</span>
-          <div class="code" t-out="this.cmdMarkup"/>
-          <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
+      <div class="content" t-att-class="{ flush: !this.stopped }">
+        <LogConsole t-if="!this.stopped" title="'Server log'" buffer="this.server.output"/>
+        <div t-else="" class="launch-form">
+          <div class="launch-field">
+            <label>Target</label>
+            <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
+              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
+            </select>
+          </div>
+          <div class="launch-field">
+            <label>Extra arguments</label>
+            <input type="text" t-att-value="this.extraArgs()" t-on-input="ev => this.extraArgs.set(ev.target.value)" placeholder="e.g. --dev all"/>
+          </div>
+          <div class="launch-field">
+            <label>Command</label>
+            <div class="cmd">
+              <span class="label">launch</span>
+              <div class="code" t-out="this.cmdPreviewMarkup"/>
+              <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
+            </div>
+          </div>
         </div>
-        <LogConsole title="'Server log'" buffer="this.server.output"/>
       </div>
     </section>`;
 
@@ -206,11 +219,23 @@ class ServerScreen extends Component {
   config = plugin(ConfigPlugin);
   copyIcon = m(ICONS.copy);
   copyLbl = signal("Copy");
-  target = signal(
-    this.server.lastTarget() ||
-      (this.config.config.targets[0] && this.config.config.targets[0].id) ||
-      "",
-  );
+  target = signal(this.server.lastTarget() || this.config.config.targets[0]?.id || "");
+  extraArgs = signal(this.config.config.start.other_args || "");
+  command = signal("");
+
+  setup() {
+    let timer;
+    // keep the command preview in sync with target / extra args (debounced)
+    useEffect(() => {
+      const tgt = this.target();
+      const args = this.extraArgs();
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => this.server.previewCommand(tgt, args).then((c) => this.command.set(c)),
+        200,
+      );
+    });
+  }
 
   get targets() {
     return this.config.config.targets;
@@ -232,8 +257,8 @@ class ServerScreen extends Component {
     return this.active || (this.stopped && this.status().odoo_port_busy);
   }
 
-  get cmdMarkup() {
-    return m(tintCmd(this.status().cmd));
+  get cmdPreviewMarkup() {
+    return m(tintCmd(this.command() || ""));
   }
 
   get info() {
@@ -267,8 +292,8 @@ class ServerScreen extends Component {
   }
 
   copy() {
-    if (!this.status().cmd) return;
-    navigator.clipboard?.writeText(this.status().cmd);
+    if (!this.command()) return;
+    navigator.clipboard?.writeText(this.command());
     this.copyLbl.set("Copied");
     setTimeout(() => this.copyLbl.set("Copy"), 1400);
   }

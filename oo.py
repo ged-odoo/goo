@@ -921,6 +921,15 @@ class Handler(BaseHTTPRequestHandler):
             self._action_start(MANAGER.restart)
         elif path in ("/api/tests/run", "/api/addons/run"):
             self._action_oneshot()
+        elif path == "/api/command":
+            config, err = self._read_json()
+            if err:
+                return self._send_json(400, {"ok": False, "error": err})
+            try:
+                cmd, _, _ = build_odoo_cmd(config)
+                self._send_json(200, {"ok": True, "cmd": cmd})
+            except ValueError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
         elif path == "/api/stop":
             ok, detail = MANAGER.stop()
             if ok:
