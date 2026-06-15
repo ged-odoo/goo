@@ -4,10 +4,13 @@
 // is held in individual signals (read via signal() in templates); component
 // props use the props({...}) helper with `t` types.
 
-import {
-  ConfigPlugin, RouterPlugin, ServerPlugin, DatabasePlugin,
-  CodePlugin, TestsPlugin, AddonsPlugin,
-} from "./plugins.js";
+import { ConfigPlugin } from "./config_plugin.js";
+import { RouterPlugin } from "./router_plugin.js";
+import { ServerPlugin } from "./server_plugin.js";
+import { DatabasePlugin } from "./database_plugin.js";
+import { CodePlugin } from "./code_plugin.js";
+import { TestsPlugin } from "./tests_plugin.js";
+import { AddonsPlugin } from "./addons_plugin.js";
 import { timeAgo, tintCmd, buildLogRow } from "./utils.js";
 
 const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, props, t } = owl;
