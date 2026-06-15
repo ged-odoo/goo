@@ -56,7 +56,10 @@ const NAV = [
 ];
 const ROUTES = [
   { href: "http://localhost:8069/odoo?debug=assets", label: "/odoo" },
-  { href: "http://localhost:8069/web/tests?debug=assets&timeout=500000", label: "/web/tests" },
+  {
+    href: "http://localhost:8069/web/tests?debug=assets&timeout=500000&manual=true",
+    label: "/web/tests",
+  },
   { href: "https://odoo.github.io/owl/documentation/v3/owl/", label: "owl docs" },
   { href: "https://odoo.github.io/owl/playground/", label: "owl playground" },
   { href: "https://github.com/odoo/owl", label: "owl github" },
