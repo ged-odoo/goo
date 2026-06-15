@@ -370,6 +370,16 @@ section.hidden {
 .panel-top .sub.hint {
   color: var(--l-amber);
 }
+/* server: title + db/odoo info inline on one row */
+.server-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.server-head .sub {
+  margin-top: 0;
+}
 .panel-actions {
   display: flex;
   align-items: center;
@@ -449,6 +459,31 @@ section.hidden {
   color: var(--l-red);
   border-color: oklch(0.55 0.21 25 / 0.4);
 }
+/* small glyphs for the server controls, sized for the .pbtn flex row */
+.pbtn .ic {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.pbtn .play {
+  width: 0;
+  height: 0;
+  border-left: 7px solid currentColor;
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  border-radius: 1px;
+}
+.pbtn .square {
+  background: currentColor;
+  border-radius: 1.5px;
+}
+.pbtn .restart {
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+}
 
 .placeholder {
   color: var(--l-text-dim);
@@ -496,62 +531,6 @@ section.hidden {
 .panel input:focus {
   outline: none;
   border-color: var(--l-accent-line);
-}
-
-/* segmented process controls (server start/stop/restart) */
-.controls {
-  display: flex;
-  align-items: center;
-  background: var(--l-card);
-  border: 1px solid var(--l-panel-line);
-  border-radius: 9px;
-  padding: 3px;
-}
-.controls button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 14px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--l-text-mid);
-  transition: 0.13s;
-}
-.controls button:hover:not(:disabled) {
-  background: var(--l-panel);
-  color: var(--l-text);
-}
-.controls button:disabled {
-  color: var(--l-text-faint);
-  cursor: default;
-}
-.controls button.stop:hover:not(:disabled) {
-  color: var(--l-red);
-}
-.controls .ic {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-.controls .play {
-  width: 0;
-  height: 0;
-  border-left: 7px solid currentColor;
-  border-top: 4.5px solid transparent;
-  border-bottom: 4.5px solid transparent;
-  border-radius: 1px;
-}
-.controls .square {
-  background: currentColor;
-  border-radius: 1.5px;
-}
-.controls .restart {
-  width: 11px;
-  height: 11px;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
 }
 
 /* ───────────────── COMMAND BAR (dark) ───────────────── */

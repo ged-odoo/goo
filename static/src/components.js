@@ -176,7 +176,7 @@ class ServerScreen extends Component {
     <section>
       <div class="panel">
         <div class="panel-top">
-          <div>
+          <div class="server-head">
             <h1>Server</h1>
             <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
             <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
@@ -187,11 +187,9 @@ class ServerScreen extends Component {
           <select t-if="this.stopped" t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)" title="target to start">
             <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
           </select>
-          <div class="controls">
-            <button t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target())"><span class="play"/>Start</button>
-            <button class="stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-            <button t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target())"><span class="restart"/>Restart</button>
-          </div>
+          <button class="pbtn primary" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target())"><span class="play"/>Start</button>
+          <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
+          <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target())"><span class="restart"/>Restart</button>
         </div>
       </div>
       <div class="content">
