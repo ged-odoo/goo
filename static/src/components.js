@@ -130,11 +130,10 @@ class Sidebar extends Component {
 
 class LogConsole extends Component {
   static template = xml`
-    <section class="console" t-att-class="this.props.extraClass">
-      <div class="log-toolbar">
+    <section class="console" t-att-class="this.consoleClass">
+      <div t-if="!this.props.bare" class="log-toolbar">
         <span class="console-title"><span class="cdot" t-att-class="{on: this.live}"/><t t-out="this.props.title"/></span>
         <div class="toolbar-right">
-          <span class="linecount"><t t-out="this.props.buffer.count()"/> lines</span>
           <label class="toggle" t-att-class="{on: this.props.buffer.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
           <button class="tool-btn" t-on-click="() => this.props.buffer.clear()"><t t-out="this.clearIcon"/>Clear</button>
         </div>
@@ -142,7 +141,13 @@ class LogConsole extends Component {
       <div class="log-host" t-ref="this.host"/>
     </section>`;
 
-  props = props({ title: t.string(), buffer: t.any(), extraClass: t.string().optional() });
+  props = props({
+    title: t.string(),
+    buffer: t.any(),
+    extraClass: t.string().optional(),
+    bare: t.boolean().optional(),
+  });
+
   server = plugin(ServerPlugin);
   host = signal.ref(HTMLElement);
   clearIcon = m(ICONS.clear);
@@ -159,6 +164,10 @@ class LogConsole extends Component {
 
   get live() {
     return this.server.status().state === "running";
+  }
+
+  get consoleClass() {
+    return [this.props.extraClass, this.props.bare ? "bare" : ""].filter(Boolean).join(" ");
   }
 
   toggleAuto() {
@@ -188,11 +197,15 @@ class ServerScreen extends Component {
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
           <span t-if="this.transient" class="run-state" t-out="this.transient"/>
+          <div t-if="this.showLogs" class="log-controls">
+            <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+            <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
+          </div>
         </div>
       </div>
       <div class="content" t-att-class="{ flush: !this.stopped }">
         <div t-if="this.disconnected" class="offline">server is offline</div>
-        <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output"/>
+        <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
         <div t-else="" class="launch-form">
           <div class="launch-field">
             <label>Target</label>
@@ -219,6 +232,7 @@ class ServerScreen extends Component {
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
   copyIcon = m(ICONS.copy);
+  clearIcon = m(ICONS.clear);
   copyLbl = signal("Copy");
   target = signal(this.server.lastTarget() || this.config.config.targets[0]?.id || "");
   extraArgs = signal(this.config.config.start.other_args || "");
@@ -257,6 +271,18 @@ class ServerScreen extends Component {
   get transient() {
     const s = this.status().state;
     return s === "starting" ? "starting…" : s === "stopping" ? "stopping…" : null;
+  }
+
+  // logs are visible (so their controls belong in the panel) whenever we're not
+  // showing the launch form or the offline message
+  get showLogs() {
+    return !this.stopped && !this.disconnected;
+  }
+
+  toggleAuto() {
+    const b = this.server.output;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
   }
 
   get active() {

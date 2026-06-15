@@ -49,6 +49,8 @@
   --l-amber-bg: oklch(0.7 0.14 75 / 0.16);
   --l-red: oklch(0.55 0.21 25);
   --l-red-bg: oklch(0.55 0.21 25 / 0.1);
+  --l-blue: oklch(0.5 0.15 250);
+  --l-blue-bg: oklch(0.5 0.15 250 / 0.1);
 
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
@@ -416,6 +418,22 @@ section.hidden {
   background: var(--l-amber);
   animation: pulse 1.8s ease-out infinite;
 }
+/* server log controls relocated into the panel; .toggle/.tool-btn reference the
+   dark palette, so remap to the light one here */
+.log-controls {
+  --line: var(--l-line);
+  --panel: var(--l-line);
+  --text: var(--l-text);
+  --text-mid: var(--l-text-mid);
+  --text-dim: var(--l-text-dim);
+  --accent: var(--l-accent);
+  --accent-soft: var(--l-accent-soft);
+
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 .uptime {
   text-align: right;
@@ -684,9 +702,31 @@ section.hidden {
   fill: none;
 }
 
-/* ───────────────── LOG CONSOLE (dark) ───────────────── */
+/* ───────────────── LOG CONSOLE (light) ───────────────── */
+/* the rows/toolbar reference the dark palette vars; remap them to the light
+   palette here so the whole console (incl. log rows + ansi) renders light */
 
 .console {
+  --inset: var(--l-card);
+  --line: var(--l-line);
+  --line-soft: var(--l-line-soft);
+  --console-head: var(--l-panel);
+  --panel: var(--l-line);
+  --text: var(--l-text);
+  --text-mid: var(--l-text-mid);
+  --text-dim: var(--l-text-dim);
+  --text-faint: var(--l-text-faint);
+  --accent: var(--l-accent);
+  --accent-soft: var(--l-accent-soft);
+  --green: var(--l-green);
+  --green-bg: var(--l-green-bg);
+  --blue: var(--l-blue);
+  --blue-bg: var(--l-blue-bg);
+  --amber: var(--l-amber);
+  --amber-bg: var(--l-amber-bg);
+  --red: var(--l-red);
+  --red-bg: var(--l-red-bg);
+
   flex: 1;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -695,6 +735,13 @@ section.hidden {
   border-radius: var(--r);
   background: var(--inset);
   overflow: hidden;
+}
+.console.bare {
+  grid-template-rows: 1fr;
+}
+.console .ansi-36,
+.console .ansi-96 {
+  color: oklch(0.52 0.1 215);
 }
 .log-toolbar {
   display: flex;
