@@ -697,8 +697,14 @@ class ListEditor extends Component {
       <h2 class="subtitle" t-out="this.spec.title"/>
       <div class="rows">
         <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row">
-          <input t-foreach="this.spec.fields" t-as="f" t-key="f.key" t-att-class="f.className"
-                 t-att-placeholder="f.placeholder" t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"/>
+          <t t-foreach="this.spec.fields" t-as="f" t-key="f.key">
+            <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.name">
+              <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => row[f.key] = ev.target.checked"/>
+              <t t-out="f.name"/>
+            </label>
+            <input t-else="" t-att-class="f.className" t-att-placeholder="f.placeholder"
+                   t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"/>
+          </t>
           <button class="row-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
         </div>
       </div>
@@ -725,7 +731,12 @@ class ListEditor extends Component {
       this.config.config[this.spec.key].map((item) => {
         const r = {};
         for (const f of this.spec.fields)
-          r[f.key] = f.format ? f.format(item[f.key]) : item[f.key] || "";
+          r[f.key] =
+            f.type === "checkbox"
+              ? !!item[f.key]
+              : f.format
+                ? f.format(item[f.key])
+                : item[f.key] || "";
         return r;
       }),
     );
@@ -752,7 +763,8 @@ class ListEditor extends Component {
     const seen = new Set();
     for (const row of this.rows()) {
       const raw = {};
-      for (const f of this.spec.fields) raw[f.key] = (row[f.key] || "").trim();
+      for (const f of this.spec.fields)
+        raw[f.key] = f.type === "checkbox" ? !!row[f.key] : (row[f.key] || "").trim();
       if (this.spec.fields.every((f) => !raw[f.key])) continue;
       for (const f of this.spec.fields) {
         if (!f.optional && !raw[f.key])
@@ -1060,6 +1072,7 @@ const SPECS = {
         className: "w-name",
         optional: true,
       },
+      { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
     ],
     validate(repos, config) {
       if (!repos.find((r) => r.id === "community"))

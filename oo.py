@@ -603,6 +603,94 @@ def close_pr(github, number):
     return True, None
 
 
+def main_remote(path, github=None):
+    """Best guess at the remote that hosts the canonical master, in order:
+    1. the upstream configured for the local `master` branch (git's own answer);
+    2. the remote whose URL matches the canonical github slug (e.g. odoo/odoo),
+       i.e. not the odoo-dev fork — the mirror of dev_remote();
+    3. "origin".
+    """
+    p = os.path.expanduser(path)
+    try:
+        r = subprocess.run(
+            ["git", "-C", p, "rev-parse", "--abbrev-ref", "master@{upstream}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0 and "/" in r.stdout.strip():
+            return r.stdout.strip().split("/", 1)[0]
+        if github:
+            rv = subprocess.run(
+                ["git", "-C", p, "remote", "-v"], capture_output=True, text=True, timeout=10
+            )
+            for line in rv.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and github in parts[1]:
+                    return parts[0]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return "origin"
+
+
+def fetch_master(repo):
+    """Fetch master objects for one repo (no merge, no working-tree change).
+    Slow on stale odoo clones, so callers run this off the main thread."""
+    rid = repo.get("id") or "?"
+    path = repo.get("path")
+    if not path:
+        return
+    remote = main_remote(path, repo.get("github"))
+    log_request(f"git fetch {remote} master  (auto-reload {rid})")
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "fetch", remote, "master"],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if r.returncode != 0:
+            tail = r.stderr.strip().splitlines()
+            print(f"{TAG} auto-reload {rid} failed: {tail[-1] if tail else 'git fetch failed'}", flush=True)
+        else:
+            print(f"{TAG} auto-reload {rid}: fetched {remote}/master", flush=True)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        print(f"{TAG} auto-reload {rid} failed: {e}", flush=True)
+
+
+class AutoReloader:
+    """Fetches master for opted-in repos every INTERVAL seconds, in the
+    background. The repo set is pushed by the frontend (config lives there).
+    Each repo's first fetch is one interval after it is first registered, so
+    starting oo never triggers a fetch storm."""
+
+    INTERVAL = 4 * 3600
+
+    def __init__(self):
+        self._repos = []
+        self._next = {}  # path -> earliest next fetch time
+        self._lock = threading.Lock()
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def set_repos(self, repos):
+        with self._lock:
+            self._repos = [r for r in repos if r.get("path")]
+            now = time.time()
+            for r in self._repos:
+                self._next.setdefault(r["path"], now + self.INTERVAL)
+
+    def _loop(self):
+        while True:
+            time.sleep(60)
+            now = time.time()
+            with self._lock:
+                due = [r for r in self._repos if now >= self._next.get(r["path"], 0)]
+                for r in due:
+                    self._next[r["path"]] = now + self.INTERVAL
+            for r in due:
+                fetch_master(r)
+
+
 def build_odoo_cmd(config):
     """Build the odoo-bin shell command from a client config.
 
@@ -894,6 +982,7 @@ class OdooManager:
 
 BUS = EventBus()
 MANAGER = OdooManager(BUS)
+AUTORELOAD = AutoReloader()
 
 
 # =============================================================================
@@ -967,6 +1056,13 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             self._send_json(200, {"ok": True, "repos": github_prs(repos)})
+        elif path == "/api/autoreload":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            AUTORELOAD.set_repos(repos)
+            self._send_json(200, {"ok": True})
         elif path == "/api/addons":
             body, err = self._read_json()
             repos = (body or {}).get("repos")

@@ -1477,6 +1477,27 @@ section.hidden {
   outline: none;
   border-color: var(--l-accent-line);
 }
+.edit-check {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--l-text-mid);
+  white-space: nowrap;
+  user-select: none;
+  cursor: pointer;
+}
+.edit-check input {
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--l-accent);
+  cursor: pointer;
+}
 .w-name {
   width: 150px;
   flex: none;
