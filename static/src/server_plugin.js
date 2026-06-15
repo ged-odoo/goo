@@ -14,6 +14,7 @@ export class ServerPlugin extends Plugin {
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
   lineListeners = new Set(); // tests/addons mirror lines from here
+  lastConfig = null; // last server start config (to resume after a one-shot run)
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
@@ -80,6 +81,7 @@ export class ServerPlugin extends Plugin {
   async start(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return this.log(`[oo] no such target: "${targetId}"`);
+    this.lastConfig = cfg;
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/start", cfg, "start");
   }
@@ -87,8 +89,16 @@ export class ServerPlugin extends Plugin {
   async restart(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return;
+    this.lastConfig = cfg;
     this.config.write(LAST_TARGET_KEY, cfg.target);
     await this._run("/api/restart", cfg, "restart");
+  }
+
+  // re-start the server with the last config used (e.g. after a one-shot install
+  // that had to stop a running server)
+  async resume() {
+    const cfg = this.lastConfig || this.buildStartConfig(this.lastTarget());
+    if (cfg) await this._run("/api/start", cfg, "resume");
   }
 
   async stop() {

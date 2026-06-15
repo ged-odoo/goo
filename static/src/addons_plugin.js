@@ -31,6 +31,7 @@ export class AddonsPlugin extends Plugin {
   runActive = signal(false);
   sawRun = signal(false);
   _adoptedDb = ""; // last running-server db we auto-selected
+  _resumeAfter = false; // a real server was running and got stopped to install
   // filtered + sorted modules — recomputed only when modules/filter change
   filtered = computed(() => this._filtered());
 
@@ -121,6 +122,10 @@ export class AddonsPlugin extends Plugin {
           : "stopped",
       );
       this.load(); // refresh install states (psql reads the db even while stopped)
+      if (this._resumeAfter) {
+        this._resumeAfter = false;
+        this.server.resume(); // bring back the server that was stopped to install
+      }
     }
   }
 
@@ -136,6 +141,9 @@ export class AddonsPlugin extends Plugin {
     const db = this.selectedDb();
     if (!db) return;
     if (!confirm(`${op === "upgrade" ? "Upgrade" : "Install"} "${name}" on ${db}?`)) return;
+    // if a real server is up, it will be stopped for the one-shot run — resume it after
+    const s = this.server.status();
+    this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
     const cfg = {
       ...this.config.config,
       target: null,
