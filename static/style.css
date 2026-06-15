@@ -1399,7 +1399,7 @@ section.hidden {
   opacity: 0.6;
 }
 
-.addons-list {
+.addons-grid-wrap {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -1411,10 +1411,62 @@ section.hidden {
   justify-content: center;
   font-size: 15px;
 }
-.addon-name {
+.addons-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 12px;
+}
+.addon-card {
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 10px;
+  background: var(--l-card);
+}
+.addon-card.installed {
+  border-color: var(--l-accent-line);
+}
+.addon-card-name {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--l-text);
+  overflow-wrap: anywhere;
+}
+.addon-card-repo {
+  font-size: 11px;
+  color: var(--l-text-faint);
+}
+.addon-card-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+}
+.addon-btn {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--l-accent);
+  padding: 5px 12px;
+  border: 1px solid var(--l-accent-line);
+  border-radius: 7px;
+  background: transparent;
+  transition: 0.13s;
+}
+.addon-btn:hover:not(:disabled) {
+  background: var(--l-accent-soft);
+}
+.addon-btn:disabled {
+  color: var(--l-text-faint);
+  border-color: var(--l-panel-line);
+  cursor: default;
 }
 .addons-more {
   padding: 8px 2px;
