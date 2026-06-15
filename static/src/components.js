@@ -13,7 +13,7 @@ import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { timeAgo, tintCmd } from "./utils.js";
 
-const { Component, xml, plugin, proxy, markup, onMounted, effect, EventBus, signal, computed, props, t } = owl;
+const { Component, xml, plugin, proxy, markup, onMounted, onWillUnmount, effect, EventBus, signal, computed, props, t } = owl;
 
 // app-wide event bus (Owl 3 has no `this.env`); used to open the branch popover
 const appBus = new EventBus();
@@ -125,13 +125,17 @@ class LogConsole extends Component {
   clearIcon = m(ICONS.clear);
 
   setup() {
-    onMounted(() => this.host().appendChild(this.props.buffer.el));
+    onMounted(() => {
+      this.host().appendChild(this.props.buffer.el);
+      this.props.buffer.restore();
+    });
+    onWillUnmount(() => { this.props.buffer.savedScroll = this.props.buffer.el.scrollTop; });
   }
   get live() { return this.server.status().state === "running"; }
   toggleAuto() {
     const b = this.props.buffer;
     b.autoScroll.set(!b.autoScroll());
-    if (b.autoScroll()) b.el.scrollTop = b.el.scrollHeight;
+    if (b.autoScroll()) b.toBottom();
   }
 }
 
