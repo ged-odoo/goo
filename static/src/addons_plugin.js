@@ -1,4 +1,6 @@
-// Browse a target's modules and install/upgrade one (via the shared process).
+// Addons of the currently running server's database: list installed/available
+// modules and install/upgrade one (via the shared process). No target selector
+// — the tab is scoped to whatever the server is running.
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -14,9 +16,10 @@ export class AddonsPlugin extends Plugin {
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
   output = new LogBuffer();
-  targetId = signal("");
   modules = signal([]);
-  loadedFor = signal("");
+  db = signal(""); // the managed db: the running server's db, sticky across one-shot installs
+  target = signal(""); // its target id (used to resolve addons-path and to install/upgrade)
+  loadedDb = signal("");
   loading = signal(false);
   error = signal("");
   filter = signal("");
@@ -27,30 +30,54 @@ export class AddonsPlugin extends Plugin {
   filtered = computed(() => this._filtered());
 
   setup() {
+    // adopt the running server's db/target as the managed context
+    effect(() => {
+      const s = this.server.status();
+      if ((s.state === "running" || s.state === "starting") && s.db && s.db !== this.db()) {
+        this.db.set(s.db);
+        this.target.set(s.target || "");
+      }
+    });
+    // (re)load the module list whenever the managed db changes
+    effect(() => {
+      const db = this.db();
+      if (db && db !== this.loadedDb() && !this.loading()) this.load();
+    });
     effect(() => this._onStatus(this.server.status()));
     this.server.onLine((line) => {
       if (this.runActive()) this.output.append(line);
     });
   }
 
-  _target(id) {
-    return this.config.config.targets.find((t) => t.id === id);
+  get serverRunning() {
+    const s = this.server.status().state;
+    return s === "running" || s === "starting";
+  }
+
+  _targetObj() {
+    return this.config.config.targets.find((t) => t.id === this.target()) || null;
   }
 
   _repoPaths(target) {
     const paths = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    return target.repos.map((id) => ({ id, path: paths[id] })).filter((r) => r.path);
+    return (target ? target.repos : [])
+      .map((id) => ({ id, path: paths[id] }))
+      .filter((r) => r.path);
   }
 
-  async load(targetId) {
-    const target = this._target(targetId);
-    if (!target) return;
+  async load() {
+    const db = this.db();
+    if (!db) {
+      this.modules.set([]);
+      this.loadedDb.set("");
+      return;
+    }
     this.loading.set(true);
     this.error.set("");
     try {
-      const data = await postJSON("/api/addons", { repos: this._repoPaths(target), db: target.db });
+      const data = await postJSON("/api/addons", { repos: this._repoPaths(this._targetObj()), db });
       this.modules.set(data.modules);
-      this.loadedFor.set(targetId);
+      this.loadedDb.set(db);
     } catch (e) {
       this.error.set(e.message);
     } finally {
@@ -90,7 +117,7 @@ export class AddonsPlugin extends Plugin {
             : "done"
           : "stopped",
       );
-      this.load(this.targetId()); // refresh install states
+      this.load(); // refresh install states (psql reads the db even while stopped)
     }
   }
 
@@ -102,8 +129,8 @@ export class AddonsPlugin extends Plugin {
     );
   }
 
-  async run(op, name, targetId) {
-    const cfg = this.server.buildStartConfig(targetId);
+  async run(op, name) {
+    const cfg = this.server.buildStartConfig(this.target());
     if (!cfg) return;
     if (!confirm(`${op === "upgrade" ? "Upgrade" : "Install"} "${name}" on ${cfg.start.db}?`))
       return;

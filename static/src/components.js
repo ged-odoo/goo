@@ -625,60 +625,55 @@ class AddonsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.addons.status()"/></div>
+        <div class="panel-top"><h1>Addons</h1><span class="meta" t-out="this.meta"/></div>
         <div class="panel-actions">
-          <select t-att-value="this.addons.targetId()" t-on-change="ev => this.onTargetChange(ev)" title="target (database + addons)">
-            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
-          </select>
-          <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off"/>
-          <button class="pbtn" t-on-click="() => this.addons.load(this.addons.targetId())"><t t-out="this.refreshIcon"/>Refresh</button>
+          <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Filter modules…" autocomplete="off" t-att-disabled="!this.addons.db()"/>
+          <button class="pbtn" t-att-disabled="!this.addons.db()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
           <button type="button" class="addons-stop" t-att-disabled="!this.addons.running" t-on-click="() => this.server.stop()">Stop</button>
         </div>
       </div>
       <div class="content">
-        <div class="addons-list">
-          <div t-if="this.addons.loading()" class="dim">Loading…</div>
-          <div t-elif="this.addons.error()" class="dim" t-out="'Failed to load: ' + this.addons.error()"/>
-          <div t-elif="!this.view.total" class="dim">No modules match.</div>
-          <t t-else="">
-            <table class="db-table addons-table">
-              <thead><tr><th>Module</th><th>Repo</th><th>State</th><th/></tr></thead>
-              <tbody>
-                <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
-                  <td class="addon-name" t-att-title="mod.summary" t-att-class="{'active-name': mod.state === 'installed'}" t-out="mod.name"/>
-                  <td class="dim" t-out="mod.repo"/>
-                  <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || '—'"/></td>
-                  <td class="db-actions">
-                    <button class="drop-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
-                            t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.addons.targetId())"
-                            t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
-                 t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
-          </t>
-        </div>
-        <LogConsole title="'Install / upgrade output'" buffer="this.addons.output" extraClass="'addons-console'"/>
+        <div t-if="!this.addons.db()" class="dim addons-empty">Start a server to view and manage the addons of its database.</div>
+        <t t-else="">
+          <div class="addons-list">
+            <div t-if="this.addons.loading()" class="dim">Loading…</div>
+            <div t-elif="this.addons.error()" class="dim" t-out="'Failed to load: ' + this.addons.error()"/>
+            <div t-elif="!this.view.total" class="dim">No modules match.</div>
+            <t t-else="">
+              <table class="db-table addons-table">
+                <thead><tr><th>Module</th><th>Repo</th><th>State</th><th/></tr></thead>
+                <tbody>
+                  <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
+                    <td class="addon-name" t-att-title="mod.summary" t-att-class="{'active-name': mod.state === 'installed'}" t-out="mod.name"/>
+                    <td class="dim" t-out="mod.repo"/>
+                    <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || '—'"/></td>
+                    <td class="db-actions">
+                      <button class="drop-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
+                              t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name)"
+                              t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
+                   t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
+            </t>
+          </div>
+          <LogConsole title="'Install / upgrade output'" buffer="this.addons.output" extraClass="'addons-console'"/>
+        </t>
       </div>
     </section>`;
 
   addons = plugin(AddonsPlugin);
   server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
   refreshIcon = m(ICONS.refresh);
-  setup() {
-    if (!this.addons.targetId()) {
-      const tgt = this.config.config.targets[0];
-      this.addons.targetId.set(tgt ? tgt.id : "");
-    }
-    if (this.addons.loadedFor() !== this.addons.targetId())
-      this.addons.load(this.addons.targetId());
-  }
 
-  get targets() {
-    return this.config.config.targets;
+  get meta() {
+    const a = this.addons;
+    const parts = [];
+    if (a.db()) parts.push(`db: ${a.db()}${a.serverRunning ? "" : " (server stopped)"}`);
+    if (a.status()) parts.push(a.status());
+    return parts.join(" · ");
   }
 
   get view() {
@@ -687,11 +682,6 @@ class AddonsScreen extends Component {
 
   stateClass(mod) {
     return (mod.state || "none").replace(/\s+/g, "-");
-  }
-
-  onTargetChange(ev) {
-    this.addons.targetId.set(ev.target.value);
-    this.addons.load(ev.target.value);
   }
 }
 

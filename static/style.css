@@ -1404,6 +1404,13 @@ section.hidden {
   min-height: 0;
   overflow: auto;
 }
+.addons-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+}
 .addon-name {
   font-family: var(--mono);
   font-size: 12.5px;
