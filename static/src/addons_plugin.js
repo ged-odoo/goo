@@ -26,6 +26,7 @@ export class AddonsPlugin extends Plugin {
   error = signal("");
   filter = signal("");
   stateFilter = signal(""); // "" | "installed" | "uninstalled"
+  appOnly = signal(false); // only modules flagged as an application
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
@@ -83,10 +84,12 @@ export class AddonsPlugin extends Plugin {
   _filtered() {
     const q = this.filter().trim().toLowerCase();
     const sf = this.stateFilter();
+    const appOnly = this.appOnly();
     const matched = this.modules().filter((mod) => {
       const installed = mod.state === "installed";
       if (sf === "installed" && !installed) return false;
       if (sf === "uninstalled" && installed) return false;
+      if (appOnly && !mod.application) return false;
       return (
         !q ||
         mod.name.toLowerCase().includes(q) ||
