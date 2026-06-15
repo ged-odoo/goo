@@ -881,7 +881,7 @@ section.hidden {
   border-left: 2px solid transparent;
 }
 .log-sep {
-  margin: 8px 14px;
+  margin: 4px 14px;
   border-top: 1px solid var(--l-panel-line);
 }
 .row:hover {
