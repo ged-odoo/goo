@@ -987,7 +987,7 @@ const SPECS = {
   },
   targets: {
     key: "targets",
-    title: "Targets",
+    title: "Base Targets",
     itemName: "target",
     fields: [
       { key: "id", name: "id", placeholder: "id (e.g. enterprise)", className: "w-name" },
