@@ -583,83 +583,62 @@ section.hidden {
   border-color: var(--l-accent-line);
 }
 
-/* ───────────────── COMMAND BAR (dark) ───────────────── */
+/* ───────────────── COMMAND BAR (light, wrapping) ───────────────── */
 
 .cmd {
-  background: var(--inset);
-  border: 1px solid var(--line);
+  background: var(--l-card);
+  border: 1px solid var(--l-panel-line);
   border-radius: var(--r);
   display: flex;
-  align-items: center;
+  align-items: stretch;
   overflow: hidden;
-  flex: none;
 }
 .cmd .label {
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: var(--text-faint);
-  padding: 0 14px;
-  border-right: 1px solid var(--line-soft);
-  align-self: stretch;
-  display: flex;
-  align-items: center;
+  color: var(--l-text-faint);
+  padding: 13px 14px;
+  border-right: 1px solid var(--l-line-soft);
   text-transform: uppercase;
   flex-shrink: 0;
 }
 .cmd .code {
   font-family: var(--mono);
   font-size: 12.5px;
-  color: var(--text-dim);
-  padding: 13px 14px;
-  overflow-x: auto;
-  white-space: nowrap;
+  line-height: 1.65;
+  color: var(--l-text-mid);
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   flex: 1;
-  opacity: 0.8;
-  transition: opacity 0.15s;
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-.cmd:hover .code {
-  opacity: 1;
-  scrollbar-color: var(--line) transparent;
-}
-.cmd .code::-webkit-scrollbar {
-  height: 8px;
-}
-.cmd .code::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 4px;
-}
-.cmd:hover .code::-webkit-scrollbar-thumb {
-  background: var(--line);
+  min-width: 0;
 }
 .cmd .code .prompt {
-  color: var(--accent);
+  color: var(--l-accent);
   user-select: none;
   margin-right: 8px;
 }
 .cmd .code .flag {
-  color: var(--amber);
+  color: var(--l-amber);
 }
 .cmd .code .path {
-  color: var(--blue);
+  color: oklch(0.5 0.15 250);
 }
 .cmd .copy {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--text-dim);
+  color: var(--l-text-dim);
   padding: 0 15px;
-  align-self: stretch;
-  border-left: 1px solid var(--line-soft);
+  border-left: 1px solid var(--l-line-soft);
   font-size: 12px;
   transition: 0.13s;
 }
 .cmd .copy:hover {
-  color: var(--text);
-  background: var(--panel);
+  color: var(--l-text);
+  background: var(--l-panel);
 }
 .cmd .copy svg {
   width: 13px;
