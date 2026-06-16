@@ -1209,6 +1209,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_events(self):
         q, backlog = BUS.subscribe()
+        print(
+            f"{TAG} {time.strftime('%H:%M:%S')} client connected ({self.client_address[0]})",
+            flush=True,
+        )
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
