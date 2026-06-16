@@ -159,11 +159,11 @@ export class CodePlugin extends Plugin {
     return res.exists;
   }
 
-  async _mutate(label, fn) {
+  async _mutate(label, fn, reload = true) {
     this.busy.set(true);
     try {
       await fn();
-      await this.load(true);
+      if (reload) await this.load(true);
     } catch (e) {
       alert(`${label} failed: ${e.message}`);
     } finally {
@@ -171,9 +171,27 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // drop a branch from the view + cache without a server round-trip — a full
+  // reload would re-fetch every branch's runbot badge, which is pointless here
+  _dropBranch(repo, branch) {
+    const branchRepos = this.branchRepos().map((r) =>
+      r.id === repo ? { ...r, branches: r.branches.filter((b) => b.name !== branch) } : r,
+    );
+    this.branchRepos.set(branchRepos);
+    const cache = this._cache();
+    if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
+  }
+
   deleteBranch(branch, repo, path) {
     if (!confirm(`Force-delete branch "${branch}" in ${repo}? This cannot be undone.`)) return;
-    return this._mutate("Delete", () => postJSON("/api/code/branches/delete", { path, branch }));
+    return this._mutate(
+      "Delete",
+      async () => {
+        await postJSON("/api/code/branches/delete", { path, branch });
+        this._dropBranch(repo, branch);
+      },
+      false,
+    );
   }
 
   closePr(github, number) {
