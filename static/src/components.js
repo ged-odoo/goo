@@ -950,7 +950,7 @@ class TestsScreen extends Component {
 
   get meta() {
     const t = this.tests.target;
-    if (!t) return "start a server to run tests against its target";
+    if (!t) return "no target configured";
     const st = this.tests.status();
     return `target: ${t}${st ? " · " + st : ""}`;
   }

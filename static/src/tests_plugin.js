@@ -1,5 +1,6 @@
 // Run `odoo-bin --test-tags …` against a target (via the shared process).
 
+import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
@@ -9,6 +10,7 @@ const { Plugin, plugin, effect, signal } = owl;
 export class TestsPlugin extends Plugin {
   static sequence = 3;
 
+  config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
   output = new LogBuffer();
   status = signal("");
@@ -16,10 +18,14 @@ export class TestsPlugin extends Plugin {
   sawRun = signal(false);
   _resumeAfter = false; // a real server was running and got stopped to test
 
-  // the target of the running/starting server — tests apply to it ("" if none)
+  // the target tests run against: the running/starting server's target, else
+  // the last-used one, else the first configured target. Tests are a one-shot
+  // run against the target's db, so they work even with the server down.
   get target() {
-    const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.target || "" : "";
+    const targets = this.config.config.targets;
+    const candidate = this.server.status().target || this.server.lastTarget();
+    if (targets.some((t) => t.name === candidate)) return candidate;
+    return targets[0]?.name || "";
   }
 
   setup() {
@@ -61,7 +67,7 @@ export class TestsPlugin extends Plugin {
     if (!tags.trim()) return;
     const s = this.server.status();
     const cfg = this.server.buildStartConfig(this.target);
-    if (!cfg) return this.server.log(`[goo] no running server target to test`);
+    if (!cfg) return this.server.log(`[goo] no valid target to test`);
     // a real server is up; it will be stopped for the one-shot test — resume after
     this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
     cfg.start.test_tags = tags.trim();
