@@ -67,6 +67,8 @@ const ROUTES = [
   { href: "https://odoo.github.io/owl/documentation/v3/owl/", label: "owl docs" },
   { href: "https://odoo.github.io/owl/playground/", label: "owl playground" },
   { href: "https://github.com/odoo/owl", label: "owl github" },
+  { href: "https://runbot.odoo.com", label: "runbot" },
+  { href: "https://mergebot.odoo.com", label: "mergebot" },
 ];
 
 // ─────────────────────────── Topbar ───────────────────────────
