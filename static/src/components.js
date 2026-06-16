@@ -628,6 +628,10 @@ class TargetsScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>Targets</h1></div>
         <div class="panel-actions">
+          <select t-if="!this.creating()" class="preset-select" t-att-value="this.preset()" t-on-change="ev => this.preset.set(ev.target.value)" title="prefill a new target from an existing one">
+            <option value="">Blank</option>
+            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.name" t-att-value="tgt.name" t-out="tgt.name"/>
+          </select>
           <button t-if="!this.creating()" class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <t t-else="">
             <button class="pbtn primary" t-on-click="() => this.save()">Save</button>
@@ -640,27 +644,21 @@ class TargetsScreen extends Component {
       <div class="content">
         <div t-if="this.creating()" class="launch-form">
           <h2 class="subtitle" t-out="this.editName() ? 'Editing ' + this.editName() : 'New target'"/>
-          <div t-if="!this.editName()" class="launch-field">
-            <label>Template</label>
-            <select t-att-value="this.draftTpl()" t-on-change="ev => this.draftTpl.set(ev.target.value)">
-              <option t-foreach="this.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id" t-out="tpl.id"/>
-            </select>
-          </div>
           <div class="launch-field">
             <label>Name</label>
-            <input type="text" t-att-value="this.draftName()" t-att-placeholder="this.ph.name" t-on-input="ev => this.draftName.set(ev.target.value)"/>
+            <input type="text" t-att-value="this.draftName()" placeholder="name (e.g. master-mytask)" t-on-input="ev => this.draftName.set(ev.target.value)"/>
           </div>
           <div class="launch-field">
             <label>Config</label>
-            <input type="text" t-att-value="this.draftConfig()" t-att-placeholder="this.ph.config" t-on-input="ev => this.draftConfig.set(ev.target.value)"/>
+            <input type="text" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)"/>
           </div>
           <div class="launch-field">
             <label>Database</label>
-            <input type="text" t-att-value="this.draftDb()" t-att-placeholder="this.ph.db" t-on-input="ev => this.draftDb.set(ev.target.value)"/>
+            <input type="text" t-att-value="this.draftDb()" placeholder="database name" t-on-input="ev => this.draftDb.set(ev.target.value)"/>
           </div>
           <div class="launch-field">
             <label>Start args</label>
-            <input type="text" t-att-value="this.draftArgs()" t-att-placeholder="this.ph.args" t-on-input="ev => this.draftArgs.set(ev.target.value)"/>
+            <input type="text" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)"/>
           </div>
           <div class="launch-field">
             <label>Favorite</label>
@@ -695,32 +693,13 @@ class TargetsScreen extends Component {
   starIcon = m(ICONS.star);
   creating = signal(false);
   editName = signal(""); // "" while creating; the edited target's original name otherwise
-  draftTpl = signal("");
+  preset = signal(""); // existing target to prefill a new one from ("" = blank)
   draftName = signal("");
   draftConfig = signal("");
   draftDb = signal("");
   draftArgs = signal("");
   draftFav = signal(false);
   error = signal("");
-
-  get templates() {
-    return this.config.config.target_templates;
-  }
-
-  // the selected template, and the placeholder values it provides
-  get tpl() {
-    return this.templates.find((t) => t.id === this.draftTpl());
-  }
-
-  get ph() {
-    const t = this.tpl;
-    return {
-      name: t?.id || "",
-      config: repoBranchList.format(t?.config),
-      db: t?.db || "",
-      args: t?.on_create_args || "",
-    };
-  }
 
   // favorites first, otherwise keep configured order
   get targets() {
@@ -745,14 +724,16 @@ class TargetsScreen extends Component {
     this.config.updateConfig({ targets });
   }
 
+  // prefill config/db/args/favorite from the selected preset target (if any);
+  // the name stays blank since a new target needs its own unique name
   startCreate() {
+    const src = this.config.config.targets.find((t) => t.name === this.preset());
     this.editName.set("");
-    this.draftTpl.set(this.templates[0]?.id || "");
     this.draftName.set("");
-    this.draftConfig.set("");
-    this.draftDb.set("");
-    this.draftArgs.set("");
-    this.draftFav.set(false);
+    this.draftConfig.set(src ? repoBranchList.format(src.config) : "");
+    this.draftDb.set(src ? src.db || "" : "");
+    this.draftArgs.set(src ? src.on_create_args || "" : "");
+    this.draftFav.set(src ? !!src.favorite : false);
     this.error.set("");
     this.creating.set(true);
   }
@@ -760,7 +741,6 @@ class TargetsScreen extends Component {
   // open the form on an existing target, fields pre-filled with its values
   startEdit(tgt) {
     this.editName.set(tgt.name);
-    this.draftTpl.set("");
     this.draftName.set(tgt.name);
     this.draftConfig.set(repoBranchList.format(tgt.config));
     this.draftDb.set(tgt.db || "");
@@ -782,22 +762,20 @@ class TargetsScreen extends Component {
     this.error.set("");
   }
 
-  // when creating, empty fields fall back to the template (placeholder) value;
-  // when editing, ph is empty so the (pre-filled) field values are used as-is
   save() {
     const editing = this.editName();
-    const name = (this.draftName().trim() || this.ph.name).trim();
+    const name = this.draftName().trim();
     if (!name) return this.error.set("a name is required");
     if (this.config.config.targets.some((t) => t.name === name && t.name !== editing))
       return this.error.set(`a target named "${name}" already exists`);
-    const config = repoBranchList.parse(this.draftConfig().trim() || this.ph.config);
+    const config = repoBranchList.parse(this.draftConfig().trim());
     if (!config.length) return this.error.set("a config is required");
     const target = {
       name,
       favorite: this.draftFav(),
       config,
-      db: this.draftDb().trim() || this.ph.db,
-      on_create_args: this.draftArgs().trim() || this.ph.args,
+      db: this.draftDb().trim(),
+      on_create_args: this.draftArgs().trim(),
     };
     const targets = this.config.config.targets;
     this.config.updateConfig({
@@ -1302,7 +1280,6 @@ class ConfigScreen extends Component {
       <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
       <div class="content">
         <ListEditor kind="'repos'"/>
-        <ListEditor kind="'target_templates'"/>
         <div class="config-block">
           <h2 class="subtitle">Storage</h2>
           <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
@@ -1599,40 +1576,9 @@ const SPECS = {
       if (!repos.find((r) => r.id === "community"))
         return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
-      for (const tt of config.target_templates) {
-        const used = (tt.config || []).find((c) => !ids.has(c.repo));
-        if (used) return `repository "${used.repo}" is still used by template "${tt.id}"`;
-      }
-      return null;
-    },
-  },
-  target_templates: {
-    key: "target_templates",
-    title: "Target Templates",
-    itemName: "target template",
-    fields: [
-      { key: "id", name: "name", placeholder: "name (e.g. master)", className: "w-name" },
-      {
-        key: "config",
-        name: "config",
-        placeholder: "config (e.g. community:master,enterprise:master)",
-        className: "w-flex",
-        ...repoBranchList,
-      },
-      { key: "db", name: "db", placeholder: "db (e.g. master-e)", className: "w-name" },
-      {
-        key: "on_create_args",
-        name: "on-create args",
-        placeholder: "on create args (e.g. -i sale_management)",
-        className: "w-mid",
-        optional: true,
-      },
-    ],
-    validate(templates, config) {
-      const repoIds = new Set(config.repos.map((r) => r.id));
-      for (const tt of templates) {
-        const unknown = tt.config.find((c) => !repoIds.has(c.repo));
-        if (unknown) return `template "${tt.id}": unknown repository "${unknown.repo}"`;
+      for (const t of config.targets) {
+        const used = (t.config || []).find((c) => !ids.has(c.repo));
+        if (used) return `repository "${used.repo}" is still used by target "${t.name}"`;
       }
       return null;
     },
