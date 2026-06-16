@@ -739,6 +739,29 @@ section.hidden {
   outline: none;
   border-color: var(--l-accent-line);
 }
+/* search input with a clear (✕) button */
+.search-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.search-box input {
+  padding-right: 24px;
+}
+.search-clear {
+  position: absolute;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--l-text-faint);
+  cursor: pointer;
+}
+.search-clear:hover {
+  color: var(--l-text);
+}
 
 /* ───────────────── COMMAND BAR (light, wrapping) ───────────────── */
 

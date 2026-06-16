@@ -195,6 +195,20 @@ class LogConsole extends Component {
   }
 }
 
+// ─────────────────────────── Search box ───────────────────────────
+
+// Reusable search input with a clear (✕) button; `value` is a signal.
+class SearchBox extends Component {
+  static template = xml`
+    <div class="search-box">
+      <input type="text" t-att-value="this.props.value()" autocomplete="off" placeholder="Search…"
+             t-on-input="ev => this.props.value.set(ev.target.value)"/>
+      <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
+    </div>`;
+
+  props = props({ value: t.any() });
+}
+
 // ─────────────────────────── Dashboard screen ───────────────────────────
 
 // Per-target view of the code state: for each target, the git/runbot/PR state
@@ -791,11 +805,13 @@ class TargetsScreen extends Component {
 // flat list (one row per branch × repo) over the same data the Dashboard tab loads
 
 class BranchesScreen extends Component {
+  static components = { SearchBox };
   static template = xml`
     <section>
       <div class="panel">
         <div class="panel-top"><h1>Branches</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
+          <SearchBox value="this.search"/>
           <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
             <option value="">All repositories</option>
             <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
@@ -847,6 +863,7 @@ class BranchesScreen extends Component {
   refreshIcon = m(ICONS.refresh);
   starIcon = m(ICONS.star);
   repoFilter = signal(""); // "" = all repositories
+  search = signal("");
   // flat, view-ready rows: favorites first, then most-recently-updated
   rows = computed(() => {
     const groups = this.code.groups();
@@ -854,11 +871,13 @@ class BranchesScreen extends Component {
     const pathByRepo = groups.pathByRepo;
     const favs = this.code.favorites();
     const repoFilter = this.repoFilter();
+    const q = this.search().trim().toLowerCase();
     const list = [];
     for (const repo of this.code.branchRepos()) {
       if (repo.error) continue;
       if (repoFilter && repo.id !== repoFilter) continue;
       for (const b of repo.branches) {
+        if (q && !b.name.toLowerCase().includes(q) && !repo.id.toLowerCase().includes(q)) continue;
         list.push({
           branch: b.name,
           repo: repo.id,
@@ -916,11 +935,13 @@ class BranchesScreen extends Component {
 
 // Flat list of every PR across repos (gh pr list --author @me), newest first.
 class PrsScreen extends Component {
+  static components = { SearchBox };
   static template = xml`
     <section>
       <div class="panel">
         <div class="panel-top"><h1>PRs</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
+          <SearchBox value="this.search"/>
           <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
             <option value="">All repositories</option>
             <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
@@ -960,6 +981,7 @@ class PrsScreen extends Component {
   refreshIcon = m(ICONS.refresh);
   openOnly = signal(true); // show only open PRs by default
   repoFilter = signal(""); // "" = all repositories
+  search = signal("");
 
   setup() {
     this.code.load();
@@ -988,12 +1010,18 @@ class PrsScreen extends Component {
   rows() {
     const openOnly = this.openOnly();
     const repoFilter = this.repoFilter();
+    const q = this.search().trim().toLowerCase();
     const list = [];
     for (const repo of this.code.prRepos()) {
       if (repo.error) continue;
       if (repoFilter && repo.id !== repoFilter) continue;
       for (const pr of repo.prs) {
         if (openOnly && pr.state !== "OPEN") continue;
+        if (
+          q &&
+          !`${pr.title} ${pr.headRefName} #${pr.number} ${repo.id}`.toLowerCase().includes(q)
+        )
+          continue;
         list.push({
           number: pr.number,
           title: pr.title || "",
@@ -1086,14 +1114,14 @@ class TestsScreen extends Component {
 // ─────────────────────────── Addons screen ───────────────────────────
 
 class AddonsScreen extends Component {
-  static components = { LogConsole };
+  static components = { LogConsole, SearchBox };
   static template = xml`
     <section>
       <div class="panel">
         <div class="panel-top addons-top">
           <h1>Addons</h1>
           <div class="addons-filters">
-            <input type="text" t-att-value="this.addons.filter()" t-on-input="ev => this.addons.filter.set(ev.target.value)" placeholder="Search…" autocomplete="off"/>
+            <SearchBox value="this.addons.filter"/>
             <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
             <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
             <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
