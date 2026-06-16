@@ -1270,6 +1270,15 @@ section.hidden {
 .pr-link:hover {
   text-decoration: underline;
 }
+.remote-link {
+  margin-left: 5px;
+  font-size: 12px;
+  color: var(--l-accent);
+  text-decoration: none;
+}
+.remote-link:hover {
+  text-decoration: underline;
+}
 .pr-state {
   font-family: var(--mono);
   font-size: 10.5px;

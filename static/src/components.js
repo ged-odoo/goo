@@ -742,6 +742,7 @@ class BranchesScreen extends Component {
                 <td class="pr-branch" t-att-class="{'active-name': row.active}">
                   <button class="fav-star" t-att-class="{'is-fav': row.favorite}" t-on-click="() => this.code.toggleFavorite(row.branch)"><t t-out="this.starIcon"/></button>
                   <span t-out="row.branch"/>
+                  <a t-if="row.remote and row.github" class="remote-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" title="open remote branch on GitHub">↗</a>
                   <span t-if="row.dirty" class="dirty-mark" title="uncommitted changes">(*)</span>
                   <span t-if="row.active" class="db-badge"><span class="pulse"/>Active</span>
                 </td>
@@ -785,6 +786,7 @@ class BranchesScreen extends Component {
           repo: repo.id,
           path: pathByRepo[repo.id] || "",
           github: groups.githubByRepo[repo.id] || "",
+          remote: b.remote,
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,

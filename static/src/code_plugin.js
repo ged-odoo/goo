@@ -145,6 +145,15 @@ export class CodePlugin extends Plugin {
     return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
   }
 
+  // where a local branch lives remotely: base branches (master, 19.0, saas-x.y)
+  // are on the canonical repo; work branches are pushed to the odoo-dev fork
+  remoteBranchUrl(github, branch) {
+    if (BASE_BRANCH_RE.test(branch)) {
+      return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
+    }
+    return this.forkBranchUrl(github, branch);
+  }
+
   bundleUrl(branch) {
     return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`;
   }
