@@ -885,19 +885,12 @@ class OdooManager:
         if was_active:
             self.bus.publish_status(self.status())
             self.bus.publish_log(f"{TAG} stopping odoo...")
+            # never let an exception leave us stuck in "stopping" (the guard
+            # above would then refuse every future stop until goo restarts)
             try:
-                pgid = os.getpgid(process.pid)
-                os.killpg(pgid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pgid, signal.SIGKILL)
-                    try:
-                        process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        pass
-            except (ProcessLookupError, OSError):
-                pass
+                self._terminate(process)
+            except Exception as e:
+                self.bus.publish_log(f"{TAG} error while stopping: {e}")
             kill_port(ODOO_PORT)
             if reader:
                 reader.join(timeout=2)
@@ -916,6 +909,27 @@ class OdooManager:
 
         self.bus.publish_status(self.status())
         return True, "stopped"
+
+    def _terminate(self, process):
+        """Signal-escalate the odoo process group until it exits: graceful
+        SIGTERM, then a second SIGTERM (odoo needs a second signal to force the
+        shutdown when graceful hangs), then SIGKILL as a last resort."""
+        if process is None:
+            return
+        try:
+            pgid = os.getpgid(process.pid)
+        except (ProcessLookupError, OSError):
+            return
+        for sig, wait in ((signal.SIGTERM, 4), (signal.SIGTERM, 3), (signal.SIGKILL, 3)):
+            try:
+                os.killpg(pgid, sig)
+            except (ProcessLookupError, OSError):
+                return  # already gone
+            try:
+                process.wait(timeout=wait)
+                return
+            except subprocess.TimeoutExpired:
+                continue
 
     def restart(self, config):
         ok, detail = self.stop()
