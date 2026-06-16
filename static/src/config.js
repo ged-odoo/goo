@@ -94,12 +94,12 @@ export const DEFAULT_CONFIG = {
 export const SECTIONS = [
   "dashboard",
   "server",
-  "targets",
   "branches",
   "prs",
   "tests",
   "databases",
   "addons",
+  "targets",
   "config",
 ];
 export const RUNBOT = "https://runbot.odoo.com";
