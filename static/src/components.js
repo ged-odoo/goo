@@ -728,7 +728,12 @@ class BranchesScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>Branches</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
+          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+            <option value="">All repositories</option>
+            <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+          </select>
           <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          <span class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content">
@@ -773,15 +778,18 @@ class BranchesScreen extends Component {
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
   starIcon = m(ICONS.star);
+  repoFilter = signal(""); // "" = all repositories
   // flat, view-ready rows: favorites first, then most-recently-updated
   rows = computed(() => {
     const groups = this.code.groups();
     const prIndex = groups.prIndex;
     const pathByRepo = groups.pathByRepo;
     const favs = this.code.favorites();
+    const repoFilter = this.repoFilter();
     const list = [];
     for (const repo of this.code.branchRepos()) {
       if (repo.error) continue;
+      if (repoFilter && repo.id !== repoFilter) continue;
       for (const b of repo.branches) {
         list.push({
           branch: b.name,
@@ -805,6 +813,16 @@ class BranchesScreen extends Component {
 
   setup() {
     this.code.load();
+  }
+
+  // repositories present in the loaded data (for the filter dropdown)
+  get repos() {
+    return this.code.branchRepos().map((r) => r.id);
+  }
+
+  get count() {
+    const n = this.rows().length;
+    return `${n} branch${n === 1 ? "" : "es"}`;
   }
 
   openPr(row) {
@@ -835,8 +853,13 @@ class PrsScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>PRs</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
+          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+            <option value="">All repositories</option>
+            <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+          </select>
           <button class="pbtn" t-att-class="{active: this.openOnly()}" t-on-click="() => this.openOnly.set(!this.openOnly())">Open</button>
           <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          <span class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content">
@@ -868,6 +891,7 @@ class PrsScreen extends Component {
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
   openOnly = signal(true); // show only open PRs by default
+  repoFilter = signal(""); // "" = all repositories
 
   setup() {
     this.code.load();
@@ -882,12 +906,24 @@ class PrsScreen extends Component {
     return this.code.prRepos().filter((r) => r.error);
   }
 
+  // repositories present in the loaded data (for the filter dropdown)
+  get repos() {
+    return this.code.prRepos().map((r) => r.id);
+  }
+
+  get count() {
+    const n = this.rows().length;
+    return `${n} PR${n === 1 ? "" : "s"}`;
+  }
+
   // every PR across repos, newest first (open-only unless the filter is off)
   rows() {
     const openOnly = this.openOnly();
+    const repoFilter = this.repoFilter();
     const list = [];
     for (const repo of this.code.prRepos()) {
       if (repo.error) continue;
+      if (repoFilter && repo.id !== repoFilter) continue;
       for (const pr of repo.prs) {
         if (openOnly && pr.state !== "OPEN") continue;
         list.push({

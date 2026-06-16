@@ -433,6 +433,12 @@ section.hidden {
 .panel-actions:empty {
   display: none;
 }
+.panel-actions .row-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text-dim);
+}
 .panel-actions .form-error {
   margin-left: 4px;
   font-size: 12.5px;
