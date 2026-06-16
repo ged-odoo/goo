@@ -984,14 +984,12 @@ class AddonsScreen extends Component {
           <span class="meta" t-out="this.addons.status()"/>
         </div>
         <div class="panel-actions">
-          <select t-att-value="this.addons.selectedDb()" t-on-change="ev => this.addons.selectedDb.set(ev.target.value)" title="database" t-att-disabled="!this.databases.length">
-            <option t-foreach="this.databases" t-as="d" t-key="d.name" t-att-value="d.name" t-out="this.dbLabel(d)"/>
-          </select>
-          <button class="pbtn" t-att-disabled="!this.addons.selectedDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
+          <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
+          <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
       </div>
       <div class="content addons-content">
-        <div t-if="!this.databases.length" class="dim addons-empty">No databases found.</div>
+        <div t-if="!this.addons.targetDb()" class="dim addons-empty">No active target — start a server to browse its addons.</div>
         <t t-else="">
           <div class="addons-grid-wrap">
             <div t-if="this.addons.loading()" class="dim">Loading…</div>
@@ -1022,28 +1020,22 @@ class AddonsScreen extends Component {
     </section>`;
 
   addons = plugin(AddonsPlugin);
-  database = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
 
   setup() {
-    this.database.load();
-    // load (and reload on selection change) only while this screen is mounted
+    // load (and reload when the active target's db changes) while mounted
     effect(() => {
-      const db = this.addons.selectedDb();
+      const db = this.addons.targetDb();
       if (db && db !== this.addons.loadedDb() && !this.addons.loading()) this.addons.load();
     });
-  }
-
-  get databases() {
-    return this.database.databases();
   }
 
   get view() {
     return this.addons.filtered();
   }
 
-  dbLabel(d) {
-    return d.name === this.database.activeDb ? `${d.name} (running)` : d.name;
+  get targetLabel() {
+    return `${this.addons.targetName()} · ${this.addons.targetDb()}`;
   }
 
   toggleState(value) {

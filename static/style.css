@@ -1524,6 +1524,12 @@ section.hidden {
   justify-content: center;
   gap: 8px;
 }
+.addons-target {
+  margin-right: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text-dim);
+}
 .addons-grid-wrap {
   flex: 1;
   min-height: 0;

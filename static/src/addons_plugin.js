@@ -1,11 +1,9 @@
-// Browse a database's modules and install/upgrade one (via the shared process).
-// A database selector drives the view — defaulting to the running server's db,
-// but any database can be selected. Available modules / addons-path come from
-// all configured repos, so a module can be installed on any database.
+// Browse the active target's modules and install/upgrade one (via the shared
+// process). The view follows the active target — the running server's target, or
+// the last one used — using its database and its set of repositories.
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
-import { DatabasePlugin } from "./database_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
@@ -17,10 +15,8 @@ export class AddonsPlugin extends Plugin {
 
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
-  database = plugin(DatabasePlugin);
   output = new LogBuffer();
   modules = signal([]);
-  selectedDb = signal("");
   loadedDb = signal("");
   loading = signal(false);
   error = signal("");
@@ -30,48 +26,44 @@ export class AddonsPlugin extends Plugin {
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
-  _adoptedDb = ""; // last running-server db we auto-selected
   _resumeAfter = false; // a real server was running and got stopped to install
   // filtered + sorted modules — recomputed only when modules/filter change
   filtered = computed(() => this._filtered());
 
   setup() {
-    // default selection follows the running server's db (adopted once per change)
-    effect(() => {
-      const s = this.server.status();
-      const sdb = s.state === "running" || s.state === "starting" ? s.db || "" : "";
-      if (sdb && sdb !== this._adoptedDb) {
-        this._adoptedDb = sdb;
-        this.selectedDb.set(sdb);
-      }
-    });
-    // with no server, default to the active/first known database
-    effect(() => {
-      if (this.selectedDb()) return;
-      const dbs = this.database.databases();
-      if (dbs.length) this.selectedDb.set(this.database.activeDb || dbs[0].name);
-    });
     effect(() => this._onStatus(this.server.status()));
     this.server.onLine((line) => {
       if (this.runActive()) this.output.append(line);
     });
   }
 
-  // all configured repos (the addons-path used for listing + install)
-  _allRepos() {
-    return this.config.config.repos.map((r) => ({ id: r.id, path: r.path })).filter((r) => r.path);
+  // the active target: the running server's target, else the last one used
+  _activeTarget() {
+    const name = this.server.status().target || this.server.lastTarget();
+    return this.config.config.targets.find((t) => t.name === name) || null;
   }
 
-  // repos of the target that uses the selected db. Modules from repos outside
-  // the target are hidden from the list. null when no target matches the db
-  // (e.g. an ad-hoc database) — then nothing is filtered out.
-  _targetRepos() {
-    const target = this.config.config.targets.find((t) => t.db === this.selectedDb());
-    return target ? new Set((target.config || []).map((c) => c.repo)) : null;
+  targetName() {
+    return this._activeTarget()?.name || "";
+  }
+
+  targetDb() {
+    return this._activeTarget()?.db || "";
+  }
+
+  // the active target's repos as {id, path} — the addons-path used to list +
+  // install, so only modules from the target's repos are ever shown
+  _repos() {
+    const target = this._activeTarget();
+    if (!target) return [];
+    const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+    return (target.config || [])
+      .map((c) => ({ id: c.repo, path: pathById[c.repo] }))
+      .filter((r) => r.path);
   }
 
   async load() {
-    const db = this.selectedDb();
+    const db = this.targetDb();
     if (!db) {
       this.modules.set([]);
       this.loadedDb.set("");
@@ -80,7 +72,7 @@ export class AddonsPlugin extends Plugin {
     this.loading.set(true);
     this.error.set("");
     try {
-      const data = await postJSON("/api/addons", { repos: this._allRepos(), db });
+      const data = await postJSON("/api/addons", { repos: this._repos(), db });
       this.modules.set(data.modules);
       this.loadedDb.set(db);
     } catch (e) {
@@ -94,9 +86,7 @@ export class AddonsPlugin extends Plugin {
     const q = this.filter().trim().toLowerCase();
     const sf = this.stateFilter();
     const appOnly = this.appOnly();
-    const allowed = this._targetRepos();
     const matched = this.modules().filter((mod) => {
-      if (allowed && !allowed.has(mod.repo)) return false;
       const installed = mod.state === "installed";
       if (sf === "installed" && !installed) return false;
       if (sf === "uninstalled" && installed) return false;
@@ -148,7 +138,7 @@ export class AddonsPlugin extends Plugin {
   }
 
   async run(op, name) {
-    const db = this.selectedDb();
+    const db = this.targetDb();
     if (!db) return;
     if (!confirm(`${op === "upgrade" ? "Upgrade" : "Install"} "${name}" on ${db}?`)) return;
     // if a real server is up, it will be stopped for the one-shot run — resume it after
@@ -157,7 +147,7 @@ export class AddonsPlugin extends Plugin {
     const cfg = {
       ...this.config.config,
       target: null,
-      start: { repos: this._allRepos().map((r) => r.id), db, [op]: name },
+      start: { repos: this._repos().map((r) => r.id), db, [op]: name },
     };
     this.output.clear();
     this.runActive.set(true);
