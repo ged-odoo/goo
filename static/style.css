@@ -631,6 +631,40 @@ section.hidden {
   flex: none;
 }
 
+/* Code tab: one block per target */
+.target-block {
+  margin-bottom: 22px;
+}
+.target-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+}
+.target-head .target-db {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--l-text-dim);
+}
+.target-head .target-fav {
+  color: var(--l-amber);
+  font-size: 13px;
+}
+.git-state {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.git-state.checkedout {
+  color: var(--l-green);
+}
+.git-state.present {
+  color: var(--l-text-dim);
+}
+.git-state.missing {
+  color: var(--l-red);
+}
+
 /* panel form controls (target select, filter, tags) */
 .panel select,
 .panel-actions select {

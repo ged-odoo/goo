@@ -40,6 +40,7 @@ const ICONS = {
   copy: `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
   star: `<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>`,
   server: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none"/></svg>`,
+  code: `<svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>`,
   target: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>`,
   branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
@@ -48,6 +49,7 @@ const ICONS = {
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
 };
 const NAV = [
+  { id: "code", label: "Code", icon: ICONS.code },
   { id: "server", label: "Server", icon: ICONS.server, live: true },
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "branches", label: "Branches", icon: ICONS.branches },
@@ -195,6 +197,140 @@ class LogConsole extends Component {
     const b = this.props.buffer;
     b.autoScroll.set(!b.autoScroll());
     if (b.autoScroll()) b.toBottom();
+  }
+}
+
+// ─────────────────────────── Code screen ───────────────────────────
+
+// Per-target view of the code state: for each target, the git/runbot/PR state
+// of every repo:branch in its config. Reuses CodePlugin's branch + PR data.
+class CodeScreen extends Component {
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top"><h1>Code</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-actions">
+          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </div>
+      </div>
+      <div class="content">
+        <div t-att-class="{busy: this.code.busy()}">
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
+          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.targets.length" class="dim">No targets.</div>
+          <t t-else="">
+            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="target-block">
+              <h2 class="subtitle target-head">
+                <span t-out="tgt.name"/>
+                <span class="target-db" t-out="'· ' + tgt.db"/>
+                <span t-if="tgt.favorite" class="target-fav" title="favorite">★</span>
+                <span t-if="this.isActive(tgt)" class="db-badge"><span class="pulse"/>Active</span>
+              </h2>
+              <table class="db-table">
+                <thead><tr><th>Repo</th><th>Branch</th><th>State</th><th>Last update</th><th>Runbot</th><th>PR</th></tr></thead>
+                <tbody>
+                  <tr t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo">
+                    <td class="dim" t-out="row.repo"/>
+                    <td t-out="row.branch"/>
+                    <td>
+                      <span t-if="row.checkedOut" class="git-state checkedout">checked out<t t-if="row.dirty"><span class="dirty-mark" title="uncommitted changes"> (*)</span></t></span>
+                      <span t-elif="row.present" class="git-state present">present</span>
+                      <span t-else="" class="git-state missing">missing</span>
+                    </td>
+                    <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                    <td t-att-class="{dim: !row.present}">
+                      <span t-if="row.present" class="runbot-inline">
+                        <a class="runbot-link" target="_blank" t-att-href="this.code.bundleUrl(row.branch)">runbot</a>
+                        <span class="runbot-dot" t-att-class="row.runbot || 'unknown'" t-att-title="'runbot: ' + (row.runbot || 'unknown')"/>
+                      </span>
+                      <t t-else="">—</t>
+                    </td>
+                    <td t-att-class="{dim: !row.pr}">
+                      <t t-if="row.pr">
+                        <a class="pr-link" target="_blank" t-att-href="row.pr.url" t-out="'#' + row.pr.number"/>
+                        <span class="pr-state" t-att-class="this.prState(row.pr)" t-out="this.prState(row.pr)"/>
+                      </t>
+                      <t t-else="">—</t>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </t>
+        </div>
+      </div>
+    </section>`;
+
+  code = plugin(CodePlugin);
+  config = plugin(ConfigPlugin);
+  server = plugin(ServerPlugin);
+  refreshIcon = m(ICONS.refresh);
+
+  setup() {
+    this.code.load();
+  }
+
+  get stamp() {
+    if (this.code.loading()) return "refreshing…";
+    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+  }
+
+  get errors() {
+    return this.code.groups().errors;
+  }
+
+  // configured targets, favorites first
+  get targets() {
+    return [...this.config.config.targets].sort(
+      (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
+    );
+  }
+
+  // repoId -> { current, dirty, branches: Map(name -> branch) }
+  get repoMap() {
+    const map = {};
+    for (const repo of this.code.branchRepos()) {
+      map[repo.id] = {
+        current: repo.current,
+        dirty: repo.dirty,
+        branches: new Map((repo.branches || []).map((b) => [b.name, b])),
+      };
+    }
+    return map;
+  }
+
+  // one row per repo:branch in the target's config, with its local + remote state
+  rows(tgt) {
+    const repos = this.repoMap;
+    const prIndex = this.code.groups().prIndex;
+    return (tgt.config || []).map(({ repo, branch }) => {
+      const r = repos[repo];
+      const b = r && r.branches.get(branch);
+      return {
+        repo,
+        branch,
+        present: !!b,
+        checkedOut: !!b && r.current === branch,
+        dirty: !!b && r.current === branch && r.dirty,
+        date: b ? b.date : "",
+        runbot: b ? b.runbot : "",
+        pr: prIndex[`${repo}:${branch}`] || null,
+      };
+    });
+  }
+
+  isActive(tgt) {
+    const s = this.server.status();
+    return (s.state === "running" || s.state === "starting") && s.target === tgt.name;
+  }
+
+  cell(date) {
+    return timeAgo(date);
+  }
+
+  prState(p) {
+    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
+    return st.toLowerCase();
   }
 }
 
@@ -1117,6 +1253,7 @@ class BranchMenu extends Component {
 // ─────────────────────────── Root ───────────────────────────
 
 const SCREENS = {
+  code: CodeScreen,
   server: ServerScreen,
   targets: TargetsScreen,
   branches: BranchesScreen,
@@ -1130,6 +1267,7 @@ export class App extends Component {
   static components = {
     Topbar,
     Sidebar,
+    CodeScreen,
     ServerScreen,
     TargetsScreen,
     BranchesScreen,
