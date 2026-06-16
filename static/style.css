@@ -1222,6 +1222,16 @@ section.hidden {
   border-color: var(--l-text-faint);
   background: transparent;
 }
+/* "Open PR" — a create action, accent-colored */
+.drop-btn.pr-open {
+  color: var(--l-accent);
+  border-color: var(--l-accent-line);
+  margin-right: 6px;
+}
+.drop-btn.pr-open:hover:not(:disabled) {
+  border-color: var(--l-accent);
+  background: var(--l-accent-soft);
+}
 
 /* ───────────────── BRANCHES & PRS (light) ───────────────── */
 

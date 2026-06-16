@@ -4,6 +4,7 @@
 // is held in individual signals (read via signal() in templates); component
 // props use the props({...}) helper with `t` types.
 
+import { BASE_BRANCH_RE } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -756,6 +757,8 @@ class BranchesScreen extends Component {
                   <t t-else="">—</t>
                 </td>
                 <td class="db-actions">
+                  <button t-if="!row.base and row.remote and row.github and !row.pr" class="drop-btn pr-open"
+                          t-on-click="() => this.openPr(row)">Open PR</button>
                   <button t-if="row.pr and row.github and row.pr.state === 'OPEN'" class="drop-btn pr-close"
                           t-on-click="() => this.code.closePr(row.github, row.pr.number)">Close PR</button>
                   <button class="drop-btn" t-att-disabled="row.active" t-att-title="row.active ? 'cannot delete the checked-out branch' : ''"
@@ -787,6 +790,7 @@ class BranchesScreen extends Component {
           path: pathByRepo[repo.id] || "",
           github: groups.githubByRepo[repo.id] || "",
           remote: b.remote,
+          base: BASE_BRANCH_RE.test(b.name),
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
@@ -802,6 +806,10 @@ class BranchesScreen extends Component {
 
   setup() {
     this.code.load();
+  }
+
+  openPr(row) {
+    window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
   }
 
   get stamp() {
