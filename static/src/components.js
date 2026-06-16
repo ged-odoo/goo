@@ -1500,9 +1500,15 @@ export class App extends Component {
     effect(() => {
       const state = this.server.status().state;
       const el = document.getElementById("favicon");
-      // green up, red disconnected, black (default) when available but stopped
+      // green up, amber starting, red disconnected, black (default) when stopped
       const icon =
-        state === "running" ? "favicon-up" : state === "disconnected" ? "favicon-down" : "favicon";
+        state === "running"
+          ? "favicon-up"
+          : state === "starting"
+            ? "favicon-starting"
+            : state === "disconnected"
+              ? "favicon-down"
+              : "favicon";
       if (el) el.href = `/static/${icon}.svg`;
     });
   }
