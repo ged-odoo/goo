@@ -409,6 +409,60 @@ def runbot_badge_status(branch):
     return ""
 
 
+MERGEBOT_STATES = frozenset(
+    (
+        "merged",
+        "staged",
+        "staging",
+        "blocked",
+        "ready",
+        "approved",
+        "validated",
+        "mergeable",
+        "reviewed",
+        "squashed",
+        "pending",
+        "error",
+        "closed",
+    )
+)
+
+
+def mergebot_status(github, number):
+    """Scrape the mergebot PR page and return its merge state, e.g. 'blocked',
+    'staged', 'merged' ("" on failure / unknown). The state is rendered
+    inconsistently per state (a colored <p> for blocked/staged/ready/…, an alert
+    <div> for merged/closed), so scan for the first element with a bg-* or alert
+    class whose leading word is a known state."""
+    url = f"https://mergebot.odoo.com/{github}/pull/{number}"
+    log_request(f"GET {url}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    for m in re.finditer(r'<\w+[^>]*class="[^"]*(?:\bbg-\w+|\balert\b)[^"]*"[^>]*>(.*?)</', html, re.S):
+        txt = re.sub(r"<[^>]+>", " ", m.group(1)).strip()
+        if not txt:
+            continue
+        word = re.sub(r"[^a-z]", "", txt.split()[0].lower())
+        if word in MERGEBOT_STATES:
+            return word
+    return ""
+
+
+def mergebot_statuses(prs):
+    """For a list of {github, number}: their mergebot states keyed
+    'github#number', fetched in parallel."""
+    prs = [p for p in prs if p.get("github") and p.get("number")]
+    if not prs:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(prs))) as pool:
+        states = pool.map(lambda p: mergebot_status(p["github"], p["number"]), prs)
+        return {f"{p['github']}#{p['number']}": s for p, s in zip(prs, states, strict=False)}
+
+
 def github_prs(repos):
     """For each repo {id, github}: the user's PRs (all states) via the gh CLI."""
     out = []
@@ -1073,6 +1127,12 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             self._send_json(200, {"ok": True, "repos": github_prs(repos)})
+        elif path == "/api/mergebot":
+            body, err = self._read_json()
+            prs = (body or {}).get("prs")
+            if err or not isinstance(prs, list):
+                return self._send_json(400, {"ok": False, "error": "missing prs list"})
+            self._send_json(200, {"ok": True, "states": mergebot_statuses(prs)})
         elif path == "/api/autoreload":
             body, err = self._read_json()
             repos = (body or {}).get("repos")

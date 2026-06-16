@@ -20,8 +20,22 @@ export class CodePlugin extends Plugin {
   error = signal("");
   busy = signal(false);
   favorites = signal(this._readFavorites());
+  mergebot = signal({}); // "github#number" -> mergebot state (scraped lazily)
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
+
+  // scrape the mergebot state for PRs not already known; merge into the map
+  async loadMergebot(prs) {
+    const have = this.mergebot();
+    const missing = prs.filter((p) => !(`${p.github}#${p.number}` in have));
+    if (!missing.length) return;
+    try {
+      const res = await postJSON("/api/mergebot", { prs: missing });
+      this.mergebot.set({ ...this.mergebot(), ...res.states });
+    } catch {
+      /* leave states blank on failure */
+    }
+  }
 
   reposWithGithub() {
     return this.config.config.repos.map((r) => ({
@@ -65,6 +79,7 @@ export class CodePlugin extends Plugin {
     }
     this.loading.set(true);
     this.error.set("");
+    this.mergebot.set({}); // re-scrape mergebot states after a real refresh
     const repos = this.reposWithGithub();
     try {
       const [b, p] = await Promise.all([

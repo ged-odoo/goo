@@ -241,7 +241,10 @@ class DashboardScreen extends Component {
                       <t t-else="">—</t>
                     </td>
                     <td t-att-class="{dim: !(row.pr and row.github)}">
-                      <a t-if="row.pr and row.github" class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)">mergebot</a>
+                      <t t-if="row.pr and row.github">
+                        <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)">mergebot</a>
+                        <span t-if="this.mbState(row)" class="mb-state" t-att-class="this.mbState(row)" t-out="this.mbState(row)"/>
+                      </t>
                       <t t-else="">—</t>
                     </td>
                     <td t-att-class="{dim: !row.pr}">
@@ -267,6 +270,33 @@ class DashboardScreen extends Component {
 
   setup() {
     this.code.load();
+    // scrape the mergebot state for the PRs shown on the dashboard
+    effect(() => {
+      const prs = this._prs();
+      if (prs.length) this.code.loadMergebot(prs);
+    });
+  }
+
+  // the unique {github, number} of every PR linked on the dashboard
+  _prs() {
+    const seen = new Set();
+    const prs = [];
+    for (const tgt of this.config.config.targets) {
+      for (const row of this.rows(tgt)) {
+        if (!row.pr || !row.github) continue;
+        const key = `${row.github}#${row.pr.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        prs.push({ github: row.github, number: row.pr.number });
+      }
+    }
+    return prs;
+  }
+
+  // the scraped mergebot state for a row's PR ("" if unknown / not fetched yet)
+  mbState(row) {
+    if (!row.pr || !row.github) return "";
+    return this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
   }
 
   get stamp() {

@@ -678,6 +678,30 @@ section.hidden {
 .git-state.missing {
   color: var(--l-red);
 }
+/* scraped mergebot state next to the dashboard mergebot link */
+.mb-state {
+  margin-left: 5px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--l-text-dim);
+}
+.mb-state.merged,
+.mb-state.ready,
+.mb-state.approved,
+.mb-state.validated,
+.mb-state.mergeable {
+  color: var(--l-green);
+}
+.mb-state.staged,
+.mb-state.staging {
+  color: var(--l-amber);
+}
+.mb-state.blocked,
+.mb-state.error {
+  color: var(--l-red);
+}
 
 /* panel form controls (target select, filter, tags) */
 .panel select,
