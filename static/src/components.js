@@ -926,6 +926,7 @@ class TestsScreen extends Component {
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
             <button type="submit" t-att-disabled="!this.tests.target"><span class="play"/>Run</button>
             <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
+            <button type="button" t-on-click="() => this.tags.set('/web:WebSuite[@web]')" title="fill the JS (hoot) unit suite tag">JS Tests</button>
             <div class="log-controls">
               <label class="toggle" t-att-class="{on: this.tests.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
               <button type="button" class="tool-btn" t-on-click="() => this.tests.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
