@@ -333,7 +333,7 @@ section.hidden {
   flex: none;
   height: 100px;
   background: var(--l-panel);
-  border-bottom: 1px solid var(--l-panel-line);
+  border-bottom: 1px solid oklch(0.82 0.006 264);
   padding: 11px 24px 13px;
 }
 .panel-top {
