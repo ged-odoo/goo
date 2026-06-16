@@ -800,8 +800,10 @@ def build_odoo_cmd(config):
     test_tags = start.get("test_tags")
     if test_tags:
         # quote so shell globbing can't mangle hoot params, e.g.
-        # /web:WebSuite[@web/core/commands] (the [..] is a bash glob)
-        cmd += f" --test-tags {shlex.quote(test_tags)} --stop-after-init"
+        # /web:WebSuite[@web/core/commands] (the [..] is a bash glob).
+        # --dev=assets serves non-minified bundles (debug=assets) so JS test
+        # code is readable when it runs.
+        cmd += f" --test-tags {shlex.quote(test_tags)} --dev=assets --stop-after-init"
         return cmd, db, False
 
     # install / upgrade modules and exit
