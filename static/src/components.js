@@ -595,7 +595,8 @@ class TargetsScreen extends Component {
       </div>
       <div class="content">
         <div t-if="this.creating()" class="launch-form">
-          <div class="launch-field">
+          <h2 class="subtitle" t-out="this.editName() ? 'Editing ' + this.editName() : 'New target'"/>
+          <div t-if="!this.editName()" class="launch-field">
             <label>Template</label>
             <select t-att-value="this.draftTpl()" t-on-change="ev => this.draftTpl.set(ev.target.value)">
               <option t-foreach="this.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id" t-out="tpl.id"/>
@@ -625,7 +626,7 @@ class TargetsScreen extends Component {
         <t t-else="">
           <div t-if="!this.targets.length" class="dim">No targets.</div>
           <table t-else="" class="db-table">
-            <thead><tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th></tr></thead>
+            <thead><tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th><th/></tr></thead>
             <tbody>
               <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.name">
                 <td class="pr-branch">
@@ -635,6 +636,10 @@ class TargetsScreen extends Component {
                 <td class="dim" t-out="this.fmtConfig(tgt)"/>
                 <td t-out="tgt.db"/>
                 <td class="dim" t-out="tgt.on_create_args || '—'"/>
+                <td class="db-actions">
+                  <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
+                  <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt.name)">Delete</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -645,6 +650,7 @@ class TargetsScreen extends Component {
   config = plugin(ConfigPlugin);
   starIcon = m(ICONS.star);
   creating = signal(false);
+  editName = signal(""); // "" while creating; the edited target's original name otherwise
   draftTpl = signal("");
   draftName = signal("");
   draftConfig = signal("");
@@ -696,6 +702,7 @@ class TargetsScreen extends Component {
   }
 
   startCreate() {
+    this.editName.set("");
     this.draftTpl.set(this.templates[0]?.id || "");
     this.draftName.set("");
     this.draftConfig.set("");
@@ -706,16 +713,38 @@ class TargetsScreen extends Component {
     this.creating.set(true);
   }
 
+  // open the form on an existing target, fields pre-filled with its values
+  startEdit(tgt) {
+    this.editName.set(tgt.name);
+    this.draftTpl.set("");
+    this.draftName.set(tgt.name);
+    this.draftConfig.set(repoBranchList.format(tgt.config));
+    this.draftDb.set(tgt.db || "");
+    this.draftArgs.set(tgt.on_create_args || "");
+    this.draftFav.set(!!tgt.favorite);
+    this.error.set("");
+    this.creating.set(true);
+  }
+
+  deleteTarget(name) {
+    if (!confirm(`Delete target "${name}"?`)) return;
+    this.config.updateConfig({
+      targets: this.config.config.targets.filter((t) => t.name !== name),
+    });
+  }
+
   discard() {
     this.creating.set(false);
     this.error.set("");
   }
 
-  // empty fields fall back to the template (placeholder) value
+  // when creating, empty fields fall back to the template (placeholder) value;
+  // when editing, ph is empty so the (pre-filled) field values are used as-is
   save() {
+    const editing = this.editName();
     const name = (this.draftName().trim() || this.ph.name).trim();
     if (!name) return this.error.set("a name is required");
-    if (this.config.config.targets.some((t) => t.name === name))
+    if (this.config.config.targets.some((t) => t.name === name && t.name !== editing))
       return this.error.set(`a target named "${name}" already exists`);
     const config = repoBranchList.parse(this.draftConfig().trim() || this.ph.config);
     if (!config.length) return this.error.set("a config is required");
@@ -726,7 +755,12 @@ class TargetsScreen extends Component {
       db: this.draftDb().trim() || this.ph.db,
       on_create_args: this.draftArgs().trim() || this.ph.args,
     };
-    this.config.updateConfig({ targets: [...this.config.config.targets, target] });
+    const targets = this.config.config.targets;
+    this.config.updateConfig({
+      targets: editing
+        ? targets.map((t) => (t.name === editing ? target : t))
+        : [...targets, target],
+    });
     this.creating.set(false);
   }
 }
