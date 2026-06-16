@@ -1212,6 +1212,16 @@ section.hidden {
   border-color: var(--l-line);
   cursor: default;
 }
+/* neutral sibling of the (red) delete button, for "Close PR" */
+.drop-btn.pr-close {
+  color: var(--l-text-mid);
+  border-color: var(--l-line);
+  margin-right: 6px;
+}
+.drop-btn.pr-close:hover:not(:disabled) {
+  border-color: var(--l-text-faint);
+  background: transparent;
+}
 
 /* ───────────────── BRANCHES & PRS (light) ───────────────── */
 

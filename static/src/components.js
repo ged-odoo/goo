@@ -753,6 +753,8 @@ class BranchesScreen extends Component {
                   <t t-else="">—</t>
                 </td>
                 <td class="db-actions">
+                  <button t-if="row.pr and row.github and row.pr.state === 'OPEN'" class="drop-btn pr-close"
+                          t-on-click="() => this.code.closePr(row.github, row.pr.number)">Close PR</button>
                   <button class="drop-btn" t-att-disabled="row.active" t-att-title="row.active ? 'cannot delete the checked-out branch' : ''"
                           t-on-click="() => this.code.deleteBranch(row.branch, row.repo, row.path)">Delete</button>
                 </td>
@@ -780,6 +782,7 @@ class BranchesScreen extends Component {
           branch: b.name,
           repo: repo.id,
           path: pathByRepo[repo.id] || "",
+          github: groups.githubByRepo[repo.id] || "",
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
