@@ -835,6 +835,7 @@ class PrsScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>PRs</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
+          <button class="pbtn" t-att-class="{active: this.openOnly()}" t-on-click="() => this.openOnly.set(!this.openOnly())">Open</button>
           <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
       </div>
@@ -866,6 +867,7 @@ class PrsScreen extends Component {
 
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
+  openOnly = signal(true); // show only open PRs by default
 
   setup() {
     this.code.load();
@@ -880,12 +882,14 @@ class PrsScreen extends Component {
     return this.code.prRepos().filter((r) => r.error);
   }
 
-  // every PR across repos, newest first
+  // every PR across repos, newest first (open-only unless the filter is off)
   rows() {
+    const openOnly = this.openOnly();
     const list = [];
     for (const repo of this.code.prRepos()) {
       if (repo.error) continue;
       for (const pr of repo.prs) {
+        if (openOnly && pr.state !== "OPEN") continue;
         list.push({
           number: pr.number,
           title: pr.title || "",
