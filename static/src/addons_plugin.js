@@ -62,6 +62,14 @@ export class AddonsPlugin extends Plugin {
     return this.config.config.repos.map((r) => ({ id: r.id, path: r.path })).filter((r) => r.path);
   }
 
+  // repos of the target that uses the selected db. Modules from repos outside
+  // the target are hidden from the list. null when no target matches the db
+  // (e.g. an ad-hoc database) — then nothing is filtered out.
+  _targetRepos() {
+    const target = this.config.config.targets.find((t) => t.db === this.selectedDb());
+    return target ? new Set((target.config || []).map((c) => c.repo)) : null;
+  }
+
   async load() {
     const db = this.selectedDb();
     if (!db) {
@@ -86,7 +94,9 @@ export class AddonsPlugin extends Plugin {
     const q = this.filter().trim().toLowerCase();
     const sf = this.stateFilter();
     const appOnly = this.appOnly();
+    const allowed = this._targetRepos();
     const matched = this.modules().filter((mod) => {
+      if (allowed && !allowed.has(mod.repo)) return false;
       const installed = mod.state === "installed";
       if (sf === "installed" && !installed) return false;
       if (sf === "uninstalled" && installed) return false;

@@ -39,15 +39,17 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
   }
 
-  buildStartConfig(targetId, otherArgs) {
+  buildStartConfig(targetName, otherArgs) {
     const cfg = this.config.config;
-    const target = cfg.targets.find((t) => t.id === targetId);
+    const target = cfg.targets.find((t) => t.name === targetName);
     if (!target) return null;
     return {
       ...cfg,
-      target: target.id,
+      target: target.name,
       start: {
-        repos: target.repos,
+        // addons path is built from the target's repos; the branches in the
+        // config are stored for later (not checked out yet)
+        repos: (target.config || []).map((c) => c.repo),
         db: target.db,
         on_create_args: target.on_create_args || "",
         other_args: otherArgs ?? cfg.start.other_args,

@@ -40,7 +40,7 @@ const ICONS = {
   copy: `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
   star: `<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>`,
   server: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none"/></svg>`,
-  code: `<svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>`,
+  target: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>`,
   branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
@@ -49,7 +49,7 @@ const ICONS = {
 };
 const NAV = [
   { id: "server", label: "Server", icon: ICONS.server, live: true },
-  { id: "code", label: "Code", icon: ICONS.code },
+  { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "databases", label: "Databases", icon: ICONS.databases },
@@ -74,13 +74,44 @@ class Topbar extends Component {
     <header class="topbar">
       <div class="top-left">
         <div class="logo"><span class="name" title="GED Odoo Overseer">goo</span></div>
+        <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
+          <span class="dot"/>
+          <span class="t-name" t-out="this.target"/>
+          <span t-if="this.db" class="t-db" t-out="this.db"/>
+        </div>
       </div>
       <div class="top-right">
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
       </div>
     </header>`;
 
+  server = plugin(ServerPlugin);
   routes = ROUTES;
+
+  get active() {
+    const s = this.server.status().state;
+    return s === "running" || s === "starting";
+  }
+
+  // the running target while active, else the last-used one (shown dimmed)
+  get target() {
+    return this.active ? this.server.status().target || "" : this.server.lastTarget();
+  }
+
+  get db() {
+    return this.active ? this.server.status().db || "" : "";
+  }
+
+  get stateClass() {
+    const s = this.server.status().state;
+    return s === "running" ? "live" : s === "starting" ? "starting" : "idle";
+  }
+
+  get tooltip() {
+    return this.active
+      ? `current target (${this.server.status().state})`
+      : "last target — server stopped";
+  }
 }
 
 // ─────────────────────────── Sidebar ───────────────────────────
@@ -96,12 +127,6 @@ class Sidebar extends Component {
         <span t-if="item.live and this.serverRunning" class="live"/>
         <span t-elif="item.live and this.serverDown" class="live down"/>
       </button>
-      <div class="spacer"/>
-      <div t-if="this.env" class="env-card">
-        <div class="row"><span class="k">target</span><span class="v" t-out="this.env.target"/></div>
-        <div class="row"><span class="k">db</span><span class="v" t-out="this.env.db"/></div>
-        <div class="row"><span class="k">pid</span><span class="v" t-out="this.env.pid"/></div>
-      </div>
     </nav>`;
 
   router = plugin(RouterPlugin);
@@ -117,12 +142,6 @@ class Sidebar extends Component {
 
   get serverDown() {
     return this.server.status().state === "disconnected";
-  }
-
-  get env() {
-    const s = this.server.status();
-    if (s.state !== "starting" && s.state !== "running") return null;
-    return { target: s.target || "—", db: s.db || "—", pid: s.pid || "—" };
   }
 }
 
@@ -212,7 +231,7 @@ class ServerScreen extends Component {
           <div class="launch-field">
             <label>Target</label>
             <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
-              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.id"/>
+              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.name" t-att-value="tgt.name" t-out="tgt.name"/>
             </select>
           </div>
           <div class="launch-field">
@@ -236,7 +255,7 @@ class ServerScreen extends Component {
   copyIcon = m(ICONS.copy);
   clearIcon = m(ICONS.clear);
   copyLbl = signal("Copy");
-  target = signal(this.server.lastTarget() || this.config.config.targets[0]?.id || "");
+  target = signal(this._initialTarget());
   extraArgs = signal(this.config.config.start.other_args || "");
   command = signal("");
 
@@ -256,6 +275,13 @@ class ServerScreen extends Component {
 
   get targets() {
     return this.config.config.targets;
+  }
+
+  // last used target if it still exists, else the first one
+  _initialTarget() {
+    const names = this.targets.map((t) => t.name);
+    const last = this.server.lastTarget();
+    return names.includes(last) ? last : names[0] || "";
   }
 
   status() {
@@ -406,88 +432,155 @@ class DatabasesScreen extends Component {
   }
 }
 
-// ─────────────────────────── Code screen ───────────────────────────
+// ─────────────────────────── Targets screen ───────────────────────────
 
-class CodeScreen extends Component {
+// First-class targets: name, favorite flag, config (repo:branch pairs), db and
+// start args. The list is read-only except for starring; "New target" swaps the
+// main area for a creation form seeded (as placeholders) from a target template.
+class TargetsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Code</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-top"><h1>Targets</h1></div>
         <div class="panel-actions">
-          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          <button t-if="!this.creating()" class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
+          <t t-else="">
+            <button class="pbtn primary" t-on-click="() => this.save()">Save</button>
+            <button class="pbtn" t-on-click="() => this.discard()">Discard</button>
+            <span t-if="this.error()" class="form-error" t-out="this.error()"/>
+          </t>
         </div>
       </div>
       <div class="content">
-        <div t-att-class="{busy: this.code.busy()}">
-          <div t-foreach="this.vm.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.vm.list.length" class="dim">No branches.</div>
-          <table t-else="" class="db-table pr-table">
-            <thead><tr><th>Branch</th><th>Repo</th><th>Last update</th><th>PR</th><th/></tr></thead>
+        <div t-if="this.creating()" class="launch-form">
+          <div class="launch-field">
+            <label>Template</label>
+            <select t-att-value="this.draftTpl()" t-on-change="ev => this.draftTpl.set(ev.target.value)">
+              <option t-foreach="this.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id" t-out="tpl.id"/>
+            </select>
+          </div>
+          <div class="launch-field">
+            <label>Name</label>
+            <input type="text" t-att-value="this.draftName()" t-att-placeholder="this.ph.name" t-on-input="ev => this.draftName.set(ev.target.value)"/>
+          </div>
+          <div class="launch-field">
+            <label>Config</label>
+            <input type="text" t-att-value="this.draftConfig()" t-att-placeholder="this.ph.config" t-on-input="ev => this.draftConfig.set(ev.target.value)"/>
+          </div>
+          <div class="launch-field">
+            <label>Database</label>
+            <input type="text" t-att-value="this.draftDb()" t-att-placeholder="this.ph.db" t-on-input="ev => this.draftDb.set(ev.target.value)"/>
+          </div>
+          <div class="launch-field">
+            <label>Start args</label>
+            <input type="text" t-att-value="this.draftArgs()" t-att-placeholder="this.ph.args" t-on-input="ev => this.draftArgs.set(ev.target.value)"/>
+          </div>
+          <div class="launch-field">
+            <label>Favorite</label>
+            <label class="edit-check"><input type="checkbox" t-att-checked="this.draftFav()" t-on-change="ev => this.draftFav.set(ev.target.checked)"/> starred</label>
+          </div>
+        </div>
+        <t t-else="">
+          <div t-if="!this.targets.length" class="dim">No targets.</div>
+          <table t-else="" class="db-table">
+            <thead><tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th></tr></thead>
             <tbody>
-              <t t-foreach="this.vm.list" t-as="g" t-key="g.branch">
-                <tr t-foreach="g.rows" t-as="row" t-key="row.repo" t-att-class="{'group-start': row_index === 0}">
-                  <td t-if="row_index === 0" class="pr-branch" t-att-rowspan="g.rows.length">
-                    <button class="fav-star" t-att-class="{'is-fav': g.favorite}" t-on-click="() => this.code.toggleFavorite(g.branch)"><t t-out="this.starIcon"/></button>
-                    <button t-if="!g.base" class="branch-trigger" t-on-click.stop="(ev) => this.openMenu(ev, g)" t-out="g.branch"/>
-                    <span t-else="" t-out="g.branch"/>
-                    <span t-if="!g.base" class="runbot-inline">
-                      <span class="runbot-paren">(</span>
-                      <a class="runbot-link" target="_blank" t-att-href="this.code.bundleUrl(g.branch)">runbot</a>
-                      <span class="runbot-dot" t-att-class="g.runbot || 'unknown'" t-att-title="'runbot: ' + (g.runbot || 'unknown')"/>
-                      <span class="runbot-paren">)</span>
-                    </span>
-                  </td>
-                  <td class="dim" t-out="row.repo"/>
-                  <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
-                  <td t-att-class="{dim: !this.pr(g, row)}">
-                    <t t-set="p" t-value="this.pr(g, row)"/>
-                    <t t-if="p">
-                      <a class="pr-link" target="_blank" t-att-href="p.url" t-out="'#' + p.number"/>
-                      <span class="pr-state" t-att-class="this.prState(p)" t-out="this.prState(p)"/>
-                    </t>
-                    <t t-else="">—</t>
-                  </td>
-                  <td/>
-                </tr>
-              </t>
+              <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.name">
+                <td class="pr-branch">
+                  <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.name)"><t t-out="this.starIcon"/></button>
+                </td>
+                <td t-out="tgt.name"/>
+                <td class="dim" t-out="this.fmtConfig(tgt)"/>
+                <td t-out="tgt.db"/>
+                <td class="dim" t-out="tgt.on_create_args || '—'"/>
+              </tr>
             </tbody>
           </table>
-        </div>
+        </t>
       </div>
     </section>`;
 
-  code = plugin(CodePlugin);
-  refreshIcon = m(ICONS.refresh);
+  config = plugin(ConfigPlugin);
   starIcon = m(ICONS.star);
-  setup() {
-    this.code.load();
+  creating = signal(false);
+  draftTpl = signal("");
+  draftName = signal("");
+  draftConfig = signal("");
+  draftDb = signal("");
+  draftArgs = signal("");
+  draftFav = signal(false);
+  error = signal("");
+
+  get templates() {
+    return this.config.config.target_templates;
   }
 
-  get stamp() {
-    if (this.code.loading()) return "refreshing…";
-    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+  // the selected template, and the placeholder values it provides
+  get tpl() {
+    return this.templates.find((t) => t.id === this.draftTpl());
   }
 
-  get vm() {
-    return this.code.groups();
+  get ph() {
+    const t = this.tpl;
+    return {
+      name: t?.id || "",
+      config: repoBranchList.format(t?.config),
+      db: t?.db || "",
+      args: t?.on_create_args || "",
+    };
   }
 
-  cell(date) {
-    return timeAgo(date);
+  // favorites first, otherwise keep configured order
+  get targets() {
+    return [...this.config.config.targets].sort(
+      (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
+    );
   }
 
-  pr(g, row) {
-    return this.vm.prIndex[`${row.repo}:${g.branch}`];
+  fmtConfig(tgt) {
+    return (tgt.config || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
   }
 
-  prState(p) {
-    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
-    return st.toLowerCase();
+  toggleFavorite(name) {
+    const targets = this.config.config.targets.map((t) =>
+      t.name === name ? { ...t, favorite: !t.favorite } : t,
+    );
+    this.config.updateConfig({ targets });
   }
 
-  openMenu(ev, g) {
-    appBus.trigger("branch-menu", { ev, group: g, vm: this.vm });
+  startCreate() {
+    this.draftTpl.set(this.templates[0]?.id || "");
+    this.draftName.set("");
+    this.draftConfig.set("");
+    this.draftDb.set("");
+    this.draftArgs.set("");
+    this.draftFav.set(false);
+    this.error.set("");
+    this.creating.set(true);
+  }
+
+  discard() {
+    this.creating.set(false);
+    this.error.set("");
+  }
+
+  // empty fields fall back to the template (placeholder) value
+  save() {
+    const name = (this.draftName().trim() || this.ph.name).trim();
+    if (!name) return this.error.set("a name is required");
+    if (this.config.config.targets.some((t) => t.name === name))
+      return this.error.set(`a target named "${name}" already exists`);
+    const config = repoBranchList.parse(this.draftConfig().trim() || this.ph.config);
+    if (!config.length) return this.error.set("a config is required");
+    const target = {
+      name,
+      favorite: this.draftFav(),
+      config,
+      db: this.draftDb().trim() || this.ph.db,
+      on_create_args: this.draftArgs().trim() || this.ph.args,
+    };
+    this.config.updateConfig({ targets: [...this.config.config.targets, target] });
+    this.creating.set(false);
   }
 }
 
@@ -827,7 +920,7 @@ class ConfigScreen extends Component {
       <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
       <div class="content">
         <ListEditor kind="'repos'"/>
-        <ListEditor kind="'targets'"/>
+        <ListEditor kind="'target_templates'"/>
         <div class="config-block">
           <h2 class="subtitle">Storage</h2>
           <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
@@ -1025,7 +1118,7 @@ class BranchMenu extends Component {
 
 const SCREENS = {
   server: ServerScreen,
-  code: CodeScreen,
+  targets: TargetsScreen,
   branches: BranchesScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
@@ -1038,7 +1131,7 @@ export class App extends Component {
     Topbar,
     Sidebar,
     ServerScreen,
-    CodeScreen,
+    TargetsScreen,
     BranchesScreen,
     TestsScreen,
     DatabasesScreen,
@@ -1075,13 +1168,18 @@ export class App extends Component {
 
 // ─────────────────────────── helpers ───────────────────────────
 
-const commaList = {
-  format: (v) => (v || []).join(","),
+// "community:master,enterprise:master" <-> [{repo, branch}, ...]
+const repoBranchList = {
+  format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
   parse: (s) =>
     s
       .split(",")
       .map((x) => x.trim())
-      .filter(Boolean),
+      .filter(Boolean)
+      .map((pair) => {
+        const [repo, branch = ""] = pair.split(":").map((p) => p.trim());
+        return { repo, branch };
+      }),
 };
 const SPECS = {
   repos: {
@@ -1109,40 +1207,40 @@ const SPECS = {
       if (!repos.find((r) => r.id === "community"))
         return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
-      for (const tt of config.targets) {
-        const used = (tt.repos || []).find((id) => !ids.has(id));
-        if (used) return `repository "${used}" is still used by target "${tt.id}"`;
+      for (const tt of config.target_templates) {
+        const used = (tt.config || []).find((c) => !ids.has(c.repo));
+        if (used) return `repository "${used.repo}" is still used by template "${tt.id}"`;
       }
       return null;
     },
   },
-  targets: {
-    key: "targets",
+  target_templates: {
+    key: "target_templates",
     title: "Target Templates",
-    itemName: "target",
+    itemName: "target template",
     fields: [
-      { key: "id", name: "id", placeholder: "id (e.g. enterprise)", className: "w-name" },
+      { key: "id", name: "name", placeholder: "name (e.g. master)", className: "w-name" },
       {
-        key: "repos",
-        name: "repos list",
-        placeholder: "repos (e.g. community,enterprise)",
-        className: "w-mid",
-        ...commaList,
+        key: "config",
+        name: "config",
+        placeholder: "config (e.g. community:master,enterprise:master)",
+        className: "w-flex",
+        ...repoBranchList,
       },
-      { key: "db", name: "db", placeholder: "db (e.g. test_db_e)", className: "w-name" },
+      { key: "db", name: "db", placeholder: "db (e.g. master-e)", className: "w-name" },
       {
         key: "on_create_args",
         name: "on-create args",
         placeholder: "on create args (e.g. -i sale_management)",
-        className: "w-flex",
+        className: "w-mid",
         optional: true,
       },
     ],
-    validate(targets, config) {
+    validate(templates, config) {
       const repoIds = new Set(config.repos.map((r) => r.id));
-      for (const tt of targets) {
-        const unknown = tt.repos.find((id) => !repoIds.has(id));
-        if (unknown) return `target "${tt.id}": unknown repository "${unknown}"`;
+      for (const tt of templates) {
+        const unknown = tt.config.find((c) => !repoIds.has(c.repo));
+        if (unknown) return `template "${tt.id}": unknown repository "${unknown.repo}"`;
       }
       return null;
     },
