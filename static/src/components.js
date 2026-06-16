@@ -73,7 +73,7 @@ class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><span class="name">goo</span></div>
+        <div class="logo"><span class="name" title="GED Odoo Overseer">goo</span></div>
       </div>
       <div class="top-right">
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
@@ -1063,9 +1063,12 @@ export class App extends Component {
   currentScreen = computed(() => SCREENS[this.router.section()] || ServerScreen);
   setup() {
     effect(() => {
-      const running = this.server.status().state === "running";
+      const state = this.server.status().state;
       const el = document.getElementById("favicon");
-      if (el) el.href = running ? "/static/favicon-on.svg" : "/static/favicon.svg";
+      // green up, red disconnected, black (default) when available but stopped
+      const icon =
+        state === "running" ? "favicon-up" : state === "disconnected" ? "favicon-down" : "favicon";
+      if (el) el.href = `/static/${icon}.svg`;
     });
   }
 }
