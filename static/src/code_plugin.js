@@ -194,9 +194,29 @@ export class CodePlugin extends Plugin {
     );
   }
 
+  // mark a PR closed in the view + cache, no reload (which would re-fetch every
+  // branch's runbot badge just to flip one PR's state)
+  _closePrLocally(github, number) {
+    const prRepos = this.prRepos().map((r) =>
+      r.github === github
+        ? { ...r, prs: r.prs.map((p) => (p.number === number ? { ...p, state: "CLOSED" } : p)) }
+        : r,
+    );
+    this.prRepos.set(prRepos);
+    const cache = this._cache();
+    if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, prRepos }));
+  }
+
   closePr(github, number) {
     if (!confirm(`Close PR #${number} in ${github}?`)) return;
-    return this._mutate("Close PR", () => postJSON("/api/prs/close", { repo: github, number }));
+    return this._mutate(
+      "Close PR",
+      async () => {
+        await postJSON("/api/prs/close", { repo: github, number });
+        this._closePrLocally(github, number);
+      },
+      false,
+    );
   }
 
   pushBranch(path, branch) {
