@@ -16,6 +16,7 @@ import os
 import pty
 import queue
 import re
+import shlex
 import signal
 import socket
 import subprocess
@@ -744,7 +745,9 @@ def build_odoo_cmd(config):
     # extras (other_args / on_create_args), mirroring the old odev behaviour
     test_tags = start.get("test_tags")
     if test_tags:
-        cmd += f" --test-tags {test_tags} --stop-after-init"
+        # quote so shell globbing can't mangle hoot params, e.g.
+        # /web:WebSuite[@web/core/commands] (the [..] is a bash glob)
+        cmd += f" --test-tags {shlex.quote(test_tags)} --stop-after-init"
         return cmd, db, False
 
     # install / upgrade modules and exit
