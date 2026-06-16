@@ -43,6 +43,7 @@ const ICONS = {
   code: `<svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>`,
   target: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>`,
   branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
+  pr: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="6" y1="9" x2="6" y2="15"/><circle cx="18" cy="18" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/></svg>`,
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
@@ -53,6 +54,7 @@ const NAV = [
   { id: "server", label: "Server", icon: ICONS.server },
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "branches", label: "Branches", icon: ICONS.branches },
+  { id: "prs", label: "PRs", icon: ICONS.pr },
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "addons", label: "Addons", icon: ICONS.addons },
@@ -815,6 +817,92 @@ class BranchesScreen extends Component {
   }
 }
 
+// ─────────────────────────── PRs screen ───────────────────────────
+
+// Flat list of every PR across repos (gh pr list --author @me), newest first.
+class PrsScreen extends Component {
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top"><h1>PRs</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-actions">
+          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </div>
+      </div>
+      <div class="content">
+        <div t-att-class="{busy: this.code.busy()}">
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
+          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.rows().length" class="dim">No pull requests.</div>
+          <table t-else="" class="db-table">
+            <thead><tr><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/></tr></thead>
+            <tbody>
+              <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number">
+                <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
+                <td t-att-title="row.title" t-out="row.title || '—'"/>
+                <td class="dim" t-out="row.repo"/>
+                <td t-out="row.branch"/>
+                <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
+                <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
+                <td class="db-actions">
+                  <button t-if="row.state === 'OPEN' and row.github" class="drop-btn pr-close"
+                          t-on-click="() => this.code.closePr(row.github, row.number)">Close PR</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
+
+  code = plugin(CodePlugin);
+  refreshIcon = m(ICONS.refresh);
+
+  setup() {
+    this.code.load();
+  }
+
+  get stamp() {
+    if (this.code.loading()) return "refreshing…";
+    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+  }
+
+  get errors() {
+    return this.code.prRepos().filter((r) => r.error);
+  }
+
+  // every PR across repos, newest first
+  rows() {
+    const list = [];
+    for (const repo of this.code.prRepos()) {
+      if (repo.error) continue;
+      for (const pr of repo.prs) {
+        list.push({
+          number: pr.number,
+          title: pr.title || "",
+          url: pr.url,
+          repo: repo.id,
+          github: repo.github,
+          branch: pr.headRefName,
+          state: pr.state,
+          isDraft: pr.isDraft,
+          updatedAt: pr.updatedAt,
+        });
+      }
+    }
+    return list.sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+  }
+
+  cell(date) {
+    return timeAgo(date);
+  }
+
+  prState(p) {
+    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
+    return st.toLowerCase();
+  }
+}
+
 // ─────────────────────────── Tests screen ───────────────────────────
 
 class TestsScreen extends Component {
@@ -1264,6 +1352,7 @@ const SCREENS = {
   server: ServerScreen,
   targets: TargetsScreen,
   branches: BranchesScreen,
+  prs: PrsScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
   addons: AddonsScreen,
@@ -1278,6 +1367,7 @@ export class App extends Component {
     ServerScreen,
     TargetsScreen,
     BranchesScreen,
+    PrsScreen,
     TestsScreen,
     DatabasesScreen,
     AddonsScreen,

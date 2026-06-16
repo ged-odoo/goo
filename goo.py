@@ -432,7 +432,7 @@ def github_prs(repos):
                     "--limit",
                     "200",
                     "--json",
-                    "number,url,state,isDraft,headRefName,updatedAt",
+                    "number,title,url,state,isDraft,headRefName,updatedAt",
                 ],
                 capture_output=True,
                 text=True,
