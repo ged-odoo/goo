@@ -1245,6 +1245,14 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def handle_error(self, request, client_address):
+        # the client closed the connection before we finished writing (page
+        # reload, aborted fetch, SSE reconnect, a superseded refresh). Harmless
+        # — don't dump a traceback. Real errors still propagate.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
 
 def main():
     parser = argparse.ArgumentParser(description="odoo development helper (web UI)")
