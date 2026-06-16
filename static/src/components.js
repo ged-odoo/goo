@@ -729,7 +729,7 @@ class BranchesScreen extends Component {
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.rows().length" class="dim">No branches.</div>
           <table t-else="" class="db-table pr-table">
-            <thead><tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th></tr></thead>
+            <thead><tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/></tr></thead>
             <tbody>
               <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch" t-att-class="{'db-active': row.active}">
                 <td class="pr-branch" t-att-class="{'active-name': row.active}">
@@ -747,6 +747,10 @@ class BranchesScreen extends Component {
                   </t>
                   <t t-else="">—</t>
                 </td>
+                <td class="db-actions">
+                  <button class="drop-btn" t-att-disabled="row.active" t-att-title="row.active ? 'cannot delete the checked-out branch' : ''"
+                          t-on-click="() => this.code.deleteBranch(row.branch, row.repo, row.path)">Delete</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -759,7 +763,9 @@ class BranchesScreen extends Component {
   starIcon = m(ICONS.star);
   // flat, view-ready rows: favorites first, then most-recently-updated
   rows = computed(() => {
-    const prIndex = this.code.groups().prIndex;
+    const groups = this.code.groups();
+    const prIndex = groups.prIndex;
+    const pathByRepo = groups.pathByRepo;
     const favs = this.code.favorites();
     const list = [];
     for (const repo of this.code.branchRepos()) {
@@ -768,6 +774,7 @@ class BranchesScreen extends Component {
         list.push({
           branch: b.name,
           repo: repo.id,
+          path: pathByRepo[repo.id] || "",
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
