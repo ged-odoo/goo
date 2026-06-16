@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG = {
   targets: [
     {
       name: "master",
-      favorite: false,
+      favorite: true,
       config: [{ repo: "community", branch: "master" }],
       db: "master",
       on_create_args: "-i sale_management",

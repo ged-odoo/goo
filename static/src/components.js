@@ -226,7 +226,7 @@ class DashboardScreen extends Component {
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.targets.length" class="dim">No targets.</div>
+          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
           <t t-else="">
             <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="target-block">
               <h2 class="subtitle target-head">
@@ -296,7 +296,7 @@ class DashboardScreen extends Component {
   // present branches shown on the dashboard (for the runbot fetch)
   _branches() {
     const seen = new Set();
-    for (const tgt of this.config.config.targets)
+    for (const tgt of this.targets)
       for (const row of this.rows(tgt)) if (row.present) seen.add(row.branch);
     return [...seen];
   }
@@ -305,7 +305,7 @@ class DashboardScreen extends Component {
   _prs() {
     const seen = new Set();
     const prs = [];
-    for (const tgt of this.config.config.targets) {
+    for (const tgt of this.targets) {
       for (const row of this.rows(tgt)) {
         if (!row.pr || !row.github) continue;
         const key = `${row.github}#${row.pr.number}`;
@@ -337,11 +337,12 @@ class DashboardScreen extends Component {
     return this.code.groups().errors;
   }
 
-  // targets ordered by last activity (most recent first), favorite as tiebreak
+  // favorite targets only, ordered by last activity (most recent first)
   get targets() {
-    return [...this.config.config.targets]
+    return this.config.config.targets
+      .filter((t) => t.favorite)
       .map((t) => ({ t, activity: this._activity(t) }))
-      .sort((a, b) => b.activity - a.activity || (b.t.favorite ? 1 : 0) - (a.t.favorite ? 1 : 0))
+      .sort((a, b) => b.activity - a.activity)
       .map((x) => x.t);
   }
 
