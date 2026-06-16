@@ -21,6 +21,7 @@ export class CodePlugin extends Plugin {
   busy = signal(false);
   favorites = signal(this._readFavorites());
   mergebot = signal({}); // "github#number" -> mergebot state (scraped lazily)
+  runbot = signal({}); // branch name -> runbot status (fetched lazily)
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
 
@@ -34,6 +35,19 @@ export class CodePlugin extends Plugin {
       this.mergebot.set({ ...this.mergebot(), ...res.states });
     } catch {
       /* leave states blank on failure */
+    }
+  }
+
+  // fetch the runbot status for branches not already known; merge into the map
+  async loadRunbot(branches) {
+    const have = this.runbot();
+    const missing = branches.filter((b) => !(b in have));
+    if (!missing.length) return;
+    try {
+      const res = await postJSON("/api/runbot", { branches: missing });
+      this.runbot.set({ ...this.runbot(), ...res.states });
+    } catch {
+      /* leave status blank on failure */
     }
   }
 
@@ -79,7 +93,8 @@ export class CodePlugin extends Plugin {
     }
     this.loading.set(true);
     this.error.set("");
-    this.mergebot.set({}); // re-scrape mergebot states after a real refresh
+    this.mergebot.set({}); // re-scrape mergebot/runbot states after a real refresh
+    this.runbot.set({});
     const repos = this.reposWithGithub();
     try {
       const [b, p] = await Promise.all([

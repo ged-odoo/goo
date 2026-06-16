@@ -351,16 +351,8 @@ def git_branches(repos):
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
         out.append(entry)
-
-    # enrich work branches with their runbot status (one badge per unique
-    # name, fetched in parallel); base branches are skipped — see frontend.
-    names = {b["name"] for e in out for b in e["branches"] if not BASE_BRANCH_RE.match(b["name"])}
-    if names:
-        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
-            status = dict(zip(names, pool.map(runbot_badge_status, names), strict=False))
-        for e in out:
-            for b in e["branches"]:
-                b["runbot"] = status.get(b["name"], "")
+    # runbot status is fetched lazily for the few branches the dashboard shows
+    # (see /api/runbot) rather than for every branch on every load.
     return out
 
 
@@ -378,9 +370,6 @@ def git_delete_branch(path, branch):
     if result.returncode != 0:
         return False, result.stderr.strip().split("\n")[0] or "git branch -D failed"
     return True, None
-
-
-BASE_BRANCH_RE = re.compile(r"^(saas-\d+\.\d+|\d+\.\d+|master)$")
 
 
 def runbot_badge_status(branch):
@@ -407,6 +396,17 @@ def runbot_badge_status(branch):
     if any(k in label for k in ("pending", "running", "testing", "progress")):
         return "pending"
     return ""
+
+
+def runbot_statuses(branches):
+    """For a list of branch names: their runbot status keyed by name, fetched
+    in parallel."""
+    branches = [b for b in dict.fromkeys(branches) if b]  # unique, non-empty
+    if not branches:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
+        states = pool.map(runbot_badge_status, branches)
+        return dict(zip(branches, states, strict=False))
 
 
 MERGEBOT_STATES = frozenset(
@@ -1133,6 +1133,12 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(prs, list):
                 return self._send_json(400, {"ok": False, "error": "missing prs list"})
             self._send_json(200, {"ok": True, "states": mergebot_statuses(prs)})
+        elif path == "/api/runbot":
+            body, err = self._read_json()
+            branches = (body or {}).get("branches")
+            if err or not isinstance(branches, list):
+                return self._send_json(400, {"ok": False, "error": "missing branches list"})
+            self._send_json(200, {"ok": True, "states": runbot_statuses(branches)})
         elif path == "/api/autoreload":
             body, err = self._read_json()
             repos = (body or {}).get("repos")

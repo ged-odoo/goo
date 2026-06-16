@@ -236,7 +236,7 @@ class DashboardScreen extends Component {
                     <td t-att-class="{dim: !row.present}">
                       <span t-if="row.present" class="runbot-inline">
                         <a class="runbot-link" target="_blank" t-att-href="this.code.bundleUrl(row.branch)">runbot</a>
-                        <span class="runbot-dot" t-att-class="row.runbot || 'unknown'" t-att-title="'runbot: ' + (row.runbot || 'unknown')"/>
+                        <span class="runbot-dot" t-att-class="this.rbState(row) || 'unknown'" t-att-title="'runbot: ' + (this.rbState(row) || 'unknown')"/>
                       </span>
                       <t t-else="">—</t>
                     </td>
@@ -270,11 +270,21 @@ class DashboardScreen extends Component {
 
   setup() {
     this.code.load();
-    // scrape the mergebot state for the PRs shown on the dashboard
+    // fetch runbot + mergebot status only for what the dashboard actually shows
     effect(() => {
+      const branches = this._branches();
+      if (branches.length) this.code.loadRunbot(branches);
       const prs = this._prs();
       if (prs.length) this.code.loadMergebot(prs);
     });
+  }
+
+  // present branches shown on the dashboard (for the runbot fetch)
+  _branches() {
+    const seen = new Set();
+    for (const tgt of this.config.config.targets)
+      for (const row of this.rows(tgt)) if (row.present) seen.add(row.branch);
+    return [...seen];
   }
 
   // the unique {github, number} of every PR linked on the dashboard
@@ -291,6 +301,11 @@ class DashboardScreen extends Component {
       }
     }
     return prs;
+  }
+
+  // the fetched runbot status for a row's branch ("" if unknown / not fetched)
+  rbState(row) {
+    return this.code.runbot()[row.branch] || "";
   }
 
   // the scraped mergebot state for a row's PR ("" if unknown / not fetched yet)
@@ -342,7 +357,6 @@ class DashboardScreen extends Component {
         present: !!b,
         remote: !!b && b.remote,
         date: b ? b.date : "",
-        runbot: b ? b.runbot : "",
         pr: groups.prIndex[`${repo}:${branch}`] || null,
       };
     });
