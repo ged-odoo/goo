@@ -684,6 +684,9 @@ section.hidden {
   padding: 7px 9px;
   cursor: pointer;
 }
+.preset-select {
+  max-width: 120px;
+}
 .panel input[type="text"] {
   padding: 7px 12px;
   border: 1px solid var(--l-panel-line);

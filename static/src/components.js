@@ -926,7 +926,13 @@ class TestsScreen extends Component {
         <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.meta"/></div>
         <div class="panel-actions">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
-            <button type="button" t-on-click="() => this.tags.set('/web:WebSuite[@web]')" title="fill the JS (hoot) unit suite tag">JS Tests</button>
+            <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
+              <option value="">Presets</option>
+              <option value="/web:WebSuite[@web]">/web:WebSuite[@web]</option>
+              <optgroup t-if="this.tests.history().length" label="Recent">
+                <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
+              </optgroup>
+            </select>
             <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
             <button type="submit" t-att-disabled="!this.tests.target"><span class="play"/>Run</button>
@@ -957,6 +963,13 @@ class TestsScreen extends Component {
 
   run() {
     this.tests.run(this.tags());
+  }
+
+  // fill the input from the preset/recent menu, then reset it back to "Presets"
+  onPreset(ev) {
+    const v = ev.target.value;
+    ev.target.value = "";
+    if (v) this.tags.set(v);
   }
 
   toggleAuto() {
@@ -1206,7 +1219,7 @@ class ConfigScreen extends Component {
 
   exportData() {
     const data = {};
-    for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target"]) {
+    for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target", "oo-test-history"]) {
       const v = localStorage.getItem(k);
       if (v !== null) data[k] = v;
     }
@@ -1227,7 +1240,7 @@ class ConfigScreen extends Component {
       const data = JSON.parse(await file.text());
       if (!data || typeof data !== "object") throw new Error("not a JSON object");
       let n = 0;
-      for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target"]) {
+      for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target", "oo-test-history"]) {
         if (typeof data[k] === "string") {
           localStorage.setItem(k, data[k]);
           n++;

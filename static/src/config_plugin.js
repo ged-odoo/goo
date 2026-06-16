@@ -11,7 +11,8 @@ const STORAGE_KEY = "oo-config";
 export const LAST_TARGET_KEY = "oo-last-target";
 const DATA_FILE_KEY = "oo-data-file";
 export const FAVORITES_KEY = "oo-prs-favorites";
-const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY];
+export const TEST_HISTORY_KEY = "oo-test-history";
+const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY, TEST_HISTORY_KEY];
 
 export class ConfigPlugin extends Plugin {
   static sequence = 1; // everything else may depend on config

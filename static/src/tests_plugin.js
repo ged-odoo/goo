@@ -1,11 +1,13 @@
 // Run `odoo-bin --test-tags …` against a target (via the shared process).
 
-import { ConfigPlugin } from "./config_plugin.js";
+import { ConfigPlugin, TEST_HISTORY_KEY } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, effect, signal } = owl;
+
+const HISTORY_MAX = 10;
 
 export class TestsPlugin extends Plugin {
   static sequence = 3;
@@ -16,7 +18,26 @@ export class TestsPlugin extends Plugin {
   status = signal("");
   runActive = signal(false);
   sawRun = signal(false);
+  history = signal(this._readHistory()); // last test tags run, most recent first
   _resumeAfter = false; // a real server was running and got stopped to test
+
+  _readHistory() {
+    try {
+      const h = JSON.parse(this.config.read(TEST_HISTORY_KEY));
+      return Array.isArray(h) ? h : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // record a run's tag at the front, deduped, capped at HISTORY_MAX
+  _pushHistory(tag) {
+    tag = tag.trim();
+    if (!tag) return;
+    const h = [tag, ...this.history().filter((t) => t !== tag)].slice(0, HISTORY_MAX);
+    this.history.set(h);
+    this.config.write(TEST_HISTORY_KEY, JSON.stringify(h));
+  }
 
   // the target tests run against: the running/starting server's target, else
   // the last-used one, else the first configured target. Tests are a one-shot
@@ -71,6 +92,7 @@ export class TestsPlugin extends Plugin {
     // a real server is up; it will be stopped for the one-shot test — resume after
     this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
     cfg.start.test_tags = tags.trim();
+    this._pushHistory(tags);
     this.output.clear();
     this.runActive.set(true);
     this.sawRun.set(false);
