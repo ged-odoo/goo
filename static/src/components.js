@@ -337,11 +337,22 @@ class DashboardScreen extends Component {
     return this.code.groups().errors;
   }
 
-  // configured targets, favorites first
+  // targets ordered by last activity (most recent first), favorite as tiebreak
   get targets() {
-    return [...this.config.config.targets].sort(
-      (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
-    );
+    return [...this.config.config.targets]
+      .map((t) => ({ t, activity: this._activity(t) }))
+      .sort((a, b) => b.activity - a.activity || (b.t.favorite ? 1 : 0) - (a.t.favorite ? 1 : 0))
+      .map((x) => x.t);
+  }
+
+  // most recent timestamp across a target's branches + their PRs (0 if none)
+  _activity(tgt) {
+    let last = 0;
+    for (const row of this.rows(tgt)) {
+      if (row.date) last = Math.max(last, Date.parse(row.date) || 0);
+      if (row.pr && row.pr.updatedAt) last = Math.max(last, Date.parse(row.pr.updatedAt) || 0);
+    }
+    return last;
   }
 
   // repoId -> { current, dirty, branches: Map(name -> branch) }
