@@ -222,7 +222,6 @@ class DashboardScreen extends Component {
                 <span t-if="this.isActive(tgt)" class="db-badge"><span class="pulse"/>Active</span>
               </h2>
               <table class="db-table">
-                <thead><tr><th>Repo</th><th>Branch</th><th>State</th><th>Last update</th><th>Runbot</th><th>Mergebot</th><th>PR</th></tr></thead>
                 <tbody>
                   <tr t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo">
                     <td class="dim" t-out="row.repo"/>
