@@ -49,7 +49,7 @@ const ICONS = {
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
 };
 const NAV = [
-  { id: "code", label: "Code", icon: ICONS.code },
+  { id: "dashboard", label: "Dashboard", icon: ICONS.code },
   { id: "server", label: "Server", icon: ICONS.server },
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "branches", label: "Branches", icon: ICONS.branches },
@@ -192,15 +192,15 @@ class LogConsole extends Component {
   }
 }
 
-// ─────────────────────────── Code screen ───────────────────────────
+// ─────────────────────────── Dashboard screen ───────────────────────────
 
 // Per-target view of the code state: for each target, the git/runbot/PR state
 // of every repo:branch in its config. Reuses CodePlugin's branch + PR data.
-class CodeScreen extends Component {
+class DashboardScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Code</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-top"><h1>Dashboard</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
           <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
@@ -718,7 +718,7 @@ class TargetsScreen extends Component {
 }
 
 // ─────────────────────────── Branches screen ───────────────────────────
-// flat list (one row per branch × repo) over the same data the Code tab loads
+// flat list (one row per branch × repo) over the same data the Dashboard tab loads
 
 class BranchesScreen extends Component {
   static template = xml`
@@ -1257,7 +1257,7 @@ class BranchMenu extends Component {
 // ─────────────────────────── Root ───────────────────────────
 
 const SCREENS = {
-  code: CodeScreen,
+  dashboard: DashboardScreen,
   server: ServerScreen,
   targets: TargetsScreen,
   branches: BranchesScreen,
@@ -1271,7 +1271,7 @@ export class App extends Component {
   static components = {
     Topbar,
     Sidebar,
-    CodeScreen,
+    DashboardScreen,
     ServerScreen,
     TargetsScreen,
     BranchesScreen,
@@ -1295,7 +1295,7 @@ export class App extends Component {
   router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
   // the active screen's component class (a class, not an instance)
-  currentScreen = computed(() => SCREENS[this.router.section()] || ServerScreen);
+  currentScreen = computed(() => SCREENS[this.router.section()] || DashboardScreen);
   setup() {
     effect(() => {
       const state = this.server.status().state;

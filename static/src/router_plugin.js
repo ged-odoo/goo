@@ -13,7 +13,7 @@ export class RouterPlugin extends Plugin {
 
   _fromHash() {
     const s = location.hash.replace("#", "");
-    return SECTIONS.includes(s) ? s : "server";
+    return SECTIONS.includes(s) ? s : "dashboard";
   }
 
   go(section) {

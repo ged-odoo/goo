@@ -92,7 +92,7 @@ export const DEFAULT_CONFIG = {
 };
 
 export const SECTIONS = [
-  "code",
+  "dashboard",
   "server",
   "targets",
   "branches",
