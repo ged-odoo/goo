@@ -668,12 +668,6 @@ section.hidden {
   font-family: var(--mono);
   font-size: 11.5px;
 }
-.git-state.checkedout {
-  color: var(--l-green);
-}
-.git-state.present {
-  color: var(--l-text-dim);
-}
 .git-state.missing {
   color: var(--l-red);
 }

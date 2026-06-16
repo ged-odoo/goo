@@ -230,9 +230,7 @@ class DashboardScreen extends Component {
                       <span t-else="" t-out="row.branch"/>
                     </td>
                     <td>
-                      <span t-if="row.checkedOut" class="git-state checkedout">checked out<t t-if="row.dirty"><span class="dirty-mark" title="uncommitted changes"> (*)</span></t></span>
-                      <span t-elif="row.present" class="git-state present">present</span>
-                      <span t-else="" class="git-state missing">missing</span>
+                      <span t-if="!row.present" class="git-state missing">missing</span>
                     </td>
                     <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                     <td t-att-class="{dim: !row.present}">
@@ -313,8 +311,6 @@ class DashboardScreen extends Component {
         github: groups.githubByRepo[repo] || "",
         present: !!b,
         remote: !!b && b.remote,
-        checkedOut: !!b && r.current === branch,
-        dirty: !!b && r.current === branch && r.dirty,
         date: b ? b.date : "",
         runbot: b ? b.runbot : "",
         pr: groups.prIndex[`${repo}:${branch}`] || null,
