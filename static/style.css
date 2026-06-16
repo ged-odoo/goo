@@ -1533,7 +1533,6 @@ section.hidden {
   gap: 8px;
 }
 .addons-target {
-  margin-right: auto;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--l-text-dim);

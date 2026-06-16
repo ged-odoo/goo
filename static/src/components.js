@@ -508,6 +508,7 @@ class DatabasesScreen extends Component {
         <div class="panel-top"><h1>Databases</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
           <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          <span class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content">
@@ -565,6 +566,11 @@ class DatabasesScreen extends Component {
     if (this.db.loading()) return "refreshing…";
     return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
   }
+
+  get count() {
+    const n = this.rows().length;
+    return `${n} database${n === 1 ? "" : "s"}`;
+  }
 }
 
 // ─────────────────────────── Targets screen ───────────────────────────
@@ -584,6 +590,7 @@ class TargetsScreen extends Component {
             <button class="pbtn" t-on-click="() => this.discard()">Discard</button>
             <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           </t>
+          <span t-if="!this.creating()" class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content">
@@ -670,6 +677,11 @@ class TargetsScreen extends Component {
     return [...this.config.config.targets].sort(
       (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
     );
+  }
+
+  get count() {
+    const n = this.targets.length;
+    return `${n} target${n === 1 ? "" : "s"}`;
   }
 
   fmtConfig(tgt) {
@@ -1034,6 +1046,7 @@ class AddonsScreen extends Component {
         </div>
         <div class="panel-actions">
           <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
+          <span t-if="this.addons.targetDb()" class="row-count" t-out="this.count"/>
           <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
       </div>
@@ -1081,6 +1094,11 @@ class AddonsScreen extends Component {
 
   get view() {
     return this.addons.filtered();
+  }
+
+  get count() {
+    const n = this.view.total;
+    return `${n} module${n === 1 ? "" : "s"}`;
   }
 
   get targetLabel() {
