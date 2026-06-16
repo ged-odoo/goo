@@ -50,7 +50,7 @@ const ICONS = {
 };
 const NAV = [
   { id: "code", label: "Code", icon: ICONS.code },
-  { id: "server", label: "Server", icon: ICONS.server, live: true },
+  { id: "server", label: "Server", icon: ICONS.server },
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "tests", label: "Tests", icon: ICONS.tests },
@@ -129,24 +129,13 @@ class Sidebar extends Component {
               t-on-click="() => this.router.go(item.id)">
         <t t-out="this.icon(item.icon)"/>
         <t t-out="item.label"/>
-        <span t-if="item.live and this.serverRunning" class="live"/>
-        <span t-elif="item.live and this.serverDown" class="live down"/>
       </button>
     </nav>`;
 
   router = plugin(RouterPlugin);
-  server = plugin(ServerPlugin);
   nav = NAV;
   icon(s) {
     return m(s);
-  }
-
-  get serverRunning() {
-    return this.server.status().state === "running";
-  }
-
-  get serverDown() {
-    return this.server.status().state === "disconnected";
   }
 }
 

@@ -335,19 +335,6 @@ a {
 .nav-item svg .knob {
   fill: var(--bg-sidebar);
 }
-.nav-item .live {
-  margin-left: auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 0 3px var(--green-bg);
-}
-.nav-item .live.down {
-  background: var(--red);
-  box-shadow: 0 0 0 3px var(--red-bg);
-}
-
 /* ───────────────── MAIN (light) ───────────────── */
 
 main {
