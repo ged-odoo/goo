@@ -97,8 +97,8 @@ export const SECTIONS = [
   "branches",
   "prs",
   "tests",
-  "databases",
   "addons",
+  "databases",
   "targets",
   "config",
 ];
