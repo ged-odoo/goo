@@ -551,6 +551,7 @@ section.hidden {
 }
 .launch-field select {
   max-width: 360px;
+  font-family: var(--sans);
 }
 .launch-field input::placeholder {
   color: var(--l-text-faint);
@@ -675,7 +676,7 @@ section.hidden {
 /* panel form controls (target select, filter, tags) */
 .panel select,
 .panel-actions select {
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 12px;
   color: var(--l-text-mid);
   background: var(--l-card);
@@ -686,6 +687,10 @@ section.hidden {
 }
 .preset-select {
   max-width: 120px;
+}
+/* test tags read better in monospace in the dropdown list */
+.preset-select option {
+  font-family: var(--mono);
 }
 .panel input[type="text"] {
   padding: 7px 12px;
