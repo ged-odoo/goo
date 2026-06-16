@@ -81,7 +81,7 @@ class Topbar extends Component {
         <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
           <span class="dot"/>
           <span class="t-name" t-out="this.target"/>
-          <span t-if="this.db" class="t-db" t-out="this.db"/>
+          <button t-if="this.stopped" class="nav-start" t-on-click="() => this.server.start(this.target)" title="start this target"><span class="play"/>Start</button>
         </div>
       </div>
       <div class="top-right">
@@ -97,13 +97,14 @@ class Topbar extends Component {
     return s === "running" || s === "starting";
   }
 
+  // backend reachable but odoo not running — offer a one-click start
+  get stopped() {
+    return this.server.status().state === "stopped";
+  }
+
   // the running target while active, else the last-used one (shown dimmed)
   get target() {
     return this.active ? this.server.status().target || "" : this.server.lastTarget();
-  }
-
-  get db() {
-    return this.active ? this.server.status().db || "" : "";
   }
 
   get stateClass() {
