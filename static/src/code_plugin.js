@@ -22,32 +22,46 @@ export class CodePlugin extends Plugin {
   favorites = signal(this._readFavorites());
   mergebot = signal({}); // "github#number" -> mergebot state (scraped lazily)
   runbot = signal({}); // branch name -> runbot status (fetched lazily)
+  _mbPending = new Set(); // keys currently being scraped (avoid duplicate fetches)
+  _rbPending = new Set();
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
 
-  // scrape the mergebot state for PRs not already known; merge into the map
+  // scrape the mergebot state for PRs not already known or in flight; the
+  // dashboard effect can fire several times before a scrape resolves, so the
+  // pending guard keeps us from re-fetching the same PR each time.
   async loadMergebot(prs) {
     const have = this.mergebot();
-    const missing = prs.filter((p) => !(`${p.github}#${p.number}` in have));
-    if (!missing.length) return;
+    const todo = prs.filter((p) => {
+      const k = `${p.github}#${p.number}`;
+      return !(k in have) && !this._mbPending.has(k);
+    });
+    if (!todo.length) return;
+    const keys = todo.map((p) => `${p.github}#${p.number}`);
+    keys.forEach((k) => this._mbPending.add(k));
     try {
-      const res = await postJSON("/api/mergebot", { prs: missing });
+      const res = await postJSON("/api/mergebot", { prs: todo });
       this.mergebot.set({ ...this.mergebot(), ...res.states });
     } catch {
       /* leave states blank on failure */
+    } finally {
+      keys.forEach((k) => this._mbPending.delete(k));
     }
   }
 
-  // fetch the runbot status for branches not already known; merge into the map
+  // fetch the runbot status for branches not already known or in flight
   async loadRunbot(branches) {
     const have = this.runbot();
-    const missing = branches.filter((b) => !(b in have));
-    if (!missing.length) return;
+    const todo = branches.filter((b) => !(b in have) && !this._rbPending.has(b));
+    if (!todo.length) return;
+    todo.forEach((b) => this._rbPending.add(b));
     try {
-      const res = await postJSON("/api/runbot", { branches: missing });
+      const res = await postJSON("/api/runbot", { branches: todo });
       this.runbot.set({ ...this.runbot(), ...res.states });
     } catch {
       /* leave status blank on failure */
+    } finally {
+      todo.forEach((b) => this._rbPending.delete(b));
     }
   }
 
