@@ -219,7 +219,7 @@ class CodeScreen extends Component {
                 <span t-if="this.isActive(tgt)" class="db-badge"><span class="pulse"/>Active</span>
               </h2>
               <table class="db-table">
-                <thead><tr><th>Repo</th><th>Branch</th><th>State</th><th>Last update</th><th>Runbot</th><th>PR</th></tr></thead>
+                <thead><tr><th>Repo</th><th>Branch</th><th>State</th><th>Last update</th><th>Runbot</th><th>Mergebot</th><th>PR</th></tr></thead>
                 <tbody>
                   <tr t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo">
                     <td class="dim" t-out="row.repo"/>
@@ -235,6 +235,10 @@ class CodeScreen extends Component {
                         <a class="runbot-link" target="_blank" t-att-href="this.code.bundleUrl(row.branch)">runbot</a>
                         <span class="runbot-dot" t-att-class="row.runbot || 'unknown'" t-att-title="'runbot: ' + (row.runbot || 'unknown')"/>
                       </span>
+                      <t t-else="">—</t>
+                    </td>
+                    <td t-att-class="{dim: !(row.pr and row.github)}">
+                      <a t-if="row.pr and row.github" class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)">mergebot</a>
                       <t t-else="">—</t>
                     </td>
                     <td t-att-class="{dim: !row.pr}">
@@ -294,19 +298,20 @@ class CodeScreen extends Component {
   // one row per repo:branch in the target's config, with its local + remote state
   rows(tgt) {
     const repos = this.repoMap;
-    const prIndex = this.code.groups().prIndex;
+    const groups = this.code.groups();
     return (tgt.config || []).map(({ repo, branch }) => {
       const r = repos[repo];
       const b = r && r.branches.get(branch);
       return {
         repo,
         branch,
+        github: groups.githubByRepo[repo] || "",
         present: !!b,
         checkedOut: !!b && r.current === branch,
         dirty: !!b && r.current === branch && r.dirty,
         date: b ? b.date : "",
         runbot: b ? b.runbot : "",
-        pr: prIndex[`${repo}:${branch}`] || null,
+        pr: groups.prIndex[`${repo}:${branch}`] || null,
       };
     });
   }

@@ -1,7 +1,7 @@
 // Branches & PRs across repos: grouped view model, favorites, and the
 // per-branch actions (delete, close PR, push).
 
-import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, CACHE_TTL } from "./config.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT, CACHE_TTL } from "./config.js";
 import { ConfigPlugin, FAVORITES_KEY } from "./config_plugin.js";
 import { postJSON } from "./utils.js";
 
@@ -147,6 +147,11 @@ export class CodePlugin extends Plugin {
 
   bundleUrl(branch) {
     return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`;
+  }
+
+  // mergebot page for a PR, e.g. https://mergebot.odoo.com/odoo/odoo/pull/269532
+  mergebotUrl(github, number) {
+    return `${MERGEBOT}/${github}/pull/${number}`;
   }
 
   async remoteExists(path, branch) {
