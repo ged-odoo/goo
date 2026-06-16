@@ -226,7 +226,10 @@ class DashboardScreen extends Component {
                 <tbody>
                   <tr t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo">
                     <td class="dim" t-out="row.repo"/>
-                    <td t-out="row.branch"/>
+                    <td>
+                      <a t-if="row.remote and row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-out="row.branch"/>
+                      <span t-else="" t-out="row.branch"/>
+                    </td>
                     <td>
                       <span t-if="row.checkedOut" class="git-state checkedout">checked out<t t-if="row.dirty"><span class="dirty-mark" title="uncommitted changes"> (*)</span></t></span>
                       <span t-elif="row.present" class="git-state present">present</span>
@@ -310,6 +313,7 @@ class DashboardScreen extends Component {
         branch,
         github: groups.githubByRepo[repo] || "",
         present: !!b,
+        remote: !!b && b.remote,
         checkedOut: !!b && r.current === branch,
         dirty: !!b && r.current === branch && r.dirty,
         date: b ? b.date : "",

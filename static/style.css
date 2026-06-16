@@ -1289,6 +1289,15 @@ section.hidden {
 .remote-link:hover {
   text-decoration: underline;
 }
+/* branch name as a link (dashboard) — readable, reveals link on hover */
+.branch-link {
+  color: var(--l-text);
+  text-decoration: none;
+}
+.branch-link:hover {
+  color: var(--l-accent);
+  text-decoration: underline;
+}
 .pr-state {
   font-family: var(--mono);
   font-size: 10.5px;
