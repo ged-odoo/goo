@@ -7,7 +7,7 @@ import { ServerPlugin } from "./server_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, effect, signal, computed } = owl;
+const { Plugin, plugin, useEffect, signal, computed } = owl;
 
 export class AddonsPlugin extends Plugin {
   static sequence = 4;
@@ -31,7 +31,7 @@ export class AddonsPlugin extends Plugin {
   filtered = computed(() => this._filtered());
 
   setup() {
-    effect(() => this._onStatus(this.server.status()));
+    useEffect(() => this._onStatus(this.server.status()));
     this.server.onLine((line) => {
       if (this.runActive()) this.output.append(line);
     });

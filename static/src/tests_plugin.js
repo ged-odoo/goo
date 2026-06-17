@@ -5,7 +5,7 @@ import { ServerPlugin } from "./server_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, effect, signal } = owl;
+const { Plugin, plugin, useEffect, signal } = owl;
 
 const HISTORY_MAX = 10;
 
@@ -50,7 +50,7 @@ export class TestsPlugin extends Plugin {
   }
 
   setup() {
-    effect(() => this._onStatus(this.server.status()));
+    useEffect(() => this._onStatus(this.server.status()));
     this.server.onLine((line) => {
       if (this.runActive()) this.output.append(line);
     });

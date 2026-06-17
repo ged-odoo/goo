@@ -22,7 +22,6 @@ const {
   markup,
   onMounted,
   onWillUnmount,
-  effect,
   useEffect,
   EventBus,
   signal,
@@ -306,7 +305,7 @@ class DashboardScreen extends Component {
   setup() {
     this.code.load();
     // fetch runbot status only for the branches the target cards actually show
-    effect(() => {
+    useEffect(() => {
       const branches = this._branches();
       if (branches.length) this.code.loadRunbot(branches);
     });
@@ -1344,7 +1343,7 @@ class AddonsScreen extends Component {
 
   setup() {
     // load (and reload when the active target's db changes) while mounted
-    effect(() => {
+    useEffect(() => {
       const db = this.addons.targetDb();
       if (db && db !== this.addons.loadedDb() && !this.addons.loading()) this.addons.load();
     });
@@ -1792,7 +1791,7 @@ export class App extends Component {
   // the active screen's component class (a class, not an instance)
   currentScreen = computed(() => SCREENS[this.router.section()] || DashboardScreen);
   setup() {
-    effect(() => {
+    useEffect(() => {
       const state = this.server.status().state;
       const el = document.getElementById("favicon");
       // green up, amber starting, red disconnected, black (default) when stopped

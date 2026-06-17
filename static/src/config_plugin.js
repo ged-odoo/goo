@@ -5,7 +5,7 @@
 import { DEFAULT_CONFIG } from "./config.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, signal, effect } = owl;
+const { Plugin, signal, useEffect } = owl;
 
 const STORAGE_KEY = "oo-config";
 export const LAST_TARGET_KEY = "oo-last-target";
@@ -24,7 +24,7 @@ export class ConfigPlugin extends Plugin {
   setup() {
     // keep the backend's auto-reload set in sync with the config (it runs the
     // 4h `git fetch master` timer server-side, independent of the frontend)
-    effect(() => {
+    useEffect(() => {
       const repos = (this.config.repos || [])
         .filter((r) => r.autoreload && r.path)
         .map((r) => ({ id: r.id, path: r.path, github: r.github }));
