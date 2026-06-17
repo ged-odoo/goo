@@ -15,6 +15,8 @@ export class ServerPlugin extends Plugin {
   output = new LogBuffer(); // the persistent server-log element
   lineListeners = new Set(); // tests/addons mirror lines from here
   lastConfig = null; // last server start config (to resume after a one-shot run)
+  // the active target (last started or activated), persisted + reactive
+  activeTarget = signal(this.config.read(LAST_TARGET_KEY) || "");
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
@@ -58,10 +60,11 @@ export class ServerPlugin extends Plugin {
   }
 
   lastTarget() {
-    return this.config.read(LAST_TARGET_KEY) || "";
+    return this.activeTarget();
   }
 
   setLastTarget(name) {
+    this.activeTarget.set(name);
     this.config.write(LAST_TARGET_KEY, name);
   }
 
@@ -88,7 +91,7 @@ export class ServerPlugin extends Plugin {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
     this.lastConfig = cfg;
-    this.config.write(LAST_TARGET_KEY, cfg.target);
+    this.setLastTarget(cfg.target);
     await this._run("/api/start", cfg, "start");
   }
 
@@ -96,7 +99,7 @@ export class ServerPlugin extends Plugin {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return;
     this.lastConfig = cfg;
-    this.config.write(LAST_TARGET_KEY, cfg.target);
+    this.setLastTarget(cfg.target);
     await this._run("/api/restart", cfg, "restart");
   }
 

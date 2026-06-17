@@ -391,12 +391,18 @@ class DashboardScreen extends Component {
     });
   }
 
-  // a target is "active" when every repo in its config is checked out on the
-  // target's branch
-  isActive(tgt) {
+  // every repo in the target's config is checked out on the target's branch
+  _checkedOut(tgt) {
     const repos = this.repoMap;
     const cfg = tgt.config || [];
     return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
+  }
+
+  // the active target is the explicit one (set on Activate / Start) — and only
+  // while its branches are still checked out. The name check disambiguates
+  // overlapping targets (e.g. master vs master(e), whose branches are a subset)
+  isActive(tgt) {
+    return tgt.name === this.server.lastTarget() && this._checkedOut(tgt);
   }
 
   // can't switch branches with uncommitted work, or to branches not present
