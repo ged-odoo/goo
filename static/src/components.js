@@ -1032,15 +1032,12 @@ class BranchesScreen extends Component {
                   <th/><th class="br-spacer"/>
                 </tr>
               </thead>
-              <tbody t-foreach="this.groups()" t-as="g" t-key="g.name" t-att-class="{active: g.active}">
-                <tr t-foreach="g.repos" t-as="r" t-key="r.repo">
+              <tbody t-foreach="this.groups()" t-as="g" t-key="g.name">
+                <tr t-foreach="g.repos" t-as="r" t-key="r.repo" t-att-class="{active: r.active}">
                   <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
                     <div class="br-name-inner">
                       <button class="fav-star" t-att-class="{'is-fav': g.favorite}" t-on-click="() => this.code.toggleFavorite(g.name)"><t t-out="this.starIcon"/></button>
-                      <div>
-                        <span class="br-branch" t-out="g.name"/>
-                        <span t-if="g.active" class="db-badge"><span class="pulse"/>active</span>
-                      </div>
+                      <span class="br-branch" t-out="g.name"/>
                     </div>
                   </td>
                   <td class="br-repo">
@@ -1126,7 +1123,6 @@ class BranchesScreen extends Component {
         name,
         favorite: favs.includes(name),
         base: BASE_BRANCH_RE.test(name),
-        active: repos.some((r) => r.active),
         // combined last-update time for the branch (sum across its repos)
         updateSum: repos.reduce((s, r) => s + (Date.parse(r.date) || 0), 0),
         repos,

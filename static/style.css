@@ -1702,11 +1702,13 @@ a.dash-row-branch:hover {
 .br-table tbody:first-of-type tr:first-child td {
   border-top: none;
 }
-.br-table tbody.active td {
-  background: var(--l-hover);
-}
 .br-table tbody tr:hover td {
   background: var(--l-hover);
+}
+/* highlight only the checked-out (active) repo rows — a clearly visible tint;
+   never the (rowspanned) name column, which is the group's shared label */
+.br-table tbody tr.active td:not(.br-name) {
+  background: oklch(0.55 0.18 300 / 0.12);
 }
 /* name cell (rowspanned) aligns with the first repo row's content, not centered
    across the whole group. The repo rows are taller than a text line (action
@@ -1714,9 +1716,6 @@ a.dash-row-branch:hover {
 .br-table td.br-name {
   vertical-align: top;
   padding: 14px 18px;
-}
-.br-table tbody.active .br-name {
-  box-shadow: inset 3px 0 0 var(--l-accent);
 }
 .br-name-inner {
   display: flex;
