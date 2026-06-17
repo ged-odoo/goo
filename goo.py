@@ -855,18 +855,19 @@ def build_odoo_cmd(config):
     db_user = config.get("db_user", "odoo")
     db_password = config.get("db_password", "odoo")
     venv_activate = config.get("venv_activate", "")
+    # the configurable launch prefix (cwd + odoo-bin); goo appends the dynamic args
+    start_cmd = config.get("start_cmd") or f"cd {community_path} && ./odoo-bin"
 
     parts = []
     if venv_activate:
         parts.append(venv_activate)
-    parts.append(f"cd {community_path}")
-    parts.append(
-        f"./odoo-bin "
-        f"-r {db_user} -w {db_password} -d {db} "
+    parts.append(start_cmd)
+    cmd = " && ".join(parts)
+    cmd += (
+        f" -r {db_user} -w {db_password} -d {db} "
         f"--database {db} --no-database-list --with-demo "
         f"--addons-path {addons_path}"
     )
-    cmd = " && ".join(parts)
 
     # test mode: run the given --test-tags and exit, skipping the server-only
     # extras (other_args / on_create_args), mirroring the old odev behaviour

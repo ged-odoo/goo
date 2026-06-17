@@ -3,6 +3,7 @@
 export const DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
   venv_activate: "source /home/odoo/work/env20/bin/activate",
+  start_cmd: "cd /home/odoo/work/community && ./odoo-bin",
   db_user: "odoo",
   db_password: "odoo",
   repos: [

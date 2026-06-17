@@ -1431,12 +1431,34 @@ class ListEditor extends Component {
   }
 }
 
+// scalar config fields editable in the Config tab's Settings block
+const SETTINGS_FIELDS = [
+  { key: "venv_activate", name: "venv activate" },
+  { key: "start_cmd", name: "start server command" },
+  { key: "db_user", name: "database user" },
+  { key: "db_password", name: "database password" },
+];
+
 class ConfigScreen extends Component {
   static components = { ListEditor };
   static template = xml`
     <section>
       <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
       <div class="content">
+        <div class="config-block">
+          <h2 class="subtitle">Settings</h2>
+          <div class="settings-grid">
+            <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
+              <label t-out="f.name"/>
+              <input type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]" t-on-input="ev => this.setSetting(f.key, ev.target.value)"/>
+            </t>
+          </div>
+          <div class="config-actions">
+            <button t-on-click="() => this.saveSettings()">Save</button>
+            <button t-on-click="() => this.resetSettings()">Reset to defaults</button>
+            <span t-att-class="this.settingsMsg() === 'saved' ? 'ok' : ''" t-out="this.settingsMsg()"/>
+          </div>
+        </div>
         <ListEditor kind="'repos'"/>
         <ListEditor kind="'links'"/>
         <div class="config-block">
@@ -1466,6 +1488,36 @@ class ConfigScreen extends Component {
   path = signal(this.config.getDataFile());
   msg = signal("");
   backupMsg = signal("");
+  settingsFields = SETTINGS_FIELDS;
+  settings = signal(this._loadSettings());
+  settingsMsg = signal("");
+
+  _loadSettings() {
+    const c = this.config.config;
+    return Object.fromEntries(SETTINGS_FIELDS.map((f) => [f.key, c[f.key] || ""]));
+  }
+
+  setSetting(key, val) {
+    this.settings.set({ ...this.settings(), [key]: val });
+  }
+
+  saveSettings() {
+    const patch = {};
+    for (const f of SETTINGS_FIELDS) patch[f.key] = (this.settings()[f.key] || "").trim();
+    this.config.updateConfig(patch);
+    this.settings.set(this._loadSettings());
+    this.settingsMsg.set("saved");
+    setTimeout(() => this.settingsMsg.set(""), 2000);
+  }
+
+  resetSettings() {
+    if (!confirm("Reset settings to the built-in defaults?")) return;
+    for (const f of SETTINGS_FIELDS) this.config.resetKey(f.key);
+    this.settings.set(this._loadSettings());
+    this.settingsMsg.set("reset to defaults");
+    setTimeout(() => this.settingsMsg.set(""), 2000);
+  }
+
   triggerImport() {
     document.getElementById("goo-import-file").click();
   }
