@@ -222,7 +222,10 @@ class DashboardScreen extends Component {
           <!-- favorite repositories (flat list, fetch &amp; rebase per repo) -->
           <section t-if="this.favRepos.length" class="dash-repos">
             <div class="dash-repos-head">
-              <span>Repository</span><span>Branch</span><span>Last commit</span><span>When</span><span/>
+              <span>Repository</span><span>Branch</span><span>Last commit</span><span>When</span>
+              <button class="dash-rebase dash-rebase-all" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
+              </button>
             </div>
             <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-repo-row">
               <div class="dash-repo-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></div>
@@ -379,6 +382,32 @@ class DashboardScreen extends Component {
     await this.code.rebase([
       { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path },
     ]);
+  }
+
+  // every shown repository whose current branch can be fetched + rebased
+  get rebasableRepos() {
+    return this.favRepos.filter((r) => this.canRebaseRepo(r));
+  }
+
+  canRebaseAll() {
+    return this.rebasableRepos.length > 0;
+  }
+
+  rebaseAllTitle() {
+    const n = this.rebasableRepos.length;
+    if (!n) return "nothing to rebase — repositories are dirty, missing, or have no canonical remote";
+    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
+  }
+
+  // fetch + rebase every shown repo's current branch onto its base, in one call
+  async rebaseAll() {
+    const repos = this.rebasableRepos.map((r) => ({
+      repo: r.id,
+      base: this._baseBranch(r.current),
+      github: r.github,
+      path: r.path,
+    }));
+    if (repos.length) await this.code.rebase(repos);
   }
 
   // favorite targets only, ordered by last activity (most recent first)

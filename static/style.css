@@ -671,7 +671,7 @@ section.hidden {
   align-items: center;
 }
 .dash-repos-head {
-  padding: 0 12px 9px;
+  padding: 4px 12px 8px;
   border-bottom: 1px solid var(--l-line);
 }
 .dash-repos-head span {
@@ -755,6 +755,17 @@ section.hidden {
   color: var(--l-text-faint);
   opacity: 0.6;
   cursor: default;
+}
+/* the "Fetch & rebase all" header action keeps the per-repo button look but is
+   accent-tinted to read as the table-wide action */
+.dash-rebase-all {
+  color: var(--l-accent);
+  border-color: var(--l-accent-line);
+}
+.dash-rebase-all:hover:not(:disabled) {
+  color: var(--l-accent);
+  border-color: var(--l-accent);
+  background: var(--l-accent-soft);
 }
 
 /* build targets — cards */
