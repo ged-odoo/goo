@@ -1004,19 +1004,24 @@ a.dash-row-branch:hover {
 .dash-pr-state:hover {
   text-decoration: underline;
 }
-.dash-pr-state.open {
-  color: var(--l-green);
-  background: var(--l-green-bg);
-}
+/* mergebot state categories */
 .dash-pr-state.merged {
   color: var(--l-accent);
   background: var(--l-accent-soft);
 }
-.dash-pr-state.closed {
+.dash-pr-state.ready {
+  color: var(--l-green);
+  background: var(--l-green-bg);
+}
+.dash-pr-state.progress {
+  color: var(--l-amber);
+  background: var(--l-amber-bg);
+}
+.dash-pr-state.blocked {
   color: var(--l-red);
   background: var(--l-red-bg);
 }
-.dash-pr-state.draft {
+.dash-pr-state.other {
   color: var(--l-text-dim);
   background: var(--l-panel);
 }

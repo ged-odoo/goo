@@ -280,7 +280,7 @@ class DashboardScreen extends Component {
                   <div class="dash-row-pr">
                     <t t-if="row.pr and row.github">
                       <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                      <a class="dash-pr-state" t-att-class="this.prState(row.pr)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'open #' + row.pr.number + ' on mergebot'" t-out="this.prState(row.pr)"/>
+                      <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
                     </t>
                     <span t-else="" class="dim">—</span>
                   </div>
@@ -303,10 +303,12 @@ class DashboardScreen extends Component {
 
   setup() {
     this.code.load();
-    // fetch runbot status only for the branches the target cards actually show
+    // fetch runbot + mergebot status only for what the target cards actually show
     useEffect(() => {
       const branches = this._branches();
       if (branches.length) this.code.loadRunbot(branches);
+      const prs = this._prs();
+      if (prs.length) this.code.loadMergebot(prs);
     });
   }
 
@@ -316,6 +318,38 @@ class DashboardScreen extends Component {
     for (const tgt of this.targets)
       for (const row of this.rows(tgt)) if (row.present) seen.add(row.branch);
     return [...seen];
+  }
+
+  // the unique {github, number} of every PR shown on the dashboard (for mergebot)
+  _prs() {
+    const seen = new Set();
+    const prs = [];
+    for (const tgt of this.targets) {
+      for (const row of this.rows(tgt)) {
+        if (!row.pr || !row.github) continue;
+        const key = `${row.github}#${row.pr.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        prs.push({ github: row.github, number: row.pr.number });
+      }
+    }
+    return prs;
+  }
+
+  // the scraped mergebot state for a row's PR ("" if unknown / not fetched yet)
+  mbState(row) {
+    if (!row.pr || !row.github) return "";
+    return this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
+  }
+
+  // color category for a mergebot state
+  mbClass(row) {
+    const s = this.mbState(row);
+    if (s === "merged") return "merged";
+    if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
+    if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
+    if (["blocked", "error"].includes(s)) return "blocked";
+    return "other";
   }
 
   // the fetched runbot status for a row's branch ("" if unknown / not fetched)
@@ -539,11 +573,6 @@ class DashboardScreen extends Component {
 
   cell(date) {
     return timeAgo(date);
-  }
-
-  prState(p) {
-    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
-    return st.toLowerCase();
   }
 }
 
