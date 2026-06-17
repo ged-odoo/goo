@@ -224,6 +224,22 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // checkout the given {path, branch} in each repo, then reload branch state
+  async checkout(repos) {
+    this.busy.set(true);
+    try {
+      const res = await postJSON("/api/code/checkout", { repos });
+      const failed = (res.results || []).filter((r) => !r.ok);
+      if (failed.length)
+        alert("Checkout failed:\n" + failed.map((r) => `${r.branch}: ${r.error}`).join("\n"));
+      await this.load(true);
+    } catch (e) {
+      alert(`Checkout failed: ${e.message}`);
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
   // drop a branch from the view + cache without a server round-trip — a full
   // reload would re-fetch every branch's runbot badge, which is pointless here
   _dropBranch(repo, branch) {

@@ -372,6 +372,24 @@ def git_delete_branch(path, branch):
     return True, None
 
 
+def git_checkout(path, branch):
+    """Checkout a local branch in a repo. Returns (ok, error)."""
+    if not path or not branch:
+        return False, "missing path or branch"
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "checkout", branch],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, result.stderr.strip().split("\n")[0] or "git checkout failed"
+    return True, None
+
+
 def runbot_badge_status(branch):
     """Fetch the runbot status badge for a branch and parse its result.
 
@@ -1170,6 +1188,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/code/checkout":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            results = []
+            for r in repos:
+                ok, error = git_checkout(r.get("path"), r.get("branch"))
+                results.append({"branch": r.get("branch"), "ok": ok, "error": error})
+            self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
             name = (body or {}).get("name")

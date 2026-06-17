@@ -61,6 +61,10 @@ export class ServerPlugin extends Plugin {
     return this.config.read(LAST_TARGET_KEY) || "";
   }
 
+  setLastTarget(name) {
+    this.config.write(LAST_TARGET_KEY, name);
+  }
+
   // the command that would launch this target (built by the backend); "" if invalid
   async previewCommand(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);

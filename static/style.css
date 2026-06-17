@@ -667,9 +667,12 @@ section.hidden {
   font-weight: 400;
   color: var(--l-text-dim);
 }
-.target-head .target-fav {
-  color: var(--l-amber);
-  font-size: 13px;
+.target-head .db-badge,
+.target-head .activate-btn {
+  margin-left: auto;
+}
+.target-head .activate-btn {
+  padding: 4px 12px;
 }
 .git-state {
   font-family: var(--mono);

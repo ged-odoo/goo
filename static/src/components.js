@@ -232,8 +232,8 @@ class DashboardScreen extends Component {
               <h2 class="subtitle target-head">
                 <span t-out="tgt.name"/>
                 <span class="target-db" t-out="'· ' + tgt.db"/>
-                <span t-if="tgt.favorite" class="target-fav" title="favorite">★</span>
                 <span t-if="this.isActive(tgt)" class="db-badge"><span class="pulse"/>Active</span>
+                <button t-else="" class="pbtn activate-btn" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
               </h2>
               <table class="db-table">
                 <tbody>
@@ -388,9 +388,46 @@ class DashboardScreen extends Component {
     });
   }
 
+  // a target is "active" when every repo in its config is checked out on the
+  // target's branch
   isActive(tgt) {
-    const s = this.server.status();
-    return (s.state === "running" || s.state === "starting") && s.target === tgt.name;
+    const repos = this.repoMap;
+    const cfg = tgt.config || [];
+    return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
+  }
+
+  // can't switch branches with uncommitted work, or to branches not present
+  _targetDirty(tgt) {
+    const repos = this.repoMap;
+    return (tgt.config || []).some(({ repo }) => repos[repo]?.dirty);
+  }
+
+  _targetPresent(tgt) {
+    const repos = this.repoMap;
+    return (tgt.config || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
+  }
+
+  canActivate(tgt) {
+    return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
+  }
+
+  activateTitle(tgt) {
+    if (this._targetDirty(tgt)) return "commit or stash changes first — the working tree is dirty";
+    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
+    return "stop the server, switch to this target and check out its branches";
+  }
+
+  // stop the server, switch to this target, check out its branches
+  async activate(tgt) {
+    if (!this.canActivate(tgt)) return;
+    const pathByRepo = this.code.groups().pathByRepo;
+    const repos = (tgt.config || [])
+      .map(({ repo, branch }) => ({ path: pathByRepo[repo], branch }))
+      .filter((r) => r.path);
+    const s = this.server.status().state;
+    if (s === "running" || s === "starting") await this.server.stop();
+    await this.code.checkout(repos);
+    this.server.setLastTarget(tgt.name);
   }
 
   cell(date) {
