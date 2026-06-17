@@ -300,7 +300,15 @@ def git_branches(repos):
         path = os.path.expanduser(repo.get("path", ""))
         if not rid or not path:
             continue
-        entry = {"id": rid, "current": None, "dirty": False, "branches": [], "error": None}
+        entry = {
+            "id": rid,
+            "current": None,
+            "dirty": False,
+            "head_subject": "",
+            "head_date": "",
+            "branches": [],
+            "error": None,
+        }
         try:
             r = subprocess.run(
                 ["git", "-C", path, "branch", "--show-current"],
@@ -321,6 +329,17 @@ def git_branches(repos):
                 timeout=10,
             )
             entry["dirty"] = bool(st.stdout.strip())
+            # HEAD's last commit subject + date (for the dashboard repo summary)
+            hl = subprocess.run(
+                ["git", "-C", path, "log", "-1", "--format=%s%n%cI"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if hl.returncode == 0:
+                lines = hl.stdout.splitlines()
+                entry["head_subject"] = lines[0] if lines else ""
+                entry["head_date"] = lines[1] if len(lines) > 1 else ""
             # branch names that have a remote-tracking ref, i.e. were pushed to
             # some remote from this clone (refname minus refs/remotes/<remote>/)
             rr = subprocess.run(

@@ -651,9 +651,26 @@ section.hidden {
   flex: none;
 }
 
+/* Dashboard: favorite-repositories summary */
+.repo-block {
+  margin-bottom: 26px;
+}
+.repo-block .repo-subject {
+  max-width: 460px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Code tab: one block per target */
 .target-block {
   margin-bottom: 22px;
+}
+/* the active target is highlighted with a light gray background */
+.target-block.active {
+  background: var(--l-panel);
+  border-radius: 10px;
+  padding: 8px 14px 12px;
 }
 .target-head {
   display: flex;

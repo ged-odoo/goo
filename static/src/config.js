@@ -6,8 +6,13 @@ export const DEFAULT_CONFIG = {
   db_user: "odoo",
   db_password: "odoo",
   repos: [
-    { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo" },
-    { id: "enterprise", path: "/home/odoo/work/enterprise", github: "odoo/enterprise" },
+    { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo", favorite: true },
+    {
+      id: "enterprise",
+      path: "/home/odoo/work/enterprise",
+      github: "odoo/enterprise",
+      favorite: true,
+    },
     { id: "tutorials", path: "/home/odoo/work/tutorials", github: "odoo/tutorials" },
   ],
   // First-class targets — what you actually work with. This is just the initial

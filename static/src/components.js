@@ -225,10 +225,30 @@ class DashboardScreen extends Component {
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
+          <div t-if="this.favRepos.length" class="repo-block">
+            <h2 class="subtitle">Repositories</h2>
+            <table class="db-table">
+              <thead><tr><th>Repository</th><th>Branch</th><th>Last commit</th><th>When</th></tr></thead>
+              <tbody>
+                <tr t-foreach="this.favRepos" t-as="r" t-key="r.id">
+                  <td class="dim" t-out="r.id"/>
+                  <td>
+                    <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
+                    <t t-else="">
+                      <span t-out="r.current"/>
+                      <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes"> *</span>
+                    </t>
+                  </td>
+                  <td class="repo-subject" t-att-title="r.subject" t-out="r.subject || '—'"/>
+                  <td t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
           <t t-else="">
-            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="target-block">
+            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="target-block" t-att-class="{active: this.isActive(tgt)}">
               <h2 class="subtitle target-head">
                 <span t-out="tgt.name"/>
                 <span class="target-db" t-out="'· db: ' + tgt.db"/>
@@ -338,6 +358,24 @@ class DashboardScreen extends Component {
 
   get errors() {
     return this.code.groups().errors;
+  }
+
+  // favorite repositories with their current state (for the dashboard summary)
+  get favRepos() {
+    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    return this.config.config.repos
+      .filter((r) => r.favorite)
+      .map((r) => {
+        const b = byId[r.id] || {};
+        return {
+          id: r.id,
+          current: b.current || "",
+          dirty: !!b.dirty,
+          subject: b.head_subject || "",
+          date: b.head_date || "",
+          error: b.error || "",
+        };
+      });
   }
 
   // favorite targets only, ordered by last activity (most recent first)
@@ -1306,7 +1344,7 @@ class ListEditor extends Component {
       <div class="rows">
         <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row">
           <t t-foreach="this.spec.fields" t-as="f" t-key="f.key">
-            <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.name">
+            <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.title || f.name">
               <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => row[f.key] = ev.target.checked"/>
               <t t-out="f.name"/>
             </label>
@@ -1698,6 +1736,13 @@ const SPECS = {
         optional: true,
       },
       { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
+      {
+        key: "favorite",
+        name: "favorite",
+        type: "checkbox",
+        optional: true,
+        title: "favorite repositories appear in the dashboard summary",
+      },
     ],
     validate(repos, config) {
       if (!repos.find((r) => r.id === "community"))
