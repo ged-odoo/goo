@@ -1008,7 +1008,7 @@ class BranchesScreen extends Component {
                           t-on-click="() => this.openPr(row)">Open PR</button>
                   <button t-if="row.pr and row.github and row.pr.state === 'OPEN'" class="drop-btn pr-close"
                           t-on-click="() => this.code.closePr(row.github, row.pr.number)">Close PR</button>
-                  <button class="drop-btn" t-att-disabled="row.active" t-att-title="row.active ? 'cannot delete the checked-out branch' : ''"
+                  <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(row)" t-att-title="this.deleteBlocked(row)"
                           t-on-click="() => this.code.deleteBranch(row.branch, row.repo, row.path, row.remote and !row.base)">Delete</button>
                 </td>
               </tr>
@@ -1073,6 +1073,14 @@ class BranchesScreen extends Component {
 
   openPr(row) {
     window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
+  }
+
+  // why a branch can't be deleted ("" = deletable). Deleting closes an open PR
+  // (it removes the head branch), so require closing the PR first.
+  deleteBlocked(row) {
+    if (row.active) return "cannot delete the checked-out branch";
+    if (row.pr && row.pr.state === "OPEN") return `close PR #${row.pr.number} first`;
+    return "";
   }
 
   get stamp() {
