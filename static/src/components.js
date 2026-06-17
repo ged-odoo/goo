@@ -50,6 +50,7 @@ const ICONS = {
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
   stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
+  external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -988,45 +989,53 @@ class BranchesScreen extends Component {
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.rows().length" class="dim">No branches.</div>
-          <table t-else="" class="db-table pr-table">
-            <thead><tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/></tr></thead>
-            <tbody>
-              <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch" t-att-class="{'db-active': row.active, 'group-start': row.groupStart}">
-                <td class="pr-branch" t-att-class="{'active-name': row.active}">
-                  <t t-if="row.first">
-                    <button class="fav-star" t-att-class="{'is-fav': row.favorite}" t-on-click="() => this.code.toggleFavorite(row.branch)"><t t-out="this.starIcon"/></button>
-                    <span t-out="row.branch"/>
-                  </t>
-                </td>
-                <td>
-                  <a t-if="row.remote and row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="'open the ' + row.repo + ' branch on GitHub'" t-out="row.repo"/>
-                  <span t-else="" class="dim" t-out="row.repo"/>
-                  <span t-if="row.dirty" class="dirty-mark" title="uncommitted changes">(*)</span>
-                  <span t-if="row.active" class="db-badge"><span class="pulse"/>Active</span>
-                </td>
-                <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
-                <td t-att-class="{dim: !row.pr}">
-                  <t t-if="row.pr">
-                    <a class="pr-link" target="_blank" t-att-href="row.pr.url" t-out="'#' + row.pr.number"/>
-                    <span class="pr-state" t-att-class="this.prState(row.pr)" t-out="this.prState(row.pr)"/>
-                  </t>
-                  <t t-else="">—</t>
-                </td>
-                <td class="db-actions">
-                  <button t-if="!row.remote" class="drop-btn pr-open"
-                          t-on-click="() => this.code.pushBranch(row.path, row.branch)"
-                          title="push this branch to the dev remote (odoo-dev)">Push</button>
-                  <button t-if="!row.base and row.remote and row.github and !row.pr" class="drop-btn pr-open"
-                          t-on-click="() => this.openPr(row)">Open PR</button>
-                  <button t-if="row.pr and row.github and row.pr.state === 'OPEN'" class="drop-btn pr-close"
-                          t-on-click="() => this.code.closePr(row.github, row.pr.number)">Close PR</button>
-                  <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(row)" t-att-title="this.deleteBlocked(row)"
-                          t-on-click="() => this.code.deleteBranch(row.branch, row.repo, row.path, row.remote and !row.base)">Delete</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div t-elif="!this.groups().length" class="dim">No branches.</div>
+          <div t-else="" class="br-card">
+            <table class="br-table">
+              <thead>
+                <tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/></tr>
+              </thead>
+              <tbody t-foreach="this.groups()" t-as="g" t-key="g.name" t-att-class="{active: g.active}">
+                <tr t-foreach="g.repos" t-as="r" t-key="r.repo">
+                  <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
+                    <div class="br-name-inner">
+                      <button class="fav-star" t-att-class="{'is-fav': g.favorite}" t-on-click="() => this.code.toggleFavorite(g.name)"><t t-out="this.starIcon"/></button>
+                      <div>
+                        <span class="br-branch" t-out="g.name"/>
+                        <span t-if="g.active" class="db-badge"><span class="pulse"/>active</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="br-repo">
+                    <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
+                    <span t-else="" t-out="r.repo"/>
+                    <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes">*</span>
+                  </td>
+                  <td class="br-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
+                  <td class="br-pr">
+                    <t t-if="r.pr">
+                      <a class="pr-link" target="_blank" t-att-href="r.pr.url" t-out="'#' + r.pr.number"/>
+                      <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
+                    </t>
+                    <t t-else="">—</t>
+                  </td>
+                  <td>
+                    <div class="br-act">
+                      <button t-if="!r.remote" class="drop-btn pr-open"
+                              t-on-click="() => this.code.pushBranch(r.path, r.branch)"
+                              title="push this branch to the dev remote (odoo-dev)">Push</button>
+                      <button t-if="!r.base and r.remote and r.github and !r.pr" class="drop-btn pr-open"
+                              t-on-click="() => this.openPr(r)">Open PR</button>
+                      <button t-if="r.pr and r.github and r.pr.state === 'OPEN'" class="drop-btn pr-close"
+                              t-on-click="() => this.code.closePr(r.github, r.pr.number)">Close PR</button>
+                      <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(r)" t-att-title="this.deleteBlocked(r)"
+                              t-on-click="() => this.code.deleteBranch(r.branch, r.repo, r.path, r.remote and !r.base)">Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>`;
@@ -1034,12 +1043,13 @@ class BranchesScreen extends Component {
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
   starIcon = m(ICONS.star);
+  externalIcon = m(ICONS.external);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
-  // view-ready rows, grouped by branch name (same-name branches stay together),
-  // groups ordered alphabetically by branch name. `first` marks a group's first
-  // row (where the name + star show); `groupStart` adds a rule between groups.
-  rows = computed(() => {
+  // branches grouped by name (one group per branch name, ordered alphabetically);
+  // each group carries its repo rows. A group is "active" when the branch is the
+  // checked-out branch in any of its repos.
+  groups = computed(() => {
     const { prIndex, pathByRepo, githubByRepo } = this.code.groups();
     const favs = this.code.favorites();
     const repoFilter = this.repoFilter();
@@ -1061,21 +1071,19 @@ class BranchesScreen extends Component {
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
-          favorite: favs.includes(b.name),
           pr: prIndex[`${repo.id}:${b.name}`],
         });
       }
     }
-    const order = [...byBranch.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([, items]) => items);
-    const out = [];
-    order.forEach((items, gi) =>
-      items.forEach((row, i) =>
-        out.push({ ...row, first: i === 0, groupStart: i === 0 && gi > 0 }),
-      ),
-    );
-    return out;
+    return [...byBranch.entries()]
+      .map(([name, repos]) => ({
+        name,
+        favorite: favs.includes(name),
+        base: BASE_BRANCH_RE.test(name),
+        active: repos.some((r) => r.active),
+        repos,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   });
 
   setup() {
@@ -1088,7 +1096,7 @@ class BranchesScreen extends Component {
   }
 
   get count() {
-    const n = this.rows().length;
+    const n = this.groups().reduce((t, g) => t + g.repos.length, 0);
     return `${n} branch${n === 1 ? "" : "es"}`;
   }
 
