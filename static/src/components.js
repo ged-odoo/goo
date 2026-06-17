@@ -256,6 +256,9 @@ class DashboardScreen extends Component {
                 <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">
                   <t t-out="this.playIcon"/>Activate
                 </button>
+                <button t-elif="this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(tgt.name)" title="start this target">
+                  <t t-out="this.playIcon"/>Start
+                </button>
               </div>
               <div class="dash-card-body">
                 <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-card-row">
@@ -322,6 +325,12 @@ class DashboardScreen extends Component {
     if (s === "failure") return { cls: "fail", label: "failing", title: "failing" };
     if (s === "pending") return { cls: "run", label: "running", title: "running" };
     return { cls: "unknown", label: "—", title: "unknown" };
+  }
+
+  // backend reachable but odoo not running — offer a one-click start on the
+  // active target's card (mirrors the navbar Start button)
+  get serverStopped() {
+    return this.server.status().state === "stopped";
   }
 
   get stamp() {

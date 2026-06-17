@@ -874,6 +874,16 @@ section.hidden {
   border-color: var(--l-line);
   cursor: default;
 }
+/* Start (active target, server stopped) — green, like the navbar Start */
+.dash-start {
+  color: var(--l-green);
+  background: var(--l-green-bg);
+  border-color: transparent;
+}
+.dash-start:hover:not(:disabled) {
+  color: var(--l-green);
+  border-color: var(--l-green);
+}
 /* the body is the grid that owns the column tracks; rows are subgrids so they
    stay aligned. The commit column (1fr) soaks up the free width; the metadata
    columns (CI / PR / when) size to their content. */
