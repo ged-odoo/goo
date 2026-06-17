@@ -1602,12 +1602,16 @@ a.dash-row-branch:hover {
   border-color: var(--l-line);
   cursor: default;
 }
-/* neutral sibling of the (red) delete button, for "Close PR" */
+/* neutral sibling of the (red) delete button, for "Close PR" / "Checkout" */
 .drop-btn.pr-close,
 .drop-btn.checkout {
+  margin-right: 6px;
+}
+/* only when enabled — disabled falls back to the shared .drop-btn:disabled look */
+.drop-btn.pr-close:not(:disabled),
+.drop-btn.checkout:not(:disabled) {
   color: var(--l-text-mid);
   border-color: var(--l-line);
-  margin-right: 6px;
 }
 .drop-btn.pr-close:hover:not(:disabled),
 .drop-btn.checkout:hover:not(:disabled) {
