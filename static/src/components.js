@@ -1001,6 +1001,9 @@ class BranchesScreen extends Component {
                   <t t-else="">—</t>
                 </td>
                 <td class="db-actions">
+                  <button t-if="!row.remote" class="drop-btn pr-open"
+                          t-on-click="() => this.code.pushBranch(row.path, row.branch)"
+                          title="push this branch to the dev remote (odoo-dev)">Push</button>
                   <button t-if="!row.base and row.remote and row.github and !row.pr" class="drop-btn pr-open"
                           t-on-click="() => this.openPr(row)">Open PR</button>
                   <button t-if="row.pr and row.github and row.pr.state === 'OPEN'" class="drop-btn pr-close"
