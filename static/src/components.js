@@ -272,8 +272,8 @@ class DashboardScreen extends Component {
                   <span t-else="" class="dash-ci missing">missing</span>
                   <div class="dash-row-pr">
                     <t t-if="row.pr and row.github">
-                      <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-out="'#' + row.pr.number"/>
-                      <span class="dash-pr-state" t-att-class="this.prState(row.pr)" t-out="this.prState(row.pr)"/>
+                      <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                      <a class="dash-pr-state" t-att-class="this.prState(row.pr)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'open #' + row.pr.number + ' on mergebot'" t-out="this.prState(row.pr)"/>
                     </t>
                     <span t-else="" class="dim">—</span>
                   </div>

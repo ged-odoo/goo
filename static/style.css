@@ -988,6 +988,10 @@ a.dash-row-branch:hover {
   border-radius: 4px;
   color: var(--l-text-dim);
   background: var(--l-panel);
+  text-decoration: none;
+}
+.dash-pr-state:hover {
+  text-decoration: underline;
 }
 .dash-pr-state.open {
   color: var(--l-green);
