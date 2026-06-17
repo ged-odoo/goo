@@ -1680,6 +1680,16 @@ a.dash-row-branch:hover {
 .br-table th:first-child {
   padding-left: 18px;
 }
+.br-table th.br-sort {
+  cursor: pointer;
+  user-select: none;
+}
+.br-table th.br-sort:hover {
+  color: var(--l-text-mid);
+}
+.br-arrow {
+  color: var(--l-accent);
+}
 .br-table td {
   padding: 8px 16px;
   white-space: nowrap;

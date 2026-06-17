@@ -1024,7 +1024,13 @@ class BranchesScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/><th class="br-spacer"/></tr>
+                <tr>
+                  <th class="br-sort" t-on-click="() => this.sort('name')">Branch<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
+                  <th>Repository</th>
+                  <th class="br-sort" t-on-click="() => this.sort('update')">Last update<span class="br-arrow" t-out="this.sortArrow('update')"/></th>
+                  <th>PR</th>
+                  <th/><th class="br-spacer"/>
+                </tr>
               </thead>
               <tbody t-foreach="this.groups()" t-as="g" t-key="g.name" t-att-class="{active: g.active}">
                 <tr t-foreach="g.repos" t-as="r" t-key="r.repo">
@@ -1078,9 +1084,11 @@ class BranchesScreen extends Component {
   externalIcon = m(ICONS.external);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
-  // branches grouped by name (one group per branch name, ordered alphabetically);
-  // each group carries its repo rows. A group is "active" when the branch is the
-  // checked-out branch in any of its repos.
+  sortKey = signal("name"); // "name" | "update"
+  sortDir = signal("asc"); // "asc" | "desc"
+  // branches grouped by name (one group per branch name). Each group carries its
+  // repo rows and is "active" when the branch is checked out in any of its repos.
+  // Sorted by the chosen column (branch name, or summed last-update time).
   groups = computed(() => {
     const { prIndex, pathByRepo, githubByRepo } = this.code.groups();
     const favs = this.code.favorites();
@@ -1107,19 +1115,41 @@ class BranchesScreen extends Component {
         });
       }
     }
+    const dir = this.sortDir() === "asc" ? 1 : -1;
+    const key = this.sortKey();
     return [...byBranch.entries()]
       .map(([name, repos]) => ({
         name,
         favorite: favs.includes(name),
         base: BASE_BRANCH_RE.test(name),
         active: repos.some((r) => r.active),
+        // combined last-update time for the branch (sum across its repos)
+        updateSum: repos.reduce((s, r) => s + (Date.parse(r.date) || 0), 0),
         repos,
       }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) =>
+        key === "update" ? (a.updateSum - b.updateSum) * dir : a.name.localeCompare(b.name) * dir,
+      );
   });
 
   setup() {
     this.code.load();
+  }
+
+  // sort by a column; clicking the active column flips the direction
+  sort(key) {
+    if (this.sortKey() === key) {
+      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
+    } else {
+      this.sortKey.set(key);
+      this.sortDir.set(key === "update" ? "desc" : "asc");
+    }
+  }
+
+  // " ▲" / " ▼" for the active sort column, else ""
+  sortArrow(key) {
+    if (this.sortKey() !== key) return "";
+    return this.sortDir() === "asc" ? " ▲" : " ▼";
   }
 
   // repositories present in the loaded data (for the filter dropdown)
