@@ -1621,6 +1621,9 @@ a.dash-row-branch:hover {
 .pr-table td {
   border-bottom: none;
   vertical-align: middle;
+  /* denser rows than the default db-table (13px) */
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 .pr-table tbody tr.group-start td {
   border-top: 1px solid var(--l-line-soft);

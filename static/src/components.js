@@ -982,15 +982,19 @@ class BranchesScreen extends Component {
           <table t-else="" class="db-table pr-table">
             <thead><tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/></tr></thead>
             <tbody>
-              <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch" t-att-class="{'db-active': row.active}">
+              <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.branch" t-att-class="{'db-active': row.active, 'group-start': row.groupStart}">
                 <td class="pr-branch" t-att-class="{'active-name': row.active}">
-                  <button class="fav-star" t-att-class="{'is-fav': row.favorite}" t-on-click="() => this.code.toggleFavorite(row.branch)"><t t-out="this.starIcon"/></button>
-                  <span t-out="row.branch"/>
-                  <a t-if="row.remote and row.github" class="remote-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" title="open remote branch on GitHub">↗</a>
+                  <t t-if="row.first">
+                    <button class="fav-star" t-att-class="{'is-fav': row.favorite}" t-on-click="() => this.code.toggleFavorite(row.branch)"><t t-out="this.starIcon"/></button>
+                    <span t-out="row.branch"/>
+                  </t>
+                </td>
+                <td>
+                  <a t-if="row.remote and row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="'open the ' + row.repo + ' branch on GitHub'" t-out="row.repo"/>
+                  <span t-else="" class="dim" t-out="row.repo"/>
                   <span t-if="row.dirty" class="dirty-mark" title="uncommitted changes">(*)</span>
                   <span t-if="row.active" class="db-badge"><span class="pulse"/>Active</span>
                 </td>
-                <td class="dim" t-out="row.repo"/>
                 <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                 <td t-att-class="{dim: !row.pr}">
                   <t t-if="row.pr">
@@ -1022,25 +1026,26 @@ class BranchesScreen extends Component {
   starIcon = m(ICONS.star);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
-  // flat, view-ready rows: favorites first, then most-recently-updated
+  // view-ready rows, grouped by branch name (same-name branches stay together),
+  // groups ordered alphabetically by branch name. `first` marks a group's first
+  // row (where the name + star show); `groupStart` adds a rule between groups.
   rows = computed(() => {
-    const groups = this.code.groups();
-    const prIndex = groups.prIndex;
-    const pathByRepo = groups.pathByRepo;
+    const { prIndex, pathByRepo, githubByRepo } = this.code.groups();
     const favs = this.code.favorites();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
-    const list = [];
+    const byBranch = new Map();
     for (const repo of this.code.branchRepos()) {
       if (repo.error) continue;
       if (repoFilter && repo.id !== repoFilter) continue;
       for (const b of repo.branches) {
         if (q && !b.name.toLowerCase().includes(q) && !repo.id.toLowerCase().includes(q)) continue;
-        list.push({
+        if (!byBranch.has(b.name)) byBranch.set(b.name, []);
+        byBranch.get(b.name).push({
           branch: b.name,
           repo: repo.id,
           path: pathByRepo[repo.id] || "",
-          github: groups.githubByRepo[repo.id] || "",
+          github: githubByRepo[repo.id] || "",
           remote: b.remote,
           base: BASE_BRANCH_RE.test(b.name),
           date: b.date,
@@ -1051,9 +1056,16 @@ class BranchesScreen extends Component {
         });
       }
     }
-    return list.sort(
-      (a, b) => b.favorite - a.favorite || (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0),
+    const order = [...byBranch.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([, items]) => items);
+    const out = [];
+    order.forEach((items, gi) =>
+      items.forEach((row, i) =>
+        out.push({ ...row, first: i === 0, groupStart: i === 0 && gi > 0 }),
+      ),
     );
+    return out;
   });
 
   setup() {
