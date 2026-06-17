@@ -268,12 +268,20 @@ export class CodePlugin extends Plugin {
     if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
   }
 
-  deleteBranch(branch, repo, path) {
-    if (!confirm(`Force-delete branch "${branch}" in ${repo}? This cannot be undone.`)) return;
+  deleteBranch(branch, repo, path, deleteRemote = false) {
+    const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
+    if (!confirm(`Force-delete branch "${branch}" in ${repo} ${scope}? This cannot be undone.`))
+      return;
     return this._mutate(
       "Delete",
       async () => {
-        await postJSON("/api/code/branches/delete", { path, branch });
+        const res = await postJSON("/api/code/branches/delete", {
+          path,
+          branch,
+          delete_remote: deleteRemote,
+        });
+        if (res.remote_error)
+          alert(`Local branch deleted, but the remote branch could not be removed:\n${res.remote_error}`);
         this._dropBranch(repo, branch);
       },
       false,

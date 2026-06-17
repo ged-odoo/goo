@@ -384,20 +384,42 @@ def git_branches(repos):
     return out
 
 
-def git_delete_branch(path, branch):
-    """Force-delete a local branch. Returns (ok, error)."""
+def git_delete_branch(path, branch, delete_remote=False):
+    """Force-delete a local branch, and optionally its branch on the odoo-dev
+    remote too. Returns (ok, error, remote_error): `ok`/`error` are for the local
+    delete; `remote_error` is set when the local delete succeeded but the remote
+    branch could not be removed (None on success or when not requested)."""
+    path = os.path.expanduser(path)
     try:
         result = subprocess.run(
-            ["git", "-C", os.path.expanduser(path), "branch", "-D", branch],
+            ["git", "-C", path, "branch", "-D", branch],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
+        return False, str(e), None
     if result.returncode != 0:
-        return False, result.stderr.strip().split("\n")[0] or "git branch -D failed"
-    return True, None
+        return False, result.stderr.strip().split("\n")[0] or "git branch -D failed", None
+    remote_error = None
+    if delete_remote:
+        remote, err = dev_remote(path)
+        if err:
+            remote_error = err
+        else:
+            log_request(f"git push {remote} --delete {branch}")
+            try:
+                r = subprocess.run(
+                    ["git", "-C", path, "push", remote, "--delete", branch],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if r.returncode != 0:
+                    remote_error = r.stderr.strip().split("\n")[-1] or "git push --delete failed"
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                remote_error = str(e)
+    return True, None, remote_error
 
 
 def git_checkout(path, branch):
@@ -1247,9 +1269,11 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = git_delete_branch(repo_path, branch)
+            ok, error, remote_error = git_delete_branch(
+                repo_path, branch, bool((body or {}).get("delete_remote"))
+            )
             if ok:
-                self._send_json(200, {"ok": True})
+                self._send_json(200, {"ok": True, "remote_error": remote_error})
             else:
                 self._send_json(400, {"ok": False, "error": error})
         elif path == "/api/code/checkout":
