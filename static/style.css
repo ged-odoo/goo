@@ -775,9 +775,11 @@ section.hidden {
 }
 
 /* build targets — cards */
+/* cards are a little wider than the old 520px, but capped (not 1fr) so a lone
+   card never stretches to the full panel width */
 .dash-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(520px, 580px));
   gap: 18px;
 }
 .dash-card {
@@ -796,10 +798,8 @@ section.hidden {
   justify-content: space-between;
   gap: 14px;
   padding: 10px 16px;
+  background: var(--l-panel);
   border-bottom: 1px solid var(--l-line-soft);
-}
-.dash-card.active .dash-card-head {
-  background: var(--l-hover);
 }
 .dash-card-title {
   display: flex;
@@ -853,9 +853,9 @@ section.hidden {
   flex: none;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--l-bg);
-  background: var(--l-text);
-  border: 1px solid var(--l-text);
+  color: var(--l-text-mid);
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
   border-radius: 8px;
   padding: 6px 13px;
   transition: 0.13s;
@@ -865,7 +865,8 @@ section.hidden {
   height: 12px;
 }
 .dash-activate:hover:not(:disabled) {
-  opacity: 0.86;
+  color: var(--l-text);
+  border-color: var(--l-text-faint);
 }
 .dash-activate:disabled {
   color: var(--l-text-faint);
@@ -873,13 +874,19 @@ section.hidden {
   border-color: var(--l-line);
   cursor: default;
 }
+/* the body is the grid that owns the column tracks; rows are subgrids so they
+   stay aligned. The commit column (1fr) soaks up the free width; the metadata
+   columns (CI / PR / when) size to their content. */
 .dash-card-body {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto auto auto;
   padding: 4px 6px 6px;
 }
 .dash-card-row {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) 86px 118px 52px;
-  gap: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  column-gap: 14px;
   align-items: center;
   padding: 10px 12px;
   border-radius: 9px;
