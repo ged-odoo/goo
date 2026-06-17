@@ -592,7 +592,7 @@ class ServerScreen extends Component {
           <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
         </div>
         <div class="panel-actions">
-          <button class="pbtn primary" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
+          <button class="pbtn primary dash-start" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
           <span t-if="this.transient" class="run-state" t-out="this.transient"/>

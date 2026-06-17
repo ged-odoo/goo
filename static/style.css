@@ -871,8 +871,9 @@ section.hidden {
   border-color: var(--l-line);
   cursor: default;
 }
-/* Start (active target, server stopped) — green, like the navbar Start */
-.dash-start {
+/* Start (active target, server stopped) — green. Shared with the Server tab's
+   Start button; gated on :not(:disabled) so a disabled Start uses the plain look */
+.dash-start:not(:disabled) {
   color: var(--l-green);
   background: var(--l-green-bg);
   border-color: transparent;
