@@ -902,6 +902,7 @@ class TargetsScreen extends Component {
                   <td>
                     <div class="br-act">
                       <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
+                      <button class="drop-btn pr-close" t-on-click="() => this.duplicateTarget(tgt)">Duplicate</button>
                       <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
                     </div>
                   </td>
@@ -976,6 +977,22 @@ class TargetsScreen extends Component {
     this.draftFav.set(!!tgt.favorite);
     this.error.set("");
     this.creating.set(true);
+  }
+
+  // clone a target with a fresh id and a unique "(copy)" name
+  duplicateTarget(tgt) {
+    const names = new Set(this.config.config.targets.map((t) => t.name));
+    let name = `${tgt.name} (copy)`;
+    for (let i = 2; names.has(name); i++) name = `${tgt.name} (copy ${i})`;
+    const copy = {
+      id: newTargetId(),
+      name,
+      favorite: false,
+      config: (tgt.config || []).map((c) => ({ ...c })),
+      db: tgt.db || "",
+      on_create_args: tgt.on_create_args || "",
+    };
+    this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
   }
 
   deleteTarget(tgt) {
