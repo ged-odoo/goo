@@ -61,12 +61,12 @@ const NAV = [
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "config", label: "Config", icon: ICONS.config },
 ];
+// open an odoo page through the autologin addon (creates an admin session first)
+const ODOO = "http://localhost:8069";
+const autologin = (to) => `${ODOO}/dev/autologin?to=${encodeURIComponent(to)}`;
 const ROUTES = [
-  { href: "http://localhost:8069/odoo?debug=assets", label: "/odoo" },
-  {
-    href: "http://localhost:8069/web/tests?debug=assets&timeout=500000&manual=true",
-    label: "/web/tests",
-  },
+  { href: autologin("/odoo?debug=assets"), label: "/odoo" },
+  { href: autologin("/web/tests?debug=assets&timeout=500000&manual=true"), label: "/web/tests" },
   { href: "https://odoo.github.io/owl/documentation/v3/owl/", label: "owl docs" },
   { href: "https://odoo.github.io/owl/playground/", label: "owl playground" },
   { href: "https://github.com/odoo/owl", label: "owl github" },

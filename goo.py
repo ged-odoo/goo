@@ -35,6 +35,7 @@ PORT = 8068
 ODOO_PORT = 8069
 READY_MARKER = "odoo.registry: Registry loaded"
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+ADDONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "addons")
 LOG_BUFFER_SIZE = 2000
 
 
@@ -388,30 +389,6 @@ def git_checkout(path, branch):
     if result.returncode != 0:
         return False, result.stderr.strip().split("\n")[0] or "git checkout failed"
     return True, None
-
-
-def main_remote(path, github):
-    """The remote pointing at the canonical <github> repo (e.g. odoo/odoo), as
-    opposed to the odoo-dev fork. Returns the remote name or None."""
-    if not github:
-        return None
-    try:
-        r = subprocess.run(
-            ["git", "-C", os.path.expanduser(path), "remote", "-v"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    for line in r.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        url = parts[1].removesuffix(".git").rstrip("/")
-        if url.endswith("/" + github) or url.endswith(":" + github) or url == github:
-            return parts[0]
-    return None
 
 
 def git_fetch_rebase(path, base, github):
@@ -853,6 +830,7 @@ def build_odoo_cmd(config):
             addons_parts.append(os.path.relpath(repo["path"], community_path))
     if not addons_parts:
         raise ValueError("no repos selected in start.repos")
+    addons_parts.append(ADDONS_DIR)  # goo's own addons (autologin, auto-installed)
     addons_path = ",".join(addons_parts)
 
     db_user = config.get("db_user", "odoo")
