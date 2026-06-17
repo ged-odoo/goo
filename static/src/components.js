@@ -986,14 +986,14 @@ class BranchesScreen extends Component {
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
-      <div class="content">
+      <div class="content br-fill">
         <div t-att-class="{busy: this.code.busy()}">
-          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.groups().length" class="dim">No branches.</div>
+          <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.groups().length" class="dim br-empty">No branches.</div>
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/></tr>
+                <tr><th>Branch</th><th>Repository</th><th>Last update</th><th>PR</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody t-foreach="this.groups()" t-as="g" t-key="g.name" t-att-class="{active: g.active}">
                 <tr t-foreach="g.repos" t-as="r" t-key="r.repo">
@@ -1032,6 +1032,7 @@ class BranchesScreen extends Component {
                               t-on-click="() => this.code.deleteBranch(r.branch, r.repo, r.path, r.remote and !r.base)">Delete</button>
                     </div>
                   </td>
+                  <td class="br-spacer"/>
                 </tr>
               </tbody>
             </table>

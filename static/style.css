@@ -1631,8 +1631,34 @@ a.dash-row-branch:hover {
   max-width: 100%;
   overflow: auto;
 }
+/* fill the content area: flush left/top/bottom, natural (content) width */
+.content.br-fill {
+  padding: 0;
+  overflow: hidden;
+}
+.content.br-fill > div {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.content.br-fill .br-card {
+  border: none;
+  border-radius: 0;
+  flex: 1;
+  min-width: 0;
+}
+.br-empty {
+  padding: 18px 30px;
+}
 .br-table {
   border-collapse: collapse;
+  width: 100%;
+}
+/* greedy empty trailing column: soaks up the slack so the real columns stay
+   content-sized while the table spans the full width */
+.br-spacer {
+  width: 100%;
 }
 .br-table th {
   text-align: left;
@@ -1642,7 +1668,7 @@ a.dash-row-branch:hover {
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--l-text-faint);
-  background: var(--l-panel);
+  background: var(--l-card);
   padding: 11px 16px;
   border-bottom: 1px solid var(--l-line);
 }
