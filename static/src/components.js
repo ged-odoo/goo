@@ -705,14 +705,18 @@ class ServerScreen extends Component {
 
   get info() {
     const s = this.status();
-    if (!s.db) return null;
-    let html = `database: <b>${s.db}</b>`;
-    if (s.odoo_version) {
-      html += `<span class="sep">·</span>odoo: <b>${s.odoo_version}</b>`;
-      if (s.enterprise) html += ` (enterprise)`;
+    if (s.db) {
+      // running — live status (db, odoo version); target is shown in the navbar
+      let html = `database: <b>${s.db}</b>`;
+      if (s.odoo_version) {
+        html += `<span class="sep">·</span>odoo: <b>${s.odoo_version}</b>`;
+        if (s.enterprise) html += ` (enterprise)`;
+      }
+      return m(html);
     }
-    if (s.target) html += `<span class="sep">·</span>target: <b>${s.target}</b>`;
-    return m(html);
+    // stopped — the selected target's database (the would-be launch)
+    const tgt = this.targets.find((t) => t.name === this.target());
+    return tgt && tgt.db ? m(`database: <b>${tgt.db}</b>`) : null;
   }
 
   get hint() {
