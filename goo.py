@@ -403,10 +403,12 @@ def git_delete_branch(path, branch, delete_remote=False):
         return False, result.stderr.strip().split("\n")[0] or "git branch -D failed", None
     remote_error = None
     if delete_remote:
-        remote, err = dev_remote(path)
-        if err:
-            remote_error = err
-        else:
+        # only delete on the dev fork when the branch is actually there. A branch
+        # that was never pushed (or only exists on the canonical remote) has
+        # nothing to remove, so don't try — and don't report a spurious failure.
+        exists, _ = remote_branch_exists(path, branch)
+        if exists:
+            remote, _ = dev_remote(path)
             log_request(f"git push {remote} --delete {branch}")
             try:
                 r = subprocess.run(
