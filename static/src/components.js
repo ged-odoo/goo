@@ -1481,6 +1481,13 @@ class ConfigScreen extends Component {
             <span t-out="this.backupMsg()"/>
           </div>
         </div>
+        <div class="config-block">
+          <h2 class="subtitle">Danger zone</h2>
+          <p class="dim">Erase every customization (settings, repos, targets, links, favorites, last target, history) and restore the built-in initial config. This cannot be undone.</p>
+          <div class="config-actions">
+            <button class="danger" t-on-click="() => this.resetAll()">Reset to initial config</button>
+          </div>
+        </div>
       </div>
     </section>`;
 
@@ -1520,6 +1527,17 @@ class ConfigScreen extends Component {
 
   triggerImport() {
     document.getElementById("goo-import-file").click();
+  }
+
+  async resetAll() {
+    if (
+      !confirm(
+        "Reset the complete config to its initial state?\n\nThis erases all your customizations (settings, repos, targets, links, favorites, last target, history) and cannot be undone.",
+      )
+    )
+      return;
+    await this.config.resetConfig();
+    location.reload();
   }
 
   async useFile() {

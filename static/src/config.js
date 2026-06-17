@@ -1,5 +1,6 @@
-// Default configuration. Anything edited in the Config tab is stored in
-// localStorage (via ConfigPlugin) and overrides these values.
+// The single source of truth for all initial data. Anything edited in the
+// Config tab is stored in localStorage (via ConfigPlugin) and overrides these
+// values; "Reset to initial config" wipes those overrides to come back here.
 export const DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
   venv_activate: "source /home/odoo/work/env20/bin/activate",

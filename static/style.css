@@ -1862,6 +1862,14 @@ section.hidden {
   color: var(--l-text);
   border-color: var(--l-text-faint);
 }
+.config-actions button.danger {
+  color: var(--l-red);
+  border-color: var(--l-panel-line);
+}
+.config-actions button.danger:hover {
+  color: var(--l-red);
+  border-color: var(--l-red);
+}
 #repo-msg,
 #target-msg,
 #data-file-msg,

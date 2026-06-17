@@ -62,6 +62,20 @@ export class ConfigPlugin extends Plugin {
     this.persist();
   }
 
+  // Nuke the complete current config: drop every goo-owned localStorage key
+  // (config, favorites, last target, history, caches…) so everything reverts to
+  // the initial data (DEFAULT_CONFIG). The data-file link is kept; the wiped
+  // state is flushed to it synchronously so a reload can't rehydrate stale data.
+  async resetConfig() {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("oo-") && k !== DATA_FILE_KEY) localStorage.removeItem(k);
+    }
+    this.cfg.set(this._merged());
+    const path = this.getDataFile();
+    if (path) await this.flush(path);
+  }
+
   // generic persistent key/value (favorites, last target)
   read(key) {
     return localStorage.getItem(key);
