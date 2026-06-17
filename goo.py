@@ -390,6 +390,64 @@ def git_checkout(path, branch):
     return True, None
 
 
+def main_remote(path, github):
+    """The remote pointing at the canonical <github> repo (e.g. odoo/odoo), as
+    opposed to the odoo-dev fork. Returns the remote name or None."""
+    if not github:
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "remote", "-v"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        url = parts[1].removesuffix(".git").rstrip("/")
+        if url.endswith("/" + github) or url.endswith(":" + github) or url == github:
+            return parts[0]
+    return None
+
+
+def git_fetch_rebase(path, base, github):
+    """Fetch the base branch from the canonical (main) repo and rebase the
+    current branch onto it — e.g. master-owl-update is rebased onto odoo/odoo's
+    master. Returns (ok, error); on conflict the rebase is left in progress for
+    manual resolution."""
+    if not path or not base:
+        return False, "missing path or base branch"
+    remote = main_remote(path, github)
+    if not remote:
+        return False, f"no remote points at {github}"
+    p = os.path.expanduser(path)
+    try:
+        f = subprocess.run(
+            ["git", "-C", p, "fetch", remote, base],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if f.returncode != 0:
+            return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
+        r = subprocess.run(
+            ["git", "-C", p, "rebase", "FETCH_HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if r.returncode != 0:
+        msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[0]
+        return False, msg or "git rebase failed"
+    return True, None
+
+
 def runbot_badge_status(branch):
     """Fetch the runbot status badge for a branch and parse its result.
 
@@ -1197,6 +1255,16 @@ class Handler(BaseHTTPRequestHandler):
             for r in repos:
                 ok, error = git_checkout(r.get("path"), r.get("branch"))
                 results.append({"branch": r.get("branch"), "ok": ok, "error": error})
+            self._send_json(200, {"ok": True, "results": results})
+        elif path == "/api/code/rebase":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            results = []
+            for r in repos:
+                ok, error = git_fetch_rebase(r.get("path"), r.get("base"), r.get("github"))
+                results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/databases/drop":
             body, err = self._read_json()

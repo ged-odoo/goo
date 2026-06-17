@@ -232,7 +232,10 @@ class DashboardScreen extends Component {
               <h2 class="subtitle target-head">
                 <span t-out="tgt.name"/>
                 <span class="target-db" t-out="'· ' + tgt.db"/>
-                <span t-if="this.isActive(tgt)" class="db-badge"><span class="pulse"/>Active</span>
+                <t t-if="this.isActive(tgt)">
+                  <span class="db-badge"><span class="pulse"/>Active</span>
+                  <button class="pbtn" t-att-disabled="!this.canRebase(tgt)" t-att-title="this.rebaseTitle(tgt)" t-on-click="() => this.rebase(tgt)">Fetch &amp; rebase</button>
+                </t>
                 <button t-else="" class="pbtn activate-btn" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
               </h2>
               <table class="db-table">
@@ -428,6 +431,47 @@ class DashboardScreen extends Component {
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.name);
+  }
+
+  // the canonical base branch a branch derives from: master-owl-update -> master,
+  // 19.0-some-fix -> 19.0 (defaults to master)
+  _baseBranch(branch) {
+    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+  }
+
+  // {repo, base, github, path} for each repo in the target's config
+  _rebaseRepos(tgt) {
+    const groups = this.code.groups();
+    return (tgt.config || []).map(({ repo, branch }) => ({
+      repo,
+      base: this._baseBranch(branch),
+      github: groups.githubByRepo[repo] || "",
+      path: groups.pathByRepo[repo] || "",
+    }));
+  }
+
+  // can fetch+rebase the active target only when clean, with a known canonical
+  // (github) remote for each repo to fetch the base branch from
+  canRebase(tgt) {
+    return (
+      this.isActive(tgt) &&
+      !this._targetDirty(tgt) &&
+      this._rebaseRepos(tgt).every((r) => r.github && r.path)
+    );
+  }
+
+  rebaseTitle(tgt) {
+    if (this._targetDirty(tgt)) return "commit or stash changes first — the working tree is dirty";
+    const repos = this._rebaseRepos(tgt);
+    const missing = repos.filter((r) => !r.github);
+    if (missing.length) return "no canonical repo for: " + missing.map((r) => r.repo).join(", ");
+    return "fetch and rebase onto " + repos.map((r) => `${r.github}@${r.base}`).join(", ");
+  }
+
+  // fetch each repo's base branch from the canonical repo and rebase onto it
+  async rebase(tgt) {
+    if (!this.canRebase(tgt)) return;
+    await this.code.rebase(this._rebaseRepos(tgt).filter((r) => r.path && r.github));
   }
 
   cell(date) {
