@@ -667,10 +667,6 @@ section.hidden {
   font-weight: 400;
   color: var(--l-text-dim);
 }
-.target-head .db-badge,
-.target-head .activate-btn {
-  margin-left: auto;
-}
 .target-head .activate-btn {
   padding: 4px 12px;
 }
