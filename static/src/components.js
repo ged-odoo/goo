@@ -231,7 +231,7 @@ class DashboardScreen extends Component {
             <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="target-block">
               <h2 class="subtitle target-head">
                 <span t-out="tgt.name"/>
-                <span class="target-db" t-out="'· ' + tgt.db"/>
+                <span class="target-db" t-out="'· db: ' + tgt.db"/>
                 <t t-if="this.isActive(tgt)">
                   <span class="db-badge"><span class="pulse"/>Active</span>
                   <button class="pbtn" t-att-disabled="!this.canRebase(tgt)" t-att-title="this.rebaseTitle(tgt)" t-on-click="() => this.rebase(tgt)">Fetch &amp; rebase</button>
