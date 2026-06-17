@@ -1706,10 +1706,12 @@ a.dash-row-branch:hover {
 .br-table tbody tr:hover td {
   background: var(--l-hover);
 }
-/* name cell (rowspanned) sits at the top of the group, with an accent bar when active */
-.br-name {
+/* name cell (rowspanned) aligns with the first repo row's content, not centered
+   across the whole group. The repo rows are taller than a text line (action
+   buttons), so the name needs extra top padding to line up with the first row. */
+.br-table td.br-name {
   vertical-align: top;
-  padding: 10px 18px;
+  padding: 14px 18px;
 }
 .br-table tbody.active .br-name {
   box-shadow: inset 3px 0 0 var(--l-accent);
