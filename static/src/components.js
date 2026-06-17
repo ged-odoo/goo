@@ -1065,6 +1065,9 @@ class BranchesScreen extends Component {
                               t-on-click="() => this.openPr(r)">Open PR</button>
                       <button t-if="r.pr and r.github and r.pr.state === 'OPEN'" class="drop-btn pr-close"
                               t-on-click="() => this.code.closePr(r.github, r.pr.number)">Close PR</button>
+                      <button class="drop-btn checkout" t-att-disabled="!!this.checkoutBlocked(r)"
+                              t-att-title="this.checkoutBlocked(r) || ('check out ' + r.branch + ' in ' + r.repo)"
+                              t-on-click="() => this.checkout(r)">Checkout</button>
                       <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(r)" t-att-title="this.deleteBlocked(r)"
                               t-on-click="() => this.code.deleteBranch(r.branch, r.repo, r.path, r.remote and !r.base)">Delete</button>
                     </div>
@@ -1111,6 +1114,7 @@ class BranchesScreen extends Component {
           date: b.date,
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
+          repoDirty: repo.dirty, // the repo's working tree (its current branch)
           pr: prIndex[`${repo.id}:${b.name}`],
         });
       }
@@ -1164,6 +1168,19 @@ class BranchesScreen extends Component {
 
   openPr(row) {
     window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
+  }
+
+  // why a branch can't be checked out ("" = allowed): already checked out, or the
+  // repo's working tree is dirty (a checkout would fail / lose changes)
+  checkoutBlocked(row) {
+    if (row.active) return "this branch is already checked out";
+    if (row.repoDirty) return "commit or stash changes first — the working tree is dirty";
+    return "";
+  }
+
+  checkout(row) {
+    if (this.checkoutBlocked(row)) return;
+    this.code.checkout([{ path: row.path, branch: row.branch }]);
   }
 
   // why a branch can't be deleted ("" = deletable). Deleting closes an open PR

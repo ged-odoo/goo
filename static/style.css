@@ -1603,12 +1603,14 @@ a.dash-row-branch:hover {
   cursor: default;
 }
 /* neutral sibling of the (red) delete button, for "Close PR" */
-.drop-btn.pr-close {
+.drop-btn.pr-close,
+.drop-btn.checkout {
   color: var(--l-text-mid);
   border-color: var(--l-line);
   margin-right: 6px;
 }
-.drop-btn.pr-close:hover:not(:disabled) {
+.drop-btn.pr-close:hover:not(:disabled),
+.drop-btn.checkout:hover:not(:disabled) {
   border-color: var(--l-text-faint);
   background: transparent;
 }
