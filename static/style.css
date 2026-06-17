@@ -484,11 +484,6 @@ section.hidden {
   flex-direction: column;
   gap: 16px;
 }
-.content > .db-list,
-.content > #prs-list,
-.content > #db-list {
-  flex: none;
-}
 /* full-bleed content (running server logs): no padding, no console chrome */
 .content.flush {
   padding: 0;
@@ -1494,39 +1489,6 @@ a.dash-row-branch:hover {
 
 /* ───────────────── TABLES (light) ───────────────── */
 
-.db-list {
-  font-size: 13.5px;
-}
-.db-table {
-  border-collapse: collapse;
-  min-width: 540px;
-  width: auto;
-}
-.db-table th {
-  text-align: left;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--l-text-faint);
-  padding: 6px 18px 10px 0;
-  border-bottom: 1px solid var(--l-line);
-}
-.db-table td {
-  padding: 13px 18px 13px 0;
-  border-bottom: 1px solid var(--l-line-soft);
-  color: var(--l-text);
-}
-.db-table th:first-child,
-.db-table td:first-child {
-  padding-left: 16px;
-}
-.db-table tbody tr:hover {
-  background: var(--l-hover);
-}
-.db-actions {
-  text-align: right;
-}
 .active-name {
   font-weight: 600;
   color: var(--l-accent);
@@ -1541,17 +1503,6 @@ a.dash-row-branch:hover {
   font-weight: 400;
 }
 
-/* running database: clear, prominent highlight */
-.db-table tr.db-active td {
-  background: var(--l-accent-soft);
-  border-bottom-color: transparent;
-}
-.db-table tr.db-active:hover td {
-  background: oklch(0.55 0.18 300 / 0.15);
-}
-.db-table tr.db-active td:first-child {
-  box-shadow: inset 3px 0 0 var(--l-accent);
-}
 .db-badge {
   display: inline-flex;
   align-items: center;

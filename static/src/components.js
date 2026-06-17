@@ -763,28 +763,35 @@ class DatabasesScreen extends Component {
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
-      <div class="content">
-        <div class="db-list" t-att-class="{busy: this.db.dropping()}">
-          <div t-if="this.db.error()" class="dim" t-out="'Failed to load: ' + this.db.error()"/>
-          <div t-elif="!this.db.databases().length" class="dim">No databases.</div>
-          <table t-else="" class="db-table">
-            <thead><tr><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/></tr></thead>
-            <tbody>
-              <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{'db-active': d.active}">
-                <td t-att-class="{'active-name': d.active}">
-                  <span t-out="d.name"/>
-                  <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
-                </td>
-                <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
-                <td t-att-class="{dim: !d.created}" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
-                <td t-att-class="{dim: !d.last}" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
-                <td class="db-actions">
-                  <button class="drop-btn" t-att-disabled="d.active" t-att-title="d.active ? 'in use by the running server' : ''"
-                          t-on-click="() => this.db.drop(d.name)">Drop</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+      <div class="content br-fill">
+        <div t-att-class="{busy: this.db.dropping()}">
+          <div t-if="this.db.error()" class="dim br-empty" t-out="'Failed to load: ' + this.db.error()"/>
+          <div t-elif="!this.db.databases().length" class="dim br-empty">No databases.</div>
+          <div t-else="" class="br-card">
+            <table class="br-table">
+              <thead>
+                <tr><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/><th class="br-spacer"/></tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active}">
+                  <td t-att-class="{'active-name': d.active}">
+                    <span t-out="d.name"/>
+                    <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
+                  </td>
+                  <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
+                  <td t-att-class="{dim: !d.created}" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
+                  <td t-att-class="{dim: !d.last}" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
+                  <td>
+                    <div class="br-act">
+                      <button class="drop-btn" t-att-disabled="d.active" t-att-title="d.active ? 'in use by the running server' : ''"
+                              t-on-click="() => this.db.drop(d.name)">Drop</button>
+                    </div>
+                  </td>
+                  <td class="br-spacer"/>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>`;
@@ -849,7 +856,7 @@ class TargetsScreen extends Component {
           <span t-if="!this.creating()" class="row-count" t-out="this.count"/>
         </div>
       </div>
-      <div class="content">
+      <div class="content" t-att-class="{'br-fill': !this.creating()}">
         <div t-if="this.creating()" class="launch-form">
           <h2 class="subtitle" t-out="this.editName() ? 'Editing ' + this.editName() : 'New target'"/>
           <div class="launch-field">
@@ -873,27 +880,34 @@ class TargetsScreen extends Component {
             <label class="edit-check"><input type="checkbox" t-att-checked="this.draftFav()" t-on-change="ev => this.draftFav.set(ev.target.checked)"/> starred</label>
           </div>
         </div>
-        <t t-else="">
-          <div t-if="!this.targets.length" class="dim">No targets.</div>
-          <table t-else="" class="db-table">
-            <thead><tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th><th/></tr></thead>
-            <tbody>
-              <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.name">
-                <td class="pr-branch">
-                  <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.name)"><t t-out="this.starIcon"/></button>
-                </td>
-                <td t-out="tgt.name"/>
-                <td class="dim" t-out="this.fmtConfig(tgt)"/>
-                <td t-out="tgt.db"/>
-                <td class="dim" t-out="tgt.on_create_args || '—'"/>
-                <td class="db-actions">
-                  <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
-                  <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt.name)">Delete</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </t>
+        <div t-else="">
+          <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
+          <div t-else="" class="br-card">
+            <table class="br-table">
+              <thead>
+                <tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.name">
+                  <td>
+                    <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.name)"><t t-out="this.starIcon"/></button>
+                  </td>
+                  <td t-out="tgt.name"/>
+                  <td class="dim" t-out="this.fmtConfig(tgt)"/>
+                  <td t-out="tgt.db"/>
+                  <td class="dim" t-out="tgt.on_create_args || '—'"/>
+                  <td>
+                    <div class="br-act">
+                      <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
+                      <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt.name)">Delete</button>
+                    </div>
+                  </td>
+                  <td class="br-spacer"/>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>`;
 
