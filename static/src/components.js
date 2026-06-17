@@ -72,7 +72,6 @@ class Topbar extends Component {
         <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
           <span class="dot"/>
           <span class="t-name" t-out="this.target"/>
-          <button t-if="this.stopped" class="nav-start" t-on-click="() => this.server.start(this.target)" title="start this target"><span class="play"/>Start</button>
         </div>
       </div>
       <div class="top-right">
@@ -91,11 +90,6 @@ class Topbar extends Component {
   get active() {
     const s = this.server.status().state;
     return s === "running" || s === "starting";
-  }
-
-  // backend reachable but odoo not running — offer a one-click start
-  get stopped() {
-    return this.server.status().state === "stopped";
   }
 
   // the running target while active, else the last-used one (shown dimmed)
@@ -210,10 +204,15 @@ class DashboardScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Dashboard</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-top">
+          <h1>Dashboard</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
         <div class="panel-actions">
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
-          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
       </div>
       <div class="content">
@@ -670,9 +669,14 @@ class DatabasesScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Databases</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-top">
+          <h1>Databases</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
         <div class="panel-actions">
-          <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -916,14 +920,19 @@ class BranchesScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Branches</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-top">
+          <h1>Branches</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
         <div class="panel-actions">
           <SearchBox value="this.search"/>
           <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
             <option value="">All repositories</option>
             <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
           </select>
-          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -1046,7 +1055,13 @@ class PrsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>PRs</h1><span class="meta" t-out="this.stamp"/></div>
+        <div class="panel-top">
+          <h1>PRs</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
         <div class="panel-actions">
           <SearchBox value="this.search"/>
           <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
@@ -1054,7 +1069,6 @@ class PrsScreen extends Component {
             <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
           </select>
           <button class="pbtn" t-att-class="{active: this.openOnly()}" t-on-click="() => this.openOnly.set(!this.openOnly())">Open</button>
-          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -1233,12 +1247,14 @@ class AddonsScreen extends Component {
             <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
             <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
           </div>
-          <span class="meta" t-out="this.addons.status()"/>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.addons.status()"/>
+            <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
         </div>
         <div class="panel-actions">
           <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
           <span t-if="this.addons.targetDb()" class="row-count" t-out="this.count"/>
-          <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
       </div>
       <div class="content addons-content">

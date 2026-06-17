@@ -166,34 +166,6 @@ a {
   color: var(--text-mid);
   font-weight: 500;
 }
-.nav-start {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 4px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--green);
-  background: var(--green-bg);
-  border: 1px solid transparent;
-  transition: 0.13s;
-}
-.nav-start:hover {
-  border-color: var(--green);
-}
-.nav-start .play {
-  width: 0;
-  height: 0;
-  border-left: 7px solid currentColor;
-  border-top: 4.5px solid transparent;
-  border-bottom: 4.5px solid transparent;
-  border-radius: 1px;
-}
-
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -384,6 +356,17 @@ section.hidden {
   color: var(--l-text-faint);
   white-space: nowrap;
   padding-top: 6px;
+}
+/* top-right cluster: the "updated …" stamp followed by the Refresh button,
+   kept consistent across every screen */
+.panel-top-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.panel-top-right .meta {
+  padding-top: 0;
 }
 .panel-top .sub {
   margin-top: 5px;
@@ -798,6 +781,9 @@ section.hidden {
   justify-content: space-between;
   gap: 14px;
   padding: 10px 16px;
+  /* fixed height so all card headers line up whether or not they carry an
+     Activate / Start button (the active+running card has none) */
+  min-height: 52px;
   background: var(--l-panel);
   border-bottom: 1px solid var(--l-line-soft);
 }
