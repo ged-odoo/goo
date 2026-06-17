@@ -18,10 +18,11 @@ export const DEFAULT_CONFIG = {
     { id: "tutorials", path: "/home/odoo/work/tutorials", github: "odoo/tutorials" },
   ],
   // First-class targets — what you actually work with. This is just the initial
-  // set; each carries its own config (repo:branch pairs), database, args and
-  // favorite flag, and new ones can be created from any existing one.
+  // set; each carries a stable `id` (used internally so renaming `name` is safe),
+  // its own config (repo:branch pairs), database, args and favorite flag.
   targets: [
     {
+      id: "master",
       name: "master",
       favorite: true,
       config: [{ repo: "community", branch: "master" }],
@@ -29,6 +30,7 @@ export const DEFAULT_CONFIG = {
       on_create_args: "-i sale_management",
     },
     {
+      id: "master-e",
       name: "master(e)",
       favorite: false,
       config: [
@@ -39,6 +41,7 @@ export const DEFAULT_CONFIG = {
       on_create_args: "-i sale_management",
     },
     {
+      id: "19.0",
       name: "19.0",
       favorite: false,
       config: [{ repo: "community", branch: "19.0" }],
@@ -46,6 +49,7 @@ export const DEFAULT_CONFIG = {
       on_create_args: "-i sale_management",
     },
     {
+      id: "19.0-e",
       name: "19.0(e)",
       favorite: false,
       config: [

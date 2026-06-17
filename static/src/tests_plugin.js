@@ -42,11 +42,13 @@ export class TestsPlugin extends Plugin {
   // the target tests run against: the running/starting server's target, else
   // the last-used one, else the first configured target. Tests are a one-shot
   // run against the target's db, so they work even with the server down.
+  // the active target id: the running server's, else the last-used one, else the
+  // first configured target (buildStartConfig resolves it by id)
   get target() {
     const targets = this.config.config.targets;
     const candidate = this.server.status().target || this.server.lastTarget();
-    if (targets.some((t) => t.name === candidate)) return candidate;
-    return targets[0]?.name || "";
+    if (targets.some((t) => t.id === candidate)) return candidate;
+    return targets[0]?.id || "";
   }
 
   setup() {

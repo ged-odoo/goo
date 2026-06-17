@@ -38,9 +38,10 @@ export class AddonsPlugin extends Plugin {
   }
 
   // the active target: the running server's target, else the last one used
+  // (both reference a target id)
   _activeTarget() {
-    const name = this.server.status().target || this.server.lastTarget();
-    return this.config.config.targets.find((t) => t.name === name) || null;
+    const id = this.server.status().target || this.server.lastTarget();
+    return this.config.config.targets.find((t) => t.id === id) || null;
   }
 
   targetName() {

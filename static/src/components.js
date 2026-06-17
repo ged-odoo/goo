@@ -5,7 +5,7 @@
 // props use the props({...}) helper with `t` types.
 
 import { BASE_BRANCH_RE } from "./config.js";
-import { ConfigPlugin } from "./config_plugin.js";
+import { ConfigPlugin, newTargetId } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { DatabasePlugin } from "./database_plugin.js";
@@ -93,9 +93,12 @@ class Topbar extends Component {
     return s === "running" || s === "starting";
   }
 
-  // the running target while active, else the last-used one (shown dimmed)
+  // the running target while active, else the last-used one (shown dimmed); the
+  // active reference is a target id — map it to the display name
   get target() {
-    return this.active ? this.server.status().target || "" : this.server.lastTarget();
+    const id = this.active ? this.server.status().target : this.server.lastTarget();
+    const tgt = this.config.config.targets.find((t) => t.id === id);
+    return tgt ? tgt.name : id || "";
   }
 
   get stateClass() {
@@ -213,7 +216,7 @@ class DashboardScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
-          <button t-if="this.activeTarget and this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(this.activeTarget.name)" title="start the active target">
+          <button t-if="this.activeTarget and this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(this.activeTarget.id)" title="start the active target">
             <t t-out="this.playIcon"/>Start
           </button>
           <button t-if="this.serverRunning or this.serverStopping" class="dash-activate dash-stop" t-att-disabled="this.serverStopping" t-on-click="() => this.server.stop()" title="stop the server">
@@ -255,7 +258,7 @@ class DashboardScreen extends Component {
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
           <div t-else="" class="dash-cards">
-            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="dash-card" t-att-class="{active: this.isActive(tgt)}">
+            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-card" t-att-class="{active: this.isActive(tgt)}">
               <div class="dash-card-head">
                 <div class="dash-card-title">
                   <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
@@ -525,10 +528,10 @@ class DashboardScreen extends Component {
   }
 
   // the active target is the explicit one (set on Activate / Start) — and only
-  // while its branches are still checked out. The name check disambiguates
+  // while its branches are still checked out. The id check disambiguates
   // overlapping targets (e.g. master vs master(e), whose branches are a subset)
   isActive(tgt) {
-    return tgt.name === this.server.lastTarget() && this._checkedOut(tgt);
+    return tgt.id === this.server.lastTarget() && this._checkedOut(tgt);
   }
 
   // can't switch branches with uncommitted work, or to branches not present
@@ -562,7 +565,7 @@ class DashboardScreen extends Component {
     const s = this.server.status().state;
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
-    this.server.setLastTarget(tgt.name);
+    this.server.setLastTarget(tgt.id);
   }
 
   // the canonical base branch a branch derives from: master-owl-update -> master,
@@ -609,7 +612,7 @@ class ServerScreen extends Component {
           <div class="launch-field">
             <label>Target</label>
             <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
-              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.name" t-att-value="tgt.name" t-out="tgt.name"/>
+              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
             </select>
           </div>
           <div class="launch-field">
@@ -655,11 +658,11 @@ class ServerScreen extends Component {
     return this.config.config.targets;
   }
 
-  // last used target if it still exists, else the first one
+  // last used target id if it still exists, else the first one
   _initialTarget() {
-    const names = this.targets.map((t) => t.name);
+    const ids = this.targets.map((t) => t.id);
     const last = this.server.lastTarget();
-    return names.includes(last) ? last : names[0] || "";
+    return ids.includes(last) ? last : ids[0] || "";
   }
 
   status() {
@@ -715,7 +718,7 @@ class ServerScreen extends Component {
       return m(html);
     }
     // stopped — the selected target's database (the would-be launch)
-    const tgt = this.targets.find((t) => t.name === this.target());
+    const tgt = this.targets.find((t) => t.id === this.target());
     return tgt && tgt.db ? m(`database: <b>${tgt.db}</b>`) : null;
   }
 
@@ -845,7 +848,7 @@ class TargetsScreen extends Component {
         <div class="panel-actions">
           <select t-if="!this.creating()" class="preset-select" t-att-value="this.preset()" t-on-change="ev => this.preset.set(ev.target.value)" title="prefill a new target from an existing one">
             <option value="">Blank</option>
-            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.name" t-att-value="tgt.name" t-out="tgt.name"/>
+            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
           </select>
           <button t-if="!this.creating()" class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <t t-else="">
@@ -888,9 +891,9 @@ class TargetsScreen extends Component {
                 <tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
-                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.name">
+                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id">
                   <td>
-                    <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.name)"><t t-out="this.starIcon"/></button>
+                    <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button>
                   </td>
                   <td t-out="tgt.name"/>
                   <td class="dim" t-out="this.fmtConfig(tgt)"/>
@@ -899,7 +902,7 @@ class TargetsScreen extends Component {
                   <td>
                     <div class="br-act">
                       <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
-                      <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt.name)">Delete</button>
+                      <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
                     </div>
                   </td>
                   <td class="br-spacer"/>
@@ -914,8 +917,9 @@ class TargetsScreen extends Component {
   config = plugin(ConfigPlugin);
   starIcon = m(ICONS.star);
   creating = signal(false);
-  editName = signal(""); // "" while creating; the edited target's original name otherwise
-  preset = signal(""); // existing target to prefill a new one from ("" = blank)
+  editId = signal(""); // "" while creating a new target; the edited target's id otherwise
+  editName = signal(""); // the edited target's original name (for the form heading)
+  preset = signal(""); // existing target id to prefill a new one from ("" = blank)
   draftName = signal("");
   draftConfig = signal("");
   draftDb = signal("");
@@ -939,9 +943,9 @@ class TargetsScreen extends Component {
     return (tgt.config || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
   }
 
-  toggleFavorite(name) {
+  toggleFavorite(id) {
     const targets = this.config.config.targets.map((t) =>
-      t.name === name ? { ...t, favorite: !t.favorite } : t,
+      t.id === id ? { ...t, favorite: !t.favorite } : t,
     );
     this.config.updateConfig({ targets });
   }
@@ -949,7 +953,8 @@ class TargetsScreen extends Component {
   // prefill config/db/args/favorite from the selected preset target (if any);
   // the name stays blank since a new target needs its own unique name
   startCreate() {
-    const src = this.config.config.targets.find((t) => t.name === this.preset());
+    const src = this.config.config.targets.find((t) => t.id === this.preset());
+    this.editId.set("");
     this.editName.set("");
     this.draftName.set("");
     this.draftConfig.set(src ? repoBranchList.format(src.config) : "");
@@ -962,6 +967,7 @@ class TargetsScreen extends Component {
 
   // open the form on an existing target, fields pre-filled with its values
   startEdit(tgt) {
+    this.editId.set(tgt.id);
     this.editName.set(tgt.name);
     this.draftName.set(tgt.name);
     this.draftConfig.set(repoBranchList.format(tgt.config));
@@ -972,10 +978,10 @@ class TargetsScreen extends Component {
     this.creating.set(true);
   }
 
-  deleteTarget(name) {
-    if (!confirm(`Delete target "${name}"?`)) return;
+  deleteTarget(tgt) {
+    if (!confirm(`Delete target "${tgt.name}"?`)) return;
     this.config.updateConfig({
-      targets: this.config.config.targets.filter((t) => t.name !== name),
+      targets: this.config.config.targets.filter((t) => t.id !== tgt.id),
     });
   }
 
@@ -985,14 +991,15 @@ class TargetsScreen extends Component {
   }
 
   save() {
-    const editing = this.editName();
+    const editId = this.editId();
     const name = this.draftName().trim();
     if (!name) return this.error.set("a name is required");
-    if (this.config.config.targets.some((t) => t.name === name && t.name !== editing))
+    if (this.config.config.targets.some((t) => t.name === name && t.id !== editId))
       return this.error.set(`a target named "${name}" already exists`);
     const config = repoBranchList.parse(this.draftConfig().trim());
     if (!config.length) return this.error.set("a config is required");
     const target = {
+      id: editId || newTargetId(),
       name,
       favorite: this.draftFav(),
       config,
@@ -1001,8 +1008,8 @@ class TargetsScreen extends Component {
     };
     const targets = this.config.config.targets;
     this.config.updateConfig({
-      targets: editing
-        ? targets.map((t) => (t.name === editing ? target : t))
+      targets: editId
+        ? targets.map((t) => (t.id === editId ? target : t))
         : [...targets, target],
     });
     this.creating.set(false);

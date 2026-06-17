@@ -41,13 +41,15 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
   }
 
-  buildStartConfig(targetName, otherArgs) {
+  buildStartConfig(targetId, otherArgs) {
     const cfg = this.config.config;
-    const target = cfg.targets.find((t) => t.name === targetName);
+    const target = cfg.targets.find((t) => t.id === targetId);
     if (!target) return null;
     return {
       ...cfg,
-      target: target.name,
+      // `target` carries the id (the backend just echoes it back in status);
+      // the frontend maps it to the name for display
+      target: target.id,
       start: {
         // addons path is built from the target's repos; the branches in the
         // config are stored for later (not checked out yet)
@@ -63,9 +65,9 @@ export class ServerPlugin extends Plugin {
     return this.activeTarget();
   }
 
-  setLastTarget(name) {
-    this.activeTarget.set(name);
-    this.config.write(LAST_TARGET_KEY, name);
+  setLastTarget(id) {
+    this.activeTarget.set(id);
+    this.config.write(LAST_TARGET_KEY, id);
   }
 
   // the command that would launch this target (built by the backend); "" if invalid

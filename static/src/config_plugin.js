@@ -14,12 +14,57 @@ export const FAVORITES_KEY = "oo-prs-favorites";
 export const TEST_HISTORY_KEY = "oo-test-history";
 const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY, TEST_HISTORY_KEY];
 
+// a stable, unique id for a new target (referenced internally so renaming is safe)
+export function newTargetId() {
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// a deterministic id derived from a name (used when migrating old configs, so
+// re-running the migration — e.g. for data-file users — yields the same ids)
+function slugId(name, used) {
+  const base =
+    (name || "target")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "") || "target";
+  let id = base;
+  for (let i = 2; used.has(id); i++) id = `${base}-${i}`;
+  return id;
+}
+
 export class ConfigPlugin extends Plugin {
   static sequence = 1; // everything else may depend on config
 
+  _migrated = this._migrate(); // runs before cfg is read (backfills target ids)
   cfg = signal(this._merged()); // the merged config object (replaced wholesale)
   dataFileSig = signal(this.getDataFile());
   _timer = null;
+
+  // one-time migration: give every stored target a stable id, and convert the
+  // persisted active target from a name (old format) to its id.
+  _migrate() {
+    const stored = this._stored();
+    if (Array.isArray(stored.targets) && stored.targets.some((t) => !t.id)) {
+      const used = new Set(stored.targets.map((t) => t.id).filter(Boolean));
+      const targets = stored.targets.map((t) => {
+        if (t.id) return t;
+        const id = slugId(t.name, used);
+        used.add(id);
+        return { ...t, id };
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...stored, targets }));
+    }
+    const last = localStorage.getItem(LAST_TARGET_KEY);
+    if (last) {
+      const targets = this._merged().targets || [];
+      if (!targets.some((t) => t.id === last)) {
+        const byName = targets.find((t) => t.name === last);
+        if (byName) localStorage.setItem(LAST_TARGET_KEY, byName.id);
+      }
+    }
+  }
 
   setup() {
     // keep the backend's auto-reload set in sync with the config (it runs the
