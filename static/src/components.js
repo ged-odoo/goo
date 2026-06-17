@@ -1084,8 +1084,8 @@ class BranchesScreen extends Component {
   externalIcon = m(ICONS.external);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
-  sortKey = signal("name"); // "name" | "update"
-  sortDir = signal("asc"); // "asc" | "desc"
+  sortKey = signal("update"); // "name" | "update" — default: most recently updated first
+  sortDir = signal("desc"); // "asc" | "desc"
   // branches grouped by name (one group per branch name). Each group carries its
   // repo rows and is "active" when the branch is checked out in any of its repos.
   // Sorted by the chosen column (branch name, or summed last-update time).
