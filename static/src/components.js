@@ -212,6 +212,12 @@ class DashboardScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
+          <button t-if="this.activeTarget and this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(this.activeTarget.name)" title="start the active target">
+            <t t-out="this.playIcon"/>Start
+          </button>
+          <button t-if="this.serverRunning or this.serverStopping" class="dash-activate dash-stop" t-att-disabled="this.serverStopping" t-on-click="() => this.server.stop()" title="stop the server">
+            <t t-out="this.stopIcon"/>Stop
+          </button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
         </div>
       </div>
@@ -255,15 +261,7 @@ class DashboardScreen extends Component {
                   <span class="dash-name" t-out="tgt.name"/>
                   <span class="dash-db"><span class="dim">db:</span> <t t-out="tgt.db"/></span>
                 </div>
-                <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">
-                  <t t-out="this.playIcon"/>Activate
-                </button>
-                <button t-elif="this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(tgt.name)" title="start this target">
-                  <t t-out="this.playIcon"/>Start
-                </button>
-                <button t-elif="this.serverRunning" class="dash-activate dash-stop" t-on-click="() => this.server.stop()" title="stop the server">
-                  <t t-out="this.stopIcon"/>Stop
-                </button>
+                <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
               </div>
               <div class="dash-card-body">
                 <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-card-row">
@@ -327,8 +325,8 @@ class DashboardScreen extends Component {
   // CI badge model for a card repo row, mapping runbot status -> design states
   ciBadge(row) {
     const s = this.rbState(row);
-    if (s === "success") return { cls: "pass", label: "passing", title: "passing" };
-    if (s === "failure") return { cls: "fail", label: "failing", title: "failing" };
+    if (s === "success") return { cls: "pass", label: "ok", title: "passing" };
+    if (s === "failure") return { cls: "fail", label: "ko", title: "failing" };
     if (s === "pending") return { cls: "run", label: "running", title: "running" };
     return { cls: "unknown", label: "—", title: "unknown" };
   }
@@ -343,6 +341,18 @@ class DashboardScreen extends Component {
   get serverRunning() {
     const s = this.server.status().state;
     return s === "running" || s === "starting";
+  }
+
+  // shutting down — keep Stop visible but disabled until it reaches "stopped"
+  // (so the button doesn't flicker out before Start can appear)
+  get serverStopping() {
+    return this.server.status().state === "stopping";
+  }
+
+  // the currently active target (checked out + last started), or null — the
+  // control-panel Start/Stop buttons act on it
+  get activeTarget() {
+    return this.config.config.targets.find((t) => this.isActive(t)) || null;
   }
 
   get stamp() {

@@ -890,6 +890,8 @@ section.hidden {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr) auto auto auto;
   padding: 4px 6px 6px;
+  /* gray body — lighter than the panel-gray header, not white */
+  background: var(--l-bg);
 }
 .dash-card-row {
   display: grid;
