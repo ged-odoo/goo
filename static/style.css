@@ -881,6 +881,8 @@ section.hidden {
   color: var(--l-green);
   border-color: var(--l-green);
 }
+/* Stop (active target, server running) — secondary/white like the other
+   buttons (it's not a primary action); inherits .dash-activate */
 /* the body is the grid that owns the column tracks; rows are subgrids so they
    stay aligned. The commit column (1fr) soaks up the free width; the metadata
    columns (CI / PR / when) size to their content. */

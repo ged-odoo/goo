@@ -50,6 +50,7 @@ const ICONS = {
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
+  stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -261,6 +262,9 @@ class DashboardScreen extends Component {
                 <button t-elif="this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(tgt.name)" title="start this target">
                   <t t-out="this.playIcon"/>Start
                 </button>
+                <button t-elif="this.serverRunning" class="dash-activate dash-stop" t-on-click="() => this.server.stop()" title="stop the server">
+                  <t t-out="this.stopIcon"/>Stop
+                </button>
               </div>
               <div class="dash-card-body">
                 <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-card-row">
@@ -297,6 +301,7 @@ class DashboardScreen extends Component {
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
   playIcon = m(ICONS.play);
+  stopIcon = m(ICONS.stop);
 
   setup() {
     this.code.load();
@@ -333,6 +338,12 @@ class DashboardScreen extends Component {
   // active target's card (mirrors the navbar Start button)
   get serverStopped() {
     return this.server.status().state === "stopped";
+  }
+
+  // server up (or coming up) — offer Stop in the same spot
+  get serverRunning() {
+    const s = this.server.status().state;
+    return s === "running" || s === "starting";
   }
 
   get stamp() {
