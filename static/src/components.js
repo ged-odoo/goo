@@ -61,19 +61,6 @@ const NAV = [
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "config", label: "Config", icon: ICONS.config },
 ];
-// open an odoo page through the autologin addon (creates an admin session first)
-const ODOO = "http://localhost:8069";
-const autologin = (to) => `${ODOO}/dev/autologin?to=${encodeURIComponent(to)}`;
-const ROUTES = [
-  { href: autologin("/odoo?debug=assets"), label: "/odoo" },
-  { href: autologin("/web/tests?debug=assets&timeout=500000&manual=true"), label: "/web/tests" },
-  { href: "https://odoo.github.io/owl/documentation/v3/owl/", label: "owl docs" },
-  { href: "https://odoo.github.io/owl/playground/", label: "owl playground" },
-  { href: "https://github.com/odoo/owl", label: "owl github" },
-  { href: "https://runbot.odoo.com", label: "runbot" },
-  { href: "https://mergebot.odoo.com", label: "mergebot" },
-];
-
 // ─────────────────────────── Topbar ───────────────────────────
 
 class Topbar extends Component {
@@ -93,7 +80,12 @@ class Topbar extends Component {
     </header>`;
 
   server = plugin(ServerPlugin);
-  routes = ROUTES;
+  config = plugin(ConfigPlugin);
+
+  // navbar links, editable in the Config tab
+  get routes() {
+    return this.config.config.links;
+  }
 
   get active() {
     const s = this.server.status().state;
@@ -1416,9 +1408,10 @@ class ListEditor extends Component {
         if (!f.optional && !raw[f.key])
           return this.flash(`every ${this.spec.itemName} needs a ${f.name}`, true);
       }
-      if (seen.has(raw.id))
-        return this.flash(`duplicate ${this.spec.fields[0].name} "${raw.id}"`, true);
-      seen.add(raw.id);
+      const keyVal = raw[this.spec.fields[0].key]; // first field is the identity
+      if (seen.has(keyVal))
+        return this.flash(`duplicate ${this.spec.fields[0].name} "${keyVal}"`, true);
+      seen.add(keyVal);
       const item = {};
       for (const f of this.spec.fields) item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
       items.push(item);
@@ -1445,6 +1438,7 @@ class ConfigScreen extends Component {
       <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
       <div class="content">
         <ListEditor kind="'repos'"/>
+        <ListEditor kind="'links'"/>
         <div class="config-block">
           <h2 class="subtitle">Storage</h2>
           <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
@@ -1752,6 +1746,18 @@ const SPECS = {
         const used = (t.config || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by target "${t.name}"`;
       }
+      return null;
+    },
+  },
+  links: {
+    key: "links",
+    title: "Navbar links",
+    itemName: "link",
+    fields: [
+      { key: "label", name: "label", placeholder: "label (e.g. /odoo)", className: "w-name" },
+      { key: "href", name: "href", placeholder: "href (e.g. https://…)", className: "w-flex" },
+    ],
+    validate() {
       return null;
     },
   },

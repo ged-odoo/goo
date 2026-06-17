@@ -60,6 +60,20 @@ export const DEFAULT_CONFIG = {
     on_create_args: "-i sale_management",
     other_args: "--dev all",
   },
+  // navbar links (editable in the Config tab). The two odoo links go through the
+  // autologin addon (?to=<url-encoded target>).
+  links: [
+    { label: "/odoo", href: "http://localhost:8069/dev/autologin?to=%2Fodoo%3Fdebug%3Dassets" },
+    {
+      label: "/web/tests",
+      href: "http://localhost:8069/dev/autologin?to=%2Fweb%2Ftests%3Fdebug%3Dassets%26timeout%3D500000%26manual%3Dtrue",
+    },
+    { label: "owl docs", href: "https://odoo.github.io/owl/documentation/v3/owl/" },
+    { label: "owl playground", href: "https://odoo.github.io/owl/playground/" },
+    { label: "owl github", href: "https://github.com/odoo/owl" },
+    { label: "runbot", href: "https://runbot.odoo.com" },
+    { label: "mergebot", href: "https://mergebot.odoo.com" },
+  ],
 };
 
 export const SECTIONS = [
