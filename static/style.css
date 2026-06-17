@@ -1653,12 +1653,16 @@ a.dash-row-branch:hover {
   min-height: 0;
   min-width: 0;
   display: flex;
+  flex-direction: column;
 }
 .content.br-fill .br-card {
   border: none;
   border-radius: 0;
   flex: 1;
   min-width: 0;
+  /* fill the full width (override the base width:fit-content; in a column flex
+     the cross axis won't stretch a fit-content box) */
+  width: 100%;
 }
 .br-empty {
   padding: 18px 30px;
@@ -1763,6 +1767,12 @@ a.dash-row-branch:hover {
 .br-when {
   font-size: 12.5px;
   color: var(--l-text-dim);
+}
+/* PR title — truncate long titles so rows stay uniform (full text on hover) */
+.br-title {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .br-pr .pr-state {
   margin-left: 8px;

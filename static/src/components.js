@@ -1233,28 +1233,38 @@ class PrsScreen extends Component {
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
-      <div class="content">
+      <div class="content br-fill">
         <div t-att-class="{busy: this.code.busy()}">
-          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.rows().length" class="dim">No pull requests.</div>
-          <table t-else="" class="db-table">
-            <thead><tr><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/></tr></thead>
-            <tbody>
-              <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number">
-                <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
-                <td t-att-title="row.title" t-out="row.title || '—'"/>
-                <td class="dim" t-out="row.repo"/>
-                <td t-out="row.branch"/>
-                <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
-                <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
-                <td class="db-actions">
-                  <button t-if="row.state === 'OPEN' and row.github" class="drop-btn pr-close"
-                          t-on-click="() => this.code.closePr(row.github, row.number)">Close PR</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>
+          <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.rows().length" class="dim br-empty">No pull requests.</div>
+          <div t-else="" class="br-card">
+            <table class="br-table">
+              <thead>
+                <tr><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/><th class="br-spacer"/></tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number">
+                  <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
+                  <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
+                  <td class="dim" t-out="row.repo"/>
+                  <td>
+                    <a t-if="row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="'open ' + row.branch + ' on GitHub'" t-out="row.branch"/>
+                    <span t-else="" t-out="row.branch"/>
+                  </td>
+                  <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
+                  <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
+                  <td>
+                    <div class="br-act">
+                      <button t-if="row.state === 'OPEN' and row.github" class="drop-btn pr-close"
+                              t-on-click="() => this.code.closePr(row.github, row.number)">Close PR</button>
+                    </div>
+                  </td>
+                  <td class="br-spacer"/>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>`;
