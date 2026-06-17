@@ -999,19 +999,21 @@ class BranchesScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top">
+        <div class="panel-top has-filters">
           <h1>Branches</h1>
+          <div class="panel-filters">
+            <SearchBox value="this.search"/>
+            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+              <option value="">All repositories</option>
+              <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+            </select>
+          </div>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
             <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
-          <SearchBox value="this.search"/>
-          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-            <option value="">All repositories</option>
-            <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-          </select>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -1165,20 +1167,22 @@ class PrsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top">
+        <div class="panel-top has-filters">
           <h1>PRs</h1>
+          <div class="panel-filters">
+            <SearchBox value="this.search"/>
+            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+              <option value="">All repositories</option>
+              <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+            </select>
+            <button class="pbtn" t-att-class="{active: this.openOnly()}" t-on-click="() => this.openOnly.set(!this.openOnly())">Open</button>
+          </div>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
             <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
-          <SearchBox value="this.search"/>
-          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-            <option value="">All repositories</option>
-            <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-          </select>
-          <button class="pbtn" t-att-class="{active: this.openOnly()}" t-on-click="() => this.openOnly.set(!this.openOnly())">Open</button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -1349,9 +1353,9 @@ class AddonsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top addons-top">
+        <div class="panel-top has-filters">
           <h1>Addons</h1>
-          <div class="addons-filters">
+          <div class="panel-filters">
             <SearchBox value="this.addons.filter"/>
             <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
             <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>

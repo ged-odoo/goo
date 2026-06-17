@@ -2011,10 +2011,11 @@ a.dash-row-branch:hover {
 .content.addons-content {
   padding: 0;
 }
-.addons-top {
+/* filters centered in the top line (addons, branches, prs) */
+.panel-top.has-filters {
   align-items: center;
 }
-.addons-filters {
+.panel-filters {
   flex: 1;
   display: flex;
   align-items: center;
