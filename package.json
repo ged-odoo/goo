@@ -2,6 +2,7 @@
   "name": "goo",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Local Odoo development helper — stdlib Python server + Owl 3 frontend (no bundler; modules are served as-is).",
   "scripts": {
