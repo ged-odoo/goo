@@ -651,41 +651,358 @@ section.hidden {
   flex: none;
 }
 
-/* Dashboard: favorite-repositories summary */
-.repo-block {
-  margin-bottom: 26px;
+/* ───────────────── DASHBOARD ───────────────── */
+/* subtitle sits on the actions row, pushing Refresh to the right */
+.dash-subtitle {
+  margin-right: auto;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--l-text-dim);
 }
-.repo-block .repo-subject {
-  max-width: 460px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+@keyframes dash-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
-/* Code tab: one block per target */
-.target-block {
-  margin-bottom: 22px;
+/* favorite repositories — flat list, fetch & rebase per repo. The table sizes
+   to its natural width (content), not the full panel; header + rows share the
+   same column tracks via subgrid so they stay aligned. */
+.dash-repos {
+  display: grid;
+  grid-template-columns: auto auto auto auto auto;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 34px;
 }
-/* the active target is highlighted with a light gray background */
-.target-block.active {
-  background: var(--l-panel);
-  border-radius: 10px;
-  padding: 8px 14px 12px;
+.dash-repos-head,
+.dash-repo-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  column-gap: 18px;
+  align-items: center;
 }
-.target-head {
+.dash-repos-head {
+  padding: 0 12px 9px;
+  border-bottom: 1px solid var(--l-line);
+}
+.dash-repos-head span {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+}
+.dash-repo-row {
+  padding: 12px;
+  border-bottom: 1px solid var(--l-line-soft);
+  border-radius: 8px;
+}
+.dash-repo-row:hover {
+  background: var(--l-hover);
+}
+.dash-repo-name {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-bottom: 8px;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--l-text);
 }
-.target-head .target-db {
+.dash-repo-name svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: var(--l-text-faint);
+  stroke-width: 2;
+}
+.dash-branch {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--l-text-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-commit {
+  font-size: 13px;
+  color: var(--l-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-when {
   font-family: var(--mono);
   font-size: 12px;
-  font-weight: 400;
-  color: var(--l-text-dim);
+  color: var(--l-text-faint);
 }
-.target-head .activate-btn {
-  padding: 4px 12px;
+.dash-rebase {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--l-text-mid);
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 7px;
+  padding: 5px 10px;
+  transition: 0.13s;
+}
+.dash-rebase svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+}
+.dash-rebase:hover:not(:disabled) {
+  color: var(--l-text);
+  border-color: var(--l-text-faint);
+}
+.dash-rebase:disabled {
+  color: var(--l-text-faint);
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* build targets — cards */
+.dash-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+  gap: 18px;
+}
+.dash-card {
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-left: 3px solid var(--l-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.dash-card.active {
+  border-left-color: var(--l-accent);
+}
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.dash-card.active .dash-card-head {
+  background: var(--l-hover);
+}
+.dash-card-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.dash-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--l-text-faint);
+  opacity: 0.5;
+  position: relative;
+}
+.dash-dot.active {
+  background: var(--l-accent);
+  opacity: 1;
+}
+.dash-dot.active::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: var(--l-accent);
+  opacity: 0.4;
+  animation: pulse 1.8s ease-out infinite;
+}
+.dash-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--l-text);
+}
+.dash-db {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text-mid);
+  background: var(--l-panel);
+  border: 1px solid var(--l-line);
+  padding: 2px 8px;
+  border-radius: 5px;
+}
+.dash-db .dim {
+  color: var(--l-text-faint);
+}
+.dash-activate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--l-bg);
+  background: var(--l-text);
+  border: 1px solid var(--l-text);
+  border-radius: 8px;
+  padding: 6px 13px;
+  transition: 0.13s;
+}
+.dash-activate svg {
+  width: 12px;
+  height: 12px;
+}
+.dash-activate:hover:not(:disabled) {
+  opacity: 0.86;
+}
+.dash-activate:disabled {
+  color: var(--l-text-faint);
+  background: var(--l-panel);
+  border-color: var(--l-line);
+  cursor: default;
+}
+.dash-card-body {
+  padding: 4px 6px 6px;
+}
+.dash-card-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 86px 118px 52px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 9px;
+}
+.dash-card-row:hover {
+  background: var(--l-hover);
+}
+.dash-row-repo {
+  min-width: 0;
+}
+.dash-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--l-text);
+}
+.dash-row-branch {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--l-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+a.dash-row-branch:hover {
+  color: var(--l-accent);
+  text-decoration: underline;
+}
+.dash-row-commit {
+  font-size: 12.5px;
+  color: var(--l-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-ci {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--l-text-dim);
+  background: var(--l-panel);
+}
+.dash-ci-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.dash-ci.pass {
+  color: var(--l-green);
+  background: var(--l-green-bg);
+}
+.dash-ci.fail {
+  color: var(--l-red);
+  background: var(--l-red-bg);
+}
+.dash-ci.run {
+  color: var(--l-amber);
+  background: var(--l-amber-bg);
+}
+.dash-ci.run .dash-ci-dot {
+  animation: dash-blink 1.4s ease-in-out infinite;
+}
+.dash-ci.missing {
+  color: var(--l-red);
+  background: var(--l-red-bg);
+}
+.dash-ci.unknown .dash-ci-dot {
+  opacity: 0.5;
+}
+.dash-row-pr {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.dash-pr-num {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--l-accent);
+}
+.dash-pr-num:hover {
+  text-decoration: underline;
+}
+.dash-pr-state {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--l-text-dim);
+  background: var(--l-panel);
+}
+.dash-pr-state.open {
+  color: var(--l-green);
+  background: var(--l-green-bg);
+}
+.dash-pr-state.merged {
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+}
+.dash-pr-state.closed {
+  color: var(--l-red);
+  background: var(--l-red-bg);
+}
+.dash-pr-state.draft {
+  color: var(--l-text-dim);
+  background: var(--l-panel);
+}
+.dash-row-when {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--l-text-faint);
+  text-align: right;
 }
 .git-state {
   font-family: var(--mono);
@@ -694,31 +1011,6 @@ section.hidden {
 .git-state.missing {
   color: var(--l-red);
 }
-/* scraped mergebot state next to the dashboard mergebot link */
-.mb-state {
-  margin-left: 5px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--l-text-dim);
-}
-.mb-state.merged,
-.mb-state.ready,
-.mb-state.approved,
-.mb-state.validated,
-.mb-state.mergeable {
-  color: var(--l-green);
-}
-.mb-state.staged,
-.mb-state.staging {
-  color: var(--l-amber);
-}
-.mb-state.blocked,
-.mb-state.error {
-  color: var(--l-red);
-}
-
 /* panel form controls (target select, filter, tags) */
 .panel select,
 .panel-actions select {

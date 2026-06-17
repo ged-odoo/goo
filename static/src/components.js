@@ -49,6 +49,7 @@ const ICONS = {
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
+  play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -211,83 +212,76 @@ class DashboardScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>Dashboard</h1><span class="meta" t-out="this.stamp"/></div>
         <div class="panel-actions">
+          <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
           <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </div>
       </div>
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-          <div t-if="this.favRepos.length" class="repo-block">
-            <h2 class="subtitle">Repositories</h2>
-            <table class="db-table">
-              <thead><tr><th>Repository</th><th>Branch</th><th>Last commit</th><th>When</th></tr></thead>
-              <tbody>
-                <tr t-foreach="this.favRepos" t-as="r" t-key="r.id">
-                  <td class="dim" t-out="r.id"/>
-                  <td>
-                    <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
-                    <t t-else="">
-                      <span t-out="r.current"/>
-                      <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes"> *</span>
-                    </t>
-                  </td>
-                  <td class="repo-subject" t-att-title="r.subject" t-out="r.subject || '—'"/>
-                  <td t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+
+          <!-- favorite repositories (flat list, fetch &amp; rebase per repo) -->
+          <section t-if="this.favRepos.length" class="dash-repos">
+            <div class="dash-repos-head">
+              <span>Repository</span><span>Branch</span><span>Last commit</span><span>When</span><span/>
+            </div>
+            <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-repo-row">
+              <div class="dash-repo-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></div>
+              <span class="dash-branch">
+                <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
+                <t t-else="">
+                  <span t-out="r.current || '—'"/>
+                  <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes"> *</span>
+                </t>
+              </span>
+              <span class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
+              <span class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
+              <button class="dash-rebase" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">
+                <t t-out="this.refreshIcon"/>Fetch &amp; rebase
+              </button>
+            </div>
+          </section>
+
+          <!-- build targets (cards) -->
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
-          <t t-else="">
-            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="target-block" t-att-class="{active: this.isActive(tgt)}">
-              <h2 class="subtitle target-head">
-                <span t-out="tgt.name"/>
-                <span class="target-db" t-out="'· db: ' + tgt.db"/>
-                <t t-if="this.isActive(tgt)">
-                  <span class="db-badge"><span class="pulse"/>Active</span>
-                  <button class="pbtn" t-att-disabled="!this.canRebase(tgt)" t-att-title="this.rebaseTitle(tgt)" t-on-click="() => this.rebase(tgt)">Fetch &amp; rebase</button>
-                </t>
-                <button t-else="" class="pbtn activate-btn" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
-              </h2>
-              <table class="db-table">
-                <tbody>
-                  <tr t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo">
-                    <td class="dim" t-out="row.repo"/>
-                    <td>
-                      <a t-if="row.remote and row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-out="row.branch"/>
-                      <span t-else="" t-out="row.branch"/>
-                    </td>
-                    <td>
-                      <span t-if="!row.present" class="git-state missing">missing</span>
-                    </td>
-                    <td t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
-                    <td t-att-class="{dim: !row.present}">
-                      <span t-if="row.present" class="runbot-inline">
-                        <a class="runbot-link" target="_blank" t-att-href="this.code.bundleUrl(row.branch)">runbot</a>
-                        <span class="runbot-dot" t-att-class="this.rbState(row) || 'unknown'" t-att-title="'runbot: ' + (this.rbState(row) || 'unknown')"/>
-                      </span>
-                      <t t-else="">—</t>
-                    </td>
-                    <td t-att-class="{dim: !(row.pr and row.github)}">
-                      <t t-if="row.pr and row.github">
-                        <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)">mergebot</a>
-                        <span t-if="this.mbState(row)" class="mb-state" t-att-class="this.mbState(row)" t-out="this.mbState(row)"/>
-                      </t>
-                      <t t-else="">—</t>
-                    </td>
-                    <td t-att-class="{dim: !row.pr}">
-                      <t t-if="row.pr">
-                        <a class="pr-link" target="_blank" t-att-href="row.pr.url" t-out="'#' + row.pr.number"/>
-                        <span class="pr-state" t-att-class="this.prState(row.pr)" t-out="this.prState(row.pr)"/>
-                      </t>
-                      <t t-else="">—</t>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+          <div t-else="" class="dash-cards">
+            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.name" class="dash-card" t-att-class="{active: this.isActive(tgt)}">
+              <div class="dash-card-head">
+                <div class="dash-card-title">
+                  <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
+                  <span class="dash-name" t-out="tgt.name"/>
+                  <span class="dash-db"><span class="dim">db:</span> <t t-out="tgt.db"/></span>
+                </div>
+                <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">
+                  <t t-out="this.playIcon"/>Activate
+                </button>
+              </div>
+              <div class="dash-card-body">
+                <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-card-row">
+                  <div class="dash-row-repo">
+                    <div class="dash-row-name" t-out="row.repo"/>
+                    <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
+                    <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
+                  </div>
+                  <span class="dash-row-commit" t-att-title="row.subject" t-out="row.present ? (row.subject || '—') : '—'"/>
+                  <t t-set="ci" t-value="this.ciBadge(row)"/>
+                  <a t-if="row.present" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
+                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                  </a>
+                  <span t-else="" class="dash-ci missing">missing</span>
+                  <div class="dash-row-pr">
+                    <t t-if="row.pr and row.github">
+                      <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-out="'#' + row.pr.number"/>
+                      <span class="dash-pr-state" t-att-class="this.prState(row.pr)" t-out="this.prState(row.pr)"/>
+                    </t>
+                    <span t-else="" class="dim">—</span>
+                  </div>
+                  <span class="dash-row-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                </div>
+              </div>
             </div>
-          </t>
+          </div>
         </div>
       </div>
     </section>`;
@@ -296,15 +290,15 @@ class DashboardScreen extends Component {
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
   refreshIcon = m(ICONS.refresh);
+  branchIcon = m(ICONS.branches);
+  playIcon = m(ICONS.play);
 
   setup() {
     this.code.load();
-    // fetch runbot + mergebot status only for what the dashboard actually shows
+    // fetch runbot status only for the branches the target cards actually show
     effect(() => {
       const branches = this._branches();
       if (branches.length) this.code.loadRunbot(branches);
-      const prs = this._prs();
-      if (prs.length) this.code.loadMergebot(prs);
     });
   }
 
@@ -316,31 +310,18 @@ class DashboardScreen extends Component {
     return [...seen];
   }
 
-  // the unique {github, number} of every PR linked on the dashboard
-  _prs() {
-    const seen = new Set();
-    const prs = [];
-    for (const tgt of this.targets) {
-      for (const row of this.rows(tgt)) {
-        if (!row.pr || !row.github) continue;
-        const key = `${row.github}#${row.pr.number}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        prs.push({ github: row.github, number: row.pr.number });
-      }
-    }
-    return prs;
-  }
-
   // the fetched runbot status for a row's branch ("" if unknown / not fetched)
   rbState(row) {
     return this.code.runbot()[row.branch] || "";
   }
 
-  // the scraped mergebot state for a row's PR ("" if unknown / not fetched yet)
-  mbState(row) {
-    if (!row.pr || !row.github) return "";
-    return this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
+  // CI badge model for a card repo row, mapping runbot status -> design states
+  ciBadge(row) {
+    const s = this.rbState(row);
+    if (s === "success") return { cls: "pass", label: "passing", title: "passing" };
+    if (s === "failure") return { cls: "fail", label: "failing", title: "failing" };
+    if (s === "pending") return { cls: "run", label: "running", title: "running" };
+    return { cls: "unknown", label: "—", title: "unknown" };
   }
 
   get stamp() {
@@ -355,6 +336,7 @@ class DashboardScreen extends Component {
   // favorite repositories with their current state (for the dashboard summary)
   get favRepos() {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    const groups = this.code.groups();
     return this.config.config.repos
       .filter((r) => r.favorite)
       .map((r) => {
@@ -366,8 +348,29 @@ class DashboardScreen extends Component {
           subject: b.head_subject || "",
           date: b.head_date || "",
           error: b.error || "",
+          github: groups.githubByRepo[r.id] || "",
+          path: groups.pathByRepo[r.id] || "",
         };
       });
+  }
+
+  // fetch+rebase a single repo's current branch onto its canonical base branch
+  canRebaseRepo(r) {
+    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
+  }
+
+  rebaseRepoTitle(r) {
+    if (r.error) return r.error;
+    if (r.dirty) return "commit or stash changes first — the working tree is dirty";
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
+  }
+
+  async rebaseRepo(r) {
+    if (!this.canRebaseRepo(r)) return;
+    await this.code.rebase([
+      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path },
+    ]);
   }
 
   // favorite targets only, ordered by last activity (most recent first)
@@ -416,6 +419,7 @@ class DashboardScreen extends Component {
         present: !!b,
         remote: !!b && b.remote,
         date: b ? b.date : "",
+        subject: b ? b.subject || "" : "",
         pr: groups.prIndex[`${repo}:${branch}`] || null,
       };
     });
@@ -473,41 +477,6 @@ class DashboardScreen extends Component {
   // 19.0-some-fix -> 19.0 (defaults to master)
   _baseBranch(branch) {
     return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
-  }
-
-  // {repo, base, github, path} for each repo in the target's config
-  _rebaseRepos(tgt) {
-    const groups = this.code.groups();
-    return (tgt.config || []).map(({ repo, branch }) => ({
-      repo,
-      base: this._baseBranch(branch),
-      github: groups.githubByRepo[repo] || "",
-      path: groups.pathByRepo[repo] || "",
-    }));
-  }
-
-  // can fetch+rebase the active target only when clean, with a known canonical
-  // (github) remote for each repo to fetch the base branch from
-  canRebase(tgt) {
-    return (
-      this.isActive(tgt) &&
-      !this._targetDirty(tgt) &&
-      this._rebaseRepos(tgt).every((r) => r.github && r.path)
-    );
-  }
-
-  rebaseTitle(tgt) {
-    if (this._targetDirty(tgt)) return "commit or stash changes first — the working tree is dirty";
-    const repos = this._rebaseRepos(tgt);
-    const missing = repos.filter((r) => !r.github);
-    if (missing.length) return "no canonical repo for: " + missing.map((r) => r.repo).join(", ");
-    return "fetch and rebase onto " + repos.map((r) => `${r.github}@${r.base}`).join(", ");
-  }
-
-  // fetch each repo's base branch from the canonical repo and rebase onto it
-  async rebase(tgt) {
-    if (!this.canRebase(tgt)) return;
-    await this.code.rebase(this._rebaseRepos(tgt).filter((r) => r.path && r.github));
   }
 
   cell(date) {

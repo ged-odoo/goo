@@ -356,17 +356,25 @@ def git_branches(repos):
                     path,
                     "for-each-ref",
                     "refs/heads",
-                    "--format=%(refname:short)%09%(committerdate:iso8601-strict)",
+                    "--format=%(refname:short)%09%(committerdate:iso8601-strict)%09%(contents:subject)",
                 ],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             for line in r.stdout.splitlines():
-                name, _, date = line.partition("\t")
+                parts = line.split("\t")
+                name = parts[0]
+                date = parts[1] if len(parts) > 1 else ""
+                subject = parts[2] if len(parts) > 2 else ""
                 if name:
                     entry["branches"].append(
-                        {"name": name, "date": date, "remote": name in remote_branches}
+                        {
+                            "name": name,
+                            "date": date,
+                            "subject": subject,
+                            "remote": name in remote_branches,
+                        }
                     )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
