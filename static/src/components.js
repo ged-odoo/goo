@@ -71,8 +71,11 @@ class Topbar extends Component {
       <div class="top-left">
         <div class="logo"><span class="name" title="GED Odoo Overseer">goo</span></div>
         <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
-          <span class="dot"/>
-          <span class="t-name" t-out="this.target"/>
+          <span class="nt-name">
+            <span class="dot"/>
+            <span class="t-name" t-out="this.target"/>
+          </span>
+          <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
         </div>
       </div>
       <div class="top-right">
@@ -93,12 +96,16 @@ class Topbar extends Component {
     return s === "running" || s === "starting";
   }
 
-  // the running target while active, else the last-used one (shown dimmed); the
-  // active reference is a target id — map it to the display name
+  // the active target id: the running one while up, else the last-used one
+  get activeId() {
+    const s = this.server.status();
+    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+  }
+
+  // the active target's display name (dimmed when the server is stopped)
   get target() {
-    const id = this.active ? this.server.status().target : this.server.lastTarget();
-    const tgt = this.config.config.targets.find((t) => t.id === id);
-    return tgt ? tgt.name : id || "";
+    const tgt = this.config.config.targets.find((t) => t.id === this.activeId);
+    return tgt ? tgt.name : this.activeId || "";
   }
 
   get stateClass() {
@@ -110,6 +117,23 @@ class Topbar extends Component {
     return this.active
       ? `current target (${this.server.status().state})`
       : "last target — server stopped";
+  }
+
+  // the Start/Stop control on the right of the badge, driven by the server state
+  get toggle() {
+    const s = this.server.status().state;
+    if (s === "running" || s === "starting")
+      return { label: "Stop", cls: "stop", disabled: false, title: "stop the server" };
+    if (s === "stopping") return { label: "Stop", cls: "stop", disabled: true, title: "stopping…" };
+    if (s === "disconnected")
+      return { label: "Start", cls: "start", disabled: true, title: "server unreachable" };
+    return { label: "Start", cls: "start", disabled: false, title: "start the active target" };
+  }
+
+  onToggle() {
+    const s = this.server.status().state;
+    if (s === "running" || s === "starting") this.server.stop();
+    else if (s === "stopped") this.server.start(this.activeId);
   }
 }
 
@@ -216,12 +240,6 @@ class DashboardScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
-          <button t-if="this.activeTarget and this.serverStopped" class="dash-activate dash-start" t-on-click="() => this.server.start(this.activeTarget.id)" title="start the active target">
-            <t t-out="this.playIcon"/>Start
-          </button>
-          <button t-if="this.serverRunning or this.serverStopping" class="dash-activate dash-stop" t-att-disabled="this.serverStopping" t-on-click="() => this.server.stop()" title="stop the server">
-            <t t-out="this.stopIcon"/>Stop
-          </button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
         </div>
       </div>
@@ -308,8 +326,6 @@ class DashboardScreen extends Component {
   server = plugin(ServerPlugin);
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
-  playIcon = m(ICONS.play);
-  stopIcon = m(ICONS.stop);
 
   setup() {
     this.code.load();
@@ -376,29 +392,6 @@ class DashboardScreen extends Component {
     return { cls: "unknown", label: "—", title: "unknown" };
   }
 
-  // backend reachable but odoo not running — offer a one-click start on the
-  // active target's card (mirrors the navbar Start button)
-  get serverStopped() {
-    return this.server.status().state === "stopped";
-  }
-
-  // server up (or coming up) — offer Stop in the same spot
-  get serverRunning() {
-    const s = this.server.status().state;
-    return s === "running" || s === "starting";
-  }
-
-  // shutting down — keep Stop visible but disabled until it reaches "stopped"
-  // (so the button doesn't flicker out before Start can appear)
-  get serverStopping() {
-    return this.server.status().state === "stopping";
-  }
-
-  // the currently active target (checked out + last started), or null — the
-  // control-panel Start/Stop buttons act on it
-  get activeTarget() {
-    return this.config.config.targets.find((t) => this.isActive(t)) || null;
-  }
 
   get stamp() {
     if (this.code.loading()) return "refreshing…";
