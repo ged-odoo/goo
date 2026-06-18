@@ -919,9 +919,9 @@ class TargetsScreen extends Component {
                   </t>
                   <t t-else="">
                     <td t-out="tgt.name"/>
-                    <td class="dim" t-out="this.fmtConfig(tgt)"/>
+                    <td class="dim"><div class="br-ellip" t-att-title="this.fmtConfig(tgt)" t-out="this.fmtConfig(tgt)"/></td>
                     <td t-out="tgt.db"/>
-                    <td class="dim" t-out="tgt.on_create_args || '—'"/>
+                    <td class="dim"><div class="br-ellip" t-att-title="tgt.on_create_args" t-out="tgt.on_create_args || '—'"/></td>
                     <td>
                       <div class="br-act">
                         <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>

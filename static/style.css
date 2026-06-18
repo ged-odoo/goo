@@ -1709,6 +1709,14 @@ a.dash-row-branch:hover {
 .cell-input.wide {
   min-width: 280px;
 }
+/* truncate long cell text (e.g. a target's config) so the table never grows
+   past the panel width; the full value stays available via the title tooltip */
+.br-ellip {
+  max-width: clamp(180px, 32vw, 620px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cell-input::placeholder {
   color: var(--l-text-faint);
 }
