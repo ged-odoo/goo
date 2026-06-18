@@ -993,16 +993,23 @@ class TargetsScreen extends Component {
     this.creating.set(true);
   }
 
-  // clone a target with a fresh id and a unique "(copy)" name
+  // clone a target onto a chosen branch: ask for a branch name (prefilled from
+  // the first configured branch), then point every repo at it
   duplicateTarget(tgt) {
+    const first = tgt.config?.[0]?.branch || "master";
+    const branch = prompt(`Branch for the duplicated "${tgt.name}" (applied to all its repos):`, first);
+    if (branch === null) return;
+    const b = branch.trim();
+    if (!b) return;
+    // the new target is named after the chosen branch (deduped if it collides)
     const names = new Set(this.config.config.targets.map((t) => t.name));
-    let name = `${tgt.name} (copy)`;
-    for (let i = 2; names.has(name); i++) name = `${tgt.name} (copy ${i})`;
+    let name = b;
+    for (let i = 2; names.has(name); i++) name = `${b} (${i})`;
     const copy = {
       id: newTargetId(),
       name,
       favorite: false,
-      config: (tgt.config || []).map((c) => ({ ...c })),
+      config: (tgt.config || []).map((c) => ({ repo: c.repo, branch: b })),
       db: tgt.db || "",
       on_create_args: tgt.on_create_args || "",
     };
