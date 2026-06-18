@@ -792,12 +792,12 @@ class DatabasesScreen extends Component {
               <tbody>
                 <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active}">
                   <td t-att-class="{'active-name': d.active}">
-                    <span t-out="d.name"/>
+                    <span class="br-branch" t-out="d.name"/>
                     <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
                   </td>
                   <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
-                  <td t-att-class="{dim: !d.created}" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
-                  <td t-att-class="{dim: !d.last}" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
+                  <td class="br-when" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
+                  <td class="br-when" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
                   <td>
                     <div class="br-act">
                       <button class="drop-btn" t-att-disabled="d.active" t-att-title="d.active ? 'in use by the running server' : ''"
