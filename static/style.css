@@ -1690,6 +1690,32 @@ a.dash-row-branch:hover {
   vertical-align: top;
   padding: 14px 18px;
 }
+/* inline row editing: inputs sit flush inside the table cells */
+.br-table tr.br-editing td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.cell-input {
+  width: 100%;
+  min-width: 150px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--l-text);
+  background: var(--l-card);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+.cell-input.wide {
+  min-width: 280px;
+}
+.cell-input::placeholder {
+  color: var(--l-text-faint);
+}
+.cell-input:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
 .br-name-inner {
   display: flex;
   align-items: flex-start;

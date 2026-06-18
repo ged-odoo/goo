@@ -853,7 +853,7 @@ class DatabasesScreen extends Component {
 
 // First-class targets: name, favorite flag, config (repo:branch pairs), db and
 // start args. The list is read-only except for starring; "New target" swaps the
-// main area for a creation form seeded (as placeholders) from a target template.
+// list of targets with inline row editing; "New target" opens a separate form.
 class TargetsScreen extends Component {
   static template = xml`
     <section>
@@ -864,14 +864,14 @@ class TargetsScreen extends Component {
           <t t-else="">
             <button class="pbtn primary" t-on-click="() => this.save()">Save</button>
             <button class="pbtn" t-on-click="() => this.discard()">Discard</button>
-            <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           </t>
+          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           <span t-if="!this.creating()" class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content" t-att-class="{'br-fill': !this.creating()}">
         <div t-if="this.creating()" class="launch-form">
-          <h2 class="subtitle" t-out="this.editName() ? 'Editing ' + this.editName() : 'New target'"/>
+          <h2 class="subtitle">New target</h2>
           <div class="launch-field">
             <label>Name</label>
             <input type="text" t-att-value="this.draftName()" placeholder="name (e.g. master-mytask)" t-on-input="ev => this.draftName.set(ev.target.value)"/>
@@ -901,21 +901,36 @@ class TargetsScreen extends Component {
                 <tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
-                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id">
+                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt)}">
                   <td>
                     <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button>
                   </td>
-                  <td t-out="tgt.name"/>
-                  <td class="dim" t-out="this.fmtConfig(tgt)"/>
-                  <td t-out="tgt.db"/>
-                  <td class="dim" t-out="tgt.on_create_args || '—'"/>
-                  <td>
-                    <div class="br-act">
-                      <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
-                      <button class="drop-btn pr-close" t-on-click="() => this.duplicateTarget(tgt)">Duplicate</button>
-                      <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
-                    </div>
-                  </td>
+                  <t t-if="this.editId() === tgt.id">
+                    <td><input type="text" class="cell-input" t-att-value="this.draftName()" placeholder="name" t-on-input="ev => this.draftName.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="text" class="cell-input wide" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="text" class="cell-input" t-att-value="this.draftDb()" placeholder="database" t-on-input="ev => this.draftDb.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="text" class="cell-input" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td>
+                      <div class="br-act">
+                        <button class="drop-btn pr-close" t-on-click="() => this.saveEdit()">Save</button>
+                        <button class="drop-btn" t-on-click="() => this.cancelEdit()">Cancel</button>
+                      </div>
+                    </td>
+                  </t>
+                  <t t-else="">
+                    <td t-out="tgt.name"/>
+                    <td class="dim" t-out="this.fmtConfig(tgt)"/>
+                    <td t-out="tgt.db"/>
+                    <td class="dim" t-out="tgt.on_create_args || '—'"/>
+                    <td>
+                      <div class="br-act">
+                        <button class="drop-btn pr-close" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
+                        <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
+                        <button class="drop-btn pr-close" t-on-click="() => this.duplicateTarget(tgt)">Duplicate</button>
+                        <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
+                      </div>
+                    </td>
+                  </t>
                   <td class="br-spacer"/>
                 </tr>
               </tbody>
@@ -926,16 +941,83 @@ class TargetsScreen extends Component {
     </section>`;
 
   config = plugin(ConfigPlugin);
+  server = plugin(ServerPlugin);
+  code = plugin(CodePlugin);
   starIcon = m(ICONS.star);
-  creating = signal(false);
-  editId = signal(""); // "" while creating a new target; the edited target's id otherwise
-  editName = signal(""); // the edited target's original name (for the form heading)
+  creating = signal(false); // the New-target form is open
+  editId = signal(""); // id of the row being edited inline ("" = none)
   draftName = signal("");
   draftConfig = signal("");
   draftDb = signal("");
   draftArgs = signal("");
   draftFav = signal(false);
   error = signal("");
+
+  setup() {
+    this.code.load(); // need each repo's branches/checkout state for Activate
+  }
+
+  // repo id -> { current branch, dirty, branches map } — for the activate checks
+  get repoMap() {
+    const map = {};
+    for (const repo of this.code.branchRepos()) {
+      map[repo.id] = {
+        current: repo.current,
+        dirty: repo.dirty,
+        branches: new Map((repo.branches || []).map((b) => [b.name, b])),
+      };
+    }
+    return map;
+  }
+
+  // every repo in the target's config is checked out on the target's branch
+  _checkedOut(tgt) {
+    const repos = this.repoMap;
+    const cfg = tgt.config || [];
+    return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
+  }
+
+  // the active target: the explicit one (set on Activate / Start), only while its
+  // branches are still checked out — the id check disambiguates overlapping targets
+  isActive(tgt) {
+    const s = this.server.status();
+    const id = s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    return tgt.id === id && this._checkedOut(tgt);
+  }
+
+  _targetDirty(tgt) {
+    const repos = this.repoMap;
+    return (tgt.config || []).some(({ repo }) => repos[repo]?.dirty);
+  }
+
+  _targetPresent(tgt) {
+    const repos = this.repoMap;
+    return (tgt.config || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
+  }
+
+  canActivate(tgt) {
+    return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
+  }
+
+  activateTitle(tgt) {
+    if (this.isActive(tgt)) return "this target is already active";
+    if (this._targetDirty(tgt)) return "commit or stash changes first — the working tree is dirty";
+    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
+    return "stop the server, switch to this target and check out its branches";
+  }
+
+  // stop the server, switch to this target, check out its branches
+  async activate(tgt) {
+    if (!this.canActivate(tgt)) return;
+    const pathByRepo = this.code.groups().pathByRepo;
+    const repos = (tgt.config || [])
+      .map(({ repo, branch }) => ({ path: pathByRepo[repo], branch }))
+      .filter((r) => r.path);
+    const s = this.server.status().state;
+    if (s === "running" || s === "starting") await this.server.stop();
+    await this.code.checkout(repos);
+    this.server.setLastTarget(tgt.id);
+  }
 
   // favorites first, otherwise keep configured order
   get targets() {
@@ -963,7 +1045,6 @@ class TargetsScreen extends Component {
   // open a blank creation form
   startCreate() {
     this.editId.set("");
-    this.editName.set("");
     this.draftName.set("");
     this.draftConfig.set("");
     this.draftDb.set("");
@@ -973,17 +1054,45 @@ class TargetsScreen extends Component {
     this.creating.set(true);
   }
 
-  // open the form on an existing target, fields pre-filled with its values
+  // turn one row into inline inputs, pre-filled with the target's values
+  // (only one row is editable at a time)
   startEdit(tgt) {
-    this.editId.set(tgt.id);
-    this.editName.set(tgt.name);
     this.draftName.set(tgt.name);
     this.draftConfig.set(repoBranchList.format(tgt.config));
     this.draftDb.set(tgt.db || "");
     this.draftArgs.set(tgt.on_create_args || "");
-    this.draftFav.set(!!tgt.favorite);
     this.error.set("");
-    this.creating.set(true);
+    this.editId.set(tgt.id);
+  }
+
+  // commit the inline edit back onto the target (favorite is left untouched —
+  // it is toggled directly via the star)
+  saveEdit() {
+    const id = this.editId();
+    const name = this.draftName().trim();
+    if (!name) return this.error.set("a name is required");
+    if (this.config.config.targets.some((t) => t.name === name && t.id !== id))
+      return this.error.set(`a target named "${name}" already exists`);
+    const config = repoBranchList.parse(this.draftConfig().trim());
+    if (!config.length) return this.error.set("a config is required");
+    const targets = this.config.config.targets.map((t) =>
+      t.id === id
+        ? { ...t, name, config, db: this.draftDb().trim(), on_create_args: this.draftArgs().trim() }
+        : t,
+    );
+    this.config.updateConfig({ targets });
+    this.cancelEdit();
+  }
+
+  cancelEdit() {
+    this.editId.set("");
+    this.error.set("");
+  }
+
+  // Enter saves the inline edit, Escape cancels it
+  onEditKey(ev) {
+    if (ev.key === "Enter") this.saveEdit();
+    else if (ev.key === "Escape") this.cancelEdit();
   }
 
   // clone a target onto a chosen branch: ask for a branch name (prefilled from
@@ -1022,27 +1131,21 @@ class TargetsScreen extends Component {
   }
 
   save() {
-    const editId = this.editId();
     const name = this.draftName().trim();
     if (!name) return this.error.set("a name is required");
-    if (this.config.config.targets.some((t) => t.name === name && t.id !== editId))
+    if (this.config.config.targets.some((t) => t.name === name))
       return this.error.set(`a target named "${name}" already exists`);
     const config = repoBranchList.parse(this.draftConfig().trim());
     if (!config.length) return this.error.set("a config is required");
     const target = {
-      id: editId || newTargetId(),
+      id: newTargetId(),
       name,
       favorite: this.draftFav(),
       config,
       db: this.draftDb().trim(),
       on_create_args: this.draftArgs().trim(),
     };
-    const targets = this.config.config.targets;
-    this.config.updateConfig({
-      targets: editId
-        ? targets.map((t) => (t.id === editId ? target : t))
-        : [...targets, target],
-    });
+    this.config.updateConfig({ targets: [...this.config.config.targets, target] });
     this.creating.set(false);
   }
 }
