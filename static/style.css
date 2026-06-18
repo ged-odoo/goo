@@ -163,15 +163,17 @@ a {
   color: var(--green);
   background: var(--green-bg);
 }
+/* Stop: not a "bad" action — white text on a dark chip slightly lighter than
+   the target-name part next to it */
 .nt-toggle.stop {
-  color: var(--red);
-  background: var(--red-bg);
+  color: var(--text);
+  background: oklch(0.33 0.013 260);
 }
 .nt-toggle.start:hover:not(:disabled) {
   background: oklch(0.78 0.15 155 / 0.22);
 }
 .nt-toggle.stop:hover:not(:disabled) {
-  background: oklch(0.68 0.2 22 / 0.22);
+  background: oklch(0.39 0.014 260);
 }
 .nt-toggle:disabled {
   opacity: 0.5;
