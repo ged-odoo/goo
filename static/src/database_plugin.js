@@ -54,14 +54,16 @@ export class DatabasePlugin extends Plugin {
     }
   }
 
+  // drop a database; returns null on success or an error message on failure
+  // (the caller handles confirmation + error reporting via the dialog)
   async drop(name) {
-    if (!confirm(`Drop database "${name}"? This cannot be undone.`)) return;
     this.dropping.set(name);
     try {
       await postJSON("/api/databases/drop", { name });
       await this.load(true);
+      return null;
     } catch (e) {
-      alert(`Drop failed: ${e.message}`);
+      return e.message;
     } finally {
       this.dropping.set("");
     }

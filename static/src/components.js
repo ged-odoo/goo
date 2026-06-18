@@ -794,7 +794,7 @@ class DatabasesScreen extends Component {
                   <td>
                     <div class="br-act">
                       <button class="drop-btn" t-att-disabled="d.active" t-att-title="d.active ? 'in use by the running server' : ''"
-                              t-on-click="() => this.db.drop(d.name)">Drop</button>
+                              t-on-click="() => this.dropDb(d)">Drop</button>
                     </div>
                   </td>
                   <td class="br-spacer"/>
@@ -839,6 +839,19 @@ class DatabasesScreen extends Component {
   get count() {
     const n = this.rows().length;
     return `${n} database${n === 1 ? "" : "s"}`;
+  }
+
+  // confirm via the dialog, then drop; report any failure in a dialog too
+  async dropDb(d) {
+    const res = await openDialog({
+      title: `Drop "${d.name}"?`,
+      message: "This permanently deletes the database. This cannot be undone.",
+      okLabel: "Drop",
+    });
+    if (!res) return;
+    const error = await this.db.drop(d.name);
+    if (error)
+      await openDialog({ title: "Drop failed", message: error, okLabel: "OK", cancelLabel: null });
   }
 }
 
@@ -2115,7 +2128,8 @@ class BranchMenu extends Component {
 // null when discarded/escaped. Spec: { title, message?, okLabel?, cancelLabel?,
 // validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox",
 // label, value, placeholder? }] }. A non-empty validate() keeps the dialog open
-// and shows the message.
+// and shows the message. cancelLabel: null hides the Discard button (e.g. for a
+// plain message/alert).
 
 function openDialog(spec) {
   return new Promise((resolve) => {
@@ -2144,7 +2158,7 @@ class Dialog extends Component {
         <div class="dialog-foot">
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           <button class="pbtn primary" t-on-click="() => this.ok()" t-out="this.spec().okLabel || 'OK'"/>
-          <button class="pbtn" t-on-click="() => this.cancel()" t-out="this.spec().cancelLabel || 'Discard'"/>
+          <button t-if="this.spec().cancelLabel !== null" class="pbtn" t-on-click="() => this.cancel()" t-out="this.spec().cancelLabel || 'Discard'"/>
         </div>
       </div>
     </div>`;
@@ -2166,10 +2180,10 @@ class Dialog extends Component {
 
   show({ spec, resolve }) {
     this._resolve = resolve;
-    this.spec.set(spec);
+    this.spec.set({ ...spec, fields: spec.fields || [] }); // fields are optional
     this.error.set("");
     const vals = {};
-    for (const f of spec.fields) vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
+    for (const f of spec.fields || []) vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
     this.values.set(vals);
     this.open.set(true);
     // focus + select the first text field once rendered
