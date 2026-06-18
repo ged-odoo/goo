@@ -953,6 +953,7 @@ class TargetsScreen extends Component {
 
   setup() {
     this.code.load(); // need each repo's branches/checkout state for Activate
+    this.db.load(); // need the database list to know whether a target's db exists
   }
 
   // repo id -> { current branch, dirty, branches map } — for the activate checks
@@ -1187,7 +1188,9 @@ class TargetsScreen extends Component {
         label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
         value: false,
       });
-    if (tgt.db)
+    // only offer to drop the db if it actually exists (a never-run target has none)
+    const dbExists = tgt.db && this.db.databases().some((d) => d.name === tgt.db);
+    if (dbExists)
       fields.push({ key: "dropDb", type: "checkbox", label: `Drop database "${tgt.db}"`, value: false });
 
     const res = await openDialog({
