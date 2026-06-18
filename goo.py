@@ -442,6 +442,25 @@ def git_checkout(path, branch):
     return True, None
 
 
+def git_branch_create(path, name, start_point):
+    """Create a new local branch <name> at <start_point> WITHOUT checking it out
+    (the working tree / current branch is left untouched). Returns (ok, error)."""
+    if not path or not name or not start_point:
+        return False, "missing path, name or start point"
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.path.expanduser(path), "branch", name, start_point],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, result.stderr.strip().split("\n")[0] or "git branch failed"
+    return True, None
+
+
 def git_fetch_rebase(path, base, github):
     """Fetch the base branch from the canonical (main) repo and rebase the
     current branch onto it — e.g. master-owl-update is rebased onto odoo/odoo's
@@ -1278,6 +1297,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "remote_error": remote_error})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/code/branch/create":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            name = (body or {}).get("name")
+            start_point = (body or {}).get("start_point")
+            if err or not repo_path or not name or not start_point:
+                return self._send_json(400, {"ok": False, "error": "missing path, name or start point"})
+            ok, error = git_branch_create(repo_path, name, start_point)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/checkout":
             body, err = self._read_json()
             repos = (body or {}).get("repos")

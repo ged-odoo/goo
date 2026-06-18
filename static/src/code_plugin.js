@@ -288,6 +288,13 @@ export class CodePlugin extends Plugin {
     );
   }
 
+  // create a new branch at <startPoint> without checking it out, then reload
+  createBranch(path, name, startPoint) {
+    return this._mutate("Create branch", () =>
+      postJSON("/api/code/branch/create", { path, name, start_point: startPoint }),
+    );
+  }
+
   // mark a PR closed in the view + cache, no reload (which would re-fetch every
   // branch's runbot badge just to flip one PR's state)
   _closePrLocally(github, number) {

@@ -1107,6 +1107,8 @@ class BranchesScreen extends Component {
                       <button class="drop-btn checkout" t-att-disabled="!!this.checkoutBlocked(r)"
                               t-att-title="this.checkoutBlocked(r) || ('check out ' + r.branch + ' in ' + r.repo)"
                               t-on-click="() => this.checkout(r)">Checkout</button>
+                      <button class="drop-btn pr-close" t-on-click="() => this.duplicateBranch(r)"
+                              title="create a new branch based on this one">Duplicate</button>
                       <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(r)" t-att-title="this.deleteBlocked(r)"
                               t-on-click="() => this.code.deleteBranch(r.branch, r.repo, r.path, r.remote and !r.base)">Delete</button>
                     </div>
@@ -1219,6 +1221,15 @@ class BranchesScreen extends Component {
   checkout(row) {
     if (this.checkoutBlocked(row)) return;
     this.code.checkout([{ path: row.path, branch: row.branch }]);
+  }
+
+  // create a new branch based on this one (git branch <new> <branch> — no checkout)
+  duplicateBranch(row) {
+    const name = prompt(`New branch name, based on "${row.branch}" (${row.repo}):`, "");
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    this.code.createBranch(row.path, trimmed, row.branch);
   }
 
   // why a branch can't be deleted ("" = deletable). Deleting closes an open PR
