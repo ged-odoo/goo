@@ -2365,8 +2365,15 @@ a.dash-row-branch:hover {
 }
 .dialog-foot {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+/* validation error sits on the left, buttons stay on the right */
+.dialog-foot .form-error {
+  margin-right: auto;
+  font-size: 12.5px;
+  color: var(--l-red);
 }
 /* primary action: dark filled button */
 .dialog-foot .pbtn.primary {

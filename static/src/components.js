@@ -845,48 +845,20 @@ class DatabasesScreen extends Component {
 // ─────────────────────────── Targets screen ───────────────────────────
 
 // First-class targets: name, favorite flag, config (repo:branch pairs), db and
-// start args. The list is read-only except for starring; "New target" swaps the
-// list of targets with inline row editing; "New target" opens a separate form.
+// start args. Rows are edited inline; "New target" opens a dialog form.
 class TargetsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
         <div class="panel-top"><h1>Targets</h1></div>
         <div class="panel-actions">
-          <button t-if="!this.creating()" class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
-          <t t-else="">
-            <button class="pbtn primary" t-on-click="() => this.save()">Save</button>
-            <button class="pbtn" t-on-click="() => this.discard()">Discard</button>
-          </t>
+          <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
-          <span t-if="!this.creating()" class="row-count" t-out="this.count"/>
+          <span class="row-count" t-out="this.count"/>
         </div>
       </div>
-      <div class="content" t-att-class="{'br-fill': !this.creating()}">
-        <div t-if="this.creating()" class="launch-form">
-          <h2 class="subtitle">New target</h2>
-          <div class="launch-field">
-            <label>Name</label>
-            <input type="text" t-att-value="this.draftName()" placeholder="name (e.g. master-mytask)" t-on-input="ev => this.draftName.set(ev.target.value)"/>
-          </div>
-          <div class="launch-field">
-            <label>Config</label>
-            <input type="text" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)"/>
-          </div>
-          <div class="launch-field">
-            <label>Database</label>
-            <input type="text" t-att-value="this.draftDb()" placeholder="database name" t-on-input="ev => this.draftDb.set(ev.target.value)"/>
-          </div>
-          <div class="launch-field">
-            <label>Start args</label>
-            <input type="text" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)"/>
-          </div>
-          <div class="launch-field">
-            <label>Favorite</label>
-            <label class="edit-check"><input type="checkbox" t-att-checked="this.draftFav()" t-on-change="ev => this.draftFav.set(ev.target.checked)"/> starred</label>
-          </div>
-        </div>
-        <div t-else="">
+      <div class="content br-fill">
+        <div>
           <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
           <div t-else="" class="br-card">
             <table class="br-table">
@@ -937,14 +909,12 @@ class TargetsScreen extends Component {
   server = plugin(ServerPlugin);
   code = plugin(CodePlugin);
   starIcon = m(ICONS.star);
-  creating = signal(false); // the New-target form is open
   editId = signal(""); // id of the row being edited inline ("" = none)
   draftName = signal("");
   draftConfig = signal("");
   draftDb = signal("");
   draftArgs = signal("");
-  draftFav = signal(false);
-  error = signal("");
+  error = signal(""); // inline-edit validation error
 
   setup() {
     this.code.load(); // need each repo's branches/checkout state for Activate
@@ -1035,16 +1005,37 @@ class TargetsScreen extends Component {
     this.config.updateConfig({ targets });
   }
 
-  // open a blank creation form
-  startCreate() {
-    this.editId.set("");
-    this.draftName.set("");
-    this.draftConfig.set("");
-    this.draftDb.set("");
-    this.draftArgs.set("");
-    this.draftFav.set(false);
-    this.error.set("");
-    this.creating.set(true);
+  // create a new target through a dialog form (validated before it closes)
+  async startCreate() {
+    const res = await openDialog({
+      title: "New target",
+      okLabel: "Create",
+      validate: (v) => {
+        const name = (v.name || "").trim();
+        if (!name) return "a name is required";
+        if (this.config.config.targets.some((t) => t.name === name))
+          return `a target named "${name}" already exists`;
+        if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+        return "";
+      },
+      fields: [
+        { key: "name", type: "text", label: "Name", placeholder: "name (e.g. master-mytask)" },
+        { key: "config", type: "text", label: "Config", placeholder: "community:master,enterprise:master" },
+        { key: "db", type: "text", label: "Database", placeholder: "database name" },
+        { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+        { key: "fav", type: "checkbox", label: "Favorite", value: false },
+      ],
+    });
+    if (!res) return;
+    const target = {
+      id: newTargetId(),
+      name: res.name.trim(),
+      favorite: !!res.fav,
+      config: repoBranchList.parse(res.config.trim()),
+      db: (res.db || "").trim(),
+      on_create_args: (res.args || "").trim(),
+    };
+    this.config.updateConfig({ targets: [...this.config.config.targets, target] });
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
@@ -1176,29 +1167,6 @@ class TargetsScreen extends Component {
     });
   }
 
-  discard() {
-    this.creating.set(false);
-    this.error.set("");
-  }
-
-  save() {
-    const name = this.draftName().trim();
-    if (!name) return this.error.set("a name is required");
-    if (this.config.config.targets.some((t) => t.name === name))
-      return this.error.set(`a target named "${name}" already exists`);
-    const config = repoBranchList.parse(this.draftConfig().trim());
-    if (!config.length) return this.error.set("a config is required");
-    const target = {
-      id: newTargetId(),
-      name,
-      favorite: this.draftFav(),
-      config,
-      db: this.draftDb().trim(),
-      on_create_args: this.draftArgs().trim(),
-    };
-    this.config.updateConfig({ targets: [...this.config.config.targets, target] });
-    this.creating.set(false);
-  }
 }
 
 // ─────────────────────────── Branches screen ───────────────────────────
@@ -2144,7 +2112,9 @@ class BranchMenu extends Component {
 // A single modal mounted at the app root, driven over appBus. Callers use the
 // openDialog() helper and await a result: an object of field values on OK, or
 // null when discarded/escaped. Spec: { title, message?, okLabel?, cancelLabel?,
-// fields: [{ key, type: "text"|"checkbox", label, value, placeholder? }] }.
+// validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox",
+// label, value, placeholder? }] }. A non-empty validate() keeps the dialog open
+// and shows the message.
 
 function openDialog(spec) {
   return new Promise((resolve) => {
@@ -2171,6 +2141,7 @@ class Dialog extends Component {
           </div>
         </div>
         <div class="dialog-foot">
+          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           <button class="pbtn primary" t-on-click="() => this.ok()" t-out="this.spec().okLabel || 'OK'"/>
           <button class="pbtn" t-on-click="() => this.cancel()" t-out="this.spec().cancelLabel || 'Discard'"/>
         </div>
@@ -2180,6 +2151,7 @@ class Dialog extends Component {
   open = signal(false);
   spec = signal({ title: "", fields: [] });
   values = signal({});
+  error = signal(""); // validation error from spec.validate()
   _resolve = null;
 
   setup() {
@@ -2194,6 +2166,7 @@ class Dialog extends Component {
   show({ spec, resolve }) {
     this._resolve = resolve;
     this.spec.set(spec);
+    this.error.set("");
     const vals = {};
     for (const f of spec.fields) vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
     this.values.set(vals);
@@ -2210,6 +2183,7 @@ class Dialog extends Component {
 
   setVal(key, v) {
     this.values.set({ ...this.values(), [key]: v });
+    if (this.error()) this.error.set(""); // clear the error as the user edits
   }
 
   onKey(ev) {
@@ -2224,7 +2198,13 @@ class Dialog extends Component {
   }
 
   ok() {
-    this._close({ ...this.values() });
+    const values = { ...this.values() };
+    const validate = this.spec().validate;
+    if (validate) {
+      const err = validate(values);
+      if (err) return this.error.set(err); // keep the dialog open, show why
+    }
+    this._close(values);
   }
 
   cancel() {
