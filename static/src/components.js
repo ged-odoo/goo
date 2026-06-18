@@ -860,10 +860,6 @@ class TargetsScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>Targets</h1></div>
         <div class="panel-actions">
-          <select t-if="!this.creating()" class="preset-select" t-att-value="this.preset()" t-on-change="ev => this.preset.set(ev.target.value)" title="prefill a new target from an existing one">
-            <option value="">Blank</option>
-            <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
-          </select>
           <button t-if="!this.creating()" class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <t t-else="">
             <button class="pbtn primary" t-on-click="() => this.save()">Save</button>
@@ -934,7 +930,6 @@ class TargetsScreen extends Component {
   creating = signal(false);
   editId = signal(""); // "" while creating a new target; the edited target's id otherwise
   editName = signal(""); // the edited target's original name (for the form heading)
-  preset = signal(""); // existing target id to prefill a new one from ("" = blank)
   draftName = signal("");
   draftConfig = signal("");
   draftDb = signal("");
@@ -965,17 +960,15 @@ class TargetsScreen extends Component {
     this.config.updateConfig({ targets });
   }
 
-  // prefill config/db/args/favorite from the selected preset target (if any);
-  // the name stays blank since a new target needs its own unique name
+  // open a blank creation form
   startCreate() {
-    const src = this.config.config.targets.find((t) => t.id === this.preset());
     this.editId.set("");
     this.editName.set("");
     this.draftName.set("");
-    this.draftConfig.set(src ? repoBranchList.format(src.config) : "");
-    this.draftDb.set(src ? src.db || "" : "");
-    this.draftArgs.set(src ? src.on_create_args || "" : "");
-    this.draftFav.set(src ? !!src.favorite : false);
+    this.draftConfig.set("");
+    this.draftDb.set("");
+    this.draftArgs.set("");
+    this.draftFav.set(false);
     this.error.set("");
     this.creating.set(true);
   }
