@@ -924,8 +924,8 @@ class TargetsScreen extends Component {
                     <td class="dim" t-out="tgt.on_create_args || '—'"/>
                     <td>
                       <div class="br-act">
-                        <button class="drop-btn pr-close" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
                         <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
+                        <button class="drop-btn pr-close" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
                         <button class="drop-btn pr-close" t-on-click="() => this.duplicateTarget(tgt)">Duplicate</button>
                         <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
                       </div>
