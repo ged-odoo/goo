@@ -279,6 +279,12 @@ export class CodePlugin extends Plugin {
     const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
     if (!confirm(`Force-delete branch "${branch}" in ${repo} ${scope}? This cannot be undone.`))
       return;
+    return this.deleteBranchNoConfirm(branch, repo, path, deleteRemote);
+  }
+
+  // delete a branch without prompting — the caller has already confirmed (e.g.
+  // a single confirmation dialog covering several branches / PRs at once)
+  deleteBranchNoConfirm(branch, repo, path, deleteRemote = false) {
     return this._mutate(
       "Delete",
       async () => {
@@ -317,6 +323,11 @@ export class CodePlugin extends Plugin {
 
   closePr(github, number) {
     if (!confirm(`Close PR #${number} in ${github}?`)) return;
+    return this.closePrNoConfirm(github, number);
+  }
+
+  // close a PR without prompting — caller has already confirmed
+  closePrNoConfirm(github, number) {
     return this._mutate(
       "Close PR",
       async () => {

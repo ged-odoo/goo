@@ -1133,9 +1133,51 @@ class TargetsScreen extends Component {
     }
   }
 
-  deleteTarget(tgt) {
+  // delete a target via a confirmation dialog that can also (optionally) delete
+  // its local/remote branches (non-base ones that exist) and close its open PRs
+  async deleteTarget(tgt) {
     if (this.isActive(tgt)) return; // the active target cannot be deleted
-    if (!confirm(`Delete target "${tgt.name}"?`)) return;
+    const repos = this.repoMap;
+    const groups = this.code.groups();
+    // deletable branches: present locally and not a base/primary branch
+    const branches = (tgt.config || [])
+      .map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) }))
+      .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
+      .map((x) => ({ repo: x.repo, branch: x.branch, path: groups.pathByRepo[x.repo], remote: !!x.b.remote }));
+    // open PRs for the target's branches
+    const prs = (tgt.config || [])
+      .map(({ repo, branch }) => ({ pr: groups.prIndex[`${repo}:${branch}`], github: groups.githubByRepo[repo] }))
+      .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
+      .map((x) => ({ github: x.github, number: x.pr.number }));
+
+    const fields = [];
+    if (branches.length)
+      fields.push({
+        key: "delBranches",
+        type: "checkbox",
+        label: `Also delete ${branches.length === 1 ? "its branch" : `its ${branches.length} branches`}`,
+        value: false,
+      });
+    if (prs.length)
+      fields.push({
+        key: "closePrs",
+        type: "checkbox",
+        label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
+        value: false,
+      });
+
+    const res = await openDialog({
+      title: `Delete "${tgt.name}"?`,
+      message: "The target will be removed from your list. This cannot be undone.",
+      okLabel: "Delete",
+      fields,
+    });
+    if (!res) return;
+
+    if (res.closePrs) for (const p of prs) await this.code.closePrNoConfirm(p.github, p.number);
+    if (res.delBranches)
+      for (const b of branches)
+        await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, b.remote);
     this.config.updateConfig({
       targets: this.config.config.targets.filter((t) => t.id !== tgt.id),
     });
@@ -2052,8 +2094,8 @@ class BranchMenu extends Component {
 // ─────────────────────────── Dialog ───────────────────────────
 // A single modal mounted at the app root, driven over appBus. Callers use the
 // openDialog() helper and await a result: an object of field values on OK, or
-// null when discarded/escaped. Fields are { key, type: "text"|"checkbox",
-// label, value, placeholder? }.
+// null when discarded/escaped. Spec: { title, message?, okLabel?, cancelLabel?,
+// fields: [{ key, type: "text"|"checkbox", label, value, placeholder? }] }.
 
 function openDialog(spec) {
   return new Promise((resolve) => {
@@ -2067,6 +2109,7 @@ class Dialog extends Component {
       <div class="dialog" t-on-click.stop="() => {}">
         <h2 class="dialog-title" t-out="this.spec().title"/>
         <div class="dialog-body">
+          <p t-if="this.spec().message" class="dialog-msg" t-out="this.spec().message"/>
           <div t-foreach="this.spec().fields" t-as="f" t-key="f.key" class="dialog-field">
             <label t-if="f.type === 'checkbox'" class="edit-check">
               <input type="checkbox" t-att-checked="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.checked)"/>

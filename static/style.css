@@ -2275,6 +2275,12 @@ a.dash-row-branch:hover {
   flex-direction: column;
   gap: 14px;
 }
+.dialog-msg {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--l-text-mid);
+}
 .dialog-field {
   display: flex;
   flex-direction: column;
