@@ -153,7 +153,7 @@ class Sidebar extends Component {
       <button class="nav-item nav-foot" t-att-class="{active: this.eventLog.open()}"
               t-on-click="() => this.eventLog.toggle()" title="toggle the event log">
         <t t-out="this.journalIcon"/>
-        Events
+        <span>Events<t t-if="!this.eventLog.open() and this.eventLog.entries().length"> (<t t-out="this.eventLog.entries().length"/>)</t></span>
       </button>
     </nav>`;
 
@@ -2250,7 +2250,7 @@ class EventLog extends Component {
           <button class="event-log-x" t-on-click="() => this.log.toggle()" title="close">✕</button>
         </div>
       </div>
-      <div class="event-log-body">
+      <div class="event-log-body" t-ref="this.body">
         <div t-if="!this.log.entries().length" class="event-log-empty">No events yet.</div>
         <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row">
           <span class="event-log-time" t-out="e.time"/>
@@ -2261,9 +2261,19 @@ class EventLog extends Component {
 
   log = plugin(EventLogPlugin);
   clearIcon = m(ICONS.clear);
+  body = signal.ref(HTMLElement);
 
+  setup() {
+    // keep the newest entry in view as lines arrive (and on open)
+    useEffect(() => {
+      const el = this.body();
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }
+
+  // chronological: oldest first, newest appended at the end
   get rows() {
-    return [...this.log.entries()].reverse().map((e) => ({
+    return this.log.entries().map((e) => ({
       id: e.id,
       time: new Date(e.at).toLocaleTimeString(),
       text: e.text,
