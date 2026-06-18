@@ -1110,7 +1110,7 @@ class TargetsScreen extends Component {
     const copy = {
       id: newTargetId(),
       name,
-      favorite: false,
+      favorite: !!tgt.favorite,
       config: (tgt.config || []).map((c) => ({ repo: c.repo, branch: b })),
       db: tgt.db || "",
       on_create_args: tgt.on_create_args || "",
