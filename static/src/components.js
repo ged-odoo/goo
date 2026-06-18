@@ -927,7 +927,7 @@ class TargetsScreen extends Component {
                         <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
                         <button class="drop-btn pr-close" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
                         <button class="drop-btn pr-close" t-on-click="() => this.duplicateTarget(tgt)">Duplicate</button>
-                        <button class="drop-btn" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
+                        <button class="drop-btn" t-att-disabled="this.isActive(tgt)" t-att-title="this.isActive(tgt) ? 'the active target cannot be deleted' : ''" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
                       </div>
                     </td>
                   </t>
@@ -1119,6 +1119,7 @@ class TargetsScreen extends Component {
   }
 
   deleteTarget(tgt) {
+    if (this.isActive(tgt)) return; // the active target cannot be deleted
     if (!confirm(`Delete target "${tgt.name}"?`)) return;
     this.config.updateConfig({
       targets: this.config.config.targets.filter((t) => t.id !== tgt.id),
