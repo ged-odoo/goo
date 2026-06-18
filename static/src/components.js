@@ -1286,7 +1286,7 @@ class BranchesScreen extends Component {
                       <button class="drop-btn pr-close" t-on-click="() => this.duplicateBranch(r)"
                               title="create a new branch based on this one">Duplicate</button>
                       <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(r)" t-att-title="this.deleteBlocked(r)"
-                              t-on-click="() => this.code.deleteBranch(r.branch, r.repo, r.path, r.remote and !r.base)">Delete</button>
+                              t-on-click="() => this.deleteRow(r)">Delete</button>
                     </div>
                   </td>
                   <td class="br-spacer"/>
@@ -1394,6 +1394,21 @@ class BranchesScreen extends Component {
     for (const r of rows)
       await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, r.remote && !r.base);
     this.selected.set(new Set());
+  }
+
+  // single-row delete, confirmed via the dialog (mirrors the batch behaviour)
+  async deleteRow(r) {
+    if (this.deleteBlocked(r)) return;
+    const deleteRemote = r.remote && !r.base;
+    const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
+    const res = await openDialog({
+      title: `Delete "${r.branch}"?`,
+      message: `Force-delete "${r.branch}" in ${r.repo} ${scope}. This cannot be undone.`,
+      okLabel: "Delete",
+      fields: [],
+    });
+    if (!res) return;
+    await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, deleteRemote);
   }
 
   // sort by a column; clicking the active column flips the direction
