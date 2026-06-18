@@ -1731,6 +1731,11 @@ a.dash-row-branch:hover {
 .br-table tbody tr.active td:not(.br-name) {
   background: oklch(0.55 0.18 300 / 0.12);
 }
+/* batch selection tints every row of the group (incl. the name cell) so it is
+   clear the whole branch group is selected */
+.br-table tbody tr.row-sel td {
+  background: oklch(0.55 0.16 250 / 0.14);
+}
 /* name cell (rowspanned) aligns with the first repo row's content, not centered
    across the whole group. The repo rows are taller than a text line (action
    buttons), so the name needs extra top padding to line up with the first row. */

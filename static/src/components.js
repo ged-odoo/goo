@@ -1212,7 +1212,7 @@ class BranchesScreen extends Component {
                 </tr>
               </thead>
               <tbody t-foreach="this.groups()" t-as="g" t-key="g.name">
-                <tr t-foreach="g.repos" t-as="r" t-key="r.repo" t-att-class="{active: r.active}">
+                <tr t-foreach="g.repos" t-as="r" t-key="r.repo" t-att-class="{active: r.active, 'row-sel': this.selected().has(g.name)}">
                   <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
                     <div class="br-name-inner">
                       <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
@@ -1328,8 +1328,9 @@ class BranchesScreen extends Component {
     return this.groups().filter((g) => sel.has(g.name));
   }
 
+  // total branches (one per repo) across the selected groups, not group count
   get selectedCount() {
-    return this.selectedGroups.length;
+    return this.selectedGroups.reduce((n, g) => n + g.repos.length, 0);
   }
 
   // batch-delete every selected branch in each repo where it can be removed
