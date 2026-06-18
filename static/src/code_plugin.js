@@ -3,6 +3,7 @@
 
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT, CACHE_TTL } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, signal, computed } = owl;
@@ -13,6 +14,7 @@ export class CodePlugin extends Plugin {
   static sequence = 3;
 
   config = plugin(ConfigPlugin);
+  eventLog = plugin(EventLogPlugin);
   branchRepos = signal((this._cache() || {}).branchRepos || []);
   prRepos = signal((this._cache() || {}).prRepos || []);
   at = signal((this._cache() || {}).at || 0);
@@ -277,6 +279,7 @@ export class CodePlugin extends Plugin {
         if (res.remote_error)
           alert(`Local branch deleted, but the remote branch could not be removed:\n${res.remote_error}`);
         this._dropBranch(repo, branch);
+        this.eventLog.add(`deleted branch ${branch} (${repo})`);
       },
       false,
     );
@@ -284,9 +287,11 @@ export class CodePlugin extends Plugin {
 
   // create a new branch at <startPoint> without checking it out, then reload
   createBranch(path, name, startPoint) {
-    return this._mutate("Create branch", () =>
-      postJSON("/api/code/branch/create", { path, name, start_point: startPoint }),
-    );
+    const repo = this.config.config.repos.find((r) => r.path === path);
+    return this._mutate("Create branch", async () => {
+      await postJSON("/api/code/branch/create", { path, name, start_point: startPoint });
+      this.eventLog.add(`created branch ${name}${repo ? ` (${repo.id})` : ""}`);
+    });
   }
 
   // mark a PR closed in the view + cache, no reload (which would re-fetch every

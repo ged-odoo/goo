@@ -941,6 +941,8 @@ class TargetsScreen extends Component {
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
   code = plugin(CodePlugin);
+  db = plugin(DatabasePlugin);
+  eventLog = plugin(EventLogPlugin);
   starIcon = m(ICONS.star);
   editId = signal(""); // id of the row being edited inline ("" = none)
   draftName = signal("");
@@ -1069,6 +1071,7 @@ class TargetsScreen extends Component {
       on_create_args: (res.args || "").trim(),
     };
     this.config.updateConfig({ targets: [...this.config.config.targets, target] });
+    this.eventLog.add(`created target ${target.name}`);
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
@@ -1141,6 +1144,7 @@ class TargetsScreen extends Component {
       on_create_args: tgt.on_create_args || "",
     };
     this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
+    this.eventLog.add(`created target ${copy.name}`);
     if (res.create) {
       const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
       for (const c of tgt.config || []) {
@@ -1151,7 +1155,8 @@ class TargetsScreen extends Component {
   }
 
   // delete a target via a confirmation dialog that can also (optionally) delete
-  // its local/remote branches (non-base ones that exist) and close its open PRs
+  // its local/remote branches (non-base ones that exist), close its open PRs and
+  // drop its database
   async deleteTarget(tgt) {
     if (this.isActive(tgt)) return; // the active target cannot be deleted
     const repos = this.repoMap;
@@ -1182,6 +1187,8 @@ class TargetsScreen extends Component {
         label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
         value: false,
       });
+    if (tgt.db)
+      fields.push({ key: "dropDb", type: "checkbox", label: `Drop database "${tgt.db}"`, value: false });
 
     const res = await openDialog({
       title: `Delete "${tgt.name}"?`,
@@ -1195,9 +1202,11 @@ class TargetsScreen extends Component {
     if (res.delBranches)
       for (const b of branches)
         await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, b.remote);
+    if (res.dropDb && tgt.db) await this.db.drop(tgt.db);
     this.config.updateConfig({
       targets: this.config.config.targets.filter((t) => t.id !== tgt.id),
     });
+    this.eventLog.add(`deleted target ${tgt.name}`);
   }
 
 }
@@ -1293,6 +1302,7 @@ class BranchesScreen extends Component {
     </section>`;
 
   code = plugin(CodePlugin);
+  config = plugin(ConfigPlugin);
   refreshIcon = m(ICONS.refresh);
   externalIcon = m(ICONS.external);
   repoFilter = signal(""); // "" = all repositories
@@ -1391,19 +1401,39 @@ class BranchesScreen extends Component {
     this.selected.set(new Set());
   }
 
-  // single-row delete, confirmed via the dialog (mirrors the batch behaviour)
+  // single-row delete, confirmed via the dialog. When the branch has an open PR
+  // it can be closed first; targets that reference this exact branch can be
+  // removed in the same step.
   async deleteRow(r) {
     if (this.deleteBlocked(r)) return;
     const deleteRemote = r.remote && !r.base;
+    const hasPr = !!(r.pr && r.pr.state === "OPEN" && r.github);
+    const targets = this.config.config.targets.filter((t) =>
+      (t.config || []).some((c) => c.repo === r.repo && c.branch === r.branch),
+    );
+    const fields = [];
+    if (hasPr) fields.push({ key: "closePr", type: "checkbox", label: `Close PR #${r.pr.number}`, value: true });
+    for (const t of targets)
+      fields.push({ key: `tgt:${t.id}`, type: "checkbox", label: `Delete target "${t.name}"`, value: false });
+
     const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
     const res = await openDialog({
       title: `Delete "${r.branch}"?`,
       message: `Force-delete "${r.branch}" in ${r.repo} ${scope}. This cannot be undone.`,
       okLabel: "Delete",
-      fields: [],
+      fields,
     });
     if (!res) return;
+    // close the PR before deleting the branch, then drop the branch
+    if (hasPr && res.closePr) await this.code.closePrNoConfirm(r.github, r.pr.number);
     await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, deleteRemote);
+    // remove any targets the user opted to delete
+    const drop = targets.filter((t) => res[`tgt:${t.id}`]);
+    if (drop.length) {
+      const ids = new Set(drop.map((t) => t.id));
+      this.config.updateConfig({ targets: this.config.config.targets.filter((t) => !ids.has(t.id)) });
+      for (const t of drop) this.code.eventLog.add(`deleted target ${t.name}`);
+    }
   }
 
   // sort by a column; clicking the active column flips the direction
@@ -1462,8 +1492,7 @@ class BranchesScreen extends Component {
   // (it removes the head branch), so require closing the PR first.
   deleteBlocked(row) {
     if (row.active) return "cannot delete the checked-out branch";
-    if (row.pr && row.pr.state === "OPEN") return `close PR #${row.pr.number} first`;
-    return "";
+    return ""; // an open PR no longer blocks: the delete dialog offers to close it
   }
 
   get stamp() {
