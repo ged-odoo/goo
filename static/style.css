@@ -2309,6 +2309,17 @@ a.dash-row-branch:hover {
   justify-content: flex-end;
   gap: 10px;
 }
+/* primary action: dark filled button */
+.dialog-foot .pbtn.primary {
+  color: var(--l-card);
+  background: var(--l-text);
+  border-color: var(--l-text);
+}
+.dialog-foot .pbtn.primary:hover:not(:disabled) {
+  color: var(--l-card);
+  background: var(--l-text-mid);
+  border-color: var(--l-text-mid);
+}
 .edit-check input {
   width: auto;
   min-width: 0;
