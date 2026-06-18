@@ -1420,6 +1420,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/event":
+            body, err = self._read_json()
+            text = (body or {}).get("text")
+            if err or not text:
+                return self._send_json(400, {"ok": False, "error": "missing text"})
+            # mirror the frontend event log on the goo terminal
+            print(f"{TAG} {time.strftime('%H:%M:%S')} • {text}", flush=True)
+            self._send_json(200, {"ok": True})
         else:
             self._send_json(404, {"ok": False, "error": "not_found"})
 
