@@ -1380,25 +1380,36 @@ class BranchesScreen extends Component {
   }
 
   // batch-delete every selected branch in each repo where it can be removed
-  // (skipping checked-out branches and ones with an open PR, like the row action)
+  // (only the checked-out branch is skipped). Open PRs on the selected branches
+  // can be closed first via a checkbox.
   async deleteSelected() {
     const groups = this.selectedGroups;
     if (!groups.length) return;
     const rows = groups.flatMap((g) => g.repos).filter((r) => !this.deleteBlocked(r));
     const total = groups.reduce((n, g) => n + g.repos.length, 0);
     const skipped = total - rows.length;
+    const prs = rows.filter((r) => r.pr && r.pr.state === "OPEN" && r.github);
     const what =
       groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
+    const fields = [];
+    if (prs.length)
+      fields.push({
+        key: "closePrs",
+        type: "checkbox",
+        label: `Close ${prs.length === 1 ? "its open pull request" : `${prs.length} open pull requests`}`,
+        value: true,
+      });
     const res = await openDialog({
       title: "Delete branches",
       message:
         `Delete ${what} in ${rows.length} repo${rows.length === 1 ? "" : "s"}?` +
-        (skipped ? ` ${skipped} skipped (checked out or with an open PR).` : "") +
+        (skipped ? ` ${skipped} skipped (checked out).` : "") +
         " This cannot be undone.",
       okLabel: "Delete",
-      fields: [],
+      fields,
     });
     if (!res) return;
+    if (res.closePrs) for (const r of prs) await this.code.closePrNoConfirm(r.github, r.pr.number);
     for (const r of rows)
       await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, r.remote && !r.base);
     this.selected.set(new Set());
