@@ -244,6 +244,10 @@ class DashboardScreen extends Component {
                 <t t-else="">
                   <span t-out="r.current || '—'"/>
                   <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes"> *</span>
+                  <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
+                    <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
+                    <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
+                  </span>
                 </t>
               </span>
               <span class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
@@ -416,6 +420,9 @@ class DashboardScreen extends Component {
           dirty: !!b.dirty,
           subject: b.head_subject || "",
           date: b.head_date || "",
+          ahead: b.ahead || 0, // commits ahead of the base (target) branch
+          behind: b.behind || 0, // commits behind the base (target) branch
+          base: this._baseBranch(b.current || ""),
           error: b.error || "",
           github: groups.githubByRepo[r.id] || "",
           path: groups.pathByRepo[r.id] || "",

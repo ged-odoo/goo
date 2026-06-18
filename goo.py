@@ -291,6 +291,16 @@ def write_data_file(path, data):
         return False, str(e)
 
 
+_BASE_BRANCH_RE = re.compile(r"^(saas-\d+\.\d+|\d+\.\d+|master)")
+
+
+def base_branch(name):
+    """The canonical base a branch derives from (master-owl-update -> master,
+    19.0-fix -> 19.0). Defaults to master."""
+    m = _BASE_BRANCH_RE.match(name or "")
+    return m.group(1) if m else "master"
+
+
 def git_branches(repos):
     """For each repo {id, path}: the checked-out branch and all local
     branches with their last-commit date."""
@@ -306,6 +316,8 @@ def git_branches(repos):
             "dirty": False,
             "head_subject": "",
             "head_date": "",
+            "ahead": 0,  # current branch commits not on its base (target) branch
+            "behind": 0,  # base branch commits not on the current branch
             "branches": [],
             "error": None,
         }
@@ -340,6 +352,19 @@ def git_branches(repos):
                 lines = hl.stdout.splitlines()
                 entry["head_subject"] = lines[0] if lines else ""
                 entry["head_date"] = lines[1] if len(lines) > 1 else ""
+            # how far the current branch diverges from its canonical base (the
+            # "target" it would rebase onto), e.g. master-owl-update vs origin/master
+            base = base_branch(entry["current"])
+            ref = f"{main_remote(path, repo.get('github'))}/{base}"
+            ad = subprocess.run(
+                ["git", "-C", path, "rev-list", "--left-right", "--count", f"{ref}...HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if ad.returncode == 0 and len(ad.stdout.split()) == 2:
+                behind, ahead = ad.stdout.split()
+                entry["behind"], entry["ahead"] = int(behind), int(ahead)
             # branch names that have a remote-tracking ref, i.e. were pushed to
             # some remote from this clone (refname minus refs/remotes/<remote>/)
             rr = subprocess.run(

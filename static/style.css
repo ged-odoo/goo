@@ -709,6 +709,19 @@ section.hidden {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* commits ahead/behind the base (target) branch */
+.dash-diff {
+  margin-left: 7px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.dash-diff .ahead {
+  color: var(--l-green);
+}
+.dash-diff .behind {
+  color: var(--l-amber);
+  margin-left: 5px;
+}
 .dash-commit {
   font-size: 13px;
   color: var(--l-text-dim);
