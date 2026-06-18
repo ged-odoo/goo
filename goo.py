@@ -316,6 +316,9 @@ def git_branches(repos):
             "dirty": False,
             "head_subject": "",
             "head_date": "",
+            "head_sha": "",  # HEAD commit sha
+            "head_pushed": False,  # HEAD is reachable from some remote (so linkable)
+            "head_remote": False,  # the current branch has a remote-tracking ref
             "ahead": 0,  # current branch commits not on its base (target) branch
             "behind": 0,  # base branch commits not on the current branch
             "branches": [],
@@ -341,17 +344,27 @@ def git_branches(repos):
                 timeout=10,
             )
             entry["dirty"] = bool(st.stdout.strip())
-            # HEAD's last commit subject + date (for the dashboard repo summary)
+            # HEAD's sha + last commit subject + date (for the dashboard summary)
             hl = subprocess.run(
-                ["git", "-C", path, "log", "-1", "--format=%s%n%cI"],
+                ["git", "-C", path, "log", "-1", "--format=%H%n%s%n%cI"],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             if hl.returncode == 0:
                 lines = hl.stdout.splitlines()
-                entry["head_subject"] = lines[0] if lines else ""
-                entry["head_date"] = lines[1] if len(lines) > 1 else ""
+                entry["head_sha"] = lines[0] if lines else ""
+                entry["head_subject"] = lines[1] if len(lines) > 1 else ""
+                entry["head_date"] = lines[2] if len(lines) > 2 else ""
+            # is HEAD reachable from any remote ref? (i.e. pushed -> linkable)
+            rp = subprocess.run(
+                ["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes", "--count"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if rp.returncode == 0:
+                entry["head_pushed"] = rp.stdout.strip() == "0"
             # how far the current branch diverges from its canonical base (the
             # "target" it would rebase onto), e.g. master-owl-update vs origin/master
             base = base_branch(entry["current"])
@@ -374,6 +387,7 @@ def git_branches(repos):
                 timeout=10,
             )
             remote_branches = set(rr.stdout.split())
+            entry["head_remote"] = entry["current"] in remote_branches
             r = subprocess.run(
                 [
                     "git",
@@ -381,7 +395,7 @@ def git_branches(repos):
                     path,
                     "for-each-ref",
                     "refs/heads",
-                    "--format=%(refname:short)%09%(committerdate:iso8601-strict)%09%(contents:subject)",
+                    "--format=%(refname:short)%09%(committerdate:iso8601-strict)%09%(contents:subject)%09%(objectname)",
                 ],
                 capture_output=True,
                 text=True,
@@ -392,12 +406,14 @@ def git_branches(repos):
                 name = parts[0]
                 date = parts[1] if len(parts) > 1 else ""
                 subject = parts[2] if len(parts) > 2 else ""
+                sha = parts[3] if len(parts) > 3 else ""
                 if name:
                     entry["branches"].append(
                         {
                             "name": name,
                             "date": date,
                             "subject": subject,
+                            "sha": sha,
                             "remote": name in remote_branches,
                         }
                     )

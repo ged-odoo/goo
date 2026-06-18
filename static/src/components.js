@@ -242,7 +242,8 @@ class DashboardScreen extends Component {
               <span class="dash-branch">
                 <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
                 <t t-else="">
-                  <span t-out="r.current || '—'"/>
+                  <a t-if="r.remote and r.github and r.current" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
+                  <span t-else="" t-out="r.current || '—'"/>
                   <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes"> *</span>
                   <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
                     <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
@@ -250,7 +251,8 @@ class DashboardScreen extends Component {
                   </span>
                 </t>
               </span>
-              <span class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
+              <a t-if="r.pushed and r.github and r.sha" class="dash-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
+              <span t-else="" class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
               <span class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
               <button class="dash-rebase" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">
                 <t t-out="this.refreshIcon"/>Fetch &amp; rebase
@@ -278,7 +280,8 @@ class DashboardScreen extends Component {
                     <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
                     <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
                   </div>
-                  <span class="dash-row-commit" t-att-title="row.subject" t-out="row.present ? (row.subject || '—') : '—'"/>
+                  <a t-if="row.present and row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="row.subject" t-out="row.subject || '—'"/>
+                  <span t-else="" class="dash-row-commit" t-att-title="row.subject" t-out="row.present ? (row.subject || '—') : '—'"/>
                   <t t-set="ci" t-value="this.ciBadge(row)"/>
                   <a t-if="row.present" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
                     <span class="dash-ci-dot"/><t t-out="ci.label"/>
@@ -419,6 +422,9 @@ class DashboardScreen extends Component {
           current: b.current || "",
           dirty: !!b.dirty,
           subject: b.head_subject || "",
+          sha: b.head_sha || "",
+          pushed: !!b.head_pushed, // HEAD is on a remote -> the commit is linkable
+          remote: !!b.head_remote, // the current branch has a remote-tracking ref
           date: b.head_date || "",
           ahead: b.ahead || 0, // commits ahead of the base (target) branch
           behind: b.behind || 0, // commits behind the base (target) branch
@@ -522,6 +528,7 @@ class DashboardScreen extends Component {
         remote: !!b && b.remote,
         date: b ? b.date : "",
         subject: b ? b.subject || "" : "",
+        sha: b ? b.sha || "" : "",
         pr: groups.prIndex[`${repo}:${branch}`] || null,
       };
     });
