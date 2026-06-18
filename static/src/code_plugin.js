@@ -319,6 +319,7 @@ export class CodePlugin extends Plugin {
       async () => {
         await postJSON("/api/prs/close", { repo: github, number });
         this._closePrLocally(github, number);
+        this.eventLog.add(`closed PR #${number} (${github})`);
       },
       false,
     );

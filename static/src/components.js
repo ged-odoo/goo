@@ -1463,6 +1463,7 @@ class BranchesScreen extends Component {
   }
 
   openPr(row) {
+    this.code.eventLog.add(`opening PR for ${row.branch} (${row.repo})`);
     window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
   }
 
@@ -2148,7 +2149,10 @@ class BranchMenu extends Component {
       if (!pr)
         actions.push({
           label: `Create PR — ${r.repo}`,
-          onClick: () => window.open(code.prCreateUrl(github, group.branch), "_blank"),
+          onClick: () => {
+            code.eventLog.add(`opening PR for ${group.branch} (${r.repo})`);
+            window.open(code.prCreateUrl(github, group.branch), "_blank");
+          },
         });
       else if (pr.state === "OPEN")
         actions.push({
