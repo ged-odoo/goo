@@ -3,6 +3,7 @@
 import { App } from "./components.js";
 import { ConfigPlugin, dataFilePath, loadDataFile } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { DatabasePlugin } from "./database_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
@@ -12,6 +13,7 @@ import { AddonsPlugin } from "./addons_plugin.js";
 const PLUGINS = [
   ConfigPlugin,
   RouterPlugin,
+  EventLogPlugin,
   ServerPlugin,
   DatabasePlugin,
   CodePlugin,

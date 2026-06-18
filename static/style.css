@@ -296,6 +296,10 @@ a {
   flex-direction: column;
   gap: 2px;
 }
+/* the event-log toggle sits pinned at the bottom of the sidebar */
+.nav-foot {
+  margin-top: auto;
+}
 .nav-item {
   display: flex;
   align-items: center;
@@ -2390,6 +2394,84 @@ a.dash-row-branch:hover {
   color: var(--l-card);
   background: var(--l-text-mid);
   border-color: var(--l-text-mid);
+}
+
+/* ─── event log (floating overlay panel) ─── */
+.event-log {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 90; /* under the dialog (100) */
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-height: min(380px, 60vh);
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
+  box-shadow: 0 14px 44px oklch(0 0 0 / 0.28);
+  overflow: hidden;
+}
+.event-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--l-line);
+  background: var(--l-panel);
+}
+.event-log-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--l-text-mid);
+}
+.event-log-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.event-log-x {
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: var(--l-text-faint);
+}
+.event-log-x:hover {
+  color: var(--l-text);
+  background: var(--l-hover);
+}
+.event-log-body {
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.event-log-empty {
+  padding: 14px 14px;
+  font-size: 12.5px;
+  color: var(--l-text-faint);
+}
+.event-log-row {
+  display: flex;
+  align-items: baseline; /* line up the timestamp with the text, despite font sizes */
+  gap: 10px;
+  padding: 4px 14px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.event-log-row:hover {
+  background: var(--l-hover);
+}
+.event-log-time {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--l-text-faint);
+}
+.event-log-text {
+  color: var(--l-text);
+  word-break: break-word;
 }
 .edit-check input {
   width: auto;

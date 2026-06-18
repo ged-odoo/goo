@@ -2,6 +2,7 @@
 
 import { ConfigPlugin, TEST_HISTORY_KEY } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
@@ -14,6 +15,7 @@ export class TestsPlugin extends Plugin {
 
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
+  eventLog = plugin(EventLogPlugin);
   output = new LogBuffer();
   status = signal("");
   runActive = signal(false);
@@ -95,6 +97,7 @@ export class TestsPlugin extends Plugin {
     this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
     cfg.start.test_tags = tags.trim();
     this._pushHistory(tags);
+    this.eventLog.add(`running tests (tags: ${tags.trim()})`);
     this.output.clear();
     this.runActive.set(true);
     this.sawRun.set(false);

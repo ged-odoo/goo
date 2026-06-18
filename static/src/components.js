@@ -12,6 +12,7 @@ import { DatabasePlugin } from "./database_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
 import { timeAgo, tintCmd } from "./utils.js";
 
 const {
@@ -51,6 +52,7 @@ const ICONS = {
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
   stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
   external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
+  journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -148,10 +150,17 @@ class Sidebar extends Component {
         <t t-out="this.icon(item.icon)"/>
         <t t-out="item.label"/>
       </button>
+      <button class="nav-item nav-foot" t-att-class="{active: this.eventLog.open()}"
+              t-on-click="() => this.eventLog.toggle()" title="toggle the event log">
+        <t t-out="this.journalIcon"/>
+        Events
+      </button>
     </nav>`;
 
   router = plugin(RouterPlugin);
+  eventLog = plugin(EventLogPlugin);
   nav = NAV;
+  journalIcon = m(ICONS.journal);
   icon(s) {
     return m(s);
   }
@@ -2227,6 +2236,41 @@ class Dialog extends Component {
   }
 }
 
+// ─────────────────────────── Event log ───────────────────────────
+// A floating, toggleable panel (bottom-right) listing business events. Hidden
+// by default; toggled from the sidebar. Newest entries first.
+
+class EventLog extends Component {
+  static template = xml`
+    <div t-if="this.log.open()" class="event-log">
+      <div class="event-log-head">
+        <span class="event-log-title">Event log</span>
+        <div class="event-log-tools">
+          <button class="tool-btn" t-on-click="() => this.log.clear()"><t t-out="this.clearIcon"/>Clear</button>
+          <button class="event-log-x" t-on-click="() => this.log.toggle()" title="close">✕</button>
+        </div>
+      </div>
+      <div class="event-log-body">
+        <div t-if="!this.log.entries().length" class="event-log-empty">No events yet.</div>
+        <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row">
+          <span class="event-log-time" t-out="e.time"/>
+          <span class="event-log-text" t-out="e.text"/>
+        </div>
+      </div>
+    </div>`;
+
+  log = plugin(EventLogPlugin);
+  clearIcon = m(ICONS.clear);
+
+  get rows() {
+    return [...this.log.entries()].reverse().map((e) => ({
+      id: e.id,
+      time: new Date(e.at).toLocaleTimeString(),
+      text: e.text,
+    }));
+  }
+}
+
 // ─────────────────────────── Root ───────────────────────────
 
 const SCREENS = {
@@ -2256,6 +2300,7 @@ export class App extends Component {
     ConfigScreen,
     BranchMenu,
     Dialog,
+    EventLog,
   };
 
   static template = xml`
@@ -2267,6 +2312,7 @@ export class App extends Component {
       </div>
       <BranchMenu/>
       <Dialog/>
+      <EventLog/>
     </div>`;
 
   router = plugin(RouterPlugin);

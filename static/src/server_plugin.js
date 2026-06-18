@@ -1,6 +1,7 @@
 // The single odoo process: live status, SSE log fan-out, start/stop/restart.
 
 import { ConfigPlugin, LAST_TARGET_KEY } from "./config_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
@@ -10,6 +11,7 @@ export class ServerPlugin extends Plugin {
   static sequence = 2;
 
   config = plugin(ConfigPlugin);
+  eventLog = plugin(EventLogPlugin);
   status = signal({ state: "stopped" }); // whole status object, replaced wholesale
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
@@ -65,6 +67,10 @@ export class ServerPlugin extends Plugin {
     return this.activeTarget();
   }
 
+  _targetName(id) {
+    return this.config.config.targets.find((t) => t.id === id)?.name || id;
+  }
+
   setLastTarget(id) {
     this.activeTarget.set(id);
     this.config.write(LAST_TARGET_KEY, id);
@@ -94,6 +100,7 @@ export class ServerPlugin extends Plugin {
     if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
     this.lastConfig = cfg;
     this.setLastTarget(cfg.target);
+    this.eventLog.add(`starting server (target: ${this._targetName(cfg.target)})`);
     await this._run("/api/start", cfg, "start");
   }
 
@@ -102,6 +109,7 @@ export class ServerPlugin extends Plugin {
     if (!cfg) return;
     this.lastConfig = cfg;
     this.setLastTarget(cfg.target);
+    this.eventLog.add(`restarting server (target: ${this._targetName(cfg.target)})`);
     await this._run("/api/restart", cfg, "restart");
   }
 
@@ -113,6 +121,7 @@ export class ServerPlugin extends Plugin {
   }
 
   async stop() {
+    this.eventLog.add("stopping server");
     await this._run("/api/stop", undefined, "stop");
   }
 }

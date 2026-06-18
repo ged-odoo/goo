@@ -2,6 +2,7 @@
 
 import { CACHE_TTL } from "./config.js";
 import { ServerPlugin } from "./server_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, signal } = owl;
@@ -12,6 +13,7 @@ export class DatabasePlugin extends Plugin {
   static sequence = 3;
 
   server = plugin(ServerPlugin);
+  eventLog = plugin(EventLogPlugin);
   databases = signal((this._cache() || {}).databases || []);
   at = signal((this._cache() || {}).at || 0);
   loading = signal(false);
@@ -61,8 +63,10 @@ export class DatabasePlugin extends Plugin {
     try {
       await postJSON("/api/databases/drop", { name });
       await this.load(true);
+      this.eventLog.add(`dropped database ${name}`);
       return null;
     } catch (e) {
+      this.eventLog.add(`failed to drop database ${name}: ${e.message}`);
       return e.message;
     } finally {
       this.dropping.set("");
