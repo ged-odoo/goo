@@ -1253,7 +1253,7 @@ class BranchesScreen extends Component {
                   <th/><th class="br-spacer"/>
                 </tr>
               </thead>
-              <tbody t-foreach="this.groups()" t-as="g" t-key="g.name">
+              <tbody t-foreach="this.groups()" t-as="g" t-key="g.name" t-att-class="{'br-tight': g.repos.length > 1}">
                 <tr t-foreach="g.repos" t-as="r" t-key="r.repo" t-att-class="{active: r.active, 'row-sel': this.selected().has(g.name)}">
                   <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
                     <div class="br-name-inner">

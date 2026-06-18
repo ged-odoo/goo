@@ -1769,6 +1769,15 @@ a.dash-row-branch:hover {
   vertical-align: top;
   padding: 14px 18px;
 }
+/* groups with several repos on the same branch: tighten the rows so the group
+   reads as one block (the name cell keeps its top offset to stay aligned) */
+.br-table tbody.br-tight td:not(.br-name) {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.br-table tbody.br-tight td.br-name {
+  padding-top: 10px;
+}
 /* inline row editing: inputs sit flush inside the table cells */
 .br-table tr.br-editing td {
   padding-top: 6px;
