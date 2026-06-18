@@ -1181,6 +1181,13 @@ class TargetsScreen extends Component {
         label: `Also delete ${branches.length === 1 ? "its branch" : `its ${branches.length} branches`}`,
         value: false,
       });
+    if (branches.some((b) => b.remote))
+      fields.push({
+        key: "delRemote",
+        type: "checkbox",
+        label: "…also on the remote (odoo-dev)",
+        value: false,
+      });
     if (prs.length)
       fields.push({
         key: "closePrs",
@@ -1204,7 +1211,7 @@ class TargetsScreen extends Component {
     if (res.closePrs) for (const p of prs) await this.code.closePrNoConfirm(p.github, p.number);
     if (res.delBranches)
       for (const b of branches)
-        await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, b.remote);
+        await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
     if (res.dropDb && tgt.db) await this.db.drop(tgt.db);
     this.config.updateConfig({
       targets: this.config.config.targets.filter((t) => t.id !== tgt.id),
@@ -1389,9 +1396,17 @@ class BranchesScreen extends Component {
     const total = groups.reduce((n, g) => n + g.repos.length, 0);
     const skipped = total - rows.length;
     const prs = rows.filter((r) => r.pr && r.pr.state === "OPEN" && r.github);
+    const remoteRows = rows.filter((r) => r.remote && !r.base);
     const what =
       groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
     const fields = [];
+    if (remoteRows.length)
+      fields.push({
+        key: "delRemote",
+        type: "checkbox",
+        label: `Also delete ${remoteRows.length === 1 ? "it" : "them"} on the remote (odoo-dev)`,
+        value: false,
+      });
     if (prs.length)
       fields.push({
         key: "closePrs",
@@ -1402,7 +1417,7 @@ class BranchesScreen extends Component {
     const res = await openDialog({
       title: "Delete branches",
       message:
-        `Delete ${what} in ${rows.length} repo${rows.length === 1 ? "" : "s"}?` +
+        `Delete ${what} in ${rows.length} repo${rows.length === 1 ? "" : "s"} locally?` +
         (skipped ? ` ${skipped} skipped (checked out).` : "") +
         " This cannot be undone.",
       okLabel: "Delete",
@@ -1411,7 +1426,7 @@ class BranchesScreen extends Component {
     if (!res) return;
     if (res.closePrs) for (const r of prs) await this.code.closePrNoConfirm(r.github, r.pr.number);
     for (const r of rows)
-      await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, r.remote && !r.base);
+      await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, !!res.delRemote && r.remote && !r.base);
     this.selected.set(new Set());
   }
 
@@ -1420,27 +1435,28 @@ class BranchesScreen extends Component {
   // removed in the same step.
   async deleteRow(r) {
     if (this.deleteBlocked(r)) return;
-    const deleteRemote = r.remote && !r.base;
+    const canRemote = r.remote && !r.base; // pushed, non-base: removable on the remote
     const hasPr = !!(r.pr && r.pr.state === "OPEN" && r.github);
     const targets = this.config.config.targets.filter((t) =>
       (t.config || []).some((c) => c.repo === r.repo && c.branch === r.branch),
     );
     const fields = [];
+    if (canRemote)
+      fields.push({ key: "delRemote", type: "checkbox", label: "Also delete it on the remote (odoo-dev)", value: false });
     if (hasPr) fields.push({ key: "closePr", type: "checkbox", label: `Close PR #${r.pr.number}`, value: true });
     for (const t of targets)
       fields.push({ key: `tgt:${t.id}`, type: "checkbox", label: `Delete target "${t.name}"`, value: false });
 
-    const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
     const res = await openDialog({
       title: `Delete "${r.branch}"?`,
-      message: `Force-delete "${r.branch}" in ${r.repo} ${scope}. This cannot be undone.`,
+      message: `Force-delete "${r.branch}" in ${r.repo} locally. This cannot be undone.`,
       okLabel: "Delete",
       fields,
     });
     if (!res) return;
     // close the PR before deleting the branch, then drop the branch
     if (hasPr && res.closePr) await this.code.closePrNoConfirm(r.github, r.pr.number);
-    await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, deleteRemote);
+    await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, !!res.delRemote);
     // remove any targets the user opted to delete
     const drop = targets.filter((t) => res[`tgt:${t.id}`]);
     if (drop.length) {
