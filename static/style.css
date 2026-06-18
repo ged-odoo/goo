@@ -574,6 +574,16 @@ section.hidden {
   border-color: var(--l-accent-line);
   background: var(--l-accent-soft);
 }
+/* destructive action (e.g. batch delete) */
+.pbtn.danger {
+  color: var(--l-red);
+  border-color: oklch(0.55 0.21 25 / 0.35);
+  background: var(--l-red-bg);
+}
+.pbtn.danger:hover:not(:disabled) {
+  color: var(--l-red);
+  border-color: var(--l-red);
+}
 .pbtn svg {
   width: 14px;
   height: 14px;
@@ -1729,9 +1739,14 @@ a.dash-row-branch:hover {
   align-items: flex-start;
   gap: 9px;
 }
-.br-name .fav-star {
-  margin: 1px 0 0;
+/* batch-selection checkbox (replaces the old favorite star) */
+.br-select {
   flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  accent-color: var(--l-accent);
+  cursor: pointer;
 }
 .br-branch {
   font-family: var(--mono);

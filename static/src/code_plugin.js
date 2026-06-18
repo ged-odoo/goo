@@ -1,8 +1,8 @@
-// Branches & PRs across repos: grouped view model, favorites, and the
-// per-branch actions (delete, close PR, push).
+// Branches & PRs across repos: grouped view model and the per-branch actions
+// (delete, close PR, push).
 
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT, CACHE_TTL } from "./config.js";
-import { ConfigPlugin, FAVORITES_KEY } from "./config_plugin.js";
+import { ConfigPlugin } from "./config_plugin.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, signal, computed } = owl;
@@ -19,7 +19,6 @@ export class CodePlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   busy = signal(false);
-  favorites = signal(this._readFavorites());
   mergebot = signal({}); // "github#number" -> mergebot state (scraped lazily)
   runbot = signal({}); // branch name -> runbot status (fetched lazily)
   _mbPending = new Set(); // keys currently being scraped (avoid duplicate fetches)
@@ -81,22 +80,6 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  _readFavorites() {
-    try {
-      const f = JSON.parse(this.config.read(FAVORITES_KEY));
-      return Array.isArray(f) ? f : [];
-    } catch {
-      return [];
-    }
-  }
-
-  toggleFavorite(branch) {
-    const favs = new Set(this.favorites());
-    favs.has(branch) ? favs.delete(branch) : favs.add(branch);
-    this.favorites.set([...favs]);
-    this.config.write(FAVORITES_KEY, JSON.stringify(this.favorites()));
-  }
-
   async load(force = false) {
     const cache = this._cache();
     if (!force && cache && Date.now() - cache.at < CACHE_TTL) {
@@ -151,7 +134,6 @@ export class CodePlugin extends Plugin {
         });
       }
     }
-    const favs = this.favorites();
     return {
       githubByRepo,
       pathByRepo,
@@ -170,11 +152,10 @@ export class CodePlugin extends Plugin {
             rows,
             activity,
             base: BASE_BRANCH_RE.test(branch),
-            favorite: favs.includes(branch),
             runbot: rows.map((r) => r.runbot).find(Boolean) || "",
           };
         })
-        .sort((a, b) => b.favorite - a.favorite || a.base - b.base || b.activity - a.activity),
+        .sort((a, b) => a.base - b.base || b.activity - a.activity),
     };
   }
 

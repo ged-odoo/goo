@@ -1231,6 +1231,7 @@ class BranchesScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
+          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -1253,7 +1254,7 @@ class BranchesScreen extends Component {
                 <tr t-foreach="g.repos" t-as="r" t-key="r.repo" t-att-class="{active: r.active}">
                   <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
                     <div class="br-name-inner">
-                      <button class="fav-star" t-att-class="{'is-fav': g.favorite}" t-on-click="() => this.code.toggleFavorite(g.name)"><t t-out="this.starIcon"/></button>
+                      <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
                       <span class="br-branch" t-out="g.name"/>
                     </div>
                   </td>
@@ -1299,10 +1300,10 @@ class BranchesScreen extends Component {
 
   code = plugin(CodePlugin);
   refreshIcon = m(ICONS.refresh);
-  starIcon = m(ICONS.star);
   externalIcon = m(ICONS.external);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
+  selected = signal(new Set()); // branch names ticked for batch actions
   sortKey = signal("update"); // "name" | "update" — default: most recently updated first
   sortDir = signal("desc"); // "asc" | "desc"
   // branches grouped by name (one group per branch name). Each group carries its
@@ -1310,7 +1311,6 @@ class BranchesScreen extends Component {
   // Sorted by the chosen column (branch name, or summed last-update time).
   groups = computed(() => {
     const { prIndex, pathByRepo, githubByRepo } = this.code.groups();
-    const favs = this.code.favorites();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
     const byBranch = new Map();
@@ -1340,7 +1340,6 @@ class BranchesScreen extends Component {
     return [...byBranch.entries()]
       .map(([name, repos]) => ({
         name,
-        favorite: favs.includes(name),
         base: BASE_BRANCH_RE.test(name),
         // combined last-update time for the branch (sum across its repos)
         updateSum: repos.reduce((s, r) => s + (Date.parse(r.date) || 0), 0),
@@ -1353,6 +1352,48 @@ class BranchesScreen extends Component {
 
   setup() {
     this.code.load();
+  }
+
+  // tick/untick a branch (by name) for batch actions
+  toggleSelect(name) {
+    const sel = new Set(this.selected());
+    sel.has(name) ? sel.delete(name) : sel.add(name);
+    this.selected.set(sel);
+  }
+
+  // selected branch groups that are still visible (a filter may hide some)
+  get selectedGroups() {
+    const sel = this.selected();
+    return this.groups().filter((g) => sel.has(g.name));
+  }
+
+  get selectedCount() {
+    return this.selectedGroups.length;
+  }
+
+  // batch-delete every selected branch in each repo where it can be removed
+  // (skipping checked-out branches and ones with an open PR, like the row action)
+  async deleteSelected() {
+    const groups = this.selectedGroups;
+    if (!groups.length) return;
+    const rows = groups.flatMap((g) => g.repos).filter((r) => !this.deleteBlocked(r));
+    const total = groups.reduce((n, g) => n + g.repos.length, 0);
+    const skipped = total - rows.length;
+    const what =
+      groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
+    const res = await openDialog({
+      title: "Delete branches",
+      message:
+        `Delete ${what} in ${rows.length} repo${rows.length === 1 ? "" : "s"}?` +
+        (skipped ? ` ${skipped} skipped (checked out or with an open PR).` : "") +
+        " This cannot be undone.",
+      okLabel: "Delete",
+      fields: [],
+    });
+    if (!res) return;
+    for (const r of rows)
+      await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, r.remote && !r.base);
+    this.selected.set(new Set());
   }
 
   // sort by a column; clicking the active column flips the direction
