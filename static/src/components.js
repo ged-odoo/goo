@@ -1095,13 +1095,21 @@ class TargetsScreen extends Component {
     else if (ev.key === "Escape") this.cancelEdit();
   }
 
-  // clone a target onto a chosen branch: ask for a branch name (prefilled from
-  // the first configured branch), then point every repo at it
-  duplicateTarget(tgt) {
+  // clone a target onto a chosen branch: ask (via a dialog) for a branch name —
+  // prefilled from the first configured branch — and point every repo at it.
+  // When "Create branches" is checked, also create that branch in each repo,
+  // starting from the repo's branch in the original target (its base).
+  async duplicateTarget(tgt) {
     const first = tgt.config?.[0]?.branch || "master";
-    const branch = prompt(`Branch for the duplicated "${tgt.name}" (applied to all its repos):`, first);
-    if (branch === null) return;
-    const b = branch.trim();
+    const res = await openDialog({
+      title: `Duplicate "${tgt.name}"`,
+      fields: [
+        { key: "branch", type: "text", label: "Branch name", value: first, placeholder: "branch (applied to all repos)" },
+        { key: "create", type: "checkbox", label: "Create branches", value: true },
+      ],
+    });
+    if (!res) return;
+    const b = (res.branch || "").trim();
     if (!b) return;
     // the new target is named after the chosen branch (deduped if it collides)
     const names = new Set(this.config.config.targets.map((t) => t.name));
@@ -1112,10 +1120,17 @@ class TargetsScreen extends Component {
       name,
       favorite: !!tgt.favorite,
       config: (tgt.config || []).map((c) => ({ repo: c.repo, branch: b })),
-      db: tgt.db || "",
+      db: b, // default the database to the branch name
       on_create_args: tgt.on_create_args || "",
     };
     this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
+    if (res.create) {
+      const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+      for (const c of tgt.config || []) {
+        const path = pathByRepo[c.repo];
+        if (path) await this.code.createBranch(path, b, c.branch); // start from the base
+      }
+    }
   }
 
   deleteTarget(tgt) {
@@ -2034,6 +2049,97 @@ class BranchMenu extends Component {
   }
 }
 
+// ─────────────────────────── Dialog ───────────────────────────
+// A single modal mounted at the app root, driven over appBus. Callers use the
+// openDialog() helper and await a result: an object of field values on OK, or
+// null when discarded/escaped. Fields are { key, type: "text"|"checkbox",
+// label, value, placeholder? }.
+
+function openDialog(spec) {
+  return new Promise((resolve) => {
+    appBus.dispatchEvent(new CustomEvent("dialog", { detail: { spec, resolve } }));
+  });
+}
+
+class Dialog extends Component {
+  static template = xml`
+    <div class="dialog-backdrop" t-att-class="{hidden: !this.open()}" t-on-click="() => this.cancel()">
+      <div class="dialog" t-on-click.stop="() => {}">
+        <h2 class="dialog-title" t-out="this.spec().title"/>
+        <div class="dialog-body">
+          <div t-foreach="this.spec().fields" t-as="f" t-key="f.key" class="dialog-field">
+            <label t-if="f.type === 'checkbox'" class="edit-check">
+              <input type="checkbox" t-att-checked="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.checked)"/>
+              <t t-out="f.label"/>
+            </label>
+            <t t-else="">
+              <label t-out="f.label"/>
+              <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
+            </t>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <button class="pbtn primary" t-on-click="() => this.ok()" t-out="this.spec().okLabel || 'OK'"/>
+          <button class="pbtn" t-on-click="() => this.cancel()" t-out="this.spec().cancelLabel || 'Discard'"/>
+        </div>
+      </div>
+    </div>`;
+
+  open = signal(false);
+  spec = signal({ title: "", fields: [] });
+  values = signal({});
+  _resolve = null;
+
+  setup() {
+    onMounted(() => {
+      appBus.addEventListener("dialog", (e) => this.show(e.detail));
+      document.addEventListener("keydown", (e) => {
+        if (this.open() && e.key === "Escape") this.cancel();
+      });
+    });
+  }
+
+  show({ spec, resolve }) {
+    this._resolve = resolve;
+    this.spec.set(spec);
+    const vals = {};
+    for (const f of spec.fields) vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
+    this.values.set(vals);
+    this.open.set(true);
+    // focus + select the first text field once rendered
+    Promise.resolve().then(() => {
+      const inp = document.querySelector(".dialog input[type=text]");
+      if (inp) {
+        inp.focus();
+        inp.select();
+      }
+    });
+  }
+
+  setVal(key, v) {
+    this.values.set({ ...this.values(), [key]: v });
+  }
+
+  onKey(ev) {
+    if (ev.key === "Enter") this.ok();
+  }
+
+  _close(result) {
+    const resolve = this._resolve;
+    this._resolve = null;
+    this.open.set(false);
+    if (resolve) resolve(result);
+  }
+
+  ok() {
+    this._close({ ...this.values() });
+  }
+
+  cancel() {
+    this._close(null);
+  }
+}
+
 // ─────────────────────────── Root ───────────────────────────
 
 const SCREENS = {
@@ -2062,6 +2168,7 @@ export class App extends Component {
     AddonsScreen,
     ConfigScreen,
     BranchMenu,
+    Dialog,
   };
 
   static template = xml`
@@ -2072,6 +2179,7 @@ export class App extends Component {
         <main><t t-component="this.currentScreen()"/></main>
       </div>
       <BranchMenu/>
+      <Dialog/>
     </div>`;
 
   router = plugin(RouterPlugin);

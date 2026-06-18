@@ -2239,6 +2239,76 @@ a.dash-row-branch:hover {
   user-select: none;
   cursor: pointer;
 }
+
+/* ─── modal dialog ─── */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: oklch(0 0 0 / 0.45);
+}
+.dialog-backdrop.hidden {
+  display: none;
+}
+.dialog {
+  width: min(440px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px 24px;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px oklch(0 0 0 / 0.32);
+}
+.dialog-title {
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--l-text);
+}
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dialog-field > label:not(.edit-check) {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+}
+.dialog-field input[type="text"] {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--l-text);
+  background: var(--l-card);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  padding: 8px 11px;
+}
+.dialog-field input[type="text"]:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
+.dialog-field .edit-check {
+  padding: 0;
+  font-size: 13px;
+  color: var(--l-text);
+}
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
 .edit-check input {
   width: auto;
   min-width: 0;
