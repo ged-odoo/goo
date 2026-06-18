@@ -1549,6 +1549,7 @@ class PrsScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
+          <button t-if="this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -1560,10 +1561,13 @@ class PrsScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/><th class="br-spacer"/></tr>
+                <tr><th/><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
-                <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number">
+                <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number" t-att-class="{'row-sel': this.selected().has(row.repo + ':' + row.number)}">
+                  <td>
+                    <input t-if="row.state === 'OPEN' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.repo + ':' + row.number)" t-on-change="() => this.toggleSelect(row.repo + ':' + row.number)" title="select this PR for batch actions"/>
+                  </td>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
                   <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
                   <td class="dim" t-out="row.repo"/>
@@ -1593,9 +1597,44 @@ class PrsScreen extends Component {
   openOnly = signal(true); // show only open PRs by default
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
+  selected = signal(new Set()); // "repo:number" of PRs ticked for batch close
 
   setup() {
     this.code.load();
+  }
+
+  // tick/untick a PR (by "repo:number") for batch actions
+  toggleSelect(key) {
+    const sel = new Set(this.selected());
+    sel.has(key) ? sel.delete(key) : sel.add(key);
+    this.selected.set(sel);
+  }
+
+  // selected, still-visible, closeable PRs
+  get _selectedPrs() {
+    const sel = this.selected();
+    return this.rows().filter(
+      (r) => sel.has(`${r.repo}:${r.number}`) && r.state === "OPEN" && r.github,
+    );
+  }
+
+  get selectedCount() {
+    return this._selectedPrs.length;
+  }
+
+  // confirm, then close every selected PR
+  async closeSelected() {
+    const prs = this._selectedPrs;
+    if (!prs.length) return;
+    const res = await openDialog({
+      title: "Close pull requests",
+      message: `Close ${prs.length} pull request${prs.length === 1 ? "" : "s"}? This cannot be undone here (reopen on GitHub).`,
+      okLabel: "Close",
+      fields: [],
+    });
+    if (!res) return;
+    for (const r of prs) await this.code.closePrNoConfirm(r.github, r.number);
+    this.selected.set(new Set());
   }
 
   get stamp() {
