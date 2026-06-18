@@ -1225,7 +1225,7 @@ class BranchesScreen extends Component {
 
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
   duplicateBranch(row) {
-    const name = prompt(`New branch name, based on "${row.branch}" (${row.repo}):`, "");
+    const name = prompt(`New branch name, based on "${row.branch}" (${row.repo}):`, row.branch);
     if (name === null) return;
     const trimmed = name.trim();
     if (!trimmed) return;
