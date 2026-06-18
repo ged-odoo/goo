@@ -156,7 +156,7 @@ export class AddonsPlugin extends Plugin {
     this.runActive.set(true);
     this.sawRun.set(false);
     this.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}…`);
-    this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name}`);
+    this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
     try {
       await postJSON("/api/addons/run", cfg);
     } catch (e) {
