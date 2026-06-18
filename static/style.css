@@ -1034,6 +1034,28 @@ a.dash-row-branch:hover {
   color: var(--l-red);
   background: var(--l-red-bg);
 }
+/* a target row whose branch does not exist locally: gray note + create button */
+.dash-row-missing {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  color: var(--l-text-faint);
+}
+.dash-create {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+  border: 1px solid var(--l-accent-line);
+  border-radius: 7px;
+  padding: 3px 10px;
+  transition: 0.13s;
+}
+.dash-create:hover {
+  background: oklch(0.66 0.16 300 / 0.2);
+}
 .dash-ci.unknown .dash-ci-dot {
   opacity: 0.5;
 }

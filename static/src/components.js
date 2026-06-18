@@ -307,21 +307,26 @@ class DashboardScreen extends Component {
                     <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
                     <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
                   </div>
-                  <a t-if="row.present and row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="row.subject" t-out="row.subject || '—'"/>
-                  <span t-else="" class="dash-row-commit" t-att-title="row.subject" t-out="row.present ? (row.subject || '—') : '—'"/>
-                  <t t-set="ci" t-value="this.ciBadge(row)"/>
-                  <a t-if="row.present" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
-                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                  </a>
-                  <span t-else="" class="dash-ci missing">missing</span>
-                  <div class="dash-row-pr">
-                    <t t-if="row.pr and row.github">
-                      <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                      <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
-                    </t>
-                    <span t-else="" class="dim">—</span>
+                  <t t-if="row.present">
+                    <a t-if="row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="row.subject" t-out="row.subject || '—'"/>
+                    <span t-else="" class="dash-row-commit" t-att-title="row.subject" t-out="row.subject || '—'"/>
+                    <t t-set="ci" t-value="this.ciBadge(row)"/>
+                    <a class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
+                      <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                    </a>
+                    <div class="dash-row-pr">
+                      <t t-if="row.pr and row.github">
+                        <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                        <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
+                      </t>
+                      <span t-else="" class="dim">—</span>
+                    </div>
+                    <span class="dash-row-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                  </t>
+                  <div t-else="" class="dash-row-missing">
+                    <span>no local branch</span>
+                    <button class="dash-create" t-on-click="() => this.createTargetBranch(row)">create it</button>
                   </div>
-                  <span class="dash-row-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                 </div>
               </div>
             </div>
@@ -588,6 +593,12 @@ class DashboardScreen extends Component {
   // 19.0-some-fix -> 19.0 (defaults to master)
   _baseBranch(branch) {
     return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+  }
+
+  // create a target's missing branch locally, off its base branch
+  createTargetBranch(row) {
+    const path = this.code.groups().pathByRepo[row.repo];
+    if (path) this.code.createBranch(path, row.branch, this._baseBranch(row.branch));
   }
 
   cell(date) {
