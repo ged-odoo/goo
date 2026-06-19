@@ -1207,19 +1207,57 @@ class TargetsScreen extends Component {
 
   // create a new target through a dialog form (validated before it closes)
   async startCreate() {
+    const existingTargets = this.config.config.targets;
     const res = await openDialog({
       title: "New target",
       okLabel: "Create",
       validate: (v) => {
         const name = (v.name || "").trim();
         if (!name) return "a name is required";
-        if (this.config.config.targets.some((t) => t.name === name))
+        if (existingTargets.some((t) => t.name === name))
           return `a target named "${name}" already exists`;
         if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
         return "";
       },
       fields: [
-        { key: "name", type: "text", label: "Name", placeholder: "name (e.g. master-mytask)" },
+        {
+          key: "template",
+          type: "select",
+          label: "Template",
+          placeholder: "— start blank —",
+          options: existingTargets.map((t) => ({ value: t.id, label: t.name })),
+          value: "",
+          onChange: (tplId) => {
+            if (!tplId) return null;
+            const tpl = existingTargets.find((t) => t.id === tplId);
+            if (!tpl) return null;
+            const branchName =
+              tpl.config.find((c) => c.repo === "enterprise")?.branch ||
+              tpl.config.find((c) => c.repo === "community")?.branch ||
+              "";
+            return {
+              name: branchName,
+              config: repoBranchList.format(tpl.config),
+              db: tpl.db || "",
+              args: tpl.on_create_args || "",
+              fav: !!tpl.favorite,
+            };
+          },
+        },
+        {
+          key: "name",
+          type: "text",
+          label: "Name",
+          placeholder: "name (e.g. master-mytask)",
+          onChange: (newName, currentValues, oldValues) => {
+            const oldName = oldValues.name;
+            if (!oldName) return null;
+            return {
+              config: (currentValues.config || "").replaceAll(oldName, newName),
+              db: (currentValues.db || "").replaceAll(oldName, newName),
+            };
+          },
+        },
         { key: "config", type: "text", label: "Config", placeholder: "community:master,enterprise:master" },
         { key: "db", type: "text", label: "Database", placeholder: "database name" },
         { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
@@ -2441,6 +2479,15 @@ class Dialog extends Component {
               <input type="checkbox" t-att-checked="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.checked)"/>
               <t t-out="f.label"/>
             </label>
+            <t t-elif="f.type === 'select'">
+              <label t-out="f.label"/>
+              <select t-on-change="(ev) => this.setVal(f.key, ev.target.value)">
+                <option value=""><t t-out="f.placeholder || '— none —'"/></option>
+                <t t-foreach="f.options || []" t-as="opt" t-key="opt.value">
+                  <option t-att-value="opt.value" t-att-selected="this.values()[f.key] === opt.value" t-out="opt.label"/>
+                </t>
+              </select>
+            </t>
             <t t-else="">
               <label t-out="f.label"/>
               <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
@@ -2489,8 +2536,15 @@ class Dialog extends Component {
   }
 
   setVal(key, v) {
-    this.values.set({ ...this.values(), [key]: v });
-    if (this.error()) this.error.set(""); // clear the error as the user edits
+    const oldValues = this.values();
+    let values = { ...oldValues, [key]: v };
+    const field = this.spec().fields.find((f) => f.key === key);
+    if (field && field.onChange) {
+      const updates = field.onChange(v, values, oldValues);
+      if (updates) values = { ...values, ...updates };
+    }
+    this.values.set(values);
+    if (this.error()) this.error.set("");
   }
 
   onKey(ev) {
