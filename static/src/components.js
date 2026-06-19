@@ -2785,7 +2785,7 @@ class Dialog extends Component {
 
 // ─────────────────────────── Terminal plugin ───────────────────────────
 
-class TerminalPlugin extends Plugin {
+export class TerminalPlugin extends Plugin {
   open = signal(false);
   toggle() {
     this.open.set(!this.open());
