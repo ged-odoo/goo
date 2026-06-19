@@ -22,6 +22,7 @@ const {
   proxy,
   markup,
   onMounted,
+  onPatched,
   onWillUnmount,
   useEffect,
   EventBus,
@@ -2146,7 +2147,7 @@ class TestsScreen extends Component {
             </select>
             <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
-            <button type="submit" t-att-disabled="!this.tests.target"><span class="play"/>Run</button>
+            <button type="submit" t-att-disabled="!this.tests.target or this.tests.runActive() or !this.tags().trim()"><span class="play"/>Run</button>
             <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
             <div class="log-controls">
               <label class="toggle" t-att-class="{on: this.tests.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
@@ -2156,7 +2157,7 @@ class TestsScreen extends Component {
         </div>
       </div>
       <div class="content flush tests-content">
-        <div t-if="!this.tests.output.count()" class="tests-empty">
+        <div t-if="!this.tests.output.count() and !this.tests.runActive()" class="tests-empty">
           <p class="tests-empty-title">No test output yet</p>
           <p class="tests-empty-hint">Pick a preset or type <code>--test-tags</code> above, then hit <strong>Run</strong> to launch a test on the active target.</p>
         </div>
@@ -2781,6 +2782,7 @@ class EventLog extends Component {
       <div class="event-log-head">
         <span class="event-log-title">Event log</span>
         <div class="event-log-tools">
+          <label class="toggle" t-att-class="{on: this.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
           <button class="tool-btn" t-on-click="() => this.log.clear()"><t t-out="this.clearIcon"/>Clear</button>
           <button class="event-log-x" t-on-click="() => this.log.toggle()" title="close">✕</button>
         </div>
@@ -2798,21 +2800,31 @@ class EventLog extends Component {
   config = plugin(ConfigPlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
+  autoScroll = signal(true); // follow the tail as new events arrive
   _lastCount = 0;
 
   setup() {
     this._lastCount = this.log.entries().length;
-    // keep the newest entry in view as lines arrive (and on open);
-    // reading entries() here makes the effect re-run whenever entries change
+    // auto-open the panel when a *new* event arrives, if the setting is on
+    // (kept separate from the scroll effect; never reads open() to avoid a loop)
     useEffect(() => {
       const count = this.log.entries().length;
-      // auto-open the panel when a *new* event arrives, if the setting is on
-      if (count > this._lastCount && this.config.config.auto_open_event_log && !this.log.open())
+      if (count > this._lastCount && this.config.config.auto_open_event_log)
         this.log.open.set(true);
       this._lastCount = count;
+    });
+    // keep the newest entry in view while autoscroll is on. onPatched runs after
+    // the DOM is updated (the new rows are present), so scrollHeight is correct —
+    // a reactive effect would run before the patch and read a stale height
+    onPatched(() => {
+      if (!this.autoScroll()) return;
       const el = this.body();
       if (el) el.scrollTop = el.scrollHeight;
     });
+  }
+
+  toggleAuto() {
+    this.autoScroll.set(!this.autoScroll());
   }
 
   // chronological: oldest first, newest appended at the end

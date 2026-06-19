@@ -16,10 +16,21 @@ export class LogBuffer {
     this.count = signal(0);
     this.autoScroll = signal(true); // true == "following the tail"
     this.savedScroll = 0; // scrollTop preserved across detach/re-host
-    // scrolling away from the bottom stops following; scrolling back resumes it
+    this._scrollQueued = false; // a tail-follow scroll is scheduled for next frame
+    this._lastTop = 0; // last seen scrollTop, to tell a user scroll-up from growth
     this.el.addEventListener("scroll", () => {
-      const atBottom = this.el.scrollTop + this.el.clientHeight >= this.el.scrollHeight - 4;
-      if (atBottom !== this.autoScroll()) this.autoScroll.set(atBottom);
+      const top = this.el.scrollTop;
+      const atBottom = top + this.el.clientHeight >= this.el.scrollHeight - 4;
+      // Re-follow once the user is back at the bottom; stop following only on an
+      // actual upward scroll. Content growing past the viewport (or our own
+      // batched toBottom landing a frame late) leaves us "not at bottom" without
+      // a user scroll — that must NOT disable autoscroll.
+      if (atBottom) {
+        if (!this.autoScroll()) this.autoScroll.set(true);
+      } else if (top < this._lastTop - 4) {
+        if (this.autoScroll()) this.autoScroll.set(false);
+      }
+      this._lastTop = top;
     });
   }
 
@@ -27,7 +38,20 @@ export class LogBuffer {
     this.el.appendChild(buildLogRow(line));
     while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild.remove();
     this.count.set(this.el.childElementCount);
-    if (this.autoScroll()) this.toBottom();
+    if (this.autoScroll()) this._queueScroll();
+  }
+
+  // Coalesce tail-following into one scroll per animation frame. Calling
+  // toBottom() on every appended line interleaves a scrollHeight read with each
+  // DOM mutation, forcing a synchronous reflow per line (layout thrashing). A
+  // burst of appends now triggers a single reflow on the next frame instead.
+  _queueScroll() {
+    if (this._scrollQueued) return;
+    this._scrollQueued = true;
+    requestAnimationFrame(() => {
+      this._scrollQueued = false;
+      if (this.autoScroll()) this.toBottom();
+    });
   }
 
   clear() {
@@ -37,6 +61,7 @@ export class LogBuffer {
 
   toBottom() {
     this.el.scrollTop = this.el.scrollHeight;
+    this._lastTop = this.el.scrollTop; // ours, not a user scroll
   }
 
   // called by the host console on (re)mount to restore the scroll position,
@@ -44,5 +69,6 @@ export class LogBuffer {
   restore() {
     if (this.autoScroll()) this.toBottom();
     else this.el.scrollTop = this.savedScroll;
+    this._lastTop = this.el.scrollTop;
   }
 }

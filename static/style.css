@@ -2642,6 +2642,26 @@ a.dash-row-branch:hover {
   align-items: center;
   gap: 6px;
 }
+/* the shared .toggle/.switch use dark-chrome vars; re-tint for the light panel */
+.event-log-tools .toggle {
+  font-size: 11.5px;
+  color: var(--l-text-faint);
+}
+.event-log-tools .toggle.on {
+  color: var(--l-text-mid);
+}
+.event-log-tools .switch {
+  background: var(--l-line);
+}
+.event-log-tools .switch::after {
+  background: var(--l-text-faint);
+}
+.event-log-tools .toggle.on .switch {
+  background: var(--l-accent-soft);
+}
+.event-log-tools .toggle.on .switch::after {
+  background: var(--l-accent);
+}
 .event-log-x {
   font-size: 13px;
   line-height: 1;

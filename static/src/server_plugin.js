@@ -117,7 +117,10 @@ export class ServerPlugin extends Plugin {
   // that had to stop a running server)
   async resume() {
     const cfg = this.lastConfig || this.buildStartConfig(this.lastTarget());
-    if (cfg) await this._run("/api/start", cfg, "resume");
+    if (cfg) {
+      this.eventLog.add(`restarting server (target: ${this._targetName(cfg.target)})`);
+      await this._run("/api/start", cfg, "resume");
+    }
   }
 
   async stop() {

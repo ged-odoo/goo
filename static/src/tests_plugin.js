@@ -22,6 +22,11 @@ export class TestsPlugin extends Plugin {
   sawRun = signal(false);
   history = signal(this._readHistory()); // last test tags run, most recent first
   _resumeAfter = false; // a real server was running and got stopped to test
+  _capturing = false; // whether server lines are currently mirrored to the test console
+  _finished = false; // guard: "test suite finished" is logged once per run
+  _tags = ""; // current run's tags (for the deferred "running tests" log)
+  _cutOnChrome = false; // WebSuite runs end the console window at the chrome teardown
+  _result = ""; // "success" | "fail" — derived from the HOOT result lines
 
   _readHistory() {
     try {
@@ -56,7 +61,24 @@ export class TestsPlugin extends Plugin {
   setup() {
     useEffect(() => this._onStatus(this.server.status()));
     this.server.onLine((line) => {
-      if (this.runActive()) this.output.append(line);
+      if (!this.runActive()) return;
+      // open the console window at the launch command line (the one right before the
+      // test server boots) so the exact command used is shown in the tab
+      if (!this._capturing && line.includes("[goo] starting odoo:")) this._capturing = true;
+      if (!this._capturing) return;
+      this.output.append(line);
+      // remember the suite outcome as soon as HOOT reports it
+      if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
+      else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
+        this._result = "fail";
+      // surface each individual HOOT test failure as its own event
+      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
+      if (failed) this.eventLog.add(`test failed: ${failed[1]}`);
+      // for browser (WebSuite) runs the meaningful window ends when the browser is
+      // torn down; everything after (thread dumps, shutdown noise) stays in the
+      // Server tab only. Other test kinds keep streaming until the process stops.
+      if (this._cutOnChrome && line.includes("Terminating chrome headless with pid"))
+        this._finishRun();
     });
   }
 
@@ -64,7 +86,14 @@ export class TestsPlugin extends Plugin {
     const active = status.state === "starting" || status.state === "running";
     const testing = active && status.mode === "test";
     if (testing) {
-      this.sawRun.set(true);
+      // the test server is up — announce the run. Mirroring usually already began
+      // at the launch-command line (see onLine); this is a fallback if that line
+      // wasn't seen. The old server's shutdown is intentionally not shown.
+      if (!this.sawRun()) {
+        this.sawRun.set(true);
+        this.eventLog.add(`running tests (tags: ${this._tags})`);
+        this._capturing = true;
+      }
       this.status.set("running…");
     } else if (this.runActive() && this.sawRun() && status.state === "stopped") {
       this.runActive.set(false);
@@ -76,11 +105,23 @@ export class TestsPlugin extends Plugin {
             : "passed"
           : "stopped",
       );
+      // fallback for non-browser tests (no chrome line): use the exit code if HOOT
+      // didn't report an outcome
+      const byExit = status.exited_unexpectedly ? (status.returncode ? "fail" : "success") : "";
+      this._finishRun(this._result || byExit);
       if (this._resumeAfter) {
         this._resumeAfter = false;
         this.server.resume(); // bring back the server that was stopped to test
       }
     }
+  }
+
+  // close the test-tab log window and log the finish event (once per run)
+  _finishRun(result = this._result) {
+    this._capturing = false;
+    if (this._finished) return;
+    this._finished = true;
+    this.eventLog.add(`test run finished${result ? ` (${result})` : ""}`);
   }
 
   get running() {
@@ -93,12 +134,19 @@ export class TestsPlugin extends Plugin {
     const s = this.server.status();
     const cfg = this.server.buildStartConfig(this.target);
     if (!cfg) return this.server.log(`[goo] no valid target to test`);
-    // a real server is up; it will be stopped for the one-shot test — resume after
-    this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
+    // a real server is up; the one-shot run stops it first — resume after
+    const serverWasUp = (s.state === "running" || s.state === "starting") && s.mode === "server";
+    this._resumeAfter = serverWasUp;
     cfg.start.test_tags = tags.trim();
     this._pushHistory(tags);
-    this.eventLog.add(`running tests (tags: ${tags.trim()})`);
+    this._tags = tags.trim(); // logged once the test server is actually up
+    this._cutOnChrome = this._tags.includes("web:WebSuite");
+    this._result = "";
+    // surface the stop as an event, but don't mirror its shutdown logs to the console
+    if (serverWasUp) this.eventLog.add("stopping server to run tests");
     this.output.clear();
+    this._capturing = false;
+    this._finished = false;
     this.runActive.set(true);
     this.sawRun.set(false);
     this.status.set("starting…");
