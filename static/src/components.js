@@ -896,15 +896,13 @@ class TargetsScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th/><th>Name</th><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
+                <tr><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt)}">
-                  <td>
-                    <button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button>
-                  </td>
                   <t t-if="this.editId() === tgt.id">
                     <td><input type="text" class="cell-input" t-att-value="this.draftName()" placeholder="name" t-on-input="ev => this.draftName.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
                     <td><input type="text" class="cell-input wide" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
                     <td><input type="text" class="cell-input" t-att-value="this.draftDb()" placeholder="database" t-on-input="ev => this.draftDb.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
                     <td><input type="text" class="cell-input" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
@@ -917,6 +915,7 @@ class TargetsScreen extends Component {
                   </t>
                   <t t-else="">
                     <td t-out="tgt.name"/>
+                    <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
                     <td class="dim"><div class="br-ellip" t-att-title="this.fmtConfig(tgt)" t-out="this.fmtConfig(tgt)"/></td>
                     <td t-out="tgt.db"/>
                     <td class="dim"><div class="br-ellip" t-att-title="tgt.on_create_args" t-out="tgt.on_create_args || '—'"/></td>
