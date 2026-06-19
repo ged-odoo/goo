@@ -49,6 +49,7 @@ const ICONS = {
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
+  kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
   stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
   external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
@@ -305,6 +306,12 @@ class DashboardScreen extends Component {
                   Active
                 </span>
                 <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
+                <div class="dash-kebab-wrap">
+                  <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
+                  <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
+                    <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                  </div>
+                </div>
               </div>
               <div class="dash-card-body">
                 <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-card-row">
@@ -344,16 +351,52 @@ class DashboardScreen extends Component {
   code = plugin(CodePlugin);
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
+  db = plugin(DatabasePlugin);
   eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
   dbIcon = m(ICONS.databases);
+  kebabIcon = m(ICONS.kebab);
+  menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
+
   startCreate() {
     return startCreateTarget(this.config, this.eventLog, this.code);
   }
 
+  toggleMenu(id) {
+    this.menuId.set(this.menuId() === id ? "" : id);
+  }
+
+  // the "current" target: the one being worked on (last activated), regardless
+  // of whether its branches are still checked out
+  isCurrent(tgt) {
+    return tgt.id === this.server.lastTarget();
+  }
+
+  async menuDelete(tgt) {
+    this.menuId.set("");
+    if (this.isCurrent(tgt)) return;
+    await this.deleteTarget(tgt);
+  }
+
+  deleteTarget(tgt) {
+    return deleteTargetDialog(tgt, {
+      config: this.config,
+      code: this.code,
+      db: this.db,
+      eventLog: this.eventLog,
+      repoMap: this.repoMap,
+      isActive: this.isActive(tgt),
+    });
+  }
+
   setup() {
     this.code.load();
+    this.db.load(); // the delete dialog needs the database list to offer "drop db"
+    // close the kebab menu on any outside click
+    const closeMenu = () => this.menuId() && this.menuId.set("");
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
     // fetch runbot + mergebot status only for what the target cards actually show
     useEffect(() => {
       const branches = this._branches();
@@ -584,12 +627,15 @@ class DashboardScreen extends Component {
     if (!this.canActivate(tgt)) return;
     const pathByRepo = this.code.groups().pathByRepo;
     const repos = (tgt.config || [])
-      .map(({ repo, branch }) => ({ path: pathByRepo[repo], branch }))
+      .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
+    // repos that will actually switch (skip the ones already on the target branch)
+    const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
     const s = this.server.status().state;
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.id);
+    for (const r of switched) this.eventLog.add(`checked out ${r.branch} (${r.repo})`);
     this.eventLog.add(`activated target ${tgt.name}`);
   }
 
@@ -1009,6 +1055,68 @@ async function startCreateTarget(config, eventLog, code) {
     }
   }
 }
+
+// delete a target via a confirmation dialog that can also (optionally) delete
+// its local/remote branches (non-base ones that exist), close its open PRs and
+// drop its database. Shared by the Targets tab and the dashboard card menu.
+async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, isActive }) {
+  if (isActive) return; // the active target cannot be deleted
+  const groups = code.groups();
+  // deletable branches: present locally and not a base/primary branch
+  const branches = (tgt.config || [])
+    .map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) }))
+    .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
+    .map((x) => ({ repo: x.repo, branch: x.branch, path: groups.pathByRepo[x.repo], remote: !!x.b.remote }));
+  // open PRs for the target's branches
+  const prs = (tgt.config || [])
+    .map(({ repo, branch }) => ({ pr: groups.prIndex[`${repo}:${branch}`], github: groups.githubByRepo[repo] }))
+    .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
+    .map((x) => ({ github: x.github, number: x.pr.number }));
+
+  const fields = [];
+  if (branches.length)
+    fields.push({
+      key: "delBranches",
+      type: "checkbox",
+      label: `Also delete ${branches.length === 1 ? "its branch" : `its ${branches.length} branches`}`,
+      value: false,
+    });
+  if (branches.some((b) => b.remote))
+    fields.push({
+      key: "delRemote",
+      type: "checkbox",
+      label: "…also on the remote (odoo-dev)",
+      value: false,
+    });
+  if (prs.length)
+    fields.push({
+      key: "closePrs",
+      type: "checkbox",
+      label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
+      value: false,
+    });
+  // only offer to drop the db if it actually exists (a never-run target has none)
+  const dbExists = tgt.db && db.databases().some((d) => d.name === tgt.db);
+  if (dbExists)
+    fields.push({ key: "dropDb", type: "checkbox", label: `Drop database "${tgt.db}"`, value: false });
+
+  const res = await openDialog({
+    title: `Delete "${tgt.name}"?`,
+    message: "The target will be removed from your list. This cannot be undone.",
+    okLabel: "Delete",
+    fields,
+  });
+  if (!res) return;
+
+  if (res.closePrs) for (const p of prs) await code.closePrNoConfirm(p.github, p.number);
+  if (res.delBranches)
+    for (const b of branches)
+      await code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
+  if (res.dropDb && tgt.db) await db.drop(tgt.db);
+  config.updateConfig({ targets: config.config.targets.filter((t) => t.id !== tgt.id) });
+  eventLog.add(`deleted target ${tgt.name}`);
+}
+
 class TargetsScreen extends Component {
   static template = xml`
     <section>
@@ -1146,12 +1254,15 @@ class TargetsScreen extends Component {
     if (!this.canActivate(tgt)) return;
     const pathByRepo = this.code.groups().pathByRepo;
     const repos = (tgt.config || [])
-      .map(({ repo, branch }) => ({ path: pathByRepo[repo], branch }))
+      .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
+    // repos that will actually switch (skip the ones already on the target branch)
+    const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
     const s = this.server.status().state;
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.id);
+    for (const r of switched) this.eventLog.add(`checked out ${r.branch} (${r.repo})`);
     this.eventLog.add(`activated target ${tgt.name}`);
   }
 
@@ -1401,70 +1512,16 @@ class TargetsScreen extends Component {
     }
   }
 
-  // delete a target via a confirmation dialog that can also (optionally) delete
-  // its local/remote branches (non-base ones that exist), close its open PRs and
-  // drop its database
-  async deleteTarget(tgt) {
-    if (this.isActive(tgt)) return; // the active target cannot be deleted
-    const repos = this.repoMap;
-    const groups = this.code.groups();
-    // deletable branches: present locally and not a base/primary branch
-    const branches = (tgt.config || [])
-      .map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) }))
-      .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
-      .map((x) => ({ repo: x.repo, branch: x.branch, path: groups.pathByRepo[x.repo], remote: !!x.b.remote }));
-    // open PRs for the target's branches
-    const prs = (tgt.config || [])
-      .map(({ repo, branch }) => ({ pr: groups.prIndex[`${repo}:${branch}`], github: groups.githubByRepo[repo] }))
-      .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
-      .map((x) => ({ github: x.github, number: x.pr.number }));
-
-    const fields = [];
-    if (branches.length)
-      fields.push({
-        key: "delBranches",
-        type: "checkbox",
-        label: `Also delete ${branches.length === 1 ? "its branch" : `its ${branches.length} branches`}`,
-        value: false,
-      });
-    if (branches.some((b) => b.remote))
-      fields.push({
-        key: "delRemote",
-        type: "checkbox",
-        label: "…also on the remote (odoo-dev)",
-        value: false,
-      });
-    if (prs.length)
-      fields.push({
-        key: "closePrs",
-        type: "checkbox",
-        label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
-        value: false,
-      });
-    // only offer to drop the db if it actually exists (a never-run target has none)
-    const dbExists = tgt.db && this.db.databases().some((d) => d.name === tgt.db);
-    if (dbExists)
-      fields.push({ key: "dropDb", type: "checkbox", label: `Drop database "${tgt.db}"`, value: false });
-
-    const res = await openDialog({
-      title: `Delete "${tgt.name}"?`,
-      message: "The target will be removed from your list. This cannot be undone.",
-      okLabel: "Delete",
-      fields,
+  deleteTarget(tgt) {
+    return deleteTargetDialog(tgt, {
+      config: this.config,
+      code: this.code,
+      db: this.db,
+      eventLog: this.eventLog,
+      repoMap: this.repoMap,
+      isActive: this.isActive(tgt),
     });
-    if (!res) return;
-
-    if (res.closePrs) for (const p of prs) await this.code.closePrNoConfirm(p.github, p.number);
-    if (res.delBranches)
-      for (const b of branches)
-        await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
-    if (res.dropDb && tgt.db) await this.db.drop(tgt.db);
-    this.config.updateConfig({
-      targets: this.config.config.targets.filter((t) => t.id !== tgt.id),
-    });
-    this.eventLog.add(`deleted target ${tgt.name}`);
   }
-
 }
 
 // ─────────────────────────── Branches screen ───────────────────────────

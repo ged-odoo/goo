@@ -863,7 +863,7 @@ section.hidden {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 13px 20px;
+  padding: 9px 20px;
   background: var(--l-bg);
   border-bottom: 1px solid var(--l-line-soft);
 }
@@ -929,7 +929,7 @@ section.hidden {
   background: var(--l-panel);
   border: 1px solid var(--l-line);
   border-radius: 9px;
-  padding: 7px 14px;
+  padding: 5px 14px;
 }
 .dash-active-badge svg {
   width: 13px;
@@ -948,7 +948,7 @@ section.hidden {
   background: var(--l-text);
   border: 1px solid var(--l-text);
   border-radius: 9px;
-  padding: 8px 16px;
+  padding: 6px 16px;
   transition: 0.13s;
 }
 .dash-activate:hover:not(:disabled) {
@@ -973,6 +973,69 @@ section.hidden {
 }
 /* Stop (active target, server running) — secondary/white like the other
    buttons (it's not a primary action); inherits .dash-activate */
+
+/* kebab "more actions" menu on the card header */
+.dash-kebab-wrap {
+  position: relative;
+  flex: none;
+}
+.dash-kebab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--l-text-faint);
+  transition: 0.12s;
+}
+.dash-kebab svg {
+  width: 17px;
+  height: 17px;
+}
+.dash-kebab:hover,
+.dash-kebab.open {
+  color: var(--l-text);
+  background: var(--l-panel);
+}
+.dash-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 150px;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
+  padding: 5px;
+  box-shadow: 0 14px 40px -10px oklch(0.27 0.012 264 / 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.dash-menu-item {
+  text-align: left;
+  font-size: 13px;
+  color: var(--l-text-mid);
+  padding: 8px 10px;
+  border-radius: 7px;
+  transition: 0.12s;
+}
+.dash-menu-item:hover:not(:disabled) {
+  background: var(--l-panel);
+  color: var(--l-text);
+}
+.dash-menu-item.danger {
+  color: var(--l-red);
+}
+.dash-menu-item.danger:hover:not(:disabled) {
+  background: var(--l-red-bg);
+}
+.dash-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* card body: white bg, rows with 3-column layout */
 .dash-card-body {
   display: grid;
