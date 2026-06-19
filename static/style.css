@@ -1838,6 +1838,10 @@ a.dash-row-branch:hover {
   accent-color: var(--l-accent);
   cursor: pointer;
 }
+.br-table th .br-select {
+  margin-right: 8px;
+  vertical-align: middle;
+}
 .br-branch {
   font-family: var(--mono);
   font-size: 13px;
