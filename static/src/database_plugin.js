@@ -60,10 +60,10 @@ export class DatabasePlugin extends Plugin {
   // (the caller handles confirmation + error reporting via the dialog)
   async drop(name) {
     this.dropping.set(name);
+    this.eventLog.add(`dropping database ${name}`);
     try {
       await postJSON("/api/databases/drop", { name });
       await this.load(true);
-      this.eventLog.add(`dropped database ${name}`);
       return null;
     } catch (e) {
       this.eventLog.add(`failed to drop database ${name}: ${e.message}`);

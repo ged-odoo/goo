@@ -693,12 +693,12 @@ class DashboardScreen extends Component {
       .filter((r) => r.path);
     // repos that will actually switch (skip the ones already on the target branch)
     const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
+    this.eventLog.add(`activating target ${tgt.name}`);
+    for (const r of switched) this.eventLog.add(`checking out ${r.branch} (${r.repo})`);
     const s = this.server.status().state;
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.id);
-    for (const r of switched) this.eventLog.add(`checked out ${r.branch} (${r.repo})`);
-    this.eventLog.add(`activated target ${tgt.name}`);
   }
 
   // the canonical base branch a branch derives from: master-owl-update -> master,
@@ -1105,8 +1105,8 @@ async function startCreateTarget(config, eventLog, code) {
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
   };
+  eventLog.add(`creating target ${target.name}`);
   config.updateConfig({ targets: [...config.config.targets, target] });
-  eventLog.add(`created target ${target.name}`);
   if (res.createBranches && code) {
     const tpl = existingTargets.find((t) => t.id === res.template);
     const baseBranchByRepo = Object.fromEntries((tpl?.config || []).map((c) => [c.repo, c.branch]));
@@ -1179,13 +1179,13 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   });
   if (!res) return;
 
+  eventLog.add(`deleting target ${tgt.name}`);
   if (res.closePrs) for (const p of prs) await code.closePrNoConfirm(p.github, p.number);
   if (res.delBranches)
     for (const b of branches)
       await code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
   if (res.dropDb && tgt.db) await db.drop(tgt.db);
   config.updateConfig({ targets: config.config.targets.filter((t) => t.id !== tgt.id) });
-  eventLog.add(`deleted target ${tgt.name}`);
 }
 
 class TargetsScreen extends Component {
@@ -1329,12 +1329,12 @@ class TargetsScreen extends Component {
       .filter((r) => r.path);
     // repos that will actually switch (skip the ones already on the target branch)
     const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
+    this.eventLog.add(`activating target ${tgt.name}`);
+    for (const r of switched) this.eventLog.add(`checking out ${r.branch} (${r.repo})`);
     const s = this.server.status().state;
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.id);
-    for (const r of switched) this.eventLog.add(`checked out ${r.branch} (${r.repo})`);
-    this.eventLog.add(`activated target ${tgt.name}`);
   }
 
   // the configured order — reorderable by dragging a row's name
@@ -1486,6 +1486,7 @@ class TargetsScreen extends Component {
     });
     if (!res) return;
 
+    for (const t of targets) this.eventLog.add(`deleting target ${t.name}`);
     if (res.closePrs) for (const p of allPrs) await this.code.closePrNoConfirm(p.github, p.number);
     if (res.delBranches)
       for (const b of allBranches)
@@ -1494,7 +1495,6 @@ class TargetsScreen extends Component {
 
     const deletedIds = new Set(targets.map((t) => t.id));
     this.config.updateConfig({ targets: this.config.config.targets.filter((t) => !deletedIds.has(t.id)) });
-    for (const t of targets) this.eventLog.add(`deleted target ${t.name}`);
     this.selected.set(new Set());
   }
 
@@ -1572,8 +1572,8 @@ class TargetsScreen extends Component {
       db: b, // default the database to the branch name
       on_create_args: tgt.on_create_args || "",
     };
+    this.eventLog.add(`creating target ${copy.name}`);
     this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
-    this.eventLog.add(`created target ${copy.name}`);
     if (res.create) {
       const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
       for (const c of tgt.config || []) {
@@ -1847,8 +1847,8 @@ class BranchesScreen extends Component {
     const drop = targets.filter((t) => res[`tgt:${t.id}`]);
     if (drop.length) {
       const ids = new Set(drop.map((t) => t.id));
+      for (const t of drop) this.code.eventLog.add(`deleting target ${t.name}`);
       this.config.updateConfig({ targets: this.config.config.targets.filter((t) => !ids.has(t.id)) });
-      for (const t of drop) this.code.eventLog.add(`deleted target ${t.name}`);
     }
   }
 
@@ -1893,8 +1893,8 @@ class BranchesScreen extends Component {
 
   checkout(row) {
     if (this.checkoutBlocked(row)) return;
+    this.code.eventLog.add(`checking out ${row.branch} (${row.repo})`);
     this.code.checkout([{ path: row.path, branch: row.branch }]);
-    this.code.eventLog.add(`checked out ${row.branch} (${row.repo})`);
   }
 
   pushBranch(row) {
@@ -2787,7 +2787,7 @@ class EventLog extends Component {
       <div class="event-log-body" t-ref="this.body">
         <div t-if="!this.log.entries().length" class="event-log-empty">No events yet.</div>
         <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row">
-          <span class="event-log-time" t-out="e.time"/>
+          <span class="event-log-time" t-att-title="e.full" t-out="e.time"/>
           <span class="event-log-text" t-out="e.text"/>
         </div>
       </div>
@@ -2816,11 +2816,15 @@ class EventLog extends Component {
 
   // chronological: oldest first, newest appended at the end
   get rows() {
-    return this.log.entries().map((e) => ({
-      id: e.id,
-      time: new Date(e.at).toLocaleTimeString(),
-      text: e.text,
-    }));
+    return this.log.entries().map((e) => {
+      const d = new Date(e.at);
+      return {
+        id: e.id,
+        time: d.toLocaleTimeString([], { hour12: false }), // 24h, no AM/PM
+        full: d.toLocaleString(), // full date + time, shown on hover
+        text: e.text,
+      };
+    });
   }
 }
 

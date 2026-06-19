@@ -271,6 +271,7 @@ export class CodePlugin extends Plugin {
     return this._mutate(
       "Delete",
       async () => {
+        this.eventLog.add(`deleting branch ${branch} (${repo})`);
         const res = await postJSON("/api/code/branches/delete", {
           path,
           branch,
@@ -279,7 +280,6 @@ export class CodePlugin extends Plugin {
         if (res.remote_error)
           alert(`Local branch deleted, but the remote branch could not be removed:\n${res.remote_error}`);
         this._dropBranch(repo, branch);
-        this.eventLog.add(`deleted branch ${branch} (${repo})`);
       },
       false,
     );
@@ -289,8 +289,8 @@ export class CodePlugin extends Plugin {
   createBranch(path, name, startPoint) {
     const repo = this.config.config.repos.find((r) => r.path === path);
     return this._mutate("Create branch", async () => {
+      this.eventLog.add(`creating branch ${name}${repo ? ` (${repo.id})` : ""}`);
       await postJSON("/api/code/branch/create", { path, name, start_point: startPoint });
-      this.eventLog.add(`created branch ${name}${repo ? ` (${repo.id})` : ""}`);
     });
   }
 
@@ -317,9 +317,9 @@ export class CodePlugin extends Plugin {
     return this._mutate(
       "Close PR",
       async () => {
+        this.eventLog.add(`closing PR #${number} (${github})`);
         await postJSON("/api/prs/close", { repo: github, number });
         this._closePrLocally(github, number);
-        this.eventLog.add(`closed PR #${number} (${github})`);
       },
       false,
     );
@@ -332,8 +332,8 @@ export class CodePlugin extends Plugin {
     return this._mutate(
       "Push",
       async () => {
+        this.eventLog.add(`pushing ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
         await postJSON("/api/code/branch/push", { path, branch });
-        this.eventLog.add(`pushed ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
       },
       reload,
     );
