@@ -421,9 +421,9 @@ class DashboardScreen extends Component {
   get favRepos() {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
-    const activeTarget = this.config.config.targets.find((t) => this.isActive(t));
+    const currentTarget = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
     const visibleIds = new Set([
-      ...(activeTarget?.config || []).map((c) => c.repo),
+      ...(currentTarget?.config || []).map((c) => c.repo),
       ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id),
     ]);
     return this.config.config.repos
