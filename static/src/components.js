@@ -242,10 +242,11 @@ class SearchBox extends Component {
 
 class DirtyBadge extends Component {
   static template = xml`
-    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">[dirty]</button>`;
+    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
   static props = ["path", "repo"];
   openMenu(ev) {
-    appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { ev, path: this.props.path, repo: this.props.repo } }));
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { rect, path: this.props.path, repo: this.props.repo } }));
   }
 }
 
@@ -273,15 +274,14 @@ class DirtyMenu extends Component {
     });
   }
 
-  async openMenu({ ev, path, repo }) {
+  async openMenu({ rect, path, repo }) {
     this._path = path;
     this._repo = repo;
     this.open.set(true);
     await Promise.resolve();
-    const r = ev.currentTarget.getBoundingClientRect();
     const w = this._el.offsetWidth;
-    this._el.style.top = `${r.bottom + 4}px`;
-    this._el.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
+    this._el.style.top = `${rect.bottom + 4}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
 
   async wipCommit() {
