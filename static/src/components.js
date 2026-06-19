@@ -416,12 +416,18 @@ class DashboardScreen extends Component {
     return this.code.groups().errors;
   }
 
-  // favorite repositories with their current state (for the dashboard summary)
+  // repositories shown in the dashboard summary: union of the active target's
+  // repos and the favorite repositories, in config order
   get favRepos() {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
+    const activeTarget = this.config.config.targets.find((t) => this.isActive(t));
+    const visibleIds = new Set([
+      ...(activeTarget?.config || []).map((c) => c.repo),
+      ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id),
+    ]);
     return this.config.config.repos
-      .filter((r) => r.favorite)
+      .filter((r) => visibleIds.has(r.id))
       .map((r) => {
         const b = byId[r.id] || {};
         return {
