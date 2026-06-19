@@ -2058,19 +2058,18 @@ class ListEditor extends Component {
         <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row">
           <t t-foreach="this.spec.fields" t-as="f" t-key="f.key">
             <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.title || f.name">
-              <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => row[f.key] = ev.target.checked"/>
+              <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => { row[f.key] = ev.target.checked; this.saveAuto(); }"/>
               <t t-out="f.name"/>
             </label>
             <input t-else="" t-att-class="f.className" t-att-placeholder="f.placeholder"
-                   t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"/>
+                   t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"
+                   t-on-change="() => this.saveAuto()"/>
           </t>
           <button class="row-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
         </div>
       </div>
       <div class="config-actions">
         <button t-on-click="() => this.addRow()" t-out="'Add ' + this.spec.itemName"/>
-        <button t-on-click="() => this.save()">Save</button>
-        <button t-on-click="() => this.reset()">Reset to defaults</button>
         <span t-att-class="this.msgCls()" t-out="this.msgText()"/>
       </div>
     </div>`;
@@ -2109,6 +2108,7 @@ class ListEditor extends Component {
 
   removeRow(i) {
     this.rows.set(this.rows().filter((_, j) => j !== i));
+    this.saveAuto();
   }
 
   flash(text, isError) {
@@ -2117,21 +2117,20 @@ class ListEditor extends Component {
     if (!isError) setTimeout(() => this.msgText.set(""), 2000);
   }
 
-  save() {
+  // auto-save: silently skips rows with incomplete required fields so mid-edit
+  // keystrokes don't flash errors; still surfaces spec-level errors (e.g. missing
+  // "community" repo) and duplicate-key errors.
+  saveAuto() {
     const items = [];
     const seen = new Set();
     for (const row of this.rows()) {
       const raw = {};
       for (const f of this.spec.fields)
         raw[f.key] = f.type === "checkbox" ? !!row[f.key] : (row[f.key] || "").trim();
-      if (this.spec.fields.every((f) => !raw[f.key])) continue;
-      for (const f of this.spec.fields) {
-        if (!f.optional && !raw[f.key])
-          return this.flash(`every ${this.spec.itemName} needs a ${f.name}`, true);
-      }
-      const keyVal = raw[this.spec.fields[0].key]; // first field is the identity
-      if (seen.has(keyVal))
-        return this.flash(`duplicate ${this.spec.fields[0].name} "${keyVal}"`, true);
+      if (this.spec.fields.every((f) => !raw[f.key])) continue; // skip blank rows
+      if (this.spec.fields.some((f) => !f.optional && !raw[f.key])) continue; // skip incomplete rows silently
+      const keyVal = raw[this.spec.fields[0].key];
+      if (seen.has(keyVal)) return; // duplicate — abort silently
       seen.add(keyVal);
       const item = {};
       for (const f of this.spec.fields) item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
@@ -2139,16 +2138,8 @@ class ListEditor extends Component {
     }
     const err = this.spec.validate(items, this.config.config);
     if (err) return this.flash(err, true);
+    this.msgText.set("");
     this.config.updateConfig({ [this.spec.key]: items });
-    this.load();
-    this.flash("saved");
-  }
-
-  reset() {
-    if (!confirm(`Reset ${this.spec.itemName}s to the built-in defaults?`)) return;
-    this.config.resetKey(this.spec.key);
-    this.load();
-    this.flash("reset to defaults");
   }
 }
 
