@@ -238,6 +238,74 @@ class SearchBox extends Component {
   props = props({ value: t.any() });
 }
 
+// ─────────────────────────── Dirty badge + menu ──────────────────────────────
+
+class DirtyBadge extends Component {
+  static template = xml`
+    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">[dirty]</button>`;
+  static props = ["path", "repo"];
+  openMenu(ev) {
+    appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { ev, path: this.props.path, repo: this.props.repo } }));
+  }
+}
+
+class DirtyMenu extends Component {
+  static template = xml`
+    <div class="branch-popover dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button class="branch-popover-item" t-on-click="() => this.wipCommit()">WIP commit</button>
+      <button class="branch-popover-item danger" t-on-click="() => this.discard()">Remove changes</button>
+    </div>`;
+
+  code = plugin(CodePlugin);
+  open = signal(false);
+  _path = null;
+  _repo = null;
+  _el = null;
+
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".dirty-menu");
+      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
+      document.addEventListener("click", () => this.open.set(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.open.set(false);
+      });
+    });
+  }
+
+  async openMenu({ ev, path, repo }) {
+    this._path = path;
+    this._repo = repo;
+    this.open.set(true);
+    await Promise.resolve();
+    const r = ev.currentTarget.getBoundingClientRect();
+    const w = this._el.offsetWidth;
+    this._el.style.top = `${r.bottom + 4}px`;
+    this._el.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
+  }
+
+  async wipCommit() {
+    this.open.set(false);
+    const res = await fetch("/api/code/wip-commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: this._path }),
+    });
+    if (res.ok) this.code.load(true);
+  }
+
+  async discard() {
+    if (!confirm(`Remove all uncommitted changes in ${this._repo}?`)) return;
+    this.open.set(false);
+    const res = await fetch("/api/code/discard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: this._path }),
+    });
+    if (res.ok) this.code.load(true);
+  }
+}
+
 // ─────────────────────────── Dashboard screen ───────────────────────────
 
 // Per-target view of the code state: for each target, the git/runbot/PR state
@@ -2541,74 +2609,6 @@ class ConfigScreen extends Component {
     } catch (e) {
       this.backupMsg.set(`Import failed: ${e.message}`);
     }
-  }
-}
-
-// ─────────────────────────── Dirty badge + menu ──────────────────────────────
-
-class DirtyBadge extends Component {
-  static template = xml`
-    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">[dirty]</button>`;
-  static props = ["path", "repo"];
-  openMenu(ev) {
-    appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { ev, path: this.props.path, repo: this.props.repo } }));
-  }
-}
-
-class DirtyMenu extends Component {
-  static template = xml`
-    <div class="branch-popover dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
-      <button class="branch-popover-item" t-on-click="() => this.wipCommit()">WIP commit</button>
-      <button class="branch-popover-item danger" t-on-click="() => this.discard()">Remove changes</button>
-    </div>`;
-
-  code = plugin(CodePlugin);
-  open = signal(false);
-  _path = null;
-  _repo = null;
-  _el = null;
-
-  setup() {
-    onMounted(() => {
-      this._el = document.querySelector(".dirty-menu");
-      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
-      document.addEventListener("click", () => this.open.set(false));
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.open.set(false);
-      });
-    });
-  }
-
-  async openMenu({ ev, path, repo }) {
-    this._path = path;
-    this._repo = repo;
-    this.open.set(true);
-    await Promise.resolve();
-    const r = ev.currentTarget.getBoundingClientRect();
-    const w = this._el.offsetWidth;
-    this._el.style.top = `${r.bottom + 4}px`;
-    this._el.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
-  }
-
-  async wipCommit() {
-    this.open.set(false);
-    const res = await fetch("/api/code/wip-commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: this._path }),
-    });
-    if (res.ok) this.code.load(true);
-  }
-
-  async discard() {
-    if (!confirm(`Remove all uncommitted changes in ${this._repo}?`)) return;
-    this.open.set(false);
-    const res = await fetch("/api/code/discard", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: this._path }),
-    });
-    if (res.ok) this.code.load(true);
   }
 }
 
