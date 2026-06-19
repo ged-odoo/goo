@@ -243,7 +243,7 @@ class SearchBox extends Component {
 class DirtyBadge extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
-  static props = { path: String, repo: String };
+  props = props({ path: t.string(), repo: t.string() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
     appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { rect, path: this.props.path, repo: this.props.repo } }));
