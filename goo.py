@@ -506,6 +506,61 @@ def git_discard(path):
         return False, str(e)
 
 
+def search_remote_branches(repos, query):
+    """Search GitHub for branches whose name starts with `query`, across all
+    repos that have a github field. Runs one gh api call per repo in parallel.
+    Returns a list of {repo: id, branch: name} dicts."""
+    results = []
+    lock = threading.Lock()
+
+    def search_one(r):
+        github = r.get("github", "")
+        if not github:
+            return
+        try:
+            res = subprocess.run(
+                ["gh", "api", f"repos/{github}/git/matching-refs/heads/{query}",
+                 "--jq", ".[].ref"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if res.returncode != 0:
+                return
+            found = []
+            for line in res.stdout.splitlines():
+                branch = line.strip()
+                if branch.startswith("refs/heads/"):
+                    branch = branch[len("refs/heads/"):]
+                if branch:
+                    found.append({"repo": r["id"], "branch": branch})
+            with lock:
+                results.extend(found)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    threads = [threading.Thread(target=search_one, args=(r,), daemon=True) for r in repos]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+    return results
+
+
+def git_fetch_remote_branch(path, branch):
+    """Fetch a remote branch and create/reset the local branch to track it.
+    Equivalent to: git fetch origin {branch}:{branch}. Returns (ok, error)."""
+    path = os.path.expanduser(path)
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "fetch", "origin", f"{branch}:{branch}"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[0] or "git fetch failed"
+        return True, None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
 def git_checkout(path, branch):
     """Checkout a local branch in a repo. Returns (ok, error)."""
     if not path or not branch:
@@ -1540,6 +1595,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/code/remote-branches/search":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos", [])
+            query = (body or {}).get("query", "")
+            if err or not query or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing query or repos"})
+            results = search_remote_branches(repos, query)
+            self._send_json(200, {"ok": True, "results": results})
+        elif path == "/api/code/remote-branch/fetch":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            branch = (body or {}).get("branch")
+            if err or not repo_path or not branch:
+                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
+            ok, error = git_fetch_remote_branch(repo_path, branch)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/wip-commit":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")

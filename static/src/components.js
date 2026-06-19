@@ -1113,6 +1113,49 @@ class DatabasesScreen extends Component {
 // First-class targets: name, favorite flag, config (repo:branch pairs), db and
 // start args. Rows are edited inline; "New target" opens a dialog form.
 
+function openRemoteBranchDialog() {
+  return new Promise((resolve) => {
+    appBus.dispatchEvent(new CustomEvent("remote-branch-dialog", { detail: { resolve } }));
+  });
+}
+
+// After remote branches have been fetched locally, open a prefilled
+// target-creation dialog (no "Create branches" step — they already exist).
+async function createTargetFromRemoteBranch(config, eventLog, branch, repos) {
+  const existingTargets = config.config.targets;
+  const configStr = repos.map((r) => `${r}:${branch}`).join(",");
+  const res = await openDialog({
+    title: "New target from remote branch",
+    okLabel: "Create",
+    validate: (v) => {
+      const name = (v.name || "").trim();
+      if (!name) return "a name is required";
+      if (existingTargets.some((t) => t.name === name))
+        return `a target named "${name}" already exists`;
+      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+      return "";
+    },
+    fields: [
+      { key: "name", type: "text", label: "Name", value: branch, placeholder: "target name" },
+      { key: "config", type: "text", label: "Config", value: configStr, placeholder: "community:branch,enterprise:branch" },
+      { key: "db", type: "text", label: "Database", value: branch, placeholder: "database name" },
+      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      { key: "fav", type: "checkbox", label: "Favorite", value: false },
+    ],
+  });
+  if (!res) return;
+  const target = {
+    id: newTargetId(),
+    name: res.name.trim(),
+    favorite: !!res.fav,
+    config: repoBranchList.parse(res.config.trim()),
+    db: (res.db || "").trim(),
+    on_create_args: (res.args || "").trim(),
+  };
+  eventLog.add(`creating target ${target.name} from remote branch ${branch}`);
+  config.updateConfig({ targets: [...config.config.targets, target] });
+}
+
 async function startCreateTarget(config, eventLog, code) {
   const existingTargets = config.config.targets;
   const res = await openDialog({
@@ -1271,6 +1314,7 @@ class TargetsScreen extends Component {
         <div class="panel-top"><h1>Targets</h1></div>
         <div class="panel-actions">
           <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
+          <button class="pbtn" t-on-click="() => this.targetFromRemoteBranch()">From remote branch</button>
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           <span class="row-count" t-out="this.count"/>
@@ -1577,6 +1621,25 @@ class TargetsScreen extends Component {
   // create a new target through a dialog form (validated before it closes)
   startCreate() {
     return startCreateTarget(this.config, this.eventLog, this.code);
+  }
+
+  // search for a remote branch across all repos, fetch it locally, then open
+  // the prefilled target creation dialog
+  async targetFromRemoteBranch() {
+    const res = await openRemoteBranchDialog();
+    if (!res) return;
+    const { branch, repos } = res;
+    const pathByRepo = this.code.groups().pathByRepo;
+    for (const repoId of repos) {
+      const path = pathByRepo[repoId];
+      if (!path) continue;
+      await fetch("/api/code/remote-branch/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, branch }),
+      });
+    }
+    await createTargetFromRemoteBranch(this.config, this.eventLog, branch, repos);
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
@@ -2848,6 +2911,132 @@ class Dialog extends Component {
   }
 }
 
+// ─────────────────────────── Remote branch dialog ────────────────────────────
+// Search for a branch on GitHub across all configured repos, select one, then
+// hand back { branch, repos } to the caller to create a local tracking branch.
+
+class RemoteBranchDialog extends Component {
+  static template = xml`
+    <div class="dialog-backdrop" t-att-class="{hidden: !this.open()}" t-on-click="() => this.cancel()">
+      <div class="dialog rbd" t-on-click.stop="() => {}">
+        <h2 class="dialog-title">Target from remote branch</h2>
+        <div class="dialog-body">
+          <div class="dialog-field">
+            <label>Branch name</label>
+            <input type="text" class="rbd-input" t-ref="this.inputEl"
+                   placeholder="type to search across all repos…"
+                   t-on-input="(ev) => this.onInput(ev.target.value)"
+                   t-on-keydown="(ev) => this.onKey(ev)"/>
+          </div>
+          <div class="rbd-results">
+            <div t-if="this.loading()" class="rbd-status">Searching…</div>
+            <div t-elif="this.searched() and !this.rows().length" class="rbd-status">No matching branches found.</div>
+            <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
+                 class="rbd-row" t-att-class="{selected: this.sel() === r.branch}"
+                 t-on-click="() => this.sel.set(r.branch)">
+              <span class="rbd-branch" t-out="r.branch"/>
+              <span class="rbd-repos" t-out="r.repos.join(', ')"/>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Create target</button>
+          <button class="pbtn" t-on-click="() => this.cancel()">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+
+  config = plugin(ConfigPlugin);
+  open = signal(false);
+  loading = signal(false);
+  searched = signal(false);
+  rows = signal([]);
+  sel = signal("");
+  inputEl = signal.ref(HTMLElement);
+  _resolve = null;
+  _timer = null;
+
+  setup() {
+    onMounted(() => {
+      appBus.addEventListener("remote-branch-dialog", (e) => this.show(e.detail));
+      document.addEventListener("keydown", (e) => {
+        if (this.open() && e.key === "Escape") this.cancel();
+      });
+    });
+    useEffect(() => {
+      if (this.open()) this.inputEl()?.focus();
+    });
+  }
+
+  show({ resolve }) {
+    this._resolve = resolve;
+    this.loading.set(false);
+    this.searched.set(false);
+    this.rows.set([]);
+    this.sel.set("");
+    this.open.set(true);
+    // clear the input once rendered
+    Promise.resolve().then(() => {
+      const el = this.inputEl();
+      if (el) el.value = "";
+    });
+  }
+
+  onInput(val) {
+    this.sel.set("");
+    clearTimeout(this._timer);
+    if (!val.trim()) {
+      this.loading.set(false);
+      this.searched.set(false);
+      this.rows.set([]);
+      return;
+    }
+    this.loading.set(true);
+    this._timer = setTimeout(() => this._search(val.trim()), 300);
+  }
+
+  async _search(query) {
+    const repos = this.config.config.repos
+      .filter((r) => r.github)
+      .map((r) => ({ id: r.id, github: r.github }));
+    try {
+      const res = await fetch("/api/code/remote-branches/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repos, query }),
+      });
+      const data = await res.json();
+      if (!data.ok) return;
+      const byBranch = {};
+      for (const { repo, branch } of data.results) {
+        if (!byBranch[branch]) byBranch[branch] = [];
+        byBranch[branch].push(repo);
+      }
+      this.rows.set(Object.entries(byBranch).map(([branch, repos]) => ({ branch, repos })));
+    } finally {
+      this.loading.set(false);
+      this.searched.set(true);
+    }
+  }
+
+  onKey(ev) {
+    if (ev.key === "Enter" && this.sel()) this.ok();
+  }
+
+  ok() {
+    if (!this.sel()) return;
+    const branch = this.sel();
+    const repos = this.rows().find((r) => r.branch === branch)?.repos || [];
+    this._resolve({ branch, repos });
+    this.open.set(false);
+  }
+
+  cancel() {
+    this._resolve(null);
+    this.open.set(false);
+  }
+}
+
 // ─────────────────────────── Event log ───────────────────────────
 // A floating, toggleable panel (bottom-right) listing business events. Hidden
 // by default; toggled from the sidebar. Newest entries first.
@@ -3161,6 +3350,7 @@ export class App extends Component {
     BranchMenu,
     DirtyMenu,
     Dialog,
+    RemoteBranchDialog,
     EventLog,
     TerminalPanel,
   };
@@ -3175,6 +3365,7 @@ export class App extends Component {
       <BranchMenu/>
       <DirtyMenu/>
       <Dialog/>
+      <RemoteBranchDialog/>
       <EventLog/>
       <TerminalPanel/>
     </div>`;
