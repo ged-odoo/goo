@@ -1230,9 +1230,6 @@ a.dash-row-branch:hover {
 /* panel form controls (target select, filter, tags) */
 .panel select,
 .panel-actions select {
-  font-family: var(--sans);
-  font-size: 12px;
-  color: var(--l-text-mid);
   background: var(--l-card);
   border: 1px solid var(--l-panel-line);
   border-radius: 8px;
