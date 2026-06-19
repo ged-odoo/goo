@@ -790,6 +790,7 @@ class DatabasesScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
+          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
@@ -800,10 +801,13 @@ class DatabasesScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/><th class="br-spacer"/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
-                <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active}">
+                <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active, 'row-sel': this.selected().has(d.name)}">
+                  <td>
+                    <input t-if="!d.active" type="checkbox" class="br-select" t-att-checked="this.selected().has(d.name)" t-on-change="() => this.toggleSelect(d.name)" title="select this database for batch actions"/>
+                  </td>
                   <td t-att-class="{'active-name': d.active}">
                     <span class="br-branch" t-out="d.name"/>
                     <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
@@ -828,6 +832,7 @@ class DatabasesScreen extends Component {
 
   db = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
+  selected = signal(new Set()); // database names ticked for batch actions
   // sorted, view-ready rows — recomputed only when the db list / active db change
   rows = computed(() => {
     const activeDb = this.db.activeDb;
@@ -859,6 +864,46 @@ class DatabasesScreen extends Component {
   get count() {
     const n = this.rows().length;
     return `${n} database${n === 1 ? "" : "s"}`;
+  }
+
+  toggleSelect(name) {
+    const sel = new Set(this.selected());
+    sel.has(name) ? sel.delete(name) : sel.add(name);
+    this.selected.set(sel);
+  }
+
+  get _selectableDbs() {
+    return this.rows().filter((d) => !d.active);
+  }
+
+  get allSelected() {
+    const sel = this.selected();
+    const selectable = this._selectableDbs;
+    return selectable.length > 0 && selectable.every((d) => sel.has(d.name));
+  }
+
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected ? new Set() : new Set(this._selectableDbs.map((d) => d.name)),
+    );
+  }
+
+  get selectedCount() {
+    return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
+  }
+
+  async dropSelected() {
+    const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
+    if (!dbs.length) return;
+    const n = dbs.length;
+    const res = await openDialog({
+      title: `Drop ${n} database${n === 1 ? "" : "s"}?`,
+      message: "This permanently deletes the selected databases. This cannot be undone.",
+      okLabel: "Drop",
+    });
+    if (!res) return;
+    for (const d of dbs) await this.db.drop(d.name);
+    this.selected.set(new Set());
   }
 
   // confirm via the dialog, then drop; report any failure in a dialog too
