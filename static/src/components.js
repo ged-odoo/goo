@@ -2535,8 +2535,10 @@ class EventLog extends Component {
   body = signal.ref(HTMLElement);
 
   setup() {
-    // keep the newest entry in view as lines arrive (and on open)
+    // keep the newest entry in view as lines arrive (and on open);
+    // reading entries() here makes the effect re-run whenever entries change
     useEffect(() => {
+      this.log.entries();
       const el = this.body();
       if (el) el.scrollTop = el.scrollHeight;
     });
