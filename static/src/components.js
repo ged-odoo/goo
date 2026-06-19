@@ -299,7 +299,7 @@ class DashboardScreen extends Component {
                 <div class="dash-card-title">
                   <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
                   <span class="dash-name" t-out="tgt.name"/>
-                  <span class="dash-db"><t t-out="this.dbIcon"/><t t-out="tgt.db || '—'"/></span>
+                  <span class="dash-db" t-att-title="tgt.db || ''"><t t-out="this.dbIcon"/><span class="dash-db-name" t-out="tgt.db || '—'"/></span>
                 </div>
                 <span t-if="this.isActive(tgt)" class="dash-active-badge">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

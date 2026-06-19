@@ -893,8 +893,7 @@ section.hidden {
   font-weight: 700;
   color: var(--l-text);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: none;
 }
 .dash-db {
   display: inline-flex;
@@ -907,7 +906,12 @@ section.hidden {
   border: 1px solid var(--l-line);
   padding: 3px 9px;
   border-radius: 7px;
-  flex: none;
+  min-width: 0; /* allow the badge to shrink so the db name can ellipsize */
+}
+.dash-db-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dash-db svg {
   width: 11px;
