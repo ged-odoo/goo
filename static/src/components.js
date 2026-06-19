@@ -252,9 +252,9 @@ class DirtyBadge extends Component {
 
 class DirtyMenu extends Component {
   static template = xml`
-    <div class="branch-popover dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
-      <button class="branch-popover-item" t-on-click="() => this.wipCommit()">WIP commit</button>
-      <button class="branch-popover-item danger" t-on-click="() => this.discard()">Remove changes</button>
+    <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
+      <button class="dash-menu-item danger" t-on-click="() => this.discard()">Remove changes</button>
     </div>`;
 
   code = plugin(CodePlugin);

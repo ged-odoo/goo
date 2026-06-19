@@ -1736,6 +1736,14 @@ a.dash-row-branch:hover {
   cursor: pointer;
   user-select: none;
 }
+.dirty-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 160px;
+}
+.dirty-menu.hidden {
+  display: none;
+}
 .dirty-badge {
   margin-left: 6px;
   font-size: 10px;
