@@ -590,6 +590,7 @@ class DashboardScreen extends Component {
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.id);
+    this.eventLog.add(`activated target ${tgt.name}`);
   }
 
   // the canonical base branch a branch derives from: master-owl-update -> master,
@@ -1151,6 +1152,7 @@ class TargetsScreen extends Component {
     if (s === "running" || s === "starting") await this.server.stop();
     await this.code.checkout(repos);
     this.server.setLastTarget(tgt.id);
+    this.eventLog.add(`activated target ${tgt.name}`);
   }
 
   // the configured order — reorderable by dragging a row's name
@@ -1764,6 +1766,7 @@ class BranchesScreen extends Component {
   checkout(row) {
     if (this.checkoutBlocked(row)) return;
     this.code.checkout([{ path: row.path, branch: row.branch }]);
+    this.code.eventLog.add(`checked out ${row.branch} (${row.repo})`);
   }
 
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
