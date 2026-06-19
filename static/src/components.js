@@ -13,11 +13,11 @@ import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
+import { TerminalPlugin } from "./terminal_plugin.js";
 import { timeAgo, tintCmd } from "./utils.js";
 
 const {
   Component,
-  Plugin,
   xml,
   plugin,
   proxy,
@@ -2782,15 +2782,6 @@ class Dialog extends Component {
 // ─────────────────────────── Event log ───────────────────────────
 // A floating, toggleable panel (bottom-right) listing business events. Hidden
 // by default; toggled from the sidebar. Newest entries first.
-
-// ─────────────────────────── Terminal plugin ───────────────────────────
-
-export class TerminalPlugin extends Plugin {
-  open = signal(false);
-  toggle() {
-    this.open.set(!this.open());
-  }
-}
 
 // lazy-load xterm.js + addon-fit only on first terminal open
 let _xtermReady = null;

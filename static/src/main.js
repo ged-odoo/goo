@@ -1,6 +1,7 @@
 // Bootstrap: hydrate from the server-side data file (if configured) so plugins
 // read up-to-date localStorage, then mount the Owl app with all plugins.
-import { App, TerminalPlugin } from "./components.js";
+import { App } from "./components.js";
+import { TerminalPlugin } from "./terminal_plugin.js";
 import { ConfigPlugin, dataFilePath, loadDataFile } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
