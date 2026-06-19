@@ -2887,11 +2887,9 @@ class TerminalPanel extends Component {
     this._termOpen = true;
     try {
       await loadXterm();
-      // always wait one animation frame so the browser computes layout before
-      // xterm attaches — on subsequent opens loadXterm() resolves instantly and
-      // fit.fit() would otherwise run against a 0×0 container
-      await new Promise((r) => requestAnimationFrame(r));
       if (!this.term.open()) return; // closed while loading
+      const el = this.container();
+      if (!el) return;
       const term = new Terminal({
         cursorBlink: true,
         fontSize: 13,
@@ -2899,9 +2897,12 @@ class TerminalPanel extends Component {
       });
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
-      const el = this.container();
-      if (!el) return;
       term.open(el);
+      // wait one frame for xterm's renderer to measure cell dimensions after
+      // inserting its DOM — fit.fit() reads cell width/height which are 0 until
+      // the browser has done a layout pass on xterm's newly created elements
+      await new Promise((r) => requestAnimationFrame(r));
+      if (!this.term.open()) return; // closed during the frame wait
       fit.fit();
       this._term = term;
 
