@@ -1934,6 +1934,20 @@ a.dash-row-branch:hover {
   color: var(--l-amber);
   fill: currentColor;
 }
+/* the target name doubles as a drag handle for reordering */
+.tgt-name-handle {
+  cursor: grab;
+}
+.tgt-name-handle:active {
+  cursor: grabbing;
+}
+.br-table tr.dragging {
+  opacity: 0.4;
+}
+/* we always drop *before* the hovered row — show a line at its top edge */
+.br-table tr.drag-over td {
+  box-shadow: inset 0 2px 0 var(--l-accent);
+}
 .pr-link {
   font-family: var(--mono);
   font-size: 12.5px;

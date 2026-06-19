@@ -349,7 +349,7 @@ class DashboardScreen extends Component {
   branchIcon = m(ICONS.branches);
   dbIcon = m(ICONS.databases);
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog);
+    return startCreateTarget(this.config, this.eventLog, this.code);
   }
 
   setup() {
@@ -505,23 +505,9 @@ class DashboardScreen extends Component {
     if (repos.length) await this.code.rebase(repos);
   }
 
-  // favorite targets only, ordered by last activity (most recent first)
+  // favorite targets only, in the order defined in the Targets tab
   get targets() {
-    return this.config.config.targets
-      .filter((t) => t.favorite)
-      .map((t) => ({ t, activity: this._activity(t) }))
-      .sort((a, b) => b.activity - a.activity)
-      .map((x) => x.t);
-  }
-
-  // most recent timestamp across a target's branches + their PRs (0 if none)
-  _activity(tgt) {
-    let last = 0;
-    for (const row of this.rows(tgt)) {
-      if (row.date) last = Math.max(last, Date.parse(row.date) || 0);
-      if (row.pr && row.pr.updatedAt) last = Math.max(last, Date.parse(row.pr.updatedAt) || 0);
-    }
-    return last;
+    return this.config.config.targets.filter((t) => t.favorite);
   }
 
   // repoId -> { current, dirty, branches: Map(name -> branch) }
@@ -942,7 +928,7 @@ class DatabasesScreen extends Component {
 // First-class targets: name, favorite flag, config (repo:branch pairs), db and
 // start args. Rows are edited inline; "New target" opens a dialog form.
 
-async function startCreateTarget(config, eventLog) {
+async function startCreateTarget(config, eventLog, code) {
   const existingTargets = config.config.targets;
   const res = await openDialog({
     title: "New target",
@@ -998,6 +984,7 @@ async function startCreateTarget(config, eventLog) {
       { key: "db", type: "text", label: "Database", placeholder: "database name" },
       { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
+      { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
     ],
   });
   if (!res) return;
@@ -1011,6 +998,15 @@ async function startCreateTarget(config, eventLog) {
   };
   config.updateConfig({ targets: [...config.config.targets, target] });
   eventLog.add(`created target ${target.name}`);
+  if (res.createBranches && code) {
+    const tpl = existingTargets.find((t) => t.id === res.template);
+    const baseBranchByRepo = Object.fromEntries((tpl?.config || []).map((c) => [c.repo, c.branch]));
+    const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
+    for (const c of target.config) {
+      const path = pathByRepo[c.repo];
+      if (path) await code.createBranch(path, c.branch, baseBranchByRepo[c.repo]);
+    }
+  }
 }
 class TargetsScreen extends Component {
   static template = xml`
@@ -1033,7 +1029,7 @@ class TargetsScreen extends Component {
                 <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
-                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id)}">
+                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id), dragging: this.dragId() === tgt.id, 'drag-over': this.dragOverId() === tgt.id}" t-on-dragover="ev => this.onDragOver(ev, tgt)" t-on-drop="ev => this.onDrop(ev, tgt)">
                   <td>
                     <input type="checkbox" class="br-select" t-att-checked="this.selected().has(tgt.id)" t-on-change="() => this.toggleSelect(tgt.id)" title="select this target for batch actions"/>
                   </td>
@@ -1051,7 +1047,7 @@ class TargetsScreen extends Component {
                     </td>
                   </t>
                   <t t-else="">
-                    <td t-out="tgt.name"/>
+                    <td class="tgt-name-handle" draggable="true" title="drag to reorder" t-on-dragstart="ev => this.onDragStart(ev, tgt)" t-on-dragend="() => this.onDragEnd()" t-out="tgt.name"/>
                     <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
                     <td class="dim"><div class="br-ellip" t-att-title="this.fmtConfig(tgt)" t-out="this.fmtConfig(tgt)"/></td>
                     <td t-out="tgt.db"/>
@@ -1087,6 +1083,8 @@ class TargetsScreen extends Component {
   draftArgs = signal("");
   error = signal(""); // inline-edit validation error
   selected = signal(new Set()); // target ids ticked for batch actions
+  dragId = signal(""); // id of the target currently being dragged ("" = none)
+  dragOverId = signal(""); // id of the row the drag is hovering over
 
   setup() {
     this.code.load(); // need each repo's branches/checkout state for Activate
@@ -1155,11 +1153,46 @@ class TargetsScreen extends Component {
     this.server.setLastTarget(tgt.id);
   }
 
-  // favorites first, otherwise keep configured order
+  // the configured order — reorderable by dragging a row's name
   get targets() {
-    return [...this.config.config.targets].sort(
-      (a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0),
-    );
+    return this.config.config.targets;
+  }
+
+  onDragStart(ev, tgt) {
+    this.dragId.set(tgt.id);
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", tgt.id); // some browsers need data to start a drag
+  }
+
+  onDragOver(ev, tgt) {
+    if (!this.dragId()) return; // ignore drags that didn't start on a name handle
+    ev.preventDefault(); // mark this row as a valid drop target
+    ev.dataTransfer.dropEffect = "move";
+    if (this.dragOverId() !== tgt.id) this.dragOverId.set(tgt.id);
+  }
+
+  onDrop(ev, tgt) {
+    ev.preventDefault();
+    this.reorderTargets(this.dragId(), tgt.id);
+    this.onDragEnd();
+  }
+
+  onDragEnd() {
+    this.dragId.set("");
+    this.dragOverId.set("");
+  }
+
+  // move the dragged target to sit immediately before the drop target
+  reorderTargets(fromId, toId) {
+    if (!fromId || fromId === toId) return;
+    const targets = [...this.config.config.targets];
+    const from = targets.findIndex((t) => t.id === fromId);
+    if (from < 0) return;
+    const [moved] = targets.splice(from, 1);
+    const to = targets.findIndex((t) => t.id === toId);
+    if (to < 0) return;
+    targets.splice(to, 0, moved);
+    this.config.updateConfig({ targets });
   }
 
   get count() {
@@ -1283,7 +1316,7 @@ class TargetsScreen extends Component {
 
   // create a new target through a dialog form (validated before it closes)
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog);
+    return startCreateTarget(this.config, this.eventLog, this.code);
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
