@@ -713,13 +713,18 @@ section.hidden {
 }
 
 /* favorite repositories — card with fixed-width columns */
+.dash-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: calc(2 * 580px + 22px);
+}
 .dash-repos {
   background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 14px;
   box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04);
   padding: 6px 8px 8px;
-  margin-bottom: 28px;
 }
 .dash-repos-head,
 .dash-repo-row {
@@ -739,7 +744,7 @@ section.hidden {
   color: var(--l-text-faint);
 }
 .dash-repo-row {
-  padding: 14px 16px;
+  padding: 10px 16px;
   border-top: 1px solid var(--l-line-soft);
   border-radius: 8px;
 }
@@ -839,7 +844,7 @@ section.hidden {
 /* build target cards — 2-column grid */
 .dash-cards {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(520px, 580px));
   gap: 22px;
 }
 .dash-card {
@@ -858,12 +863,12 @@ section.hidden {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 18px 20px;
-  background: var(--l-card);
+  padding: 13px 20px;
+  background: var(--l-bg);
   border-bottom: 1px solid var(--l-line-soft);
 }
 .dash-card.active .dash-card-head {
-  background: var(--l-panel);
+  background: var(--l-bg);
 }
 .dash-card-title {
   display: flex;
@@ -981,7 +986,7 @@ section.hidden {
   grid-template-columns: subgrid;
   column-gap: 16px;
   align-items: center;
-  padding: 15px 12px;
+  padding: 10px 12px;
   border-top: 1px solid var(--l-line-soft);
   border-radius: 9px;
 }

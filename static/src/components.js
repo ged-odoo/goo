@@ -256,6 +256,7 @@ class DashboardScreen extends Component {
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
 
+          <div class="dash-layout">
           <!-- favorite repositories (flat list, fetch &amp; rebase per repo) -->
           <section t-if="this.favRepos.length" class="dash-repos">
             <div class="dash-repos-head">
@@ -334,6 +335,7 @@ class DashboardScreen extends Component {
               </div>
             </div>
           </div>
+          </div><!-- /.dash-layout -->
         </div>
       </div>
     </section>`;
