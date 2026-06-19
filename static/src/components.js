@@ -2887,6 +2887,10 @@ class TerminalPanel extends Component {
     this._termOpen = true;
     try {
       await loadXterm();
+      // always wait one animation frame so the browser computes layout before
+      // xterm attaches — on subsequent opens loadXterm() resolves instantly and
+      // fit.fit() would otherwise run against a 0×0 container
+      await new Promise((r) => requestAnimationFrame(r));
       if (!this.term.open()) return; // closed while loading
       const term = new Terminal({
         cursorBlink: true,
