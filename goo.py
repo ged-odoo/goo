@@ -967,9 +967,13 @@ def build_odoo_cmd(config):
     if test_tags:
         # quote so shell globbing can't mangle hoot params, e.g.
         # /web:WebSuite[@web/core/commands] (the [..] is a bash glob).
-        # --dev=assets serves non-minified bundles (debug=assets) so JS test
-        # code is readable when it runs.
-        cmd += f" --test-tags {shlex.quote(test_tags)} --dev=assets --stop-after-init"
+        # --dev all turns on the dev features (access/qweb/reload/xml). NOTE: it
+        # does NOT de-minify the headless HOOT JS bundle — minification is decided
+        # by `session.debug` (set only from the `debug=assets` URL param), and
+        # test_js.py hardcodes the test URL without it (browser_js adds it only in
+        # non-headless "watch" mode). To read non-minified JS stacks, open the
+        # failing test via the "[open in hoot]" link in the log (debug=assets).
+        cmd += f" --test-tags {shlex.quote(test_tags)} --dev all --stop-after-init"
         return cmd, db, False
 
     # install / upgrade modules and exit
