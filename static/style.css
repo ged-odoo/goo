@@ -743,9 +743,6 @@ section.hidden {
   border-top: 1px solid var(--l-line-soft);
   border-radius: 8px;
 }
-.dash-repo-row:hover {
-  background: var(--l-hover);
-}
 .dash-repo-name {
   display: flex;
   align-items: center;
@@ -990,9 +987,6 @@ section.hidden {
 }
 .dash-card-row:first-child {
   border-top: none;
-}
-.dash-card-row:hover {
-  background: var(--l-hover);
 }
 .dash-row-repo {
   min-width: 0;
