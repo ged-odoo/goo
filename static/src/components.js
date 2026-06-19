@@ -2818,7 +2818,7 @@ class TerminalPanel extends Component {
         <span class="term-panel-title">Terminal</span>
         <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
       </div>
-      <div class="term-panel-body" t-ref="container"/>
+      <div class="term-panel-body" t-ref="this.container"/>
     </div>`;
 
   term = plugin(TerminalPlugin);
