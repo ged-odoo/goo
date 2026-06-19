@@ -920,7 +920,8 @@ class DatabasesScreen extends Component {
                   <td>
                     <input t-if="!d.active" type="checkbox" class="br-select" t-att-checked="this.selected().has(d.name)" t-on-change="() => this.toggleSelect(d.name)" title="select this database for batch actions"/>
                   </td>
-                  <td t-att-class="{'active-name': d.active}">
+                  <td t-att-class="{'active-name': d.active, 'select-toggle': !d.active}"
+                      t-on-click="() => d.active || this.toggleSelect(d.name)">
                     <span class="br-branch" t-out="d.name"/>
                     <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
                   </td>
@@ -1642,7 +1643,7 @@ class BranchesScreen extends Component {
                   <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
                     <div class="br-name-inner">
                       <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
-                      <span class="br-branch" t-out="g.name"/>
+                      <span class="br-branch select-toggle" t-on-click="() => this.toggleSelect(g.name)" t-out="g.name"/>
                     </div>
                   </td>
                   <td class="br-repo">
