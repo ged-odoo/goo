@@ -886,6 +886,7 @@ class TargetsScreen extends Component {
         <div class="panel-top"><h1>Targets</h1></div>
         <div class="panel-actions">
           <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
+          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
           <span class="row-count" t-out="this.count"/>
         </div>
@@ -896,10 +897,13 @@ class TargetsScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
+                <tr><th/><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
-                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt)}">
+                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id)}">
+                  <td>
+                    <input type="checkbox" class="br-select" t-att-checked="this.selected().has(tgt.id)" t-on-change="() => this.toggleSelect(tgt.id)" title="select this target for batch actions"/>
+                  </td>
                   <t t-if="this.editId() === tgt.id">
                     <td><input type="text" class="cell-input" t-att-value="this.draftName()" placeholder="name" t-on-input="ev => this.draftName.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
                     <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
@@ -949,6 +953,7 @@ class TargetsScreen extends Component {
   draftDb = signal("");
   draftArgs = signal("");
   error = signal(""); // inline-edit validation error
+  selected = signal(new Set()); // target ids ticked for batch actions
 
   setup() {
     this.code.load(); // need each repo's branches/checkout state for Activate
@@ -1038,6 +1043,93 @@ class TargetsScreen extends Component {
       t.id === id ? { ...t, favorite: !t.favorite } : t,
     );
     this.config.updateConfig({ targets });
+  }
+
+  toggleSelect(id) {
+    const sel = new Set(this.selected());
+    sel.has(id) ? sel.delete(id) : sel.add(id);
+    this.selected.set(sel);
+  }
+
+  get _selectedTargets() {
+    const sel = this.selected();
+    return this.targets.filter((t) => sel.has(t.id) && !this.isActive(t));
+  }
+
+  get selectedCount() {
+    return this._selectedTargets.length;
+  }
+
+  async deleteSelected() {
+    const targets = this._selectedTargets;
+    if (!targets.length) return;
+    const repos = this.repoMap;
+    const groups = this.code.groups();
+
+    // aggregate deletable branches across all selected targets
+    const allBranches = targets.flatMap((tgt) =>
+      (tgt.config || [])
+        .map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) }))
+        .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
+        .map((x) => ({ repo: x.repo, branch: x.branch, path: groups.pathByRepo[x.repo], remote: !!x.b.remote })),
+    );
+
+    // aggregate open PRs across all selected targets
+    const allPrs = targets.flatMap((tgt) =>
+      (tgt.config || [])
+        .map(({ repo, branch }) => ({ pr: groups.prIndex[`${repo}:${branch}`], github: groups.githubByRepo[repo] }))
+        .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
+        .map((x) => ({ github: x.github, number: x.pr.number })),
+    );
+
+    // aggregate existing databases across all selected targets
+    const existingDbs = this.db.databases().map((d) => d.name);
+    const allDbs = [...new Set(targets.map((t) => t.db).filter((db) => db && existingDbs.includes(db)))];
+
+    const n = targets.length;
+    const fields = [];
+    if (allBranches.length)
+      fields.push({
+        key: "delBranches",
+        type: "checkbox",
+        label: `Also delete ${allBranches.length === 1 ? "their branch" : `their ${allBranches.length} branches`}`,
+        value: false,
+      });
+    if (allBranches.some((b) => b.remote))
+      fields.push({ key: "delRemote", type: "checkbox", label: "…also on the remote (odoo-dev)", value: false });
+    if (allPrs.length)
+      fields.push({
+        key: "closePrs",
+        type: "checkbox",
+        label: `Close ${allPrs.length === 1 ? "their open pull request" : `their ${allPrs.length} open pull requests`}`,
+        value: false,
+      });
+    if (allDbs.length)
+      fields.push({
+        key: "dropDbs",
+        type: "checkbox",
+        label: `Drop ${allDbs.length === 1 ? `database "${allDbs[0]}"` : `their ${allDbs.length} databases`}`,
+        value: false,
+      });
+
+    const res = await openDialog({
+      title: `Delete ${n} target${n === 1 ? "" : "s"}?`,
+      message: "The targets will be removed from your list. This cannot be undone.",
+      okLabel: "Delete",
+      fields,
+    });
+    if (!res) return;
+
+    if (res.closePrs) for (const p of allPrs) await this.code.closePrNoConfirm(p.github, p.number);
+    if (res.delBranches)
+      for (const b of allBranches)
+        await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
+    if (res.dropDbs) for (const db of allDbs) await this.db.drop(db);
+
+    const deletedIds = new Set(targets.map((t) => t.id));
+    this.config.updateConfig({ targets: this.config.config.targets.filter((t) => !deletedIds.has(t.id)) });
+    for (const t of targets) this.eventLog.add(`deleted target ${t.name}`);
+    this.selected.set(new Set());
   }
 
   // create a new target through a dialog form (validated before it closes)
