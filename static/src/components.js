@@ -249,6 +249,7 @@ class DashboardScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
+          <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
         </div>
       </div>
@@ -343,9 +344,13 @@ class DashboardScreen extends Component {
   code = plugin(CodePlugin);
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
+  eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
   dbIcon = m(ICONS.databases);
+  startCreate() {
+    return startCreateTarget(this.config, this.eventLog);
+  }
 
   setup() {
     this.code.load();
@@ -936,6 +941,77 @@ class DatabasesScreen extends Component {
 
 // First-class targets: name, favorite flag, config (repo:branch pairs), db and
 // start args. Rows are edited inline; "New target" opens a dialog form.
+
+async function startCreateTarget(config, eventLog) {
+  const existingTargets = config.config.targets;
+  const res = await openDialog({
+    title: "New target",
+    okLabel: "Create",
+    validate: (v) => {
+      const name = (v.name || "").trim();
+      if (!name) return "a name is required";
+      if (existingTargets.some((t) => t.name === name))
+        return `a target named "${name}" already exists`;
+      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+      return "";
+    },
+    fields: [
+      {
+        key: "template",
+        type: "select",
+        label: "Template",
+        placeholder: "— start blank —",
+        options: existingTargets.map((t) => ({ value: t.id, label: t.name })),
+        value: "",
+        onChange: (tplId) => {
+          if (!tplId) return null;
+          const tpl = existingTargets.find((t) => t.id === tplId);
+          if (!tpl) return null;
+          const branchName =
+            tpl.config.find((c) => c.repo === "enterprise")?.branch ||
+            tpl.config.find((c) => c.repo === "community")?.branch ||
+            "";
+          return {
+            name: branchName,
+            config: repoBranchList.format(tpl.config),
+            db: tpl.db || "",
+            args: tpl.on_create_args || "",
+            fav: !!tpl.favorite,
+          };
+        },
+      },
+      {
+        key: "name",
+        type: "text",
+        label: "Name",
+        placeholder: "name (e.g. master-mytask)",
+        onChange: (newName, currentValues, oldValues) => {
+          const oldName = oldValues.name;
+          if (!oldName) return null;
+          return {
+            config: (currentValues.config || "").replaceAll(oldName, newName),
+            db: (currentValues.db || "").replaceAll(oldName, newName),
+          };
+        },
+      },
+      { key: "config", type: "text", label: "Config", placeholder: "community:master,enterprise:master" },
+      { key: "db", type: "text", label: "Database", placeholder: "database name" },
+      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      { key: "fav", type: "checkbox", label: "Favorite", value: false },
+    ],
+  });
+  if (!res) return;
+  const target = {
+    id: newTargetId(),
+    name: res.name.trim(),
+    favorite: !!res.fav,
+    config: repoBranchList.parse(res.config.trim()),
+    db: (res.db || "").trim(),
+    on_create_args: (res.args || "").trim(),
+  };
+  config.updateConfig({ targets: [...config.config.targets, target] });
+  eventLog.add(`created target ${target.name}`);
+}
 class TargetsScreen extends Component {
   static template = xml`
     <section>
@@ -1206,75 +1282,8 @@ class TargetsScreen extends Component {
   }
 
   // create a new target through a dialog form (validated before it closes)
-  async startCreate() {
-    const existingTargets = this.config.config.targets;
-    const res = await openDialog({
-      title: "New target",
-      okLabel: "Create",
-      validate: (v) => {
-        const name = (v.name || "").trim();
-        if (!name) return "a name is required";
-        if (existingTargets.some((t) => t.name === name))
-          return `a target named "${name}" already exists`;
-        if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-        return "";
-      },
-      fields: [
-        {
-          key: "template",
-          type: "select",
-          label: "Template",
-          placeholder: "— start blank —",
-          options: existingTargets.map((t) => ({ value: t.id, label: t.name })),
-          value: "",
-          onChange: (tplId) => {
-            if (!tplId) return null;
-            const tpl = existingTargets.find((t) => t.id === tplId);
-            if (!tpl) return null;
-            const branchName =
-              tpl.config.find((c) => c.repo === "enterprise")?.branch ||
-              tpl.config.find((c) => c.repo === "community")?.branch ||
-              "";
-            return {
-              name: branchName,
-              config: repoBranchList.format(tpl.config),
-              db: tpl.db || "",
-              args: tpl.on_create_args || "",
-              fav: !!tpl.favorite,
-            };
-          },
-        },
-        {
-          key: "name",
-          type: "text",
-          label: "Name",
-          placeholder: "name (e.g. master-mytask)",
-          onChange: (newName, currentValues, oldValues) => {
-            const oldName = oldValues.name;
-            if (!oldName) return null;
-            return {
-              config: (currentValues.config || "").replaceAll(oldName, newName),
-              db: (currentValues.db || "").replaceAll(oldName, newName),
-            };
-          },
-        },
-        { key: "config", type: "text", label: "Config", placeholder: "community:master,enterprise:master" },
-        { key: "db", type: "text", label: "Database", placeholder: "database name" },
-        { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
-        { key: "fav", type: "checkbox", label: "Favorite", value: false },
-      ],
-    });
-    if (!res) return;
-    const target = {
-      id: newTargetId(),
-      name: res.name.trim(),
-      favorite: !!res.fav,
-      config: repoBranchList.parse(res.config.trim()),
-      db: (res.db || "").trim(),
-      on_create_args: (res.args || "").trim(),
-    };
-    this.config.updateConfig({ targets: [...this.config.config.targets, target] });
-    this.eventLog.add(`created target ${target.name}`);
+  startCreate() {
+    return startCreateTarget(this.config, this.eventLog);
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
