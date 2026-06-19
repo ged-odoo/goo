@@ -27,6 +27,7 @@ export class TestsPlugin extends Plugin {
   _tags = ""; // current run's tags (for the deferred "running tests" log)
   _cutOnChrome = false; // WebSuite runs end the console window at the chrome teardown
   _result = ""; // "success" | "fail" — derived from the HOOT result lines
+  _failSeq = 0; // monotonic id source for failure-row anchors (never reset)
 
   _readHistory() {
     try {
@@ -66,14 +67,16 @@ export class TestsPlugin extends Plugin {
       // test server boots) so the exact command used is shown in the tab
       if (!this._capturing && line.includes("[goo] starting odoo:")) this._capturing = true;
       if (!this._capturing) return;
-      this.output.append(line);
+      // a failing HOOT test gets a DOM anchor on its row so the event log entry
+      // can scroll the console straight to it
+      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
+      const anchor = failed ? `test-fail-${++this._failSeq}` : "";
+      this.output.append(line, anchor);
+      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor);
       // remember the suite outcome as soon as HOOT reports it
       if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
       else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
         this._result = "fail";
-      // surface each individual HOOT test failure as its own event
-      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
-      if (failed) this.eventLog.add(`test failed: ${failed[1]}`);
       // for browser (WebSuite) runs the meaningful window ends when the browser is
       // torn down; everything after (thread dumps, shutdown noise) stays in the
       // Server tab only. Other test kinds keep streaming until the process stops.

@@ -1568,6 +1568,16 @@ a.dash-row-branch:hover {
   border-left-color: oklch(0.68 0.2 22 / 0.55);
   background: oklch(0.68 0.2 22 / 0.05);
 }
+/* "[open in hoot]" link appended to HOOT "Running test" rows */
+.hoot-link {
+  flex: none;
+  margin-left: 8px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.hoot-link:hover {
+  text-decoration: underline;
+}
 .ts {
   color: var(--text-faint);
   flex-shrink: 0;
@@ -1731,6 +1741,33 @@ a.dash-row-branch:hover {
   font-weight: 400;
 }
 
+/* tests tab: result chip beside the title */
+.test-title {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.test-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.test-badge.ok {
+  color: var(--l-green);
+  background: var(--l-green-bg);
+}
+.test-badge.fail {
+  color: var(--l-red);
+  background: var(--l-red-bg);
+}
+.test-badge.run {
+  color: var(--l-amber);
+  background: var(--l-amber-bg);
+}
 .db-badge {
   display: inline-flex;
   align-items: center;
@@ -2700,8 +2737,32 @@ a.dash-row-branch:hover {
   color: var(--l-text-faint);
 }
 .event-log-text {
+  flex: 1;
   color: var(--l-text);
   word-break: break-word;
+}
+.event-log-jump {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--l-accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.event-log-jump:hover {
+  text-decoration: underline;
+}
+/* brief highlight on the log row a jump landed on */
+.log-jump-flash {
+  animation: log-jump-flash 1.5s ease-out;
+}
+@keyframes log-jump-flash {
+  0% {
+    background: var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+  }
 }
 .edit-check input {
   width: auto;

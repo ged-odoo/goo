@@ -34,8 +34,11 @@ export class LogBuffer {
     });
   }
 
-  append(line) {
-    this.el.appendChild(buildLogRow(line));
+  // `id` (optional) tags the row's DOM element so callers can scroll/link to it
+  append(line, id) {
+    const row = buildLogRow(line);
+    if (id) row.id = id;
+    this.el.appendChild(row);
     while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild.remove();
     this.count.set(this.el.childElementCount);
     if (this.autoScroll()) this._queueScroll();

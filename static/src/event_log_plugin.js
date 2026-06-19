@@ -15,8 +15,10 @@ export class EventLogPlugin extends Plugin {
   open = signal(false); // overlay panel visibility
   _seq = 0;
 
-  add(text) {
-    const next = [...this.entries(), { id: ++this._seq, at: Date.now(), text }];
+  // `anchor` (optional) is a DOM id of a log row the UI can scroll to. It is kept
+  // client-side only — the server log still receives just the text.
+  add(text, anchor = "") {
+    const next = [...this.entries(), { id: ++this._seq, at: Date.now(), text, anchor }];
     this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
     postJSON("/api/event", { text }).catch(() => {}); // also log on the goo server (best-effort)
   }

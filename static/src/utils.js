@@ -84,15 +84,45 @@ export function ansiToHtml(line) {
   return html;
 }
 
+// HOOT's own test id: Java-style String.hashCode of the test's full name, as an
+// 8-char hex string. Mirrors generateHash() in web/static/lib/hoot/hoot_utils.js
+// (the id is generateHash(fullName) in core/job.js).
+function hootTestId(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  return (hash + 16 ** 8).toString(16).slice(-8);
+}
+
+function hootTestUrl(name) {
+  return `http://localhost:8069/web/tests?debug=assets&timeout=500000&id=${hootTestId(name)}`;
+}
+
+// append an "[open in hoot]" link that opens the single test in HOOT's web UI
+function appendHootLink(div, name) {
+  const a = document.createElement("a");
+  a.className = "hoot-link";
+  a.href = hootTestUrl(name);
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.textContent = "[open in hoot]";
+  div.appendChild(a);
+}
+
 // Build a detached <div class="row"> for one odoo log line.
 export function buildLogRow(line) {
   const div = document.createElement("div");
   const text = line.replace(ANSI_RE, "");
+  // a HOOT "Running test" line gets a link to open that test in the HOOT web UI
+  const hoot = text.match(/\[HOOT\] Running test "(.+?)"/);
   const m = LOG_RE.exec(text);
   if (!m) {
     // goo's own events ("[goo] …") get a gray background to stand out from odoo logs
     div.className = text.startsWith("[goo]") ? "row raw goo-line" : "row raw";
     div.innerHTML = `<span class="msg">${ansiToHtml(line)}</span>`;
+    if (hoot) appendHootLink(div, hoot[1]);
     return div;
   }
   const [, ts, pid, lvl, , logger, msg] = m;
@@ -126,6 +156,7 @@ export function buildLogRow(line) {
     `<span class="lvl ${LVL_CLASS[lvl]}">${lvl === "WARNING" ? "WARN" : lvl === "CRITICAL" ? "CRIT" : lvl}</span>` +
     `<span class="logger">${escapeHtml(logger)}:</span>` +
     `<span class="msg">${msgHtml}</span>`;
+  if (hoot) appendHootLink(div, hoot[1]);
   return div;
 }
 

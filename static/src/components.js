@@ -2135,7 +2135,7 @@ class TestsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Tests</h1><span class="meta" t-out="this.meta"/></div>
+        <div class="panel-top"><div class="test-title"><h1>Tests</h1><span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/></div></div>
         <div class="panel-actions">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
             <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
@@ -2170,11 +2170,13 @@ class TestsScreen extends Component {
   clearIcon = m(ICONS.clear);
   tags = signal("");
 
-  get meta() {
-    const t = this.tests.target;
-    if (!t) return "no target configured";
-    const st = this.tests.status();
-    return `target: ${t}${st ? " · " + st : ""}`;
+  // a compact result chip shown next to the title, replacing the old status text
+  get badge() {
+    const s = this.tests.status();
+    if (s === "passed") return { label: "success", cls: "ok" };
+    if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
+    if (s === "running…" || s === "starting…") return { label: "running", cls: "run" };
+    return null;
   }
 
   run() {
@@ -2792,12 +2794,15 @@ class EventLog extends Component {
         <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row">
           <span class="event-log-time" t-att-title="e.full" t-out="e.time"/>
           <span class="event-log-text" t-out="e.text"/>
+          <a t-if="e.anchor" class="event-log-jump" t-on-click="() => this.jump(e.anchor)" title="jump to this line in the test log">[jump]</a>
         </div>
       </div>
     </div>`;
 
   log = plugin(EventLogPlugin);
   config = plugin(ConfigPlugin);
+  router = plugin(RouterPlugin);
+  tests = plugin(TestsPlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true); // follow the tail as new events arrive
@@ -2827,6 +2832,26 @@ class EventLog extends Component {
     this.autoScroll.set(!this.autoScroll());
   }
 
+  // open the Tests tab and scroll its console to the anchored line. The console
+  // unmounts when off-tab and its element is re-hosted on return, so we wait
+  // (a few frames) for the row to become laid out before revealing it.
+  jump(anchor) {
+    this.router.go("tests");
+    let tries = 0;
+    const reveal = () => {
+      const row = document.getElementById(anchor);
+      if (row && row.offsetParent !== null) {
+        this.tests.output.autoScroll.set(false); // stay on the line, don't snap to the tail
+        row.scrollIntoView({ block: "center" });
+        row.classList.add("log-jump-flash");
+        setTimeout(() => row.classList.remove("log-jump-flash"), 1500);
+      } else if (tries++ < 30) {
+        requestAnimationFrame(reveal);
+      }
+    };
+    requestAnimationFrame(reveal);
+  }
+
   // chronological: oldest first, newest appended at the end
   get rows() {
     return this.log.entries().map((e) => {
@@ -2836,6 +2861,7 @@ class EventLog extends Component {
         time: d.toLocaleTimeString([], { hour12: false }), // 24h, no AM/PM
         full: d.toLocaleString(), // full date + time, shown on hover
         text: e.text,
+        anchor: e.anchor || "",
       };
     });
   }
