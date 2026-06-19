@@ -740,9 +740,9 @@ class ServerScreen extends Component {
           <button class="pbtn primary dash-start" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
+          <button class="pbtn" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
           <span t-if="this.transient" class="run-state" t-out="this.transient"/>
           <div t-if="this.showLogs" class="log-controls">
-            <button class="pbtn term-btn" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
             <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
             <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
           </div>
@@ -2812,41 +2812,57 @@ function loadXterm() {
 
 class TerminalPanel extends Component {
   static template = xml`
-    <div t-if="this.term.open()" class="term-panel"
-         t-att-style="'left:' + this.x() + 'px;top:' + this.y() + 'px'">
+    <div t-if="this.term.open()" class="term-panel" t-att-style="this.panelStyle">
       <div class="term-panel-head" t-on-mousedown="this.onDragStart">
         <span class="term-panel-title">Terminal</span>
         <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
       </div>
       <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.onResizeStart"/>
     </div>`;
 
   term = plugin(TerminalPlugin);
   container = signal.ref(HTMLElement);
   x = signal(0);
   y = signal(0);
+  w = signal(780);
+  h = signal(440);
   _dragging = false;
   _dragOffsetX = 0;
   _dragOffsetY = 0;
+  _resizing = false;
+  _resizeStartX = 0;
+  _resizeStartY = 0;
+  _resizeStartW = 0;
+  _resizeStartH = 0;
   _term = null;
   _ws = null;
   _ro = null;
   _termOpen = false; // guard against double-open on re-renders
 
+  get panelStyle() {
+    return `left:${this.x()}px;top:${this.y()}px;width:${this.w()}px;height:${this.h()}px`;
+  }
+
   setup() {
     this._onMouseMove = (e) => {
-      if (!this._dragging) return;
-      this.x.set(Math.max(0, e.clientX - this._dragOffsetX));
-      this.y.set(Math.max(0, e.clientY - this._dragOffsetY));
+      if (this._dragging) {
+        this.x.set(Math.max(0, e.clientX - this._dragOffsetX));
+        this.y.set(Math.max(0, e.clientY - this._dragOffsetY));
+      } else if (this._resizing) {
+        this.w.set(Math.max(300, this._resizeStartW + e.clientX - this._resizeStartX));
+        this.h.set(Math.max(200, this._resizeStartH + e.clientY - this._resizeStartY));
+      }
     };
     this._onMouseUp = () => {
       this._dragging = false;
+      this._resizing = false;
     };
 
     onMounted(() => {
       // center on first render
-      this.x.set(Math.max(0, Math.floor((window.innerWidth - 780) / 2)));
-      this.y.set(Math.max(0, Math.floor((window.innerHeight - 440) / 2)));
+      this.x.set(Math.max(0, Math.floor((window.innerWidth - this.w()) / 2)));
+      this.y.set(Math.max(0, Math.floor((window.innerHeight - this.h()) / 2)));
       document.addEventListener("mousemove", this._onMouseMove);
       document.addEventListener("mouseup", this._onMouseUp);
     });
@@ -2940,6 +2956,17 @@ class TerminalPanel extends Component {
     this._dragOffsetX = e.clientX - this.x();
     this._dragOffsetY = e.clientY - this.y();
     e.preventDefault();
+  }
+
+  onResizeStart(e) {
+    if (e.button !== 0) return;
+    this._resizing = true;
+    this._resizeStartX = e.clientX;
+    this._resizeStartY = e.clientY;
+    this._resizeStartW = this.w();
+    this._resizeStartH = this.h();
+    e.preventDefault();
+    e.stopPropagation();
   }
 }
 

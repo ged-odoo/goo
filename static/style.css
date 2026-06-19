@@ -2651,13 +2651,13 @@ a.dash-row-branch:hover {
   z-index: 90;
   display: flex;
   flex-direction: column;
-  width: 780px;
-  height: 440px;
   background: #1a1a1a;
   border: 1px solid var(--l-line);
   border-radius: 10px;
   box-shadow: 0 14px 44px oklch(0 0 0 / 0.4);
   overflow: hidden;
+  min-width: 300px;
+  min-height: 200px;
 }
 
 .term-panel-head {
@@ -2695,6 +2695,15 @@ a.dash-row-branch:hover {
 .term-panel-body .terminal {
   width: 100%;
   height: 100%;
+}
+
+.term-panel-resize {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  cursor: se-resize;
 }
 
 /* ──────────── Event log panel ──────────── */
