@@ -2162,13 +2162,10 @@ class ConfigScreen extends Component {
           <div class="settings-grid">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
               <label t-out="f.name"/>
-              <input type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]" t-on-input="ev => this.setSetting(f.key, ev.target.value)"/>
+              <input type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
+                     t-on-input="ev => this.setSetting(f.key, ev.target.value)"
+                     t-on-change="() => this.saveSettings()"/>
             </t>
-          </div>
-          <div class="config-actions">
-            <button t-on-click="() => this.saveSettings()">Save</button>
-            <button t-on-click="() => this.resetSettings()">Reset to defaults</button>
-            <span t-att-class="this.settingsMsg() === 'saved' ? 'ok' : ''" t-out="this.settingsMsg()"/>
           </div>
         </div>
         <ListEditor kind="'repos'"/>
@@ -2209,7 +2206,6 @@ class ConfigScreen extends Component {
   backupMsg = signal("");
   settingsFields = SETTINGS_FIELDS;
   settings = signal(this._loadSettings());
-  settingsMsg = signal("");
 
   _loadSettings() {
     const c = this.config.config;
@@ -2224,17 +2220,6 @@ class ConfigScreen extends Component {
     const patch = {};
     for (const f of SETTINGS_FIELDS) patch[f.key] = (this.settings()[f.key] || "").trim();
     this.config.updateConfig(patch);
-    this.settings.set(this._loadSettings());
-    this.settingsMsg.set("saved");
-    setTimeout(() => this.settingsMsg.set(""), 2000);
-  }
-
-  resetSettings() {
-    if (!confirm("Reset settings to the built-in defaults?")) return;
-    for (const f of SETTINGS_FIELDS) this.config.resetKey(f.key);
-    this.settings.set(this._loadSettings());
-    this.settingsMsg.set("reset to defaults");
-    setTimeout(() => this.settingsMsg.set(""), 2000);
   }
 
   triggerImport() {
