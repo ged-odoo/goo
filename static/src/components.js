@@ -897,7 +897,7 @@ class TargetsScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th/><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id)}">
@@ -1049,6 +1049,22 @@ class TargetsScreen extends Component {
     const sel = new Set(this.selected());
     sel.has(id) ? sel.delete(id) : sel.add(id);
     this.selected.set(sel);
+  }
+
+  get _selectableTargets() {
+    return this.targets.filter((t) => !this.isActive(t));
+  }
+
+  get allSelected() {
+    const sel = this.selected();
+    const selectable = this._selectableTargets;
+    return selectable.length > 0 && selectable.every((t) => sel.has(t.id));
+  }
+
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected ? new Set() : new Set(this._selectableTargets.map((t) => t.id)),
+    );
   }
 
   get _selectedTargets() {
@@ -1347,7 +1363,7 @@ class BranchesScreen extends Component {
             <table class="br-table">
               <thead>
                 <tr>
-                  <th class="br-sort" t-on-click="() => this.sort('name')">Branch<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
+                  <th class="br-sort" t-on-click="() => this.sort('name')"><span t-on-click.stop=""><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all branches"/></span>Branch<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
                   <th>Repository</th>
                   <th class="br-sort" t-on-click="() => this.sort('update')">Last update<span class="br-arrow" t-out="this.sortArrow('update')"/></th>
                   <th>PR</th>
@@ -1464,6 +1480,18 @@ class BranchesScreen extends Component {
     const sel = new Set(this.selected());
     sel.has(name) ? sel.delete(name) : sel.add(name);
     this.selected.set(sel);
+  }
+
+  get allSelected() {
+    const groups = this.groups();
+    const sel = this.selected();
+    return groups.length > 0 && groups.every((g) => sel.has(g.name));
+  }
+
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected ? new Set() : new Set(this.groups().map((g) => g.name)),
+    );
   }
 
   // selected branch groups that are still visible (a filter may hide some)
@@ -1668,7 +1696,7 @@ class PrsScreen extends Component {
           <div t-else="" class="br-card">
             <table class="br-table">
               <thead>
-                <tr><th/><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/><th class="br-spacer"/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/><th class="br-spacer"/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number" t-att-class="{'row-sel': this.selected().has(row.repo + ':' + row.number)}">
@@ -1715,6 +1743,24 @@ class PrsScreen extends Component {
     const sel = new Set(this.selected());
     sel.has(key) ? sel.delete(key) : sel.add(key);
     this.selected.set(sel);
+  }
+
+  get _selectablePrs() {
+    return this.rows().filter((r) => r.state === "OPEN" && r.github);
+  }
+
+  get allSelected() {
+    const sel = this.selected();
+    const selectable = this._selectablePrs;
+    return selectable.length > 0 && selectable.every((r) => sel.has(`${r.repo}:${r.number}`));
+  }
+
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected
+        ? new Set()
+        : new Set(this._selectablePrs.map((r) => `${r.repo}:${r.number}`)),
+    );
   }
 
   // selected, still-visible, closeable PRs
