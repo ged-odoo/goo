@@ -2814,7 +2814,7 @@ class TerminalPanel extends Component {
   static template = xml`
     <div t-if="this.term.open()" class="term-panel"
          t-att-style="'left:' + this.x() + 'px;top:' + this.y() + 'px'">
-      <div class="term-panel-head" t-on-mousedown="onDragStart">
+      <div class="term-panel-head" t-on-mousedown="this.onDragStart">
         <span class="term-panel-title">Terminal</span>
         <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
       </div>
