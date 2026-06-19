@@ -2874,22 +2874,21 @@ class TerminalPanel extends Component {
     });
 
     useEffect(() => {
-      if (this.term.open()) {
-        this._openTerminal();
+      const el = this.container();
+      if (el) {
+        this._openTerminal(el);
       } else {
         this._closeTerminal();
       }
     });
   }
 
-  async _openTerminal() {
+  async _openTerminal(el) {
     if (this._termOpen) return;
     this._termOpen = true;
     try {
       await loadXterm();
-      if (!this.term.open()) return; // closed while loading
-      const el = this.container();
-      if (!el) return;
+      if (this.container() !== el) return; // container swapped/gone while loading
       const term = new Terminal({
         cursorBlink: true,
         fontSize: 13,
@@ -2898,11 +2897,10 @@ class TerminalPanel extends Component {
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
       term.open(el);
-      // wait one frame for xterm's renderer to measure cell dimensions after
-      // inserting its DOM — fit.fit() reads cell width/height which are 0 until
-      // the browser has done a layout pass on xterm's newly created elements
+      // rAF lets the browser lay out xterm's newly inserted DOM so that
+      // FitAddon can read non-zero cell dimensions
       await new Promise((r) => requestAnimationFrame(r));
-      if (!this.term.open()) return; // closed during the frame wait
+      if (this.container() !== el) return; // container swapped/gone during rAF
       fit.fit();
       this._term = term;
 
