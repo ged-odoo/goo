@@ -2644,6 +2644,61 @@ a.dash-row-branch:hover {
 }
 
 /* ─── event log (floating overlay panel) ─── */
+/* ──────────── Terminal panel ──────────── */
+
+.term-panel {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  width: 780px;
+  height: 440px;
+  background: #1a1a1a;
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
+  box-shadow: 0 14px 44px oklch(0 0 0 / 0.4);
+  overflow: hidden;
+}
+
+.term-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--l-panel);
+  border-bottom: 1px solid var(--l-line);
+  cursor: grab;
+  user-select: none;
+  flex: none;
+}
+
+.term-panel-head:active {
+  cursor: grabbing;
+}
+
+.term-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--l-text-mid);
+}
+
+.term-panel-body {
+  flex: 1;
+  overflow: hidden;
+  padding: 4px;
+  min-height: 0;
+}
+
+/* xterm.js element fills the body */
+.term-panel-body .terminal {
+  width: 100%;
+  height: 100%;
+}
+
+/* ──────────── Event log panel ──────────── */
+
 .event-log {
   position: fixed;
   right: 16px;

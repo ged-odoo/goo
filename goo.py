@@ -9,7 +9,10 @@ it with each start request; the backend is stateless.
 import argparse
 import ast
 import atexit
+import base64
 import collections
+import fcntl
+import hashlib
 import json
 import mimetypes
 import os
@@ -19,8 +22,10 @@ import re
 import shlex
 import signal
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 import urllib.parse
@@ -998,6 +1003,60 @@ def build_odoo_cmd(config):
 
 
 # =============================================================================
+# WebSocket helpers (no external deps — only stdlib hashlib/base64/struct)
+# =============================================================================
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+RAW_BUF_MAX = 256 * 1024  # raw PTY byte ring buffer for terminal replay
+
+
+def _ws_accept_key(key):
+    digest = hashlib.sha1((key + _WS_GUID).encode()).digest()
+    return base64.b64encode(digest).decode()
+
+
+def _ws_send_frame(sock, payload, opcode=2):
+    """Send one unmasked WebSocket frame (server→client). opcode 2 = binary."""
+    n = len(payload)
+    if n < 126:
+        header = bytes([0x80 | opcode, n])
+    elif n < 65536:
+        header = bytes([0x80 | opcode, 126]) + struct.pack(">H", n)
+    else:
+        header = bytes([0x80 | opcode, 127]) + struct.pack(">Q", n)
+    sock.sendall(header + (payload if isinstance(payload, bytes) else bytes(payload)))
+
+
+def _ws_recv_frame(sock):
+    """Receive one WebSocket frame (client→server, always masked).
+    Returns (opcode, payload_bytes). Raises OSError on disconnect."""
+
+    def _recv(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise OSError("WebSocket disconnected")
+            buf += chunk
+        return buf
+
+    b0, b1 = _recv(2)
+    opcode = b0 & 0x0F
+    masked = bool(b1 & 0x80)
+    length = b1 & 0x7F
+    if length == 126:
+        length = struct.unpack(">H", _recv(2))[0]
+    elif length == 127:
+        length = struct.unpack(">Q", _recv(8))[0]
+    mask = _recv(4) if masked else b""
+    payload = bytearray(_recv(length))
+    if masked:
+        for i in range(len(payload)):
+            payload[i] ^= mask[i % 4]
+    return opcode, bytes(payload)
+
+
+# =============================================================================
 # Odoo process manager
 # =============================================================================
 
@@ -1021,6 +1080,11 @@ class OdooManager:
         self.started_at = None
         self.exited_unexpectedly = False
         self.returncode = None
+        # raw PTY byte ring buffer: replayed to each new terminal WebSocket client
+        # so xterm.js can reconstruct the current terminal state on connect
+        self._raw_buf = bytearray()
+        self._raw_lock = threading.Lock()
+        self._ws_clients = set()  # set of queue.Queue, one per terminal WS connection
 
     def status(self):
         with self.lock:
@@ -1076,6 +1140,9 @@ class OdooManager:
                 self.bus.publish_log(
                     f"{TAG} database '{db}' not initialized, applying on_create_args"
                 )
+
+            with self._raw_lock:
+                self._raw_buf.clear()
 
             master_fd, slave_fd = pty.openpty()
             self.process = subprocess.Popen(
@@ -1174,6 +1241,16 @@ class OdooManager:
         if active:
             self.stop()
 
+    def _emit_raw(self, data):
+        """Append raw PTY bytes to the ring buffer and fan out to terminal WS clients."""
+        with self._raw_lock:
+            self._raw_buf += data
+            if len(self._raw_buf) > RAW_BUF_MAX:
+                self._raw_buf = self._raw_buf[-RAW_BUF_MAX:]
+            clients = list(self._ws_clients)
+        for q in clients:
+            q.put(data)
+
     def _reader(self, fd, process):
         """Read the PTY, publish lines, detect readiness and unexpected exit."""
         buf = b""
@@ -1184,6 +1261,7 @@ class OdooManager:
                 break
             if not data:
                 break
+            self._emit_raw(data)
             buf += data
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
@@ -1252,6 +1330,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
         elif path == "/api/events":
             self._handle_events()
+        elif path == "/api/terminal":
+            self._handle_terminal()
         elif path == "/api/data":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             fpath = (qs.get("path") or [""])[0]
@@ -1498,6 +1578,75 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
+
+    # --- WebSocket terminal ---
+
+    def _handle_terminal(self):
+        """Upgrade to WebSocket, replay the PTY ring buffer, then proxy
+        live PTY bytes to the browser and browser keystrokes to the PTY."""
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key:
+            return self._send_json(400, {"ok": False, "error": "missing WS key"})
+
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", _ws_accept_key(key))
+        self.end_headers()
+        self.wfile.flush()
+
+        sock = self.connection
+        q = queue.Queue()
+
+        # snapshot buffer + register atomically so no bytes are lost
+        with MANAGER._raw_lock:
+            replay = bytes(MANAGER._raw_buf)
+            MANAGER._ws_clients.add(q)
+
+        try:
+            if replay:
+                _ws_send_frame(sock, replay)
+
+            def _sender():
+                while True:
+                    chunk = q.get()
+                    if chunk is None:
+                        break
+                    try:
+                        _ws_send_frame(sock, chunk)
+                    except OSError:
+                        break
+
+            sender = threading.Thread(target=_sender, daemon=True)
+            sender.start()
+
+            while True:
+                opcode, payload = _ws_recv_frame(sock)
+                if opcode == 8:  # close
+                    break
+                fd = MANAGER.master_fd
+                if fd is None:
+                    continue
+                if opcode == 1:  # text: JSON control message (resize)
+                    try:
+                        msg = json.loads(payload)
+                        if msg.get("type") == "resize":
+                            rows = max(1, int(msg.get("rows", 24)))
+                            cols = max(1, int(msg.get("cols", 80)))
+                            fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                                        struct.pack("HHHH", rows, cols, 0, 0))
+                    except (json.JSONDecodeError, OSError, ValueError):
+                        pass
+                elif opcode == 2:  # binary: raw terminal input bytes
+                    try:
+                        os.write(fd, payload)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        finally:
+            MANAGER._ws_clients.discard(q)
+            q.put(None)  # stop the sender thread
 
     # --- SSE ---
 

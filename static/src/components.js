@@ -17,6 +17,7 @@ import { timeAgo, tintCmd } from "./utils.js";
 
 const {
   Component,
+  Plugin,
   xml,
   plugin,
   proxy,
@@ -56,6 +57,7 @@ const ICONS = {
   stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
   external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
   journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
+  terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -738,6 +740,7 @@ class ServerScreen extends Component {
           <button class="pbtn primary dash-start" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
+          <button class="pbtn" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/>Terminal</button>
           <span t-if="this.transient" class="run-state" t-out="this.transient"/>
           <div t-if="this.showLogs" class="log-controls">
             <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
@@ -773,8 +776,10 @@ class ServerScreen extends Component {
 
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
+  term = plugin(TerminalPlugin);
   copyIcon = m(ICONS.copy);
   clearIcon = m(ICONS.clear);
+  termIcon = m(ICONS.terminal);
   copyLbl = signal("Copy");
   target = signal(this._initialTarget());
   extraArgs = signal(this.config.config.start.other_args || "");
@@ -2778,6 +2783,175 @@ class Dialog extends Component {
 // A floating, toggleable panel (bottom-right) listing business events. Hidden
 // by default; toggled from the sidebar. Newest entries first.
 
+// ─────────────────────────── Terminal plugin ───────────────────────────
+
+class TerminalPlugin extends Plugin {
+  open = signal(false);
+  toggle() {
+    this.open.set(!this.open());
+  }
+}
+
+// lazy-load xterm.js + addon-fit only on first terminal open
+let _xtermReady = null;
+function loadXterm() {
+  if (!_xtermReady) {
+    _xtermReady = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/static/lib/xterm/xterm.css";
+      document.head.appendChild(link);
+      const s1 = document.createElement("script");
+      s1.src = "/static/lib/xterm/xterm.js";
+      s1.onload = () => {
+        const s2 = document.createElement("script");
+        s2.src = "/static/lib/xterm/addon-fit.js";
+        s2.onload = resolve;
+        s2.onerror = reject;
+        document.head.appendChild(s2);
+      };
+      s1.onerror = reject;
+      document.head.appendChild(s1);
+    });
+  }
+  return _xtermReady;
+}
+
+// ─────────────────────────── Terminal panel ───────────────────────────
+
+class TerminalPanel extends Component {
+  static template = xml`
+    <div t-if="this.term.open()" class="term-panel"
+         t-att-style="'left:' + this.x() + 'px;top:' + this.y() + 'px'">
+      <div class="term-panel-head" t-on-mousedown="onDragStart">
+        <span class="term-panel-title">Terminal</span>
+        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
+      </div>
+      <div class="term-panel-body" t-ref="container"/>
+    </div>`;
+
+  term = plugin(TerminalPlugin);
+  container = signal.ref(HTMLElement);
+  x = signal(0);
+  y = signal(0);
+  _dragging = false;
+  _dragOffsetX = 0;
+  _dragOffsetY = 0;
+  _term = null;
+  _ws = null;
+  _ro = null;
+  _termOpen = false; // guard against double-open on re-renders
+
+  setup() {
+    this._onMouseMove = (e) => {
+      if (!this._dragging) return;
+      this.x.set(Math.max(0, e.clientX - this._dragOffsetX));
+      this.y.set(Math.max(0, e.clientY - this._dragOffsetY));
+    };
+    this._onMouseUp = () => {
+      this._dragging = false;
+    };
+
+    onMounted(() => {
+      // center on first render
+      this.x.set(Math.max(0, Math.floor((window.innerWidth - 780) / 2)));
+      this.y.set(Math.max(0, Math.floor((window.innerHeight - 440) / 2)));
+      document.addEventListener("mousemove", this._onMouseMove);
+      document.addEventListener("mouseup", this._onMouseUp);
+    });
+
+    onWillUnmount(() => {
+      document.removeEventListener("mousemove", this._onMouseMove);
+      document.removeEventListener("mouseup", this._onMouseUp);
+      this._closeTerminal();
+    });
+
+    useEffect(() => {
+      if (this.term.open()) {
+        this._openTerminal();
+      } else {
+        this._closeTerminal();
+      }
+    });
+  }
+
+  async _openTerminal() {
+    if (this._termOpen) return;
+    this._termOpen = true;
+    try {
+      await loadXterm();
+      if (!this.term.open()) return; // closed while loading
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "var(--mono, monospace)",
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      const el = this.container();
+      if (!el) return;
+      term.open(el);
+      fit.fit();
+      this._term = term;
+
+      const ws = new WebSocket(`ws://127.0.0.1:8068/api/terminal`);
+      ws.binaryType = "arraybuffer";
+      this._ws = ws;
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      };
+      ws.onmessage = (e) => {
+        term.write(new Uint8Array(e.data));
+      };
+      ws.onclose = () => {
+        this._ws = null;
+      };
+
+      term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(data));
+        }
+      });
+
+      this._ro = new ResizeObserver(() => {
+        fit.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      });
+      this._ro.observe(el);
+    } catch (e) {
+      this._termOpen = false;
+    }
+  }
+
+  _closeTerminal() {
+    if (!this._termOpen) return;
+    this._termOpen = false;
+    if (this._ro) {
+      this._ro.disconnect();
+      this._ro = null;
+    }
+    if (this._ws) {
+      this._ws.close();
+      this._ws = null;
+    }
+    if (this._term) {
+      this._term.dispose();
+      this._term = null;
+    }
+  }
+
+  onDragStart(e) {
+    if (e.button !== 0) return;
+    this._dragging = true;
+    this._dragOffsetX = e.clientX - this.x();
+    this._dragOffsetY = e.clientY - this.y();
+    e.preventDefault();
+  }
+}
+
 class EventLog extends Component {
   static template = xml`
     <div t-if="this.log.open()" class="event-log">
@@ -2897,6 +3071,7 @@ export class App extends Component {
     BranchMenu,
     Dialog,
     EventLog,
+    TerminalPanel,
   };
 
   static template = xml`
@@ -2909,6 +3084,7 @@ export class App extends Component {
       <BranchMenu/>
       <Dialog/>
       <EventLog/>
+      <TerminalPanel/>
     </div>`;
 
   router = plugin(RouterPlugin);
