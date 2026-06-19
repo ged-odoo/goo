@@ -470,6 +470,42 @@ def git_delete_branch(path, branch, delete_remote=False):
     return True, None, remote_error
 
 
+def git_wip_commit(path):
+    """Stage all changes and create a WIP commit. Returns (ok, error)."""
+    path = os.path.expanduser(path)
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "add", "-A"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "git add failed"
+        r = subprocess.run(
+            ["git", "-C", path, "commit", "-m", "WIP"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "git commit failed"
+        return True, None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
+def git_discard(path):
+    """Discard all uncommitted changes to tracked files. Returns (ok, error)."""
+    path = os.path.expanduser(path)
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "restore", "."],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "git restore failed"
+        return True, None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
 def git_checkout(path, branch):
     """Checkout a local branch in a repo. Returns (ok, error)."""
     if not path or not branch:
@@ -1504,6 +1540,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/code/wip-commit":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            if err or not repo_path:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            ok, error = git_wip_commit(repo_path)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/discard":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            if err or not repo_path:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            ok, error = git_discard(repo_path)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/event":
             body, err = self._read_json()
             text = (body or {}).get("text")

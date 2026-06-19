@@ -243,6 +243,7 @@ class SearchBox extends Component {
 // Per-target view of the code state: for each target, the git/runbot/PR state
 // of every repo:branch in its config. Reuses CodePlugin's branch + PR data.
 class DashboardScreen extends Component {
+  static components = { DirtyBadge };
   static template = xml`
     <section>
       <div class="panel">
@@ -278,7 +279,7 @@ class DashboardScreen extends Component {
                 <t t-else="">
                   <a t-if="r.remote and r.github and r.current" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
                   <span t-else="" t-out="r.current || '—'"/>
-                  <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes"> *</span>
+                  <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
                   <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
                     <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
                     <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
@@ -1606,7 +1607,7 @@ class TargetsScreen extends Component {
 // flat list (one row per branch × repo) over the same data the Dashboard tab loads
 
 class BranchesScreen extends Component {
-  static components = { SearchBox };
+  static components = { SearchBox, DirtyBadge };
   static template = xml`
     <section>
       <div class="panel">
@@ -1655,7 +1656,7 @@ class BranchesScreen extends Component {
                   <td class="br-repo">
                     <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
                     <span t-else="" t-out="r.repo"/>
-                    <span t-if="r.dirty" class="dirty-mark" title="uncommitted changes">*</span>
+                    <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
                   </td>
                   <td class="br-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
                   <td class="br-pr">
@@ -2543,6 +2544,74 @@ class ConfigScreen extends Component {
   }
 }
 
+// ─────────────────────────── Dirty badge + menu ──────────────────────────────
+
+class DirtyBadge extends Component {
+  static template = xml`
+    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">[dirty]</button>`;
+  static props = ["path", "repo"];
+  openMenu(ev) {
+    appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { ev, path: this.props.path, repo: this.props.repo } }));
+  }
+}
+
+class DirtyMenu extends Component {
+  static template = xml`
+    <div class="branch-popover dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button class="branch-popover-item" t-on-click="() => this.wipCommit()">WIP commit</button>
+      <button class="branch-popover-item danger" t-on-click="() => this.discard()">Remove changes</button>
+    </div>`;
+
+  code = plugin(CodePlugin);
+  open = signal(false);
+  _path = null;
+  _repo = null;
+  _el = null;
+
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".dirty-menu");
+      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
+      document.addEventListener("click", () => this.open.set(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.open.set(false);
+      });
+    });
+  }
+
+  async openMenu({ ev, path, repo }) {
+    this._path = path;
+    this._repo = repo;
+    this.open.set(true);
+    await Promise.resolve();
+    const r = ev.currentTarget.getBoundingClientRect();
+    const w = this._el.offsetWidth;
+    this._el.style.top = `${r.bottom + 4}px`;
+    this._el.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
+  }
+
+  async wipCommit() {
+    this.open.set(false);
+    const res = await fetch("/api/code/wip-commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: this._path }),
+    });
+    if (res.ok) this.code.load(true);
+  }
+
+  async discard() {
+    if (!confirm(`Remove all uncommitted changes in ${this._repo}?`)) return;
+    this.open.set(false);
+    const res = await fetch("/api/code/discard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: this._path }),
+    });
+    if (res.ok) this.code.load(true);
+  }
+}
+
 // ─────────────────────────── Branch action popover ───────────────────────────
 
 class BranchMenu extends Component {
@@ -3090,6 +3159,7 @@ export class App extends Component {
     AddonsScreen,
     ConfigScreen,
     BranchMenu,
+    DirtyMenu,
     Dialog,
     EventLog,
     TerminalPanel,
@@ -3103,6 +3173,7 @@ export class App extends Component {
         <main><t t-component="this.currentScreen()"/></main>
       </div>
       <BranchMenu/>
+      <DirtyMenu/>
       <Dialog/>
       <EventLog/>
       <TerminalPanel/>

@@ -1736,10 +1736,23 @@ a.dash-row-branch:hover {
   cursor: pointer;
   user-select: none;
 }
-.dirty-mark {
+.dirty-badge {
   margin-left: 6px;
+  font-size: 10px;
   font-weight: 700;
+  letter-spacing: 0.04em;
   color: var(--l-amber);
+  background: color-mix(in oklch, var(--l-amber) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--l-amber) 35%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.12s, border-color 0.12s;
+}
+.dirty-badge:hover {
+  background: color-mix(in oklch, var(--l-amber) 22%, transparent);
+  border-color: color-mix(in oklch, var(--l-amber) 55%, transparent);
 }
 .active-mark {
   color: var(--l-text-dim);
