@@ -2154,7 +2154,11 @@ class TestsScreen extends Component {
           </form>
         </div>
       </div>
-      <div class="content flush">
+      <div class="content flush tests-content">
+        <div t-if="!this.tests.output.count()" class="tests-empty">
+          <p class="tests-empty-title">No test output yet</p>
+          <p class="tests-empty-hint">Pick a preset or type <code>--test-tags</code> above, then hit <strong>Run</strong> to launch a test on the active target.</p>
+        </div>
         <LogConsole title="'Test output'" buffer="this.tests.output" bare="true"/>
       </div>
     </section>`;
@@ -2396,6 +2400,15 @@ class ConfigScreen extends Component {
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
+          </div>
+        </div>
+        <div class="config-block">
+          <h2 class="subtitle">Miscellaneous</h2>
+          <div class="settings-grid">
+            <label title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open).">auto-open event log</label>
+            <input type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
+                   t-att-checked="this.config.config.auto_open_event_log"
+                   t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
           </div>
         </div>
         <ListEditor kind="'repos'"/>
@@ -2781,14 +2794,21 @@ class EventLog extends Component {
     </div>`;
 
   log = plugin(EventLogPlugin);
+  config = plugin(ConfigPlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
+  _lastCount = 0;
 
   setup() {
+    this._lastCount = this.log.entries().length;
     // keep the newest entry in view as lines arrive (and on open);
     // reading entries() here makes the effect re-run whenever entries change
     useEffect(() => {
-      this.log.entries();
+      const count = this.log.entries().length;
+      // auto-open the panel when a *new* event arrives, if the setting is on
+      if (count > this._lastCount && this.config.config.auto_open_event_log && !this.log.open())
+        this.log.open.set(true);
+      this._lastCount = count;
       const el = this.body();
       if (el) el.scrollTop = el.scrollHeight;
     });
