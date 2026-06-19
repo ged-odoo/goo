@@ -1738,6 +1738,7 @@ a.dash-row-branch:hover {
 }
 .dirty-menu {
   position: fixed;
+  right: auto;
   z-index: 50;
   min-width: 160px;
 }
