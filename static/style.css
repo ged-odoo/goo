@@ -841,7 +841,7 @@ section.hidden {
 /* build target cards — 2-column grid */
 .dash-cards {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(520px, 580px));
   gap: 22px;
 }
 .dash-card {
@@ -975,7 +975,7 @@ section.hidden {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr) auto;
   padding: 4px 8px 8px;
-  background: var(--l-card);
+  background: var(--l-bg);
 }
 .dash-card-row {
   display: grid;
@@ -986,6 +986,9 @@ section.hidden {
   padding: 15px 12px;
   border-top: 1px solid var(--l-line-soft);
   border-radius: 9px;
+}
+.dash-card-row:first-child {
+  border-top: none;
 }
 .dash-card-row:hover {
   background: var(--l-hover);
