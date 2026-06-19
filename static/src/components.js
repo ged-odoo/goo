@@ -56,13 +56,13 @@ const ICONS = {
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
+  { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "server", label: "Server", icon: ICONS.server },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
-  { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "config", label: "Config", icon: ICONS.config },
 ];
 // ─────────────────────────── Topbar ───────────────────────────
