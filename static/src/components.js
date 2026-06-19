@@ -740,7 +740,7 @@ class ServerScreen extends Component {
           <button class="pbtn primary dash-start" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
           <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
-          <button class="pbtn" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/>Terminal</button>
+          <button class="pbtn term-btn" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
           <span t-if="this.transient" class="run-state" t-out="this.transient"/>
           <div t-if="this.showLogs" class="log-controls">
             <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
