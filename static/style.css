@@ -711,38 +711,35 @@ section.hidden {
   }
 }
 
-/* favorite repositories — flat list, fetch & rebase per repo. The table sizes
-   to its natural width (content), not the full panel; header + rows share the
-   same column tracks via subgrid so they stay aligned. */
+/* favorite repositories — card with fixed-width columns */
 .dash-repos {
-  display: grid;
-  grid-template-columns: auto auto auto auto auto;
-  width: fit-content;
-  max-width: 100%;
-  margin-bottom: 34px;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04);
+  padding: 6px 8px 8px;
+  margin-bottom: 28px;
 }
 .dash-repos-head,
 .dash-repo-row {
   display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: subgrid;
-  column-gap: 18px;
+  grid-template-columns: 200px 220px 1fr 90px 160px;
+  column-gap: 16px;
   align-items: center;
 }
 .dash-repos-head {
-  padding: 4px 12px 8px;
-  border-bottom: 1px solid var(--l-line);
+  padding: 12px 16px 10px;
 }
 .dash-repos-head span {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--l-text-faint);
 }
 .dash-repo-row {
-  padding: 12px;
-  border-bottom: 1px solid var(--l-line-soft);
+  padding: 14px 16px;
+  border-top: 1px solid var(--l-line-soft);
   border-radius: 8px;
 }
 .dash-repo-row:hover {
@@ -828,47 +825,47 @@ section.hidden {
   opacity: 0.6;
   cursor: default;
 }
-/* the "Fetch & rebase all" header action keeps the per-repo button look but is
-   accent-tinted to read as the table-wide action */
+/* the "Fetch & rebase all" header action: accent-tinted pill */
 .dash-rebase-all {
   color: var(--l-accent);
+  background: var(--l-accent-soft);
   border-color: var(--l-accent-line);
+  justify-self: end;
 }
 .dash-rebase-all:hover:not(:disabled) {
   color: var(--l-accent);
   border-color: var(--l-accent);
-  background: var(--l-accent-soft);
+  background: oklch(0.66 0.16 300 / 0.18);
 }
 
-/* build targets — cards */
-/* cards are a little wider than the old 520px, but capped (not 1fr) so a lone
-   card never stretches to the full panel width */
+/* build target cards — 2-column grid */
 .dash-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(520px, 580px));
-  gap: 18px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 22px;
 }
 .dash-card {
   background: var(--l-card);
   border: 1px solid var(--l-line);
-  border-left: 3px solid var(--l-line);
-  border-radius: 12px;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04), 0 8px 24px -16px oklch(0.27 0.012 264 / 0.12);
   overflow: hidden;
 }
 .dash-card.active {
-  border-left-color: var(--l-accent);
+  border-color: var(--l-line);
+  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.08), 0 10px 28px -16px oklch(0.27 0.012 264 / 0.4), 0 0 0 1px var(--l-text);
 }
 .dash-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 10px 16px;
-  /* fixed height so all card headers line up whether or not they carry an
-     Activate / Start button (the active+running card has none) */
-  min-height: 52px;
-  background: var(--l-panel);
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--l-card);
   border-bottom: 1px solid var(--l-line-soft);
+}
+.dash-card.active .dash-card-head {
+  background: var(--l-panel);
 }
 .dash-card-title {
   display: flex;
@@ -882,60 +879,77 @@ section.hidden {
   border-radius: 50%;
   flex: none;
   background: var(--l-text-faint);
-  opacity: 0.5;
-  position: relative;
+  box-shadow: 0 0 0 3px var(--l-line);
 }
 .dash-dot.active {
-  background: var(--l-accent);
-  opacity: 1;
-}
-.dash-dot.active::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  background: var(--l-accent);
-  opacity: 0.4;
-  animation: pulse 1.8s ease-out infinite;
+  background: var(--l-text);
+  box-shadow: 0 0 0 3px var(--l-line);
 }
 .dash-name {
-  font-size: 15px;
+  font-size: 15.5px;
   font-weight: 700;
   color: var(--l-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dash-db {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--mono);
-  font-size: 12px;
-  color: var(--l-text-mid);
+  font-size: 11.5px;
+  color: var(--l-text-dim);
   background: var(--l-panel);
   border: 1px solid var(--l-line);
-  padding: 2px 8px;
-  border-radius: 5px;
+  padding: 3px 9px;
+  border-radius: 7px;
+  flex: none;
 }
-.dash-db .dim {
+.dash-db svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  stroke: var(--l-text-faint);
+  fill: none;
+  stroke-width: 2;
+}
+.dash-active-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--l-text-faint);
+  background: var(--l-panel);
+  border: 1px solid var(--l-line);
+  border-radius: 9px;
+  padding: 7px 14px;
+}
+.dash-active-badge svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
 }
 .dash-activate {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex: none;
-  font-size: 12.5px;
+  margin-left: auto;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--l-text-mid);
-  background: var(--l-card);
-  border: 1px solid var(--l-line);
-  border-radius: 8px;
-  padding: 6px 13px;
+  color: var(--l-card);
+  background: var(--l-text);
+  border: 1px solid var(--l-text);
+  border-radius: 9px;
+  padding: 8px 16px;
   transition: 0.13s;
 }
-.dash-activate svg {
-  width: 12px;
-  height: 12px;
-}
 .dash-activate:hover:not(:disabled) {
-  color: var(--l-text);
-  border-color: var(--l-text-faint);
+  opacity: 0.85;
 }
 .dash-activate:disabled {
   color: var(--l-text-faint);
@@ -956,23 +970,21 @@ section.hidden {
 }
 /* Stop (active target, server running) — secondary/white like the other
    buttons (it's not a primary action); inherits .dash-activate */
-/* the body is the grid that owns the column tracks; rows are subgrids so they
-   stay aligned. The commit column (1fr) soaks up the free width; the metadata
-   columns (CI / PR / when) size to their content. */
+/* card body: white bg, rows with 3-column layout */
 .dash-card-body {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) auto auto auto;
-  padding: 4px 6px 6px;
-  /* gray body — lighter than the panel-gray header, not white */
-  background: var(--l-bg);
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  padding: 4px 8px 8px;
+  background: var(--l-card);
 }
 .dash-card-row {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: subgrid;
-  column-gap: 14px;
+  column-gap: 16px;
   align-items: center;
-  padding: 10px 12px;
+  padding: 15px 12px;
+  border-top: 1px solid var(--l-line-soft);
   border-radius: 9px;
 }
 .dash-card-row:hover {
@@ -991,6 +1003,7 @@ section.hidden {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--l-text-faint);
+  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1001,7 +1014,7 @@ a.dash-row-branch:hover {
   text-decoration: underline;
 }
 .dash-row-commit {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--l-text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -1071,11 +1084,15 @@ a.dash-row-branch:hover {
 .dash-ci.unknown .dash-ci-dot {
   opacity: 0.5;
 }
-.dash-row-pr {
+.dash-row-meta {
   display: flex;
   align-items: center;
-  gap: 7px;
-  min-width: 0;
+  gap: 10px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+.dash-row-pr {
+  display: contents;
 }
 .dash-pr-num {
   font-family: var(--mono);
@@ -1124,6 +1141,7 @@ a.dash-row-branch:hover {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--l-text-faint);
+  min-width: 58px;
   text-align: right;
 }
 .git-state {

@@ -296,8 +296,12 @@ class DashboardScreen extends Component {
                 <div class="dash-card-title">
                   <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
                   <span class="dash-name" t-out="tgt.name"/>
-                  <span class="dash-db"><span class="dim">db:</span> <t t-out="tgt.db"/></span>
+                  <span class="dash-db"><t t-out="this.dbIcon"/><t t-out="tgt.db || '—'"/></span>
                 </div>
+                <span t-if="this.isActive(tgt)" class="dash-active-badge">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  Active
+                </span>
                 <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Activate</button>
               </div>
               <div class="dash-card-body">
@@ -310,18 +314,17 @@ class DashboardScreen extends Component {
                   <t t-if="row.present">
                     <a t-if="row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="row.subject" t-out="row.subject || '—'"/>
                     <span t-else="" class="dash-row-commit" t-att-title="row.subject" t-out="row.subject || '—'"/>
-                    <t t-set="ci" t-value="this.ciBadge(row)"/>
-                    <a class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
-                      <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                    </a>
-                    <div class="dash-row-pr">
+                    <div class="dash-row-meta">
+                      <t t-set="ci" t-value="this.ciBadge(row)"/>
+                      <a class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
+                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                      </a>
                       <t t-if="row.pr and row.github">
                         <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
                         <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
                       </t>
-                      <span t-else="" class="dim">—</span>
+                      <span class="dash-row-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                     </div>
-                    <span class="dash-row-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                   </t>
                   <div t-else="" class="dash-row-missing">
                     <span>no local branch</span>
@@ -340,6 +343,7 @@ class DashboardScreen extends Component {
   server = plugin(ServerPlugin);
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
+  dbIcon = m(ICONS.databases);
 
   setup() {
     this.code.load();
