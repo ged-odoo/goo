@@ -2646,10 +2646,6 @@ a.dash-row-branch:hover {
 /* ─── event log (floating overlay panel) ─── */
 /* ──────────── Terminal panel ──────────── */
 
-.term-btn {
-  margin-left: auto;
-}
-
 .term-panel {
   position: fixed;
   z-index: 90;
