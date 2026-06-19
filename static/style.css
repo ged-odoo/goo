@@ -527,6 +527,7 @@ section.hidden {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  background: var(--l-bg);
 }
 /* full-bleed content (running server logs): no padding, no console chrome */
 .content.flush {
@@ -841,7 +842,7 @@ section.hidden {
 /* build target cards — 2-column grid */
 .dash-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(520px, 580px));
+  grid-template-columns: repeat(2, 1fr);
   gap: 22px;
 }
 .dash-card {
@@ -975,7 +976,7 @@ section.hidden {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr) auto;
   padding: 4px 8px 8px;
-  background: var(--l-bg);
+  background: var(--l-card);
 }
 .dash-card-row {
   display: grid;
