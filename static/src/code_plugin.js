@@ -325,8 +325,17 @@ export class CodePlugin extends Plugin {
     );
   }
 
-  pushBranch(path, branch) {
-    if (!confirm(`Push "${branch}" to the dev remote (odoo-dev)?`)) return;
-    return this._mutate("Push", () => postJSON("/api/code/branch/push", { path, branch }));
+  // push a branch to the dev remote without prompting — caller has confirmed
+  // (via the app modal) before calling
+  pushBranchNoConfirm(path, branch, reload = true) {
+    const repo = this.config.config.repos.find((r) => r.path === path);
+    return this._mutate(
+      "Push",
+      async () => {
+        await postJSON("/api/code/branch/push", { path, branch });
+        this.eventLog.add(`pushed ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
+      },
+      reload,
+    );
   }
 }

@@ -50,6 +50,7 @@ const ICONS = {
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
   kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
+  push: `<svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
   stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
   external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
@@ -284,9 +285,14 @@ class DashboardScreen extends Component {
               <a t-if="r.pushed and r.github and r.sha" class="dash-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
               <span t-else="" class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
               <span class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
-              <button class="dash-rebase" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">
-                <t t-out="this.refreshIcon"/>Fetch &amp; rebase
-              </button>
+              <div class="dash-repo-actions">
+                <button class="dash-rebase" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">
+                  <t t-out="this.refreshIcon"/>Fetch &amp; rebase
+                </button>
+                <button class="dash-rebase" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">
+                  <t t-out="this.pushIcon"/>Push
+                </button>
+              </div>
             </div>
           </section>
 
@@ -309,6 +315,8 @@ class DashboardScreen extends Component {
                 <div class="dash-kebab-wrap">
                   <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
+                    <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
                     <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
                   </div>
                 </div>
@@ -357,6 +365,7 @@ class DashboardScreen extends Component {
   branchIcon = m(ICONS.branches);
   dbIcon = m(ICONS.databases);
   kebabIcon = m(ICONS.kebab);
+  pushIcon = m(ICONS.push);
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
@@ -388,6 +397,40 @@ class DashboardScreen extends Component {
       repoMap: this.repoMap,
       isActive: this.isActive(tgt),
     });
+  }
+
+  // the target's work branches that exist locally and have a canonical repo on
+  // GitHub (base branches like master are never pushed to the dev fork)
+  _pushableBranches(tgt) {
+    const groups = this.code.groups();
+    const repoMap = this.repoMap;
+    return (tgt.config || [])
+      .filter(({ repo, branch }) => !BASE_BRANCH_RE.test(branch) && repoMap[repo]?.branches.has(branch))
+      .map(({ repo, branch }) => ({ branch, path: groups.pathByRepo[repo], github: groups.githubByRepo[repo] }))
+      .filter((x) => x.path && x.github);
+  }
+
+  canPushTarget(tgt) {
+    return this._pushableBranches(tgt).length > 0;
+  }
+
+  menuPush(tgt) {
+    this.menuId.set("");
+    const branches = this._pushableBranches(tgt);
+    if (!branches.length) return;
+    const n = branches.length;
+    return pushBranchesDialog(this.code, branches, {
+      title: `Push ${n} branch${n === 1 ? "" : "es"}?`,
+      message: `Push ${n} branch${n === 1 ? "" : "es"} of "${tgt.name}" to the dev remote (odoo-dev)?`,
+    });
+  }
+
+  menuRemoveFavorite(tgt) {
+    this.menuId.set("");
+    const targets = this.config.config.targets.map((t) =>
+      t.id === tgt.id ? { ...t, favorite: false } : t,
+    );
+    this.config.updateConfig({ targets });
   }
 
   setup() {
@@ -520,6 +563,25 @@ class DashboardScreen extends Component {
     await this.code.rebase([
       { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path },
     ]);
+  }
+
+  // push a single repo's current branch to the dev remote
+  canPushRepo(r) {
+    return !!r.current && !r.error && !!r.github && !!r.path;
+  }
+
+  pushRepoTitle(r) {
+    if (r.error) return r.error;
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `push ${r.current} to the dev remote (odoo-dev)`;
+  }
+
+  pushRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, [{ path: r.path, branch: r.current }], {
+      title: `Push "${r.current}"?`,
+      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
+    });
   }
 
   // every shown repository whose current branch can be fetched + rebased
@@ -1056,6 +1118,15 @@ async function startCreateTarget(config, eventLog, code) {
   }
 }
 
+// confirm (via the app modal) then push one or more branches to the dev remote.
+// branches: [{ path, branch }]. Shared by every "Push" affordance.
+async function pushBranchesDialog(code, branches, { title, message }) {
+  if (!branches.length) return;
+  const ok = await openDialog({ title, message, okLabel: "Push" });
+  if (!ok) return;
+  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch);
+}
+
 // delete a target via a confirmation dialog that can also (optionally) delete
 // its local/remote branches (non-base ones that exist), close its open PRs and
 // drop its database. Shared by the Targets tab and the dashboard card menu.
@@ -1590,7 +1661,7 @@ class BranchesScreen extends Component {
                   <td>
                     <div class="br-act">
                       <button t-if="!r.remote" class="drop-btn pr-open"
-                              t-on-click="() => this.code.pushBranch(r.path, r.branch)"
+                              t-on-click="() => this.pushBranch(r)"
                               title="push this branch to the dev remote (odoo-dev)">Push</button>
                       <button t-if="!r.base and r.remote and r.github and !r.pr" class="drop-btn pr-open"
                               t-on-click="() => this.openPr(r)">Open PR</button>
@@ -1824,6 +1895,13 @@ class BranchesScreen extends Component {
     if (this.checkoutBlocked(row)) return;
     this.code.checkout([{ path: row.path, branch: row.branch }]);
     this.code.eventLog.add(`checked out ${row.branch} (${row.repo})`);
+  }
+
+  pushBranch(row) {
+    return pushBranchesDialog(this.code, [{ path: row.path, branch: row.branch }], {
+      title: `Push "${row.branch}"?`,
+      message: `Push ${row.branch} (${row.repo}) to the dev remote (odoo-dev)?`,
+    });
   }
 
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
@@ -2518,7 +2596,11 @@ class BranchMenu extends Component {
               : {
                   label: `Push branch to GitHub — ${r.repo}`,
                   disabled: false,
-                  onClick: () => code.pushBranch(path, group.branch),
+                  onClick: () =>
+                    pushBranchesDialog(code, [{ path, branch: group.branch }], {
+                      title: `Push "${group.branch}"?`,
+                      message: `Push ${group.branch} (${r.repo}) to the dev remote (odoo-dev)?`,
+                    }),
                 };
           } catch (e) {
             return { label: `GitHub check failed — ${r.repo}`, disabled: true, title: e.message };

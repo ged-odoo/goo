@@ -729,9 +729,14 @@ section.hidden {
 .dash-repos-head,
 .dash-repo-row {
   display: grid;
-  grid-template-columns: 200px 220px 1fr 90px 160px;
+  grid-template-columns: 200px 220px 1fr 90px auto;
   column-gap: 16px;
   align-items: center;
+}
+.dash-repo-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 .dash-repos-head {
   padding: 12px 16px 10px;
@@ -1019,6 +1024,7 @@ section.hidden {
 }
 .dash-menu-item {
   text-align: left;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--l-text-mid);
   padding: 8px 10px;
