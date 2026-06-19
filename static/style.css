@@ -638,6 +638,11 @@ section.hidden {
   background: var(--l-card);
   transition: 0.13s;
 }
+.pbtn.pbtn-icon {
+  align-self: stretch;
+  padding-left: 10px;
+  padding-right: 10px;
+}
 .pbtn:hover:not(:disabled) {
   color: var(--l-text);
   border-color: var(--l-text-faint);
