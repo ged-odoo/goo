@@ -492,15 +492,24 @@ def git_wip_commit(path):
 
 
 def git_discard(path):
-    """Discard all uncommitted changes to tracked files. Returns (ok, error)."""
+    """Make the working tree pristine: reset tracked files (staged + unstaged)
+    to HEAD, then remove untracked files/dirs. Mirrors the dirty check, which
+    flags any non-empty `git status --porcelain` (untracked files included).
+    `git clean -fd` (no -x) leaves ignored files alone. Returns (ok, error)."""
     path = os.path.expanduser(path)
     try:
         r = subprocess.run(
-            ["git", "-C", path, "restore", "."],
+            ["git", "-C", path, "reset", "--hard", "HEAD"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode != 0:
-            return False, r.stderr.strip() or "git restore failed"
+            return False, r.stderr.strip() or "git reset failed"
+        r = subprocess.run(
+            ["git", "-C", path, "clean", "-fd"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "git clean failed"
         return True, None
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, str(e)

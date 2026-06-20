@@ -254,7 +254,7 @@ class DirtyMenu extends Component {
   static template = xml`
     <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
       <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
-      <button class="dash-menu-item danger" t-on-click="() => this.discard()">Remove changes</button>
+      <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
 
   code = plugin(CodePlugin);
@@ -286,23 +286,20 @@ class DirtyMenu extends Component {
 
   async wipCommit() {
     this.open.set(false);
-    const res = await fetch("/api/code/wip-commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: this._path }),
-    });
-    if (res.ok) this.code.load(true);
+    try {
+      await this.code.wipCommit(this._path, this._repo);
+    } catch (e) {
+      await openDialog({ title: "WIP commit failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+    }
   }
 
   async discard() {
-    if (!confirm(`Remove all uncommitted changes in ${this._repo}?`)) return;
     this.open.set(false);
-    const res = await fetch("/api/code/discard", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: this._path }),
-    });
-    if (res.ok) this.code.load(true);
+    try {
+      await this.code.discard(this._path, this._repo);
+    } catch (e) {
+      await openDialog({ title: "Discard changes failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+    }
   }
 }
 
@@ -2808,7 +2805,7 @@ function openDialog(spec) {
 class Dialog extends Component {
   static template = xml`
     <div class="dialog-backdrop" t-att-class="{hidden: !this.open()}" t-on-click="() => this.cancel()">
-      <div class="dialog" t-on-click.stop="() => {}">
+      <div class="dialog" t-att-class="this.spec().cls || ''" t-on-click.stop="() => {}">
         <h2 class="dialog-title" t-out="this.spec().title"/>
         <div class="dialog-body">
           <p t-if="this.spec().message" class="dialog-msg" t-out="this.spec().message"/>

@@ -325,6 +325,38 @@ export class CodePlugin extends Plugin {
     );
   }
 
+  // commit / discard the working tree. These rethrow on failure so the caller
+  // can surface the error in a dialog; the failure is also logged to the event
+  // log here (where eventLog lives).
+  async wipCommit(path, repo) {
+    this.busy.set(true);
+    try {
+      this.eventLog.add(`WIP commit (${repo})`);
+      await postJSON("/api/code/wip-commit", { path });
+      await this.load(true);
+    } catch (e) {
+      this.eventLog.add(`WIP commit failed (${repo})`);
+      throw e;
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  async discard(path, repo) {
+    if (!confirm(`Remove all uncommitted changes in ${repo}?`)) return;
+    this.busy.set(true);
+    try {
+      this.eventLog.add(`discarding changes (${repo})`);
+      await postJSON("/api/code/discard", { path });
+      await this.load(true);
+    } catch (e) {
+      this.eventLog.add(`discard failed (${repo})`);
+      throw e;
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
   // push a branch to the dev remote without prompting — caller has confirmed
   // (via the app modal) before calling
   pushBranchNoConfirm(path, branch, reload = true) {

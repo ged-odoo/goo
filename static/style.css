@@ -2670,6 +2670,25 @@ a.dash-row-branch:hover {
   border-color: var(--l-text-mid);
 }
 
+/* ─── error dialog: wider, with the (possibly verbose) message scrollable ─── */
+.dialog.dialog-error {
+  width: min(680px, 92vw);
+}
+.dialog.dialog-error .dialog-msg {
+  max-height: min(50vh, 420px);
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--l-text);
+  background: var(--l-red-bg);
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+}
+
 /* ─── remote branch dialog ─── */
 .dialog.rbd {
   width: min(520px, 92vw);
