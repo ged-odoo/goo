@@ -481,7 +481,7 @@ def git_wip_commit(path):
         if r.returncode != 0:
             return False, r.stderr.strip() or "git add failed"
         r = subprocess.run(
-            ["git", "-C", path, "commit", "-m", "WIP"],
+            ["git", "-C", path, "commit", "--no-verify", "-m", "WIP"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode != 0:
