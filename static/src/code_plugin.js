@@ -4,6 +4,7 @@
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT, CACHE_TTL } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
+import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, signal, computed } = owl;
@@ -15,6 +16,7 @@ export class CodePlugin extends Plugin {
 
   config = plugin(ConfigPlugin);
   eventLog = plugin(EventLogPlugin);
+  dialogs = plugin(DialogPlugin);
   branchRepos = signal((this._cache() || {}).branchRepos || []);
   prRepos = signal((this._cache() || {}).prRepos || []);
   at = signal((this._cache() || {}).at || 0);
@@ -325,9 +327,9 @@ export class CodePlugin extends Plugin {
     );
   }
 
-  // commit / discard the working tree. These rethrow on failure so the caller
-  // can surface the error in a dialog; the failure is also logged to the event
-  // log here (where eventLog lives).
+  // commit / discard the working tree. On failure the event log records the
+  // failure and the error is surfaced in a (scrollable) dialog — opened by the
+  // plugin itself via the DialogPlugin, no component involvement needed.
   async wipCommit(path, repo) {
     this.busy.set(true);
     try {
@@ -336,14 +338,19 @@ export class CodePlugin extends Plugin {
       await this.load(true);
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
-      throw e;
+      this.dialogs.open({ title: "WIP commit failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
     } finally {
       this.busy.set(false);
     }
   }
 
   async discard(path, repo) {
-    if (!confirm(`Remove all uncommitted changes in ${repo}?`)) return;
+    const ok = await this.dialogs.open({
+      title: `Discard changes in ${repo}?`,
+      message: "This permanently removes all uncommitted changes, including untracked files. This cannot be undone.",
+      okLabel: "Discard changes",
+    });
+    if (!ok) return;
     this.busy.set(true);
     try {
       this.eventLog.add(`discarding changes (${repo})`);
@@ -351,7 +358,7 @@ export class CodePlugin extends Plugin {
       await this.load(true);
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
-      throw e;
+      this.dialogs.open({ title: "Discard changes failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
     } finally {
       this.busy.set(false);
     }

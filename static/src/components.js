@@ -14,6 +14,7 @@ import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
+import { DialogPlugin } from "./dialog_plugin.js";
 import { timeAgo, tintCmd } from "./utils.js";
 
 const {
@@ -284,22 +285,14 @@ class DirtyMenu extends Component {
     this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
 
-  async wipCommit() {
+  wipCommit() {
     this.open.set(false);
-    try {
-      await this.code.wipCommit(this._path, this._repo);
-    } catch (e) {
-      await openDialog({ title: "WIP commit failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
-    }
+    this.code.wipCommit(this._path, this._repo);
   }
 
-  async discard() {
+  discard() {
     this.open.set(false);
-    try {
-      await this.code.discard(this._path, this._repo);
-    } catch (e) {
-      await openDialog({ title: "Discard changes failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
-    }
+    this.code.discard(this._path, this._repo);
   }
 }
 
@@ -429,6 +422,7 @@ class DashboardScreen extends Component {
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
   db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
@@ -438,7 +432,7 @@ class DashboardScreen extends Component {
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog, this.code);
+    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs);
   }
 
   toggleMenu(id) {
@@ -464,6 +458,7 @@ class DashboardScreen extends Component {
       db: this.db,
       eventLog: this.eventLog,
       repoMap: this.repoMap,
+      dialogs: this.dialogs,
       isActive: this.isActive(tgt),
     });
   }
@@ -488,7 +483,7 @@ class DashboardScreen extends Component {
     const branches = this._pushableBranches(tgt);
     if (!branches.length) return;
     const n = branches.length;
-    return pushBranchesDialog(this.code, branches, {
+    return pushBranchesDialog(this.code, this.dialogs, branches, {
       title: `Push ${n} branch${n === 1 ? "" : "es"}?`,
       message: `Push ${n} branch${n === 1 ? "" : "es"} of "${tgt.name}" to the dev remote (odoo-dev)?`,
     });
@@ -647,7 +642,7 @@ class DashboardScreen extends Component {
 
   pushRepo(r) {
     if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, [{ path: r.path, branch: r.current }], {
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
       title: `Push "${r.current}"?`,
       message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
     });
@@ -1016,6 +1011,7 @@ class DatabasesScreen extends Component {
     </section>`;
 
   db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   selected = signal(new Set()); // database names ticked for batch actions
   // sorted, view-ready rows — recomputed only when the db list / active db change
@@ -1081,7 +1077,7 @@ class DatabasesScreen extends Component {
     const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
     if (!dbs.length) return;
     const n = dbs.length;
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: `Drop ${n} database${n === 1 ? "" : "s"}?`,
       message: "This permanently deletes the selected databases. This cannot be undone.",
       okLabel: "Drop",
@@ -1093,7 +1089,7 @@ class DatabasesScreen extends Component {
 
   // confirm via the dialog, then drop; report any failure in a dialog too
   async dropDb(d) {
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: `Drop "${d.name}"?`,
       message: "This permanently deletes the database. This cannot be undone.",
       okLabel: "Drop",
@@ -1101,7 +1097,7 @@ class DatabasesScreen extends Component {
     if (!res) return;
     const error = await this.db.drop(d.name);
     if (error)
-      await openDialog({ title: "Drop failed", message: error, okLabel: "OK", cancelLabel: null });
+      await this.dialogs.open({ title: "Drop failed", message: error, okLabel: "OK", cancelLabel: null });
   }
 }
 
@@ -1110,18 +1106,12 @@ class DatabasesScreen extends Component {
 // First-class targets: name, favorite flag, config (repo:branch pairs), db and
 // start args. Rows are edited inline; "New target" opens a dialog form.
 
-function openRemoteBranchDialog() {
-  return new Promise((resolve) => {
-    appBus.dispatchEvent(new CustomEvent("remote-branch-dialog", { detail: { resolve } }));
-  });
-}
-
 // After remote branches have been fetched locally, open a prefilled
 // target-creation dialog (no "Create branches" step — they already exist).
-async function createTargetFromRemoteBranch(config, eventLog, branch, repos) {
+async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
   const existingTargets = config.config.targets;
   const configStr = repos.map((r) => `${r}:${branch}`).join(",");
-  const res = await openDialog({
+  const res = await dialogs.open({
     title: "New target from remote branch",
     okLabel: "Create",
     validate: (v) => {
@@ -1153,9 +1143,9 @@ async function createTargetFromRemoteBranch(config, eventLog, branch, repos) {
   config.updateConfig({ targets: [...config.config.targets, target] });
 }
 
-async function startCreateTarget(config, eventLog, code) {
+async function startCreateTarget(config, eventLog, code, dialogs) {
   const existingTargets = config.config.targets;
-  const res = await openDialog({
+  const res = await dialogs.open({
     title: "New target",
     okLabel: "Create",
     validate: (v) => {
@@ -1236,9 +1226,9 @@ async function startCreateTarget(config, eventLog, code) {
 
 // confirm (via the app modal) then push one or more branches to the dev remote.
 // branches: [{ path, branch }]. Shared by every "Push" affordance.
-async function pushBranchesDialog(code, branches, { title, message }) {
+async function pushBranchesDialog(code, dialogs, branches, { title, message }) {
   if (!branches.length) return;
-  const ok = await openDialog({ title, message, okLabel: "Push" });
+  const ok = await dialogs.open({ title, message, okLabel: "Push" });
   if (!ok) return;
   for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch);
 }
@@ -1246,7 +1236,7 @@ async function pushBranchesDialog(code, branches, { title, message }) {
 // delete a target via a confirmation dialog that can also (optionally) delete
 // its local/remote branches (non-base ones that exist), close its open PRs and
 // drop its database. Shared by the Targets tab and the dashboard card menu.
-async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, isActive }) {
+async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, isActive, dialogs }) {
   if (isActive) return; // the active target cannot be deleted
   const groups = code.groups();
   // deletable branches: present locally and not a base/primary branch
@@ -1287,7 +1277,7 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   if (dbExists)
     fields.push({ key: "dropDb", type: "checkbox", label: `Drop database "${tgt.db}"`, value: false });
 
-  const res = await openDialog({
+  const res = await dialogs.open({
     title: `Delete "${tgt.name}"?`,
     message: "The target will be removed from your list. This cannot be undone.",
     okLabel: "Delete",
@@ -1371,6 +1361,7 @@ class TargetsScreen extends Component {
   server = plugin(ServerPlugin);
   code = plugin(CodePlugin);
   db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
   starIcon = m(ICONS.star);
   editId = signal(""); // id of the row being edited inline ("" = none)
@@ -1595,7 +1586,7 @@ class TargetsScreen extends Component {
         value: false,
       });
 
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: `Delete ${n} target${n === 1 ? "" : "s"}?`,
       message: "The targets will be removed from your list. This cannot be undone.",
       okLabel: "Delete",
@@ -1617,13 +1608,13 @@ class TargetsScreen extends Component {
 
   // create a new target through a dialog form (validated before it closes)
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog, this.code);
+    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs);
   }
 
   // search for a remote branch across all repos, fetch it locally, then open
   // the prefilled target creation dialog
   async targetFromRemoteBranch() {
-    const res = await openRemoteBranchDialog();
+    const res = await this.dialogs.openComponent(RemoteBranchDialog);
     if (!res) return;
     const { branch, repos } = res;
     const pathByRepo = this.code.groups().pathByRepo;
@@ -1636,7 +1627,7 @@ class TargetsScreen extends Component {
         body: JSON.stringify({ path, branch }),
       });
     }
-    await createTargetFromRemoteBranch(this.config, this.eventLog, branch, repos);
+    await createTargetFromRemoteBranch(this.config, this.eventLog, this.dialogs, branch, repos);
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
@@ -1686,7 +1677,7 @@ class TargetsScreen extends Component {
   // starting from the repo's branch in the original target (its base).
   async duplicateTarget(tgt) {
     const first = tgt.config?.[0]?.branch || "master";
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: `Duplicate "${tgt.name}"`,
       fields: [
         { key: "branch", type: "text", label: "Branch name", value: first, placeholder: "branch (applied to all repos)" },
@@ -1726,6 +1717,7 @@ class TargetsScreen extends Component {
       db: this.db,
       eventLog: this.eventLog,
       repoMap: this.repoMap,
+      dialogs: this.dialogs,
       isActive: this.isActive(tgt),
     });
   }
@@ -1823,6 +1815,7 @@ class BranchesScreen extends Component {
 
   code = plugin(CodePlugin);
   config = plugin(ConfigPlugin);
+  dialogs = plugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   externalIcon = m(ICONS.external);
   repoFilter = signal(""); // "" = all repositories
@@ -1936,7 +1929,7 @@ class BranchesScreen extends Component {
         label: `Close ${prs.length === 1 ? "its open pull request" : `${prs.length} open pull requests`}`,
         value: true,
       });
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: "Delete branches",
       message:
         `Delete ${what} in ${rows.length} repo${rows.length === 1 ? "" : "s"} locally?` +
@@ -1969,7 +1962,7 @@ class BranchesScreen extends Component {
     for (const t of targets)
       fields.push({ key: `tgt:${t.id}`, type: "checkbox", label: `Delete target "${t.name}"`, value: false });
 
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: `Delete "${r.branch}"?`,
       message: `Force-delete "${r.branch}" in ${r.repo} locally. This cannot be undone.`,
       okLabel: "Delete",
@@ -2034,7 +2027,7 @@ class BranchesScreen extends Component {
   }
 
   pushBranch(row) {
-    return pushBranchesDialog(this.code, [{ path: row.path, branch: row.branch }], {
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: row.path, branch: row.branch }], {
       title: `Push "${row.branch}"?`,
       message: `Push ${row.branch} (${row.repo}) to the dev remote (odoo-dev)?`,
     });
@@ -2139,6 +2132,7 @@ class PrsScreen extends Component {
     </section>`;
 
   code = plugin(CodePlugin);
+  dialogs = plugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   openOnly = signal(true); // show only open PRs by default
   repoFilter = signal(""); // "" = all repositories
@@ -2190,7 +2184,7 @@ class PrsScreen extends Component {
   async closeSelected() {
     const prs = this._selectedPrs;
     if (!prs.length) return;
-    const res = await openDialog({
+    const res = await this.dialogs.open({
       title: "Close pull requests",
       message: `Close ${prs.length} pull request${prs.length === 1 ? "" : "s"}? This cannot be undone here (reopen on GitHub).`,
       okLabel: "Close",
@@ -2683,6 +2677,7 @@ class BranchMenu extends Component {
     </div>`;
 
   code = plugin(CodePlugin);
+  dialogs = plugin(DialogPlugin);
   open = signal(false);
   actions = signal([]);
   el = null;
@@ -2724,6 +2719,7 @@ class BranchMenu extends Component {
 
   buildActions(group, vm) {
     const code = this.code;
+    const dialogs = this.dialogs;
     const actions = [];
     const resolvers = [];
     for (const r of group.rows) {
@@ -2748,7 +2744,7 @@ class BranchMenu extends Component {
                   label: `Push branch to GitHub — ${r.repo}`,
                   disabled: false,
                   onClick: () =>
-                    pushBranchesDialog(code, [{ path, branch: group.branch }], {
+                    pushBranchesDialog(code, dialogs, [{ path, branch: group.branch }], {
                       title: `Push "${group.branch}"?`,
                       message: `Push ${group.branch} (${r.repo}) to the dev remote (odoo-dev)?`,
                     }),
@@ -2787,134 +2783,13 @@ class BranchMenu extends Component {
   }
 }
 
-// ─────────────────────────── Dialog ───────────────────────────
-// A single modal mounted at the app root, driven over appBus. Callers use the
-// openDialog() helper and await a result: an object of field values on OK, or
-// null when discarded/escaped. Spec: { title, message?, okLabel?, cancelLabel?,
-// validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox",
-// label, value, placeholder? }] }. A non-empty validate() keeps the dialog open
-// and shows the message. cancelLabel: null hides the Discard button (e.g. for a
-// plain message/alert).
-
-function openDialog(spec) {
-  return new Promise((resolve) => {
-    appBus.dispatchEvent(new CustomEvent("dialog", { detail: { spec, resolve } }));
-  });
-}
-
-class Dialog extends Component {
-  static template = xml`
-    <div class="dialog-backdrop" t-att-class="{hidden: !this.open()}" t-on-click="() => this.cancel()">
-      <div class="dialog" t-att-class="this.spec().cls || ''" t-on-click.stop="() => {}">
-        <h2 class="dialog-title" t-out="this.spec().title"/>
-        <div class="dialog-body">
-          <p t-if="this.spec().message" class="dialog-msg" t-out="this.spec().message"/>
-          <div t-foreach="this.spec().fields" t-as="f" t-key="f.key" class="dialog-field">
-            <label t-if="f.type === 'checkbox'" class="edit-check">
-              <input type="checkbox" t-att-checked="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.checked)"/>
-              <t t-out="f.label"/>
-            </label>
-            <t t-elif="f.type === 'select'">
-              <label t-out="f.label"/>
-              <select t-on-change="(ev) => this.setVal(f.key, ev.target.value)">
-                <option value=""><t t-out="f.placeholder || '— none —'"/></option>
-                <t t-foreach="f.options || []" t-as="opt" t-key="opt.value">
-                  <option t-att-value="opt.value" t-att-selected="this.values()[f.key] === opt.value" t-out="opt.label"/>
-                </t>
-              </select>
-            </t>
-            <t t-else="">
-              <label t-out="f.label"/>
-              <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
-            </t>
-          </div>
-        </div>
-        <div class="dialog-foot">
-          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
-          <button class="pbtn primary" t-on-click="() => this.ok()" t-out="this.spec().okLabel || 'OK'"/>
-          <button t-if="this.spec().cancelLabel !== null" class="pbtn" t-on-click="() => this.cancel()" t-out="this.spec().cancelLabel || 'Discard'"/>
-        </div>
-      </div>
-    </div>`;
-
-  open = signal(false);
-  spec = signal({ title: "", fields: [] });
-  values = signal({});
-  error = signal(""); // validation error from spec.validate()
-  _resolve = null;
-
-  setup() {
-    onMounted(() => {
-      appBus.addEventListener("dialog", (e) => this.show(e.detail));
-      document.addEventListener("keydown", (e) => {
-        if (this.open() && e.key === "Escape") this.cancel();
-      });
-    });
-  }
-
-  show({ spec, resolve }) {
-    this._resolve = resolve;
-    this.spec.set({ ...spec, fields: spec.fields || [] }); // fields are optional
-    this.error.set("");
-    const vals = {};
-    for (const f of spec.fields || []) vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
-    this.values.set(vals);
-    this.open.set(true);
-    // focus + select the first text field once rendered
-    Promise.resolve().then(() => {
-      const inp = document.querySelector(".dialog input[type=text]");
-      if (inp) {
-        inp.focus();
-        inp.select();
-      }
-    });
-  }
-
-  setVal(key, v) {
-    const oldValues = this.values();
-    let values = { ...oldValues, [key]: v };
-    const field = this.spec().fields.find((f) => f.key === key);
-    if (field && field.onChange) {
-      const updates = field.onChange(v, values, oldValues);
-      if (updates) values = { ...values, ...updates };
-    }
-    this.values.set(values);
-    if (this.error()) this.error.set("");
-  }
-
-  onKey(ev) {
-    if (ev.key === "Enter") this.ok();
-  }
-
-  _close(result) {
-    const resolve = this._resolve;
-    this._resolve = null;
-    this.open.set(false);
-    if (resolve) resolve(result);
-  }
-
-  ok() {
-    const values = { ...this.values() };
-    const validate = this.spec().validate;
-    if (validate) {
-      const err = validate(values);
-      if (err) return this.error.set(err); // keep the dialog open, show why
-    }
-    this._close(values);
-  }
-
-  cancel() {
-    this._close(null);
-  }
-}
-
 // ─────────────────────────── Remote branch dialog ────────────────────────────
 // Search for a branch on GitHub across all configured repos, select one, then
 // hand back { branch, repos } to the caller to create a local tracking branch.
 
 class RemoteBranchDialog extends Component {
   static template = xml`
-    <div class="dialog-backdrop" t-att-class="{hidden: !this.open()}" t-on-click="() => this.cancel()">
+    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog rbd" t-on-click.stop="() => {}">
         <h2 class="dialog-title">Target from remote branch</h2>
         <div class="dialog-body">
@@ -2938,45 +2813,34 @@ class RemoteBranchDialog extends Component {
         </div>
         <div class="dialog-foot">
           <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Create target</button>
-          <button class="pbtn" t-on-click="() => this.cancel()">Cancel</button>
+          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
         </div>
       </div>
     </div>`;
 
+  props = props({ done: t.function() });
   config = plugin(ConfigPlugin);
-  open = signal(false);
   loading = signal(false);
   searched = signal(false);
   rows = signal([]);
   sel = signal("");
   inputEl = signal.ref(HTMLElement);
-  _resolve = null;
   _timer = null;
 
   setup() {
-    onMounted(() => {
-      appBus.addEventListener("remote-branch-dialog", (e) => this.show(e.detail));
-      document.addEventListener("keydown", (e) => {
-        if (this.open() && e.key === "Escape") this.cancel();
-      });
-    });
-    useEffect(() => {
-      if (this.open()) this.inputEl()?.focus();
+    onMounted(() => this.inputEl()?.focus());
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => {
+      document.removeEventListener("keydown", onKey);
+      clearTimeout(this._timer);
     });
   }
 
-  show({ resolve }) {
-    this._resolve = resolve;
-    this.loading.set(false);
-    this.searched.set(false);
-    this.rows.set([]);
-    this.sel.set("");
-    this.open.set(true);
-    // clear the input once rendered
-    Promise.resolve().then(() => {
-      const el = this.inputEl();
-      if (el) el.value = "";
-    });
+  done(result) {
+    this.props.done(result);
   }
 
   onInput(val) {
@@ -3024,13 +2888,7 @@ class RemoteBranchDialog extends Component {
     if (!this.sel()) return;
     const branch = this.sel();
     const repos = this.rows().find((r) => r.branch === branch)?.repos || [];
-    this._resolve({ branch, repos });
-    this.open.set(false);
-  }
-
-  cancel() {
-    this._resolve(null);
-    this.open.set(false);
+    this.done({ branch, repos });
   }
 }
 
@@ -3346,8 +3204,6 @@ export class App extends Component {
     ConfigScreen,
     BranchMenu,
     DirtyMenu,
-    Dialog,
-    RemoteBranchDialog,
     EventLog,
     TerminalPanel,
   };
@@ -3361,12 +3217,12 @@ export class App extends Component {
       </div>
       <BranchMenu/>
       <DirtyMenu/>
-      <Dialog/>
-      <RemoteBranchDialog/>
       <EventLog/>
       <TerminalPanel/>
+      <div t-ref="this.dialogRoot"/>
     </div>`;
 
+  dialogRoot = plugin(DialogPlugin).root;
   router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
   // the active screen's component class (a class, not an instance)
