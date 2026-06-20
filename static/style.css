@@ -989,22 +989,23 @@ section.hidden {
   gap: 6px;
   flex: none;
   margin-left: auto;
-  font-size: 13px;
+  white-space: nowrap;
+  font-size: 11.5px;
   font-weight: 600;
-  color: var(--l-card);
-  background: var(--l-text);
-  border: 1px solid var(--l-text);
-  border-radius: 9px;
-  padding: 6px 16px;
+  color: var(--l-text-mid);
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 7px;
+  padding: 5px 10px;
   transition: 0.13s;
 }
 .dash-activate:hover:not(:disabled) {
-  opacity: 0.85;
+  color: var(--l-text);
+  border-color: var(--l-text-faint);
 }
 .dash-activate:disabled {
   color: var(--l-text-faint);
-  background: var(--l-panel);
-  border-color: var(--l-line);
+  opacity: 0.6;
   cursor: default;
 }
 /* Start (active target, server stopped) — green. Shared with the Server tab's
