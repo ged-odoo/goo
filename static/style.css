@@ -2604,6 +2604,7 @@ a.dash-row-branch:hover {
   font-size: 13px;
   line-height: 1.5;
   color: var(--l-text-mid);
+  white-space: pre-line;
 }
 .dialog-field {
   display: flex;

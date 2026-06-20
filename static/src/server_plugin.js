@@ -2,6 +2,8 @@
 
 import { ConfigPlugin, LAST_TARGET_KEY } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
+import { CodePlugin } from "./code_plugin.js";
+import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
@@ -12,6 +14,8 @@ export class ServerPlugin extends Plugin {
 
   config = plugin(ConfigPlugin);
   eventLog = plugin(EventLogPlugin);
+  code = plugin(CodePlugin);
+  dialogs = plugin(DialogPlugin);
   status = signal({ state: "stopped" }); // whole status object, replaced wholesale
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
@@ -95,9 +99,38 @@ export class ServerPlugin extends Plugin {
     }
   }
 
+  // the server launches whatever branches are currently checked out (the target's
+  // branches aren't sent to the backend). If they don't match the target, ask the
+  // user to confirm — starting with different branches is a valid use case.
+  // Returns true to proceed, false if the user cancelled.
+  async _confirmBranches(targetId) {
+    const target = this.config.config.targets.find((t) => t.id === targetId);
+    if (!target) return true;
+    await this.code.load(); // cache-aware; populates branchRepos
+    const current = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r.current]));
+    // only flag repos whose current branch we actually know
+    const off = (target.config || []).filter(
+      ({ repo, branch }) => current[repo] !== undefined && current[repo] !== branch,
+    );
+    if (!off.length) return true;
+    const lines = off
+      .map(({ repo, branch }) => `${repo}: on "${current[repo]}" — target wants "${branch}"`)
+      .join("\n");
+    const ok = await this.dialogs.open({
+      title: "Branches don't match this target",
+      message:
+        `The checked-out branches differ from "${this._targetName(targetId)}":\n\n` +
+        `${lines}\n\nStart with the current branches anyway?`,
+      okLabel: "Start anyway",
+      cancelLabel: "Cancel",
+    });
+    return !!ok;
+  }
+
   async start(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
+    if (!(await this._confirmBranches(targetId))) return;
     this.lastConfig = cfg;
     this.setLastTarget(cfg.target);
     this.eventLog.add(`starting server (target: ${this._targetName(cfg.target)})`);
@@ -107,6 +140,7 @@ export class ServerPlugin extends Plugin {
   async restart(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return;
+    if (!(await this._confirmBranches(targetId))) return;
     this.lastConfig = cfg;
     this.setLastTarget(cfg.target);
     this.eventLog.add(`restarting server (target: ${this._targetName(cfg.target)})`);
