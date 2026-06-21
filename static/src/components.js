@@ -4,7 +4,7 @@
 // is held in individual signals (read via signal() in templates); component
 // props use the props({...}) helper with `t` types.
 
-import { BASE_BRANCH_RE, ODOO_LINKS } from "./config.js";
+import { BASE_BRANCH_RE, ODOO_LINKS, VERSION } from "./config.js";
 import { ConfigPlugin, newTargetId } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -77,14 +77,14 @@ class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><span class="name" title="GED Odoo Overseer">goo</span></div>
-        <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
-          <span class="nt-name">
-            <span class="dot"/>
-            <span class="t-name" t-out="this.target"/>
-          </span>
-          <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
-        </div>
+        <div class="logo"><span class="name" title="GED Odoo Overseer">goo</span><span class="version" t-out="this.version"/></div>
+      </div>
+      <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
+        <span class="nt-name">
+          <span class="dot"/>
+          <span class="t-name" t-out="this.target"/>
+        </span>
+        <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
         <t t-foreach="this.odooLinks" t-as="r" t-key="r.label">
@@ -98,6 +98,7 @@ class Topbar extends Component {
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
 
+  version = `v${VERSION}`;
   // hardcoded links into the running server (disabled while it's down)
   odooLinks = ODOO_LINKS;
   disabledHint = "the server is not running — start it to open this";

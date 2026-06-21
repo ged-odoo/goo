@@ -15,6 +15,8 @@
   --text-dim: oklch(0.56 0.012 264);
   --text-faint: oklch(0.52 0.012 264);
 
+  --sidebar-width: 226px; /* shared by the body grid and the navbar column */
+
   --accent: oklch(0.66 0.16 300);
   --accent-soft: oklch(0.66 0.16 300 / 0.14);
   --accent-line: oklch(0.66 0.16 300 / 0.45);
@@ -99,19 +101,20 @@ a {
 /* ───────────────── TOP BAR (dark) ───────────────── */
 
 .topbar {
-  display: flex;
-  justify-content: space-between;
+  /* columns mirror the body grid so the centre cell sits above the main area */
+  display: grid;
+  grid-template-columns: var(--sidebar-width) auto 1fr;
   align-items: center;
-  padding: 0 18px;
-  gap: 18px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--chrome-line);
 }
 .top-left {
+  grid-column: 1;
   display: flex;
   align-items: center;
   gap: 14px;
   min-width: 0;
+  padding-left: 18px;
 }
 .logo {
   display: flex;
@@ -125,9 +128,17 @@ a {
   letter-spacing: 0.02em;
   color: var(--text);
 }
+.logo .version {
+  margin-left: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
 
-/* current target chip, next to the goo title */
+/* current target chip — sits at the start of the main area, just past the sidebar */
 .nav-target {
+  grid-column: 2;
   display: inline-flex;
   align-items: stretch; /* both parts fill the height so the divider spans it */
   min-width: 0;
@@ -257,10 +268,13 @@ a {
 }
 
 .top-right {
+  grid-column: 3;
+  justify-self: end;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  padding-right: 18px;
 }
 .route {
   display: inline-flex;
@@ -297,7 +311,7 @@ a {
 
 .body {
   display: grid;
-  grid-template-columns: 226px 1fr;
+  grid-template-columns: var(--sidebar-width) 1fr;
   min-height: 0;
 }
 

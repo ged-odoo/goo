@@ -1,3 +1,6 @@
+// app version — shown in the navbar. Keep in sync with package.json "version".
+export const VERSION = "1.0.0";
+
 // The single source of truth for all initial data. Anything edited in the
 // Config tab is stored in localStorage (via ConfigPlugin) and overrides these
 // values; "Reset to initial config" wipes those overrides to come back here.
