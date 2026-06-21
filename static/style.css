@@ -281,6 +281,17 @@ a {
   background: var(--accent-soft);
   border-color: var(--accent-line);
 }
+/* a hardcoded server link while the server is down: dimmed, not clickable, but
+   still hoverable so its explanatory title tooltip shows */
+.route.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.route.disabled:hover {
+  color: #fff;
+  background: var(--chrome-inset);
+  border-color: var(--chrome-line);
+}
 
 /* ───────────────── BODY / SIDEBAR (dark) ───────────────── */
 

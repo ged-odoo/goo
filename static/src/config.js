@@ -67,14 +67,9 @@ export const DEFAULT_CONFIG = {
     on_create_args: "-i sale_management",
     other_args: "--dev all",
   },
-  // navbar links (editable in the Config tab). The two odoo links go through the
-  // autologin addon (?to=<url-encoded target>).
+  // navbar links (editable in the Config tab). The hardcoded /odoo + /web/tests
+  // links live in ODOO_LINKS below, not here.
   links: [
-    { label: "/odoo", href: "http://localhost:8069/dev/autologin?to=%2Fodoo%3Fdebug%3Dassets" },
-    {
-      label: "/web/tests",
-      href: "http://localhost:8069/dev/autologin?to=%2Fweb%2Ftests%3Fdebug%3Dassets%26timeout%3D500000%26manual%3Dtrue",
-    },
     { label: "owl docs", href: "https://odoo.github.io/owl/documentation/v3/owl/" },
     { label: "owl playground", href: "https://odoo.github.io/owl/playground/" },
     { label: "owl github", href: "https://github.com/odoo/owl" },
@@ -82,6 +77,17 @@ export const DEFAULT_CONFIG = {
     { label: "mergebot", href: "https://mergebot.odoo.com" },
   ],
 };
+
+// Hardcoded navbar links into the running Odoo server. They go through the
+// autologin addon (?to=<url-encoded target>) and only work while the server is
+// up, so the topbar disables them when it isn't running. Not user-configurable.
+export const ODOO_LINKS = [
+  { label: "/odoo", href: "http://localhost:8069/dev/autologin?to=%2Fodoo%3Fdebug%3Dassets" },
+  {
+    label: "/web/tests",
+    href: "http://localhost:8069/dev/autologin?to=%2Fweb%2Ftests%3Fdebug%3Dassets%26timeout%3D500000%26manual%3Dtrue",
+  },
+];
 
 export const SECTIONS = [
   "dashboard",

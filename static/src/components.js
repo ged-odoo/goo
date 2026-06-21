@@ -4,7 +4,7 @@
 // is held in individual signals (read via signal() in templates); component
 // props use the props({...}) helper with `t` types.
 
-import { BASE_BRANCH_RE } from "./config.js";
+import { BASE_BRANCH_RE, ODOO_LINKS } from "./config.js";
 import { ConfigPlugin, newTargetId } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -87,6 +87,10 @@ class Topbar extends Component {
         </div>
       </div>
       <div class="top-right">
+        <t t-foreach="this.odooLinks" t-as="r" t-key="r.label">
+          <a t-if="this.serverUp" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
+          <span t-else="" class="route disabled" t-att-title="this.disabledHint" t-out="r.label"/>
+        </t>
         <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
       </div>
     </header>`;
@@ -94,9 +98,20 @@ class Topbar extends Component {
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
 
-  // navbar links, editable in the Config tab
+  // hardcoded links into the running server (disabled while it's down)
+  odooLinks = ODOO_LINKS;
+  disabledHint = "the server is not running — start it to open this";
+
+  // these links only reach the Odoo server once it is actually serving
+  get serverUp() {
+    return this.server.status().state === "running";
+  }
+
+  // user-configurable navbar links. Filter out the hardcoded /odoo + /web/tests
+  // labels in case an older saved config still carries them.
   get routes() {
-    return this.config.config.links;
+    const reserved = new Set(ODOO_LINKS.map((l) => l.label));
+    return this.config.config.links.filter((l) => !reserved.has(l.label));
   }
 
   get active() {
