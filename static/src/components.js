@@ -369,6 +369,9 @@ class DashboardScreen extends Component {
                 <button class="dash-rebase" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">
                   <t t-out="this.pushIcon"/>Push
                 </button>
+                <button class="dash-rebase dash-term" t-att-disabled="!r.path" title="open a terminal in this repo" t-on-click="() => this.openTerminal(r)">
+                  <t t-out="this.terminalIcon"/>
+                </button>
               </div>
             </div>
           </section>
@@ -444,6 +447,7 @@ class DashboardScreen extends Component {
   dbIcon = m(ICONS.databases);
   kebabIcon = m(ICONS.kebab);
   pushIcon = m(ICONS.push);
+  terminalIcon = m(ICONS.terminal);
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
@@ -790,6 +794,12 @@ class DashboardScreen extends Component {
   createTargetBranch(row) {
     const path = this.code.groups().pathByRepo[row.repo];
     if (path) this.code.createBranch(path, row.branch, this._baseBranch(row.branch));
+  }
+
+  // open a modal bash terminal in this repo's directory
+  openTerminal(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: `${r.id} — ${r.path}` });
   }
 
   cell(date) {
@@ -2936,6 +2946,52 @@ function loadXterm() {
   return _xtermReady;
 }
 
+/* global Terminal, FitAddon */
+// attach an xterm terminal to `el`, backed by the WebSocket at `wsUrl` (bytes
+// both ways, JSON resize messages). Returns a dispose() that tears it all down.
+// Shared by the floating TerminalPanel (/api/terminal) and TerminalDialog (/api/shell).
+async function attachXterm(el, wsUrl, focusOnOpen = false) {
+  await loadXterm();
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "var(--mono, monospace)",
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(el);
+  // rAF lets the browser lay out xterm's DOM so FitAddon reads non-zero cells
+  await new Promise((r) => requestAnimationFrame(r));
+  fit.fit();
+  if (focusOnOpen) term.focus();
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+  const sendSize = () => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  ws.onopen = sendSize;
+  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+  const onData = term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+  });
+  const ro = new ResizeObserver(() => {
+    fit.fit();
+    sendSize();
+  });
+  ro.observe(el);
+  return () => {
+    ro.disconnect();
+    onData.dispose?.();
+    try {
+      ws.close();
+    } catch {
+      /* already closing */
+    }
+    term.dispose();
+  };
+}
+
 // ─────────────────────────── Terminal panel ───────────────────────────
 
 class TerminalPanel extends Component {
@@ -2963,9 +3019,7 @@ class TerminalPanel extends Component {
   _resizeStartY = 0;
   _resizeStartW = 0;
   _resizeStartH = 0;
-  _term = null;
-  _ws = null;
-  _ro = null;
+  _dispose = null;
   _termOpen = false; // guard against double-open on re-renders
 
   get panelStyle() {
@@ -3015,50 +3069,12 @@ class TerminalPanel extends Component {
     if (this._termOpen) return;
     this._termOpen = true;
     try {
-      await loadXterm();
-      if (this.container() !== el) return; // container swapped/gone while loading
-      const term = new Terminal({
-        cursorBlink: true,
-        fontSize: 13,
-        fontFamily: "var(--mono, monospace)",
-      });
-      const fit = new FitAddon.FitAddon();
-      term.loadAddon(fit);
-      term.open(el);
-      // rAF lets the browser lay out xterm's newly inserted DOM so that
-      // FitAddon can read non-zero cell dimensions
-      await new Promise((r) => requestAnimationFrame(r));
-      if (this.container() !== el) return; // container swapped/gone during rAF
-      fit.fit();
-      this._term = term;
-
-      const ws = new WebSocket(`ws://127.0.0.1:8068/api/terminal`);
-      ws.binaryType = "arraybuffer";
-      this._ws = ws;
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-      };
-      ws.onmessage = (e) => {
-        term.write(new Uint8Array(e.data));
-      };
-      ws.onclose = () => {
-        this._ws = null;
-      };
-
-      term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode(data));
-        }
-      });
-
-      this._ro = new ResizeObserver(() => {
-        fit.fit();
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-        }
-      });
-      this._ro.observe(el);
+      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
+      if (this.container() !== el) {
+        dispose(); // container swapped/gone while loading
+        return;
+      }
+      this._dispose = dispose;
     } catch (e) {
       this._termOpen = false;
     }
@@ -3067,18 +3083,8 @@ class TerminalPanel extends Component {
   _closeTerminal() {
     if (!this._termOpen) return;
     this._termOpen = false;
-    if (this._ro) {
-      this._ro.disconnect();
-      this._ro = null;
-    }
-    if (this._ws) {
-      this._ws.close();
-      this._ws = null;
-    }
-    if (this._term) {
-      this._term.dispose();
-      this._term = null;
-    }
+    this._dispose?.();
+    this._dispose = null;
   }
 
   onDragStart(e) {
@@ -3098,6 +3104,59 @@ class TerminalPanel extends Component {
     this._resizeStartH = this.h();
     e.preventDefault();
     e.stopPropagation();
+  }
+}
+
+// ─────────────────────────── Terminal dialog ───────────────────────────
+// A modal terminal running bash in a given directory (opened from the Dashboard
+// repo list). Backed by /api/shell, so it works regardless of the Odoo server.
+class TerminalDialog extends Component {
+  static template = xml`
+    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+      <div class="dialog term-dialog" t-on-click.stop="() => {}">
+        <div class="term-dialog-head">
+          <span class="term-dialog-title" t-out="this.label"/>
+          <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
+        </div>
+        <div class="term-dialog-body" t-ref="this.container"/>
+      </div>
+    </div>`;
+
+  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  container = signal.ref(HTMLElement);
+  _dispose = null;
+
+  setup() {
+    useEffect(() => {
+      const el = this.container();
+      if (!el) return;
+      let live = true;
+      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+      attachXterm(el, url, true).then((dispose) => (live ? (this._dispose = dispose) : dispose()));
+      return () => {
+        live = false;
+        this._dispose?.();
+        this._dispose = null;
+      };
+    });
+    const onKey = (e) => {
+      // let a focused terminal handle Escape itself (vim, readline, …); only
+      // close the dialog when focus is outside the terminal
+      if (e.key !== "Escape") return;
+      const el = this.container();
+      if (el && el.contains(document.activeElement)) return;
+      this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+  }
+
+  get label() {
+    return this.props.label || this.props.path;
+  }
+
+  done(result) {
+    this.props.done(result);
   }
 }
 

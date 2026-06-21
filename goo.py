@@ -1432,6 +1432,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_events()
         elif path == "/api/terminal":
             self._handle_terminal()
+        elif path == "/api/shell":
+            self._handle_shell()
         elif path == "/api/data":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             fpath = (qs.get("path") or [""])[0]
@@ -1777,6 +1779,94 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             MANAGER._ws_clients.discard(q)
             q.put(None)  # stop the sender thread
+
+    def _handle_shell(self):
+        """Upgrade to WebSocket and proxy an interactive bash shell running in
+        the requested directory. One shell process per connection, killed on
+        disconnect. Independent of the Odoo server PTY."""
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        cwd = os.path.expanduser((qs.get("cwd") or [""])[0])
+        if not cwd or not os.path.isdir(cwd):
+            return self._send_json(400, {"ok": False, "error": "invalid cwd"})
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key:
+            return self._send_json(400, {"ok": False, "error": "missing WS key"})
+
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", _ws_accept_key(key))
+        self.end_headers()
+        self.wfile.flush()
+
+        sock = self.connection
+        master_fd, slave_fd = pty.openpty()
+
+        def _preexec():
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)  # pty becomes controlling tty
+
+        proc = subprocess.Popen(
+            ["/bin/bash", "-i"],
+            cwd=cwd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            preexec_fn=_preexec,
+        )
+        os.close(slave_fd)
+
+        # one thread pumps PTY output to the socket; the main loop pumps client
+        # input (and resize messages) into the PTY. Only this thread writes to
+        # the socket, so there is no concurrent-write hazard.
+        def _pty_to_ws():
+            try:
+                while True:
+                    data = os.read(master_fd, 4096)
+                    if not data:
+                        break
+                    _ws_send_frame(sock, data)
+            except OSError:
+                pass
+            finally:
+                try:
+                    _ws_send_frame(sock, b"", opcode=8)  # close frame
+                except OSError:
+                    pass
+
+        threading.Thread(target=_pty_to_ws, daemon=True).start()
+
+        try:
+            while True:
+                opcode, payload = _ws_recv_frame(sock)
+                if opcode == 8:  # close
+                    break
+                if opcode == 1:  # text: JSON control message (resize)
+                    try:
+                        msg = json.loads(payload)
+                        if msg.get("type") == "resize":
+                            rows = max(1, int(msg.get("rows", 24)))
+                            cols = max(1, int(msg.get("cols", 80)))
+                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
+                                        struct.pack("HHHH", rows, cols, 0, 0))
+                    except (json.JSONDecodeError, OSError, ValueError):
+                        pass
+                elif opcode == 2:  # binary: raw terminal input bytes
+                    try:
+                        os.write(master_fd, payload)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        finally:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
 
     # --- SSE ---
 
