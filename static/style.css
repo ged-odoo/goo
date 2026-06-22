@@ -2863,7 +2863,7 @@ a.dash-row-branch:hover {
 }
 .commit-row {
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) auto;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: baseline;
   padding: 6px 14px;
@@ -2874,8 +2874,11 @@ a.dash-row-branch:hover {
 .commit-row.expanded {
   background: var(--l-panel);
 }
-.commit-sha {
-  color: var(--l-accent);
+.commit-when,
+.commit-author {
+  white-space: nowrap;
+  color: var(--l-text-dim);
+  font-size: 11px;
 }
 .commit-subject {
   min-width: 0;
@@ -2884,22 +2887,36 @@ a.dash-row-branch:hover {
   text-overflow: ellipsis;
   color: var(--l-text);
 }
-.commit-meta {
-  white-space: nowrap;
-  color: var(--l-text-dim);
+.commit-detail {
+  background: var(--l-panel);
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.commit-detail-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px 2px;
+  font-family: var(--mono);
   font-size: 11px;
+}
+.commit-detail-hash {
+  color: var(--l-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.commit-detail-date {
+  color: var(--l-text-dim);
+  white-space: nowrap;
 }
 .commit-body {
   margin: 0;
-  padding: 8px 16px 10px;
+  padding: 4px 16px 10px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--l-text-mid);
-  background: var(--l-panel);
-  border-bottom: 1px solid var(--l-line-soft);
 }
 
 /* icon-only repo-row terminal button */

@@ -3231,11 +3231,17 @@ class CommitsDialog extends Component {
         <t t-else="">
           <t t-foreach="this.commits()" t-as="c" t-key="c.sha">
             <div class="commit-row" t-att-class="{expanded: this.isExpanded(c.sha)}" t-on-click="() => this.toggle(c.sha)">
-              <span class="commit-sha" t-out="c.sha.slice(0, 8)"/>
+              <span class="commit-when" t-att-title="c.date" t-out="this.when(c.date)"/>
               <span class="commit-subject" t-att-title="c.subject" t-out="c.subject"/>
-              <span class="commit-meta" t-att-title="c.date"><t t-out="c.author"/> · <t t-out="this.when(c.date)"/></span>
+              <span class="commit-author" t-out="c.author"/>
             </div>
-            <pre t-if="this.isExpanded(c.sha)" class="commit-body" t-out="this.message(c)"/>
+            <div t-if="this.isExpanded(c.sha)" class="commit-detail">
+              <div class="commit-detail-meta">
+                <span class="commit-detail-hash" t-out="c.sha"/>
+                <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
+              </div>
+              <pre class="commit-body" t-out="this.message(c)"/>
+            </div>
           </t>
         </t>
       </div>
@@ -3271,6 +3277,11 @@ class CommitsDialog extends Component {
 
   when(date) {
     return timeAgo(date);
+  }
+
+  fullDate(date) {
+    const d = new Date(date);
+    return isNaN(d) ? date : d.toLocaleString();
   }
 
   toggle(sha) {
