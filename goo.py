@@ -701,6 +701,36 @@ def runbot_badge_status(branch):
     return ""
 
 
+def runbot_latest_pending(branch):
+    """True if the bundle's latest batch still has a build running.
+
+    The badge only reports the last *finished* result, so a re-run in progress
+    reads as the previous success/failure. On the bundle page batches render
+    newest-first, so the first `.batch_tile` is the latest; a running build in it
+    shows a spinner (fa-spin)."""
+    url = f"https://runbot.odoo.com/runbot/bundle/{urllib.parse.quote(branch)}"
+    log_request(f"GET {url}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return False
+    parts = html.split('class="batch_tile', 1)
+    if len(parts) < 2:
+        return False
+    latest = parts[1].split('class="batch_tile', 1)[0]  # up to the next (older) tile
+    return "fa-spin" in latest
+
+
+def runbot_status(branch):
+    """Runbot status for a branch's bundle: "pending" when the latest batch is
+    still running, otherwise the badge's last-finished result."""
+    if runbot_latest_pending(branch):
+        return "pending"
+    return runbot_badge_status(branch)
+
+
 def runbot_statuses(branches):
     """For a list of branch names: their runbot status keyed by name, fetched
     in parallel."""
@@ -708,7 +738,7 @@ def runbot_statuses(branches):
     if not branches:
         return {}
     with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
-        states = pool.map(runbot_badge_status, branches)
+        states = pool.map(runbot_status, branches)
         return dict(zip(branches, states, strict=False))
 
 
