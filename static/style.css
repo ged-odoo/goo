@@ -797,7 +797,9 @@ section.hidden {
 .dash-repos-head,
 .dash-repo-row {
   display: grid;
-  grid-template-columns: 200px 220px 1fr 90px auto;
+  /* Repository + When are short → fixed and tight; Branch gets the largest
+     flexible share, Last commit a smaller one */
+  grid-template-columns: 150px minmax(0, 1.5fr) minmax(0, 1fr) 80px auto;
   column-gap: 16px;
   align-items: center;
 }
@@ -839,15 +841,23 @@ section.hidden {
   stroke-width: 2;
 }
 .dash-branch {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--l-text-mid);
-  white-space: nowrap;
+}
+/* only the branch name truncates — the dirty badge + ahead/behind stay visible */
+.dash-branch-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 /* commits ahead/behind the base (target) branch */
 .dash-diff {
+  flex-shrink: 0;
   margin-left: 7px;
   font-size: 11px;
   font-weight: 600;
@@ -1777,6 +1787,7 @@ a.dash-row-branch:hover {
   display: none;
 }
 .dirty-badge {
+  flex-shrink: 0;
   margin-left: 6px;
   font-size: 10px;
   font-weight: 700;
