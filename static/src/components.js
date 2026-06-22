@@ -21,7 +21,6 @@ const {
   Component,
   xml,
   plugin,
-  proxy,
   markup,
   onMounted,
   onPatched,
@@ -1877,22 +1876,8 @@ class BranchesScreen extends Component {
                   </td>
                   <td>
                     <div class="br-act">
-                      <button class="drop-btn pr-close" t-on-click="() => this.openCommits(r)"
-                              title="show recent commits on this branch">Commits</button>
-                      <button t-if="!r.remote" class="drop-btn pr-open"
-                              t-on-click="() => this.pushBranch(r)"
-                              title="push this branch to the dev remote (odoo-dev)">Push</button>
-                      <button t-if="!r.base and r.remote and r.github and !r.pr" class="drop-btn pr-open"
-                              t-on-click="() => this.openPr(r)">Open PR</button>
-                      <button t-if="r.pr and r.github and r.pr.state === 'OPEN'" class="drop-btn pr-close"
-                              t-on-click="() => this.code.closePr(r.github, r.pr.number)">Close PR</button>
-                      <button class="drop-btn checkout" t-att-disabled="!!this.checkoutBlocked(r)"
-                              t-att-title="this.checkoutBlocked(r) || ('check out ' + r.branch + ' in ' + r.repo)"
-                              t-on-click="() => this.checkout(r)">Checkout</button>
-                      <button class="drop-btn pr-close" t-on-click="() => this.duplicateBranch(r)"
-                              title="create a new branch based on this one">Duplicate</button>
-                      <button class="drop-btn" t-att-disabled="!!this.deleteBlocked(r)" t-att-title="this.deleteBlocked(r)"
-                              t-on-click="() => this.deleteRow(r)">Delete</button>
+                      <button class="dash-kebab" title="branch actions"
+                              t-on-click.stop="(ev) => this.openRowMenu(ev, r)"><t t-out="this.kebabIcon"/></button>
                     </div>
                   </td>
                   <td class="br-spacer"/>
@@ -1909,6 +1894,7 @@ class BranchesScreen extends Component {
   dialogs = plugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   externalIcon = m(ICONS.external);
+  kebabIcon = m(ICONS.kebab);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
   selected = signal(new Set()); // branch names ticked for batch actions
@@ -2101,6 +2087,44 @@ class BranchesScreen extends Component {
   openPr(row) {
     this.code.eventLog.add(`opening PR for ${row.branch} (${row.repo})`);
     window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
+  }
+
+  // build the per-branch action list for this row and open the floating kebab
+  // menu anchored to the clicked button (see ActionMenu)
+  openRowMenu(ev, r) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const actions = [{ label: "Commits", onClick: () => this.openCommits(r) }];
+    if (!r.remote)
+      actions.push({
+        label: "Push",
+        title: "push this branch to the dev remote (odoo-dev)",
+        onClick: () => this.pushBranch(r),
+      });
+    if (!r.base && r.remote && r.github && !r.pr)
+      actions.push({ label: "Open PR", onClick: () => this.openPr(r) });
+    if (r.pr && r.github && r.pr.state === "OPEN")
+      actions.push({ label: "Close PR", danger: true, onClick: () => this.code.closePr(r.github, r.pr.number) });
+    const coBlocked = this.checkoutBlocked(r);
+    actions.push({
+      label: "Checkout",
+      disabled: !!coBlocked,
+      title: coBlocked || `check out ${r.branch} in ${r.repo}`,
+      onClick: () => this.checkout(r),
+    });
+    actions.push({
+      label: "Duplicate",
+      title: "create a new branch based on this one",
+      onClick: () => this.duplicateBranch(r),
+    });
+    const delBlocked = this.deleteBlocked(r);
+    actions.push({
+      label: "Delete",
+      danger: true,
+      disabled: !!delBlocked,
+      title: delBlocked || "",
+      onClick: () => this.deleteRow(r),
+    });
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
   }
 
   // why a branch can't be checked out ("" = allowed): already checked out, or the
@@ -2790,120 +2814,54 @@ class ConfigScreen extends Component {
   }
 }
 
-// ─────────────────────────── Branch action popover ───────────────────────────
+// ─────────────────────────── Action menu popover ───────────────────────────
 
-class BranchMenu extends Component {
+// A generic floating kebab menu. Lives at the app root and is opened via the
+// appBus "action-menu" event with an anchor rect + a list of actions
+// ({ label, danger?, disabled?, title?, onClick }). Positioned fixed so it
+// escapes overflow-clipped containers (e.g. the scrolling branches table);
+// flips above the anchor when it would run off the bottom of the viewport.
+class ActionMenu extends Component {
   static template = xml`
-    <div class="branch-popover" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
-      <button t-foreach="this.actions()" t-as="a" t-key="a_index" class="branch-popover-item"
+    <div class="dash-menu action-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button t-foreach="this.actions()" t-as="a" t-key="a_index" class="dash-menu-item"
               t-att-class="{danger: a.danger}" t-att-disabled="a.disabled" t-att-title="a.title || ''"
               t-on-click="() => this.select(a)" t-out="a.label"/>
     </div>`;
 
-  code = plugin(CodePlugin);
-  dialogs = plugin(DialogPlugin);
   open = signal(false);
   actions = signal([]);
-  el = null;
+  _el = null;
+
   setup() {
     onMounted(() => {
-      this.el = document.querySelector(".branch-popover");
-      appBus.addEventListener("branch-menu", (e) => this.openMenu(e.detail));
-      document.addEventListener("click", () => this.close());
+      this._el = document.querySelector(".action-menu");
+      appBus.addEventListener("action-menu", (e) => this.openMenu(e.detail));
+      document.addEventListener("click", () => this.open.set(false));
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.close();
+        if (e.key === "Escape") this.open.set(false);
       });
     });
   }
 
-  close() {
-    this.open.set(false);
-  }
-
-  async openMenu({ ev, group, vm }) {
-    const { actions, resolvers } = this.buildActions(group, vm);
-    this.actions.set(actions); // a deep proxy array
+  async openMenu({ rect, actions }) {
+    this.actions.set(actions);
     this.open.set(true);
-    await Promise.resolve();
-    const r = ev.currentTarget.getBoundingClientRect();
-    const w = this.el.offsetWidth;
-    this.el.style.top = `${r.bottom + 4}px`;
-    this.el.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
-    for (const { index, run } of resolvers) {
-      run().then((patch) => Object.assign(this.actions()[index], patch));
-    }
+    await Promise.resolve(); // wait a tick so offsetWidth/Height reflect the items
+    const w = this._el.offsetWidth;
+    const h = this._el.offsetHeight;
+    // open below the anchor; flip above if it would overflow the viewport bottom
+    let top = rect.bottom + 4;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
+    this._el.style.top = `${top}px`;
+    // right-align the menu to the kebab, clamped to the viewport
+    this._el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
   }
 
   select(a) {
-    if (!a.disabled && a.onClick) {
-      this.close();
-      a.onClick();
-    }
-  }
-
-  buildActions(group, vm) {
-    const code = this.code;
-    const dialogs = this.dialogs;
-    const actions = [];
-    const resolvers = [];
-    for (const r of group.rows) {
-      const github = vm.githubByRepo[r.repo];
-      if (!github) continue;
-      const path = vm.pathByRepo[r.repo];
-      const pr = vm.prIndex[`${r.repo}:${group.branch}`];
-      const linkAction = {
-        label: `Branch on GitHub — ${r.repo}`,
-        disabled: false,
-        onClick: () => window.open(code.forkBranchUrl(github, group.branch), "_blank"),
-      };
-      actions.push({ label: `Checking GitHub… — ${r.repo}`, disabled: true });
-      resolvers.push({
-        index: actions.length - 1,
-        run: async () => {
-          if (pr || r.remote) return linkAction;
-          try {
-            return (await code.remoteExists(path, group.branch))
-              ? linkAction
-              : {
-                  label: `Push branch to GitHub — ${r.repo}`,
-                  disabled: false,
-                  onClick: () =>
-                    pushBranchesDialog(code, dialogs, [{ path, branch: group.branch }], {
-                      title: `Push "${group.branch}"?`,
-                      message: `Push ${group.branch} (${r.repo}) to the dev remote (odoo-dev)?`,
-                    }),
-                };
-          } catch (e) {
-            return { label: `GitHub check failed — ${r.repo}`, disabled: true, title: e.message };
-          }
-        },
-      });
-      if (!pr)
-        actions.push({
-          label: `Create PR — ${r.repo}`,
-          onClick: () => {
-            code.eventLog.add(`opening PR for ${group.branch} (${r.repo})`);
-            window.open(code.prCreateUrl(github, group.branch), "_blank");
-          },
-        });
-      else if (pr.state === "OPEN")
-        actions.push({
-          label: `Close PR #${pr.number} — ${r.repo}`,
-          danger: true,
-          onClick: () => code.closePr(github, pr.number),
-        });
-    }
-    for (const r of group.rows) {
-      actions.push({
-        label: `Delete local branch — ${r.repo}`,
-        danger: true,
-        disabled: r.checkedOut,
-        title: r.checkedOut ? "currently checked out" : "",
-        onClick: () => code.deleteBranch(group.branch, r.repo, vm.pathByRepo[r.repo]),
-      });
-    }
-    actions.push({ label: "Rebase onto base", disabled: true, title: "coming soon" });
-    return { actions: proxy(actions), resolvers };
+    if (a.disabled) return;
+    this.open.set(false);
+    a.onClick?.();
   }
 }
 
@@ -3509,7 +3467,7 @@ export class App extends Component {
     DatabasesScreen,
     AddonsScreen,
     ConfigScreen,
-    BranchMenu,
+    ActionMenu,
     DirtyMenu,
     EventLog,
     TerminalPanel,
@@ -3522,7 +3480,7 @@ export class App extends Component {
         <Sidebar/>
         <main><t t-component="this.currentScreen()"/></main>
       </div>
-      <BranchMenu/>
+      <ActionMenu/>
       <DirtyMenu/>
       <EventLog/>
       <TerminalPanel/>
