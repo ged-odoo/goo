@@ -127,6 +127,11 @@ a {
   font-size: 20px;
   letter-spacing: 0.02em;
   color: var(--text);
+  text-decoration: none;
+  transition: color 0.13s;
+}
+.logo .name:hover {
+  color: var(--accent);
 }
 .logo .version {
   margin-left: 6px;

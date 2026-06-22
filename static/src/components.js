@@ -78,7 +78,7 @@ class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><span class="name" title="GED Odoo Overseer">goo</span><span class="version" t-out="this.version"/></div>
+        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/></div>
       </div>
       <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
         <span class="nt-name">
