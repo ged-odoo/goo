@@ -719,9 +719,11 @@ def runbot_status(branch):
     `result` ("success" / "failure" / "") comes from the bundle page favicon
     (icon_ok / icon_ko / icon_killed …) — runbot's own overall verdict, which
     already reflects a failure even mid-run. `running` is true when the latest
-    batch still has a build in progress (a spinner), so the UI can show the
-    result *and* a "still running" indicator at the same time. Falls back to the
-    badge's last-finished result if the page can't be read."""
+    batch still has a build in progress — runbot colours an in-progress build
+    `btn-info` (blue), which reliably distinguishes a running batch from a
+    finished one. So the UI can show the result *and* a "still running" indicator
+    at once. Falls back to the badge's last-finished result if the page can't be
+    read."""
     html = runbot_bundle_page(branch)
     if not html:
         s = runbot_badge_status(branch)
@@ -731,7 +733,8 @@ def runbot_status(branch):
     result = "failure" if state in ("ko", "killed") else "success" if state == "ok" else ""
     parts = html.split('class="batch_tile', 1)
     latest = parts[1].split('class="batch_tile', 1)[0] if len(parts) > 1 else ""
-    return {"result": result, "running": "fa-spin" in latest}
+    running = "btn-info" in latest or "fa-spin" in latest
+    return {"result": result, "running": running}
 
 
 def runbot_statuses(branches):
