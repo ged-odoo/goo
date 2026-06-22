@@ -423,6 +423,7 @@ class DashboardScreen extends Component {
                       <t t-set="ci" t-value="this.ciBadge(row)"/>
                       <a class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                        <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </a>
                       <t t-if="row.pr and row.github">
                         <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
@@ -582,18 +583,26 @@ class DashboardScreen extends Component {
     return "other";
   }
 
-  // the fetched runbot status for a row's branch ("" if unknown / not fetched)
+  // the fetched runbot status for a row's branch ({result, running} or null)
   rbState(row) {
-    return this.code.runbot()[row.branch] || "";
+    return this.code.runbot()[row.branch] || null;
   }
 
-  // CI badge model for a card repo row, mapping runbot status -> design states
+  // CI badge model for a card repo row: the result (ok/ko) plus a `running` flag
+  // so the badge can show a "still running" indicator alongside the verdict
   ciBadge(row) {
     const s = this.rbState(row);
-    if (s === "success") return { cls: "pass", label: "ok", title: "passing" };
-    if (s === "failure") return { cls: "fail", label: "ko", title: "failing" };
-    if (s === "pending") return { cls: "run", label: "running", title: "running" };
-    return { cls: "unknown", label: "—", title: "unknown" };
+    const result = (s && s.result) || "";
+    const running = !!(s && s.running);
+    let badge;
+    if (result === "success") badge = { cls: "pass", label: "ok", title: "passing" };
+    else if (result === "failure") badge = { cls: "fail", label: "ko", title: "failing" };
+    else if (running) badge = { cls: "run", label: "running", title: "running" };
+    else badge = { cls: "unknown", label: "—", title: "unknown" };
+    // a concrete pass/fail that's still running gets the extra running indicator
+    badge.running = running && !!result;
+    if (badge.running) badge.title += " — still running";
+    return badge;
   }
 
 

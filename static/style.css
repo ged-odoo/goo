@@ -1210,6 +1210,15 @@ a.dash-row-branch:hover {
 .dash-ci.run .dash-ci-dot {
   animation: dash-blink 1.4s ease-in-out infinite;
 }
+/* shown next to an ok/ko badge while the batch is still running */
+.dash-ci-run {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--l-amber);
+  animation: dash-blink 1.4s ease-in-out infinite;
+}
 .dash-ci.missing {
   color: var(--l-red);
   background: var(--l-red-bg);

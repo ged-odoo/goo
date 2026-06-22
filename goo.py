@@ -701,34 +701,37 @@ def runbot_badge_status(branch):
     return ""
 
 
-def runbot_latest_pending(branch):
-    """True if the bundle's latest batch still has a build running.
-
-    The badge only reports the last *finished* result, so a re-run in progress
-    reads as the previous success/failure. On the bundle page batches render
-    newest-first, so the first `.batch_tile` is the latest; a running build in it
-    shows a spinner (fa-spin)."""
+def runbot_bundle_page(branch):
+    """Fetch a bundle's runbot page HTML ("" if unreachable)."""
     url = f"https://runbot.odoo.com/runbot/bundle/{urllib.parse.quote(branch)}"
     log_request(f"GET {url}")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
     except Exception:
-        return False
-    parts = html.split('class="batch_tile', 1)
-    if len(parts) < 2:
-        return False
-    latest = parts[1].split('class="batch_tile', 1)[0]  # up to the next (older) tile
-    return "fa-spin" in latest
+        return ""
 
 
 def runbot_status(branch):
-    """Runbot status for a branch's bundle: "pending" when the latest batch is
-    still running, otherwise the badge's last-finished result."""
-    if runbot_latest_pending(branch):
-        return "pending"
-    return runbot_badge_status(branch)
+    """Runbot status for a branch's bundle as {"result": ..., "running": bool}.
+
+    `result` ("success" / "failure" / "") comes from the bundle page favicon
+    (icon_ok / icon_ko / icon_killed …) — runbot's own overall verdict, which
+    already reflects a failure even mid-run. `running` is true when the latest
+    batch still has a build in progress (a spinner), so the UI can show the
+    result *and* a "still running" indicator at the same time. Falls back to the
+    badge's last-finished result if the page can't be read."""
+    html = runbot_bundle_page(branch)
+    if not html:
+        s = runbot_badge_status(branch)
+        return {"result": s if s in ("success", "failure") else "", "running": s == "pending"}
+    m = re.search(r'rel="[^"]*icon"[^>]*href="[^"]*?icon_([a-z]+)\.', html)
+    state = m.group(1) if m else ""
+    result = "failure" if state in ("ko", "killed") else "success" if state == "ok" else ""
+    parts = html.split('class="batch_tile', 1)
+    latest = parts[1].split('class="batch_tile', 1)[0] if len(parts) > 1 else ""
+    return {"result": result, "running": "fa-spin" in latest}
 
 
 def runbot_statuses(branches):
@@ -1143,7 +1146,15 @@ def build_odoo_cmd(config):
         # non-headless "watch" mode). To read non-minified JS stacks, open the
         # failing test via the "[open in hoot]" link in the log (debug=assets).
         cmd += f" --test-tags {shlex.quote(test_tags)} --dev all --stop-after-init"
-        return cmd, db, False
+        # if the db was never set up (target created but server never started),
+        # initialize it in the same run by applying the target's on_create_args
+        # (e.g. `-i <modules>`) — odoo then installs the modules AND runs the
+        # tests, instead of failing against an empty/missing database
+        is_new = not db_initialized(db)
+        on_create_args = start.get("on_create_args", "")
+        if is_new and on_create_args:
+            cmd += f" {on_create_args}"
+        return cmd, db, is_new
 
     # install / upgrade modules and exit
     install, upgrade = start.get("install"), start.get("upgrade")
