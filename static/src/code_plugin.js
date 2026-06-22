@@ -309,7 +309,13 @@ export class CodePlugin extends Plugin {
           delete_remote: deleteRemote,
         });
         if (res.remote_error)
-          alert(`Local branch deleted, but the remote branch could not be removed:\n${res.remote_error}`);
+          this.dialogs.open({
+            title: "Remote branch not deleted",
+            message: `The local branch was deleted, but the remote branch could not be removed:\n\n${res.remote_error}`,
+            cls: "dialog-error",
+            okLabel: "OK",
+            cancelLabel: null,
+          });
         this._dropBranch(repo, branch);
       },
       false,

@@ -466,24 +466,26 @@ def git_delete_branch(path, branch, delete_remote=False):
         return False, result.stderr.strip().split("\n")[0] or "git branch -D failed", None
     remote_error = None
     if delete_remote:
-        # only delete on the dev fork when the branch is actually there. A branch
-        # that was never pushed (or only exists on the canonical remote) has
-        # nothing to remove, so don't try — and don't report a spurious failure.
-        exists, _ = remote_branch_exists(path, branch)
-        if exists:
-            remote, _ = dev_remote(path)
-            log_request(f"git push {remote} --delete {branch}")
-            try:
-                r = subprocess.run(
-                    ["git", "-C", path, "push", remote, "--delete", branch],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if r.returncode != 0:
-                    remote_error = r.stderr.strip().split("\n")[-1] or "git push --delete failed"
-            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                remote_error = str(e)
+        # delete straight away — no `ls-remote` pre-check (it adds a network
+        # round-trip per branch). If the branch was never pushed (or only exists
+        # on the canonical remote), git fails with "remote ref does not exist",
+        # which we treat as success: there was nothing to remove.
+        remote, _ = dev_remote(path)
+        if not remote:
+            # no odoo-dev fork configured → nothing could have been pushed there
+            return True, None, None
+        log_request(f"git push {remote} --delete {branch}")
+        try:
+            r = subprocess.run(
+                ["git", "-C", path, "push", remote, "--delete", branch],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if r.returncode != 0 and "remote ref does not exist" not in r.stderr:
+                remote_error = r.stderr.strip().split("\n")[-1] or "git push --delete failed"
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            remote_error = str(e)
     return True, None, remote_error
 
 
