@@ -72,7 +72,7 @@ export class TestsPlugin extends Plugin {
       const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
       const anchor = failed ? `test-fail-${++this._failSeq}` : "";
       this.output.append(line, anchor);
-      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor);
+      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
       // remember the suite outcome as soon as HOOT reports it
       if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
       else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
@@ -124,7 +124,12 @@ export class TestsPlugin extends Plugin {
     this._capturing = false;
     if (this._finished) return;
     this._finished = true;
-    this.eventLog.add(`test run finished${result ? ` (${result})` : ""}`);
+    const failed = result && String(result).includes("fail");
+    this.eventLog.add(
+      `test run finished${result ? ` (${result})` : ""}`,
+      "",
+      failed ? "error" : "",
+    );
   }
 
   get running() {

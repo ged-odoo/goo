@@ -2992,6 +2992,11 @@ a.dash-row-branch:hover {
   font-size: 12.5px;
   line-height: 1.45;
 }
+/* something went wrong (failed server action, failed test) — tint it red */
+.event-log-row.error {
+  background: var(--red-bg);
+  box-shadow: inset 2px 0 var(--red);
+}
 .event-log-row:hover {
   background: var(--l-hover);
 }

@@ -98,7 +98,7 @@ export class ServerPlugin extends Plugin {
       // surface the failure everywhere — server log (record), event log (badge +
       // history) and a modal — so it can't go unnoticed from another screen
       this.log(`[goo] ${label} failed: ${e.message}`);
-      this.eventLog.add(`${label} failed: ${e.message}`);
+      this.eventLog.add(`${label} failed: ${e.message}`, "", "error");
       this.dialogs.open({
         title: `Could not ${label} the server`,
         message: e.message,

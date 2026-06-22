@@ -3273,7 +3273,7 @@ class EventLog extends Component {
       </div>
       <div class="event-log-body" t-ref="this.body">
         <div t-if="!this.log.entries().length" class="event-log-empty">No events yet.</div>
-        <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row">
+        <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row" t-att-class="{error: e.level === 'error'}">
           <span class="event-log-time" t-att-title="e.full" t-out="e.time"/>
           <span class="event-log-text" t-out="e.text"/>
           <a t-if="e.anchor" class="event-log-jump" t-on-click="() => this.jump(e.anchor)" title="jump to this line in the test log">[jump]</a>
@@ -3344,6 +3344,7 @@ class EventLog extends Component {
         full: d.toLocaleString(), // full date + time, shown on hover
         text: e.text,
         anchor: e.anchor || "",
+        level: e.level || "",
       };
     });
   }

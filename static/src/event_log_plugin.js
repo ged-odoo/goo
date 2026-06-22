@@ -16,9 +16,10 @@ export class EventLogPlugin extends Plugin {
   _seq = 0;
 
   // `anchor` (optional) is a DOM id of a log row the UI can scroll to. It is kept
-  // client-side only — the server log still receives just the text.
-  add(text, anchor = "") {
-    const next = [...this.entries(), { id: ++this._seq, at: Date.now(), text, anchor }];
+  // client-side only — the server log still receives just the text. `level`
+  // (e.g. "error") flags the entry so the UI can highlight it.
+  add(text, anchor = "", level = "") {
+    const next = [...this.entries(), { id: ++this._seq, at: Date.now(), text, anchor, level }];
     this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
     postJSON("/api/event", { text }).catch(() => {}); // also log on the goo server (best-effort)
   }
