@@ -371,6 +371,9 @@ class DashboardScreen extends Component {
                 <button class="dash-rebase" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">
                   <t t-out="this.pushIcon"/>Push
                 </button>
+                <button t-if="r.canPr" class="dash-rebase" title="open a PR for this branch on GitHub" t-on-click="() => this.openPr(r)">
+                  <t t-out="this.prIcon"/>Open PR
+                </button>
                 <button class="dash-rebase dash-term" t-att-disabled="!r.path" title="open a terminal in this repo" t-on-click="() => this.openTerminal(r)">
                   <t t-out="this.terminalIcon"/>
                 </button>
@@ -454,6 +457,7 @@ class DashboardScreen extends Component {
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
   historyIcon = m(ICONS.history);
+  prIcon = m(ICONS.pr);
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
@@ -616,9 +620,12 @@ class DashboardScreen extends Component {
       .filter((r) => visibleIds.has(r.id))
       .map((r) => {
         const b = byId[r.id] || {};
+        const current = b.current || "";
+        const github = groups.githubByRepo[r.id] || "";
+        const pr = groups.prIndex[`${r.id}:${current}`] || null;
         return {
           id: r.id,
-          current: b.current || "",
+          current,
           dirty: !!b.dirty,
           subject: b.head_subject || "",
           sha: b.head_sha || "",
@@ -627,10 +634,13 @@ class DashboardScreen extends Component {
           date: b.head_date || "",
           ahead: b.ahead || 0, // commits ahead of the base (target) branch
           behind: b.behind || 0, // commits behind the base (target) branch
-          base: this._baseBranch(b.current || ""),
+          base: this._baseBranch(current),
           error: b.error || "",
-          github: groups.githubByRepo[r.id] || "",
+          github,
           path: groups.pathByRepo[r.id] || "",
+          pr,
+          // a work branch that's pushed and PR-less can have a PR opened for it
+          canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
         };
       });
   }
@@ -816,6 +826,12 @@ class DashboardScreen extends Component {
       ref: r.current || "",
       label: `${r.id} · ${r.current || "?"}`,
     });
+  }
+
+  // open GitHub's PR-creation page for this repo's current branch
+  openPr(r) {
+    this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
+    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
 
   cell(date) {
