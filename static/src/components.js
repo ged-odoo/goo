@@ -800,7 +800,7 @@ class DashboardScreen extends Component {
   // open a modal bash terminal in this repo's directory
   openTerminal(r) {
     if (!r.path) return;
-    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: `${r.id} — ${r.path}` });
+    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
   }
 
   cell(date) {
@@ -2995,67 +2995,88 @@ async function attachXterm(el, wsUrl, focusOnOpen = false) {
 
 // ─────────────────────────── Terminal panel ───────────────────────────
 
+// draggable + resizable floating-window behaviour shared by the terminal windows.
+// Call from setup(); returns { style, onDragStart, onResizeStart } for the template.
+function useDragResize({ w = 780, h = 440 } = {}) {
+  const x = signal(0);
+  const y = signal(0);
+  const width = signal(w);
+  const height = signal(h);
+  let dragging = false;
+  let resizing = false;
+  let offX = 0;
+  let offY = 0;
+  let startX = 0;
+  let startY = 0;
+  let startW = 0;
+  let startH = 0;
+  const onMouseMove = (e) => {
+    if (dragging) {
+      x.set(Math.max(0, e.clientX - offX));
+      y.set(Math.max(0, e.clientY - offY));
+    } else if (resizing) {
+      width.set(Math.max(300, startW + e.clientX - startX));
+      height.set(Math.max(200, startH + e.clientY - startY));
+    }
+  };
+  const onMouseUp = () => {
+    dragging = false;
+    resizing = false;
+  };
+  onMounted(() => {
+    // center on first render
+    x.set(Math.max(0, Math.floor((window.innerWidth - width()) / 2)));
+    y.set(Math.max(0, Math.floor((window.innerHeight - height()) / 2)));
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+  onWillUnmount(() => {
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+  });
+  return {
+    get style() {
+      return `left:${x()}px;top:${y()}px;width:${width()}px;height:${height()}px`;
+    },
+    onDragStart: (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      offX = e.clientX - x();
+      offY = e.clientY - y();
+      e.preventDefault();
+    },
+    onResizeStart: (e) => {
+      if (e.button !== 0) return;
+      resizing = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startW = width();
+      startH = height();
+      e.preventDefault();
+      e.stopPropagation();
+    },
+  };
+}
+
 class TerminalPanel extends Component {
   static template = xml`
-    <div t-if="this.term.open()" class="term-panel" t-att-style="this.panelStyle">
-      <div class="term-panel-head" t-on-mousedown="this.onDragStart">
+    <div t-if="this.term.open()" class="term-panel" t-att-style="this.drag.style">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
         <span class="term-panel-title">Terminal</span>
         <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
       </div>
       <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.onResizeStart"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
   term = plugin(TerminalPlugin);
   container = signal.ref(HTMLElement);
-  x = signal(0);
-  y = signal(0);
-  w = signal(780);
-  h = signal(440);
-  _dragging = false;
-  _dragOffsetX = 0;
-  _dragOffsetY = 0;
-  _resizing = false;
-  _resizeStartX = 0;
-  _resizeStartY = 0;
-  _resizeStartW = 0;
-  _resizeStartH = 0;
   _dispose = null;
   _termOpen = false; // guard against double-open on re-renders
 
-  get panelStyle() {
-    return `left:${this.x()}px;top:${this.y()}px;width:${this.w()}px;height:${this.h()}px`;
-  }
-
   setup() {
-    this._onMouseMove = (e) => {
-      if (this._dragging) {
-        this.x.set(Math.max(0, e.clientX - this._dragOffsetX));
-        this.y.set(Math.max(0, e.clientY - this._dragOffsetY));
-      } else if (this._resizing) {
-        this.w.set(Math.max(300, this._resizeStartW + e.clientX - this._resizeStartX));
-        this.h.set(Math.max(200, this._resizeStartH + e.clientY - this._resizeStartY));
-      }
-    };
-    this._onMouseUp = () => {
-      this._dragging = false;
-      this._resizing = false;
-    };
-
-    onMounted(() => {
-      // center on first render
-      this.x.set(Math.max(0, Math.floor((window.innerWidth - this.w()) / 2)));
-      this.y.set(Math.max(0, Math.floor((window.innerHeight - this.h()) / 2)));
-      document.addEventListener("mousemove", this._onMouseMove);
-      document.addEventListener("mouseup", this._onMouseUp);
-    });
-
-    onWillUnmount(() => {
-      document.removeEventListener("mousemove", this._onMouseMove);
-      document.removeEventListener("mouseup", this._onMouseUp);
-      this._closeTerminal();
-    });
-
+    this.drag = useDragResize();
+    onWillUnmount(() => this._closeTerminal());
     useEffect(() => {
       const el = this.container();
       if (el) {
@@ -3087,40 +3108,22 @@ class TerminalPanel extends Component {
     this._dispose?.();
     this._dispose = null;
   }
-
-  onDragStart(e) {
-    if (e.button !== 0) return;
-    this._dragging = true;
-    this._dragOffsetX = e.clientX - this.x();
-    this._dragOffsetY = e.clientY - this.y();
-    e.preventDefault();
-  }
-
-  onResizeStart(e) {
-    if (e.button !== 0) return;
-    this._resizing = true;
-    this._resizeStartX = e.clientX;
-    this._resizeStartY = e.clientY;
-    this._resizeStartW = this.w();
-    this._resizeStartH = this.h();
-    e.preventDefault();
-    e.stopPropagation();
-  }
 }
 
 // ─────────────────────────── Terminal dialog ───────────────────────────
-// A modal terminal running bash in a given directory (opened from the Dashboard
-// repo list). Backed by /api/shell, so it works regardless of the Odoo server.
+// A draggable, resizable floating terminal running bash in a given directory
+// (opened from the Dashboard repo list). Backed by /api/shell, so it works
+// regardless of the Odoo server; shares the term-panel chrome + useDragResize
+// with the server-tab TerminalPanel.
 class TerminalDialog extends Component {
   static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
-      <div class="dialog term-dialog" t-on-click.stop="() => {}">
-        <div class="term-dialog-head">
-          <span class="term-dialog-title" t-out="this.label"/>
-          <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
-        </div>
-        <div class="term-dialog-body" t-ref="this.container"/>
+    <div class="term-panel" t-att-style="this.drag.style">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
+        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
       </div>
+      <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
   props = props({ done: t.function(), path: t.string(), label: t.string() });
@@ -3128,6 +3131,7 @@ class TerminalDialog extends Component {
   _dispose = null;
 
   setup() {
+    this.drag = useDragResize();
     useEffect(() => {
       const el = this.container();
       if (!el) return;
