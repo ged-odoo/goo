@@ -3098,7 +3098,10 @@ async function attachXterm(el, wsUrl, focusOnOpen = false) {
 // Position is written straight to the DOM (not through a reactive style binding),
 // so the window paints centered on the very first frame — no reposition flash —
 // and dragging mutates the element directly instead of re-rendering per mousemove.
-function useDragResize({ w = 780, h = 440 } = {}) {
+// `place(w, h) => {x, y}` overrides the default (centered) first position — e.g.
+// the event log anchors bottom-right. x/y persist in the closure so a dragged
+// window keeps its spot when reshown.
+function useDragResize({ w = 780, h = 440, place = null } = {}) {
   const handle = signal.ref(HTMLElement);
   let x = 0;
   let y = 0;
@@ -3151,8 +3154,9 @@ function useDragResize({ w = 780, h = 440 } = {}) {
     const el = handle();
     if (!el) return;
     if (!placed) {
-      x = Math.max(0, Math.floor((window.innerWidth - width) / 2));
-      y = Math.max(0, Math.floor((window.innerHeight - height) / 2));
+      const p = place ? place(width, height) : null;
+      x = p ? p.x : Math.max(0, Math.floor((window.innerWidth - width) / 2));
+      y = p ? p.y : Math.max(0, Math.floor((window.innerHeight - height) / 2));
       placed = true;
     }
     apply();
@@ -3380,8 +3384,8 @@ class CommitsDialog extends Component {
 
 class EventLog extends Component {
   static template = xml`
-    <div t-if="this.log.open()" class="event-log">
-      <div class="event-log-head">
+    <div t-if="this.log.open()" class="event-log" t-ref="this.drag.handle">
+      <div class="event-log-head" t-on-mousedown="this.drag.onDragStart">
         <span class="event-log-title">Event log</span>
         <div class="event-log-tools">
           <label class="toggle" t-att-class="{on: this.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
@@ -3397,6 +3401,7 @@ class EventLog extends Component {
           <a t-if="e.anchor" class="event-log-jump" t-on-click="() => this.jump(e.anchor)" title="jump to this line in the test log">[jump]</a>
         </div>
       </div>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
   log = plugin(EventLogPlugin);
@@ -3409,6 +3414,15 @@ class EventLog extends Component {
   _lastCount = 0;
 
   setup() {
+    // draggable + resizable; defaults to the bottom-right corner (its old fixed spot)
+    this.drag = useDragResize({
+      w: 540,
+      h: 380,
+      place: (w, h) => ({
+        x: Math.max(0, window.innerWidth - w - 16),
+        y: Math.max(0, window.innerHeight - h - 16),
+      }),
+    });
     this._lastCount = this.log.entries().length;
     // auto-open the panel when a *new* event arrives, if the setting is on
     // (kept separate from the scroll effect; never reads open() to avoid a loop)
