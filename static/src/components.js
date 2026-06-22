@@ -3021,12 +3021,17 @@ async function attachXterm(el, wsUrl, focusOnOpen = false) {
 // ─────────────────────────── Terminal panel ───────────────────────────
 
 // draggable + resizable floating-window behaviour shared by the terminal windows.
-// Call from setup(); returns { style, onDragStart, onResizeStart } for the template.
+// Call from setup() and bind the returned `handle` to the panel root via t-ref.
+// Position is written straight to the DOM (not through a reactive style binding),
+// so the window paints centered on the very first frame — no reposition flash —
+// and dragging mutates the element directly instead of re-rendering per mousemove.
 function useDragResize({ w = 780, h = 440 } = {}) {
-  const x = signal(0);
-  const y = signal(0);
-  const width = signal(w);
-  const height = signal(h);
+  const handle = signal.ref(HTMLElement);
+  let x = 0;
+  let y = 0;
+  let width = w;
+  let height = h;
+  let placed = false;
   let dragging = false;
   let resizing = false;
   let offX = 0;
@@ -3035,13 +3040,23 @@ function useDragResize({ w = 780, h = 440 } = {}) {
   let startY = 0;
   let startW = 0;
   let startH = 0;
+  const apply = () => {
+    const el = handle();
+    if (!el) return;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.width = `${width}px`;
+    el.style.height = `${height}px`;
+  };
   const onMouseMove = (e) => {
     if (dragging) {
-      x.set(Math.max(0, e.clientX - offX));
-      y.set(Math.max(0, e.clientY - offY));
+      x = Math.max(0, e.clientX - offX);
+      y = Math.max(0, e.clientY - offY);
+      apply();
     } else if (resizing) {
-      width.set(Math.max(300, startW + e.clientX - startX));
-      height.set(Math.max(200, startH + e.clientY - startY));
+      width = Math.max(300, startW + e.clientX - startX);
+      height = Math.max(200, startH + e.clientY - startY);
+      apply();
     }
   };
   const onMouseUp = () => {
@@ -3049,9 +3064,6 @@ function useDragResize({ w = 780, h = 440 } = {}) {
     resizing = false;
   };
   onMounted(() => {
-    // center on first render
-    x.set(Math.max(0, Math.floor((window.innerWidth - width()) / 2)));
-    y.set(Math.max(0, Math.floor((window.innerHeight - height()) / 2)));
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
   });
@@ -3059,15 +3071,26 @@ function useDragResize({ w = 780, h = 440 } = {}) {
     document.removeEventListener("mousemove", onMouseMove);
     document.removeEventListener("mouseup", onMouseUp);
   });
+  // when the panel root (re)mounts, center it once then write the position
+  // directly. The effect runs before the browser paints, so there is no flash;
+  // x/y persist in this closure, so a dragged window keeps its spot if reshown.
+  useEffect(() => {
+    const el = handle();
+    if (!el) return;
+    if (!placed) {
+      x = Math.max(0, Math.floor((window.innerWidth - width) / 2));
+      y = Math.max(0, Math.floor((window.innerHeight - height) / 2));
+      placed = true;
+    }
+    apply();
+  });
   return {
-    get style() {
-      return `left:${x()}px;top:${y()}px;width:${width()}px;height:${height()}px`;
-    },
+    handle,
     onDragStart: (e) => {
       if (e.button !== 0) return;
       dragging = true;
-      offX = e.clientX - x();
-      offY = e.clientY - y();
+      offX = e.clientX - x;
+      offY = e.clientY - y;
       e.preventDefault();
     },
     onResizeStart: (e) => {
@@ -3075,8 +3098,8 @@ function useDragResize({ w = 780, h = 440 } = {}) {
       resizing = true;
       startX = e.clientX;
       startY = e.clientY;
-      startW = width();
-      startH = height();
+      startW = width;
+      startH = height;
       e.preventDefault();
       e.stopPropagation();
     },
@@ -3085,7 +3108,7 @@ function useDragResize({ w = 780, h = 440 } = {}) {
 
 class TerminalPanel extends Component {
   static template = xml`
-    <div t-if="this.term.open()" class="term-panel" t-att-style="this.drag.style">
+    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
       <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
         <span class="term-panel-title">Terminal</span>
         <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
@@ -3142,7 +3165,7 @@ class TerminalPanel extends Component {
 // with the server-tab TerminalPanel.
 class TerminalDialog extends Component {
   static template = xml`
-    <div class="term-panel" t-att-style="this.drag.style">
+    <div class="term-panel" t-ref="this.drag.handle">
       <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
         <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
         <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
@@ -3196,7 +3219,7 @@ class TerminalDialog extends Component {
 // chrome + useDragResize with the terminal windows.
 class CommitsDialog extends Component {
   static template = xml`
-    <div class="term-panel commits-panel" t-att-style="this.drag.style">
+    <div class="term-panel commits-panel" t-ref="this.drag.handle">
       <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
         <span class="term-panel-title" t-att-title="this.props.path" t-out="this.props.label"/>
         <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
