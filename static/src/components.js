@@ -3500,6 +3500,24 @@ export class App extends Component {
               : "favicon";
       if (el) el.href = `/static/${icon}.svg`;
     });
+    // "[open in hoot]" links (built in utils.js) — HOOT is served by odoo, so
+    // start the server first if it's down, then point the tab at the test.
+    const onHoot = (e) => this.openHoot(e.detail.url);
+    document.addEventListener("goo:open-hoot", onHoot);
+    onWillUnmount(() => document.removeEventListener("goo:open-hoot", onHoot));
+  }
+
+  async openHoot(url) {
+    const running = this.server.status().state === "running";
+    // open the tab now (inside the click gesture) to avoid popup blockers
+    const win = window.open(running ? url : "about:blank", "_blank");
+    if (running) return;
+    await this.server.start(this.server.lastTarget());
+    const ok = await this.server.waitUntilRunning();
+    if (win && !win.closed) {
+      if (ok) win.location.href = url;
+      else win.close(); // server didn't come up (start error is surfaced separately)
+    }
   }
 }
 

@@ -171,4 +171,21 @@ export class ServerPlugin extends Plugin {
     this.eventLog.add("stopping server");
     await this._run("/api/stop", undefined, "stop");
   }
+
+  // resolve true once the server reports "running", false on timeout
+  waitUntilRunning(timeout = 90000) {
+    return new Promise((resolve) => {
+      if (this.status().state === "running") return resolve(true);
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        if (this.status().state === "running") {
+          clearInterval(iv);
+          resolve(true);
+        } else if (Date.now() - t0 > timeout) {
+          clearInterval(iv);
+          resolve(false);
+        }
+      }, 300);
+    });
+  }
 }

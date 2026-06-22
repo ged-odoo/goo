@@ -97,17 +97,28 @@ function hootTestId(name) {
 }
 
 function hootTestUrl(name) {
-  return `http://localhost:8069/web/tests?debug=assets&timeout=500000&id=${hootTestId(name)}`;
+  // go through the autologin addon (?to=<url-encoded target>) so no manual login
+  // is needed — same as the navbar /odoo and /web/tests links
+  const to = `/web/tests?debug=assets&timeout=500000&id=${hootTestId(name)}`;
+  return `http://localhost:8069/dev/autologin?to=${encodeURIComponent(to)}`;
 }
 
-// append an "[open in hoot]" link that opens the single test in HOOT's web UI
+// append an "[open in hoot]" link that opens the single test in HOOT's web UI.
+// HOOT is served by the odoo server, so left-click is intercepted and handed to
+// the app (via a DOM event) which starts the server first if it isn't running.
 function appendHootLink(div, name) {
   const a = document.createElement("a");
+  const url = hootTestUrl(name);
   a.className = "hoot-link";
-  a.href = hootTestUrl(name);
+  a.href = url;
   a.target = "_blank";
   a.rel = "noopener";
   a.textContent = "[open in hoot]";
+  a.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return; // let real new-tab clicks through
+    e.preventDefault();
+    document.dispatchEvent(new CustomEvent("goo:open-hoot", { detail: { url } }));
+  });
   div.appendChild(a);
 }
 
