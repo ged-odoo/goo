@@ -491,6 +491,39 @@ def git_wip_commit(path):
         return False, str(e)
 
 
+def git_log(path, n=20):
+    """Return the last n commits on the current branch (HEAD). Returns
+    (commits, error); commits is a list of {sha, author, date, subject, body}.
+    Fields are \\x1f-separated, commits \\x1e-terminated so multi-line bodies survive."""
+    path = os.path.expanduser(path)
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "log", "-n", str(n),
+             "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return None, r.stderr.strip() or "git log failed"
+        commits = []
+        for rec in r.stdout.split("\x1e"):
+            rec = rec.strip("\n")
+            if not rec:
+                continue
+            parts = rec.split("\x1f")
+            if len(parts) < 4:
+                continue
+            commits.append({
+                "sha": parts[0],
+                "author": parts[1],
+                "date": parts[2],
+                "subject": parts[3],
+                "body": parts[4].strip() if len(parts) > 4 else "",
+            })
+        return commits, None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return None, str(e)
+
+
 def git_discard(path):
     """Make the working tree pristine: reset tracked files (staged + unstaged)
     to HEAD, then remove untracked files/dirs. Mirrors the dirty check, which
@@ -1636,6 +1669,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             ok, error = git_discard(repo_path)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/log":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            if err or not repo_path:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            count = int((body or {}).get("count") or 20)
+            commits, error = git_log(repo_path, count)
+            self._send_json(
+                200 if error is None else 400,
+                {"ok": error is None, "commits": commits or [], "error": error},
+            )
         elif path == "/api/event":
             body, err = self._read_json()
             text = (body or {}).get("text")

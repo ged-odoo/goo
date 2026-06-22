@@ -204,6 +204,13 @@ export class CodePlugin extends Plugin {
     return res.exists;
   }
 
+  // last commits on a repo's current branch (for the commits dialog)
+  async commits(path) {
+    const res = await postJSON("/api/code/log", { path });
+    if (!res.ok) throw new Error(res.error || "git log failed");
+    return res.commits;
+  }
+
   async _mutate(label, fn, reload = true) {
     this.busy.set(true);
     try {

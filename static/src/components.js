@@ -59,6 +59,7 @@ const ICONS = {
   external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
   journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
   terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
+  history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -373,6 +374,9 @@ class DashboardScreen extends Component {
                 <button class="dash-rebase dash-term" t-att-disabled="!r.path" title="open a terminal in this repo" t-on-click="() => this.openTerminal(r)">
                   <t t-out="this.terminalIcon"/>
                 </button>
+                <button class="dash-rebase dash-term" t-att-disabled="!r.path" title="show recent commits on this branch" t-on-click="() => this.openCommits(r)">
+                  <t t-out="this.historyIcon"/>
+                </button>
               </div>
             </div>
           </section>
@@ -449,6 +453,7 @@ class DashboardScreen extends Component {
   kebabIcon = m(ICONS.kebab);
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
+  historyIcon = m(ICONS.history);
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
@@ -801,6 +806,15 @@ class DashboardScreen extends Component {
   openTerminal(r) {
     if (!r.path) return;
     this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
+  }
+
+  // show the last commits on this repo's current branch
+  openCommits(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: r.path,
+      label: `${r.id} · ${r.current || "?"}`,
+    });
   }
 
   cell(date) {
@@ -3158,6 +3172,87 @@ class TerminalDialog extends Component {
 
   get label() {
     return this.props.label || this.props.path;
+  }
+
+  done(result) {
+    this.props.done(result);
+  }
+}
+
+// ─────────────────────────── Commits dialog ───────────────────────────
+// A draggable, resizable floating window listing the last commits on a repo's
+// current branch (opened from the Dashboard repo list). Shares the term-panel
+// chrome + useDragResize with the terminal windows.
+class CommitsDialog extends Component {
+  static template = xml`
+    <div class="term-panel commits-panel" t-att-style="this.drag.style">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.props.label"/>
+        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
+      </div>
+      <div class="commits-body">
+        <div t-if="this.loading()" class="commits-empty">loading…</div>
+        <div t-elif="this.error()" class="commits-empty" t-out="this.error()"/>
+        <div t-elif="!this.commits().length" class="commits-empty">no commits</div>
+        <t t-else="">
+          <t t-foreach="this.commits()" t-as="c" t-key="c.sha">
+            <div class="commit-row" t-att-class="{expanded: this.isExpanded(c.sha)}" t-on-click="() => this.toggle(c.sha)">
+              <span class="commit-sha" t-out="c.sha.slice(0, 8)"/>
+              <span class="commit-subject" t-att-title="c.subject" t-out="c.subject"/>
+              <span class="commit-meta" t-att-title="c.date"><t t-out="c.author"/> · <t t-out="this.when(c.date)"/></span>
+            </div>
+            <pre t-if="this.isExpanded(c.sha)" class="commit-body" t-out="this.message(c)"/>
+          </t>
+        </t>
+      </div>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+
+  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  code = plugin(CodePlugin);
+  commits = signal([]);
+  loading = signal(true);
+  error = signal("");
+  expanded = signal(new Set());
+
+  setup() {
+    this.drag = useDragResize({ w: 620, h: 460 });
+    onMounted(() => this.load());
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+  }
+
+  async load() {
+    try {
+      this.commits.set(await this.code.commits(this.props.path));
+    } catch (e) {
+      this.error.set(e.message);
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  when(date) {
+    return timeAgo(date);
+  }
+
+  toggle(sha) {
+    const s = new Set(this.expanded());
+    if (s.has(sha)) s.delete(sha);
+    else s.add(sha);
+    this.expanded.set(s);
+  }
+
+  isExpanded(sha) {
+    return this.expanded().has(sha);
+  }
+
+  // full commit message (subject + body) shown when a row is expanded
+  message(c) {
+    return c.body ? `${c.subject}\n\n${c.body}` : c.subject;
   }
 
   done(result) {
