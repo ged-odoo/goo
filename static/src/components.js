@@ -341,45 +341,58 @@ class DashboardScreen extends Component {
           <div class="dash-layout">
           <!-- favorite repositories (flat list, fetch &amp; rebase per repo) -->
           <section t-if="this.favRepos.length" class="dash-repos">
-            <div class="dash-repos-head">
-              <span>Repository</span><span>Branch</span><span>Last commit</span><span>When</span>
-              <button class="dash-rebase dash-rebase-all" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
-              </button>
-            </div>
-            <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-repo-row">
-              <div class="dash-repo-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></div>
-              <span class="dash-branch">
-                <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
-                <t t-else="">
-                  <a t-if="r.remote and r.github and r.current" class="branch-link dash-branch-name" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
-                  <span t-else="" class="dash-branch-name" t-out="r.current || '—'"/>
-                  <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
-                  <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
-                    <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
-                    <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
-                  </span>
-                </t>
-              </span>
-              <a t-if="r.pushed and r.github and r.sha" class="dash-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
-              <span t-else="" class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
-              <span class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
-              <div class="dash-repo-actions">
-                <div class="dash-kebab-wrap">
-                  <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
-                  <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
-                    <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
-                    <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
-                    <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
-                    <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <table class="dash-repos-table">
+              <thead>
+                <tr>
+                  <th>Repository</th>
+                  <th>Branch</th>
+                  <th>When</th>
+                  <th>Last commit</th>
+                  <th class="dash-repos-act">
+                    <button class="dash-rebase dash-rebase-all" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+                      <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.favRepos" t-as="r" t-key="r.id">
+                  <td class="dash-repo-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></td>
+                  <td class="dash-branch">
+                    <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
+                    <t t-else="">
+                      <a t-if="r.remote and r.github and r.current" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
+                      <span t-else="" t-out="r.current || '—'"/>
+                      <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
+                      <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
+                        <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
+                        <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
+                      </span>
+                    </t>
+                  </td>
+                  <td class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
+                  <td class="dash-commit">
+                    <a t-if="r.pushed and r.github and r.sha" class="branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
+                    <span t-else="" t-att-title="r.subject" t-out="r.subject || '—'"/>
+                  </td>
+                  <td class="dash-repo-actions">
+                    <div class="dash-kebab-wrap">
+                      <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
+                      <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
+                        <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
+                        <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
+                        <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
+                        <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
+                        <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
+                        <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
+                        <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
+                        <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </section>
 
           <!-- build targets (cards) -->

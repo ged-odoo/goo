@@ -794,40 +794,36 @@ section.hidden {
   box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04);
   padding: 6px 8px 8px;
 }
-.dash-repos-head,
-.dash-repo-row {
-  display: grid;
-  /* Repository + When are short → fixed and tight; Branch gets the largest
-     flexible share, Last commit a smaller one */
-  grid-template-columns: 150px minmax(0, 1.5fr) minmax(0, 1fr) 80px auto;
-  column-gap: 16px;
-  align-items: center;
+/* one table → shared column widths across the header and every row; columns
+   size to content (natural), Last commit is the lone fluid+truncating column */
+.dash-repos-table {
+  width: 100%;
+  border-collapse: collapse;
 }
-.dash-repo-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.dash-repos-head {
-  padding: 12px 16px 10px;
-}
-.dash-repos-head span {
+.dash-repos-table th {
+  text-align: left;
+  padding: 10px 16px 8px;
+  white-space: nowrap;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--l-text-faint);
 }
-.dash-repo-row {
-  padding: 10px 16px;
+.dash-repos-table td {
+  padding: 9px 16px;
   border-top: 1px solid var(--l-line-soft);
-  border-radius: 8px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.dash-repos-act,
+.dash-repo-actions {
+  text-align: right;
+}
+.dash-repos-table .dash-kebab-wrap {
+  display: inline-block;
 }
 .dash-repo-name {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--l-text);
@@ -835,29 +831,19 @@ section.hidden {
 .dash-repo-name svg {
   width: 14px;
   height: 14px;
-  flex: none;
+  margin-right: 8px;
+  vertical-align: -2px;
   fill: none;
   stroke: var(--l-text-faint);
   stroke-width: 2;
 }
 .dash-branch {
-  display: flex;
-  align-items: center;
-  min-width: 0;
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--l-text-mid);
 }
-/* only the branch name truncates — the dirty badge + ahead/behind stay visible */
-.dash-branch-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
 /* commits ahead/behind the base (target) branch */
 .dash-diff {
-  flex-shrink: 0;
   margin-left: 7px;
   font-size: 11px;
   font-weight: 600;
@@ -869,12 +855,14 @@ section.hidden {
   color: var(--l-amber);
   margin-left: 5px;
 }
+/* Last commit: the only fluid column — takes the remaining width and truncates */
 .dash-commit {
-  font-size: 13px;
-  color: var(--l-text-dim);
-  white-space: nowrap;
+  width: 100%;
+  max-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--l-text-dim);
 }
 .dash-when {
   font-family: var(--mono);
