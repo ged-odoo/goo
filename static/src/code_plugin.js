@@ -86,20 +86,18 @@ export class CodePlugin extends Plugin {
 
   async load(force = false) {
     const cache = this._cache();
-    if (!force && cache && Date.now() - cache.at < CACHE_TTL) {
-      this.branchRepos.set(cache.branchRepos);
-      this.prRepos.set(cache.prRepos);
-      this.at.set(cache.at);
-      return;
-    }
+    // PRs come from GitHub (slow) — reuse the cache while it's fresh. Branches
+    // come from local git (fast) and carry the *volatile* dirty / current-branch
+    // state, so they are ALWAYS re-fetched: caching them made the dashboard show
+    // stale (e.g. not-dirty) state between refreshes.
+    const prsFresh = !force && cache && Date.now() - cache.at < CACHE_TTL;
     this.loading.set(true);
     this.error.set("");
-    this.mergebot.set({}); // re-scrape mergebot/runbot states after a real refresh
-    this.runbot.set({});
+    if (!prsFresh) {
+      this.mergebot.set({}); // re-scrape mergebot/runbot states on a real refresh
+      this.runbot.set({});
+    }
     const repos = this.reposWithGithub();
-    // branches come from local git (fast); PRs from GitHub (slow). Publish each
-    // signal as soon as it resolves so the branch/commit state shows immediately,
-    // instead of blocking on the slower PR fetch.
     const branchesP = postJSON("/api/code/branches", { repos })
       .then((b) => {
         this.branchRepos.set(b.repos);
@@ -109,19 +107,27 @@ export class CodePlugin extends Plugin {
         this.error.set(e.message);
         return null;
       });
-    const prsP = postJSON("/api/prs", { repos: repos.filter((r) => r.github) })
-      .then((p) => {
-        this.prRepos.set(p.repos);
-        return p.repos;
-      })
-      .catch((e) => {
-        this.error.set(e.message);
-        return null;
-      });
+    let prsP;
+    if (prsFresh) {
+      this.prRepos.set(cache.prRepos);
+      this.at.set(cache.at);
+      prsP = Promise.resolve(cache.prRepos);
+    } else {
+      prsP = postJSON("/api/prs", { repos: repos.filter((r) => r.github) })
+        .then((p) => {
+          this.prRepos.set(p.repos);
+          return p.repos;
+        })
+        .catch((e) => {
+          this.error.set(e.message);
+          return null;
+        });
+    }
     const [b, p] = await Promise.all([branchesP, prsP]);
     this.loading.set(false);
-    // cache once both are in (only when both succeeded)
-    if (b && p) {
+    // refresh the cache only when PRs were actually fetched (keeps the PR TTL
+    // meaningful) — store the fresh branches alongside them
+    if (!prsFresh && b && p) {
       const at = Date.now();
       this.at.set(at);
       localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b, prRepos: p }));
