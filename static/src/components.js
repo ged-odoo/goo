@@ -2074,12 +2074,23 @@ class BranchesScreen extends Component {
   }
 
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
-  duplicateBranch(row) {
-    const name = prompt(`New branch name, based on "${row.branch}" (${row.repo}):`, row.branch);
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    this.code.createBranch(row.path, trimmed, row.branch);
+  async duplicateBranch(row) {
+    const res = await this.dialogs.open({
+      title: `Duplicate "${row.branch}" (${row.repo})`,
+      fields: [
+        {
+          key: "branch",
+          type: "text",
+          label: "New branch name",
+          value: row.branch,
+          placeholder: "new branch name",
+        },
+      ],
+    });
+    if (!res) return;
+    const name = (res.branch || "").trim();
+    if (!name) return;
+    this.code.createBranch(row.path, name, row.branch);
   }
 
   // why a branch can't be deleted ("" = deletable). Deleting closes an open PR
