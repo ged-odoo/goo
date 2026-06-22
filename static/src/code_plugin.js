@@ -390,13 +390,14 @@ export class CodePlugin extends Plugin {
 
   // push a branch to the dev remote without prompting — caller has confirmed
   // (via the app modal) before calling
-  pushBranchNoConfirm(path, branch, reload = true) {
+  pushBranchNoConfirm(path, branch, reload = true, force = false) {
     const repo = this.config.config.repos.find((r) => r.path === path);
     return this._mutate(
-      "Push",
+      force ? "Force push" : "Push",
       async () => {
-        this.eventLog.add(`pushing ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
-        await postJSON("/api/code/branch/push", { path, branch });
+        const verb = force ? "force-pushing" : "pushing";
+        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
+        await postJSON("/api/code/branch/push", { path, branch, force });
       },
       reload,
     );

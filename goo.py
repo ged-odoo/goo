@@ -960,15 +960,21 @@ def remote_branch_exists(path, branch):
     return bool(r.stdout.strip()), None
 
 
-def push_branch(path, branch):
-    """Push <branch> to the odoo-dev remote, setting upstream. (ok, error)."""
+def push_branch(path, branch, force=False):
+    """Push <branch> to the odoo-dev remote, setting upstream. With force, use
+    --force-with-lease (a safe force that aborts if the remote moved
+    unexpectedly). Returns (ok, error)."""
     remote, err = dev_remote(path)
     if err:
         return False, err
-    log_request(f"git push {remote} {branch}")
+    args = ["push", "--set-upstream"]
+    if force:
+        args.append("--force-with-lease")
+    args += [remote, branch]
+    log_request("git " + " ".join(args))
     try:
         r = subprocess.run(
-            ["git", "-C", os.path.expanduser(path), "push", "--set-upstream", remote, branch],
+            ["git", "-C", os.path.expanduser(path), *args],
             capture_output=True,
             text=True,
             timeout=120,
@@ -1679,7 +1685,7 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = push_branch(repo_path, branch)
+            ok, error = push_branch(repo_path, branch, bool((body or {}).get("force")))
             if ok:
                 self._send_json(200, {"ok": True})
             else:

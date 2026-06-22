@@ -365,21 +365,19 @@ class DashboardScreen extends Component {
               <span t-else="" class="dash-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
               <span class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
               <div class="dash-repo-actions">
-                <button class="dash-rebase" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">
-                  <t t-out="this.refreshIcon"/>Fetch &amp; rebase
-                </button>
-                <button class="dash-rebase" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">
-                  <t t-out="this.pushIcon"/>Push
-                </button>
-                <button t-if="r.canPr" class="dash-rebase" title="open a PR for this branch on GitHub" t-on-click="() => this.openPr(r)">
-                  <t t-out="this.prIcon"/>Open PR
-                </button>
-                <button class="dash-rebase dash-term" t-att-disabled="!r.path" title="open a terminal in this repo" t-on-click="() => this.openTerminal(r)">
-                  <t t-out="this.terminalIcon"/>
-                </button>
-                <button class="dash-rebase dash-term" t-att-disabled="!r.path" title="show recent commits on this branch" t-on-click="() => this.openCommits(r)">
-                  <t t-out="this.historyIcon"/>
-                </button>
+                <div class="dash-kebab-wrap">
+                  <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
+                  <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
+                    <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
+                    <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
+                    <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
+                    <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -689,6 +687,15 @@ class DashboardScreen extends Component {
     return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
       title: `Push "${r.current}"?`,
       message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
+    });
+  }
+
+  pushForceRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Force-push "${r.current}"?`,
+      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+      force: true,
     });
   }
 
@@ -1292,11 +1299,11 @@ async function startCreateTarget(config, eventLog, code, dialogs) {
 
 // confirm (via the app modal) then push one or more branches to the dev remote.
 // branches: [{ path, branch }]. Shared by every "Push" affordance.
-async function pushBranchesDialog(code, dialogs, branches, { title, message }) {
+async function pushBranchesDialog(code, dialogs, branches, { title, message, force = false }) {
   if (!branches.length) return;
-  const ok = await dialogs.open({ title, message, okLabel: "Push" });
+  const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
   if (!ok) return;
-  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch);
+  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
 }
 
 // delete a target via a confirmation dialog that can also (optionally) delete
