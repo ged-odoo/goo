@@ -97,23 +97,34 @@ export class CodePlugin extends Plugin {
     this.mergebot.set({}); // re-scrape mergebot/runbot states after a real refresh
     this.runbot.set({});
     const repos = this.reposWithGithub();
-    try {
-      const [b, p] = await Promise.all([
-        postJSON("/api/code/branches", { repos }),
-        postJSON("/api/prs", { repos: repos.filter((r) => r.github) }),
-      ]);
+    // branches come from local git (fast); PRs from GitHub (slow). Publish each
+    // signal as soon as it resolves so the branch/commit state shows immediately,
+    // instead of blocking on the slower PR fetch.
+    const branchesP = postJSON("/api/code/branches", { repos })
+      .then((b) => {
+        this.branchRepos.set(b.repos);
+        return b.repos;
+      })
+      .catch((e) => {
+        this.error.set(e.message);
+        return null;
+      });
+    const prsP = postJSON("/api/prs", { repos: repos.filter((r) => r.github) })
+      .then((p) => {
+        this.prRepos.set(p.repos);
+        return p.repos;
+      })
+      .catch((e) => {
+        this.error.set(e.message);
+        return null;
+      });
+    const [b, p] = await Promise.all([branchesP, prsP]);
+    this.loading.set(false);
+    // cache once both are in (only when both succeeded)
+    if (b && p) {
       const at = Date.now();
-      localStorage.setItem(
-        PRS_CACHE_KEY,
-        JSON.stringify({ at, branchRepos: b.repos, prRepos: p.repos }),
-      );
-      this.branchRepos.set(b.repos);
-      this.prRepos.set(p.repos);
       this.at.set(at);
-    } catch (e) {
-      this.error.set(e.message);
-    } finally {
-      this.loading.set(false);
+      localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b, prRepos: p }));
     }
   }
 
