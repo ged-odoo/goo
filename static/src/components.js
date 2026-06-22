@@ -2281,7 +2281,9 @@ class PrsScreen extends Component {
                     <input t-if="row.state === 'OPEN' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.repo + ':' + row.number)" t-on-change="() => this.toggleSelect(row.repo + ':' + row.number)" title="select this PR for batch actions"/>
                   </td>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
-                  <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
+                  <td class="br-title" t-att-class="{ 'select-toggle': this.selectable(row) }"
+                      t-att-title="this.selectable(row) ? (row.title || '') + ' — click to select' : row.title"
+                      t-on-click="() => this.selectRow(row)" t-out="row.title || '—'"/>
                   <td class="dim" t-out="row.repo"/>
                   <td>
                     <a t-if="row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="'open ' + row.branch + ' on GitHub'" t-out="row.branch"/>
@@ -2321,6 +2323,16 @@ class PrsScreen extends Component {
     const sel = new Set(this.selected());
     sel.has(key) ? sel.delete(key) : sel.add(key);
     this.selected.set(sel);
+  }
+
+  // a PR can be selected (and batch-closed) only while open and on GitHub
+  selectable(row) {
+    return row.state === "OPEN" && !!row.github;
+  }
+
+  // clicking a PR's title toggles its selection, mirroring the row checkbox
+  selectRow(row) {
+    if (this.selectable(row)) this.toggleSelect(`${row.repo}:${row.number}`);
   }
 
   get _selectablePrs() {
