@@ -204,9 +204,9 @@ export class CodePlugin extends Plugin {
     return res.exists;
   }
 
-  // last commits on a repo's current branch (for the commits dialog)
-  async commits(path) {
-    const res = await postJSON("/api/code/log", { path });
+  // last commits on a branch (ref; defaults to the repo's current branch)
+  async commits(path, ref = "") {
+    const res = await postJSON("/api/code/log", { path, ref });
     if (!res.ok) throw new Error(res.error || "git log failed");
     return res.commits;
   }

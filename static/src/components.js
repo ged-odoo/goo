@@ -813,6 +813,7 @@ class DashboardScreen extends Component {
     if (!r.path) return;
     this.dialogs.openComponent(CommitsDialog, {
       path: r.path,
+      ref: r.current || "",
       label: `${r.id} · ${r.current || "?"}`,
     });
   }
@@ -1828,6 +1829,8 @@ class BranchesScreen extends Component {
                   </td>
                   <td>
                     <div class="br-act">
+                      <button class="drop-btn pr-close" t-on-click="() => this.openCommits(r)"
+                              title="show recent commits on this branch">Commits</button>
                       <button t-if="!r.remote" class="drop-btn pr-open"
                               t-on-click="() => this.pushBranch(r)"
                               title="push this branch to the dev remote (odoo-dev)">Push</button>
@@ -2074,6 +2077,16 @@ class BranchesScreen extends Component {
   }
 
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
+  // show the last commits on this branch (in a floating dialog)
+  openCommits(row) {
+    if (!row.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: row.path,
+      ref: row.branch,
+      label: `${row.repo} · ${row.branch}`,
+    });
+  }
+
   async duplicateBranch(row) {
     const res = await this.dialogs.open({
       title: `Duplicate "${row.branch}" (${row.repo})`,
@@ -3248,7 +3261,7 @@ class CommitsDialog extends Component {
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  props = props({ done: t.function(), path: t.string(), label: t.string(), ref: t.string() });
   code = plugin(CodePlugin);
   commits = signal([]);
   loading = signal(true);
@@ -3267,7 +3280,7 @@ class CommitsDialog extends Component {
 
   async load() {
     try {
-      this.commits.set(await this.code.commits(this.props.path));
+      this.commits.set(await this.code.commits(this.props.path, this.props.ref));
     } catch (e) {
       this.error.set(e.message);
     } finally {

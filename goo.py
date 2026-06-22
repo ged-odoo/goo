@@ -491,17 +491,18 @@ def git_wip_commit(path):
         return False, str(e)
 
 
-def git_log(path, n=20):
-    """Return the last n commits on the current branch (HEAD). Returns
-    (commits, error); commits is a list of {sha, author, date, subject, body}.
-    Fields are \\x1f-separated, commits \\x1e-terminated so multi-line bodies survive."""
+def git_log(path, n=20, ref=""):
+    """Return the last n commits on <ref> (default: the current branch / HEAD).
+    Returns (commits, error); commits is a list of {sha, author, date, subject,
+    body}. Fields are \\x1f-separated, commits \\x1e-terminated so multi-line
+    bodies survive."""
     path = os.path.expanduser(path)
+    cmd = ["git", "-C", path, "log", "-n", str(n),
+           "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"]
+    if ref:
+        cmd += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
     try:
-        r = subprocess.run(
-            ["git", "-C", path, "log", "-n", str(n),
-             "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"],
-            capture_output=True, text=True, timeout=30,
-        )
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
             return None, r.stderr.strip() or "git log failed"
         commits = []
@@ -1675,7 +1676,8 @@ class Handler(BaseHTTPRequestHandler):
             if err or not repo_path:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             count = int((body or {}).get("count") or 20)
-            commits, error = git_log(repo_path, count)
+            ref = (body or {}).get("ref") or ""
+            commits, error = git_log(repo_path, count, ref)
             self._send_json(
                 200 if error is None else 400,
                 {"ok": error is None, "commits": commits or [], "error": error},
