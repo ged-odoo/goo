@@ -74,6 +74,15 @@ class EventBus:
         for q in subscribers:
             q.put(("status", status))
 
+    def publish_event(self, text):
+        """A business event: logged to the goo server stdout and pushed to the
+        browser event log via an SSE 'event' message."""
+        print(f"{TAG} {time.strftime('%H:%M:%S')} • {text}", flush=True)
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("event", {"text": text}))
+
     def subscribe(self):
         """Register a client queue. Returns (queue, log backlog) atomically so
         no line is lost between the backlog replay and the live stream."""
@@ -1487,6 +1496,9 @@ class OdooManager:
 
 BUS = EventBus()
 MANAGER = OdooManager(BUS)
+# the last start/test config received from the UI — reused by the `goo --test-tags`
+# CLI so agents can run tests without re-supplying the target/db/repos/venv
+LAST_CONFIG = None
 AUTORELOAD = AutoReloader()
 
 
@@ -1538,6 +1550,10 @@ class Handler(BaseHTTPRequestHandler):
             self._action_start(MANAGER.restart)
         elif path in ("/api/tests/run", "/api/addons/run"):
             self._action_oneshot()
+        elif path == "/api/cli/config":
+            self._cli_config()
+        elif path == "/api/cli/test":
+            self._handle_cli_test()
         elif path == "/api/command":
             config, err = self._read_json()
             if err:
@@ -1749,6 +1765,8 @@ class Handler(BaseHTTPRequestHandler):
         config, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
+        global LAST_CONFIG
+        LAST_CONFIG = config
         ok, detail = action(config)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
@@ -1762,6 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
         config, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
+        global LAST_CONFIG
+        LAST_CONFIG = config
         MANAGER.stop()
         ok, detail = MANAGER.start(config)
         if ok:
@@ -1993,6 +2013,67 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             BUS.unsubscribe(q)
 
+    def _cli_config(self):
+        """Store the current UI config (pushed by the browser) so the
+        `goo --test-tags` CLI can run a one-shot test without the server having
+        been started."""
+        config, err = self._read_json()
+        if err:
+            return self._send_json(400, {"ok": False, "error": err})
+        global LAST_CONFIG
+        LAST_CONFIG = config
+        self._send_json(200, {"ok": True})
+
+    def _handle_cli_test(self):
+        """Run a one-shot test (triggered by the `goo --test-tags` CLI) and stream
+        its log back as plain text. Announces the run on the server log + the
+        browser event log, and reuses the last start/test config (target, db,
+        repos, venv) so agents need only pass the tags."""
+        body, err = self._read_json()
+        tags = ((body or {}).get("test_tags") or "").strip()
+        if err or not tags:
+            return self._send_json(400, {"ok": False, "error": "missing test_tags"})
+        if LAST_CONFIG is None:
+            return self._send_json(
+                409, {"ok": False, "error": "no target yet — open the goo UI (with a target configured) once"}
+            )
+        cfg = dict(LAST_CONFIG)
+        cfg["start"] = {**(LAST_CONFIG.get("start") or {}), "test_tags": tags}
+
+        q, _ = BUS.subscribe()  # subscribe before triggering so no line is missed
+        try:
+            BUS.publish_event(f"CLI test run (tags: {tags})")
+            MANAGER.stop()
+            ok, detail = MANAGER.start(cfg)
+            self.send_response(200 if ok else 409)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            if not ok:
+                self.wfile.write(f"{TAG} could not start: {detail}\n".encode())
+                return
+            self.wfile.write(f"{TAG} running tests (tags: {tags})\n".encode())
+            self.wfile.flush()
+            started = False
+            while True:
+                kind, payload = q.get()
+                if kind == "log":
+                    self.wfile.write((payload["line"] + "\n").encode("utf-8", "replace"))
+                    self.wfile.flush()
+                elif kind == "status":
+                    state = payload.get("state")
+                    if state in ("starting", "running"):
+                        started = True
+                    elif started and state == "stopped":
+                        rc = payload.get("returncode") or 0
+                        self.wfile.write(f"{TAG} test run finished (exit {rc})\n".encode())
+                        self.wfile.flush()
+                        break
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # client gone
+        finally:
+            BUS.unsubscribe(q)
+
     def _send_event(self, event, payload):
         # json.dumps guarantees a single-line data field
         msg = f"event: {event}\ndata: {json.dumps(payload)}\n\n"
@@ -2013,10 +2094,47 @@ class Server(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+def run_cli_test(tags):
+    """Client mode (`goo --test-tags …`): ask the already-running goo server to
+    run a test against its current target and stream the log to stdout. Exits with
+    the test's return code so agents can gate on pass/fail."""
+    url = f"http://{HOST}:{PORT}/api/cli/test"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"test_tags": tags}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=None) as resp:  # streams until the run ends
+            exit_code = 0
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").rstrip("\n")
+                print(line, flush=True)
+                m = re.search(r"test run finished \(exit (-?\d+)\)", line)
+                if m:
+                    exit_code = int(m.group(1))
+            return 0 if exit_code == 0 else 1
+    except urllib.error.HTTPError as e:
+        print(f"{TAG} {e.read().decode('utf-8', 'replace')}", file=sys.stderr)
+        return 2
+    except urllib.error.URLError as e:
+        print(f"{TAG} cannot reach goo at {url} — is goo running? ({e.reason})", file=sys.stderr)
+        return 2
+
+
 def main():
     parser = argparse.ArgumentParser(description="odoo development helper (web UI)")
     parser.add_argument("--open", action="store_true", help="open the UI in the default browser")
+    parser.add_argument(
+        "--test-tags",
+        dest="test_tags",
+        metavar="TAGS",
+        help="run a test with these --test-tags on the running goo server and stream the log",
+    )
     args = parser.parse_args()
+
+    if args.test_tags:
+        return run_cli_test(args.test_tags)
 
     try:
         httpd = Server((HOST, PORT), Handler)

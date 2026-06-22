@@ -7,7 +7,7 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+const { Plugin, plugin, signal, useEffect } = owl;
 
 export class ServerPlugin extends Plugin {
   static sequence = 2;
@@ -27,6 +27,14 @@ export class ServerPlugin extends Plugin {
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
     this._connect();
+    // mirror the current target's launch config to the backend so `goo --test-tags`
+    // can run a one-shot test without the server having been started
+    useEffect(() => {
+      const targets = this.config.config.targets;
+      const tid = targets.find((t) => t.id === this.activeTarget())?.id || targets[0]?.id;
+      const cfg = tid && this.buildStartConfig(tid);
+      if (cfg) postJSON("/api/cli/config", cfg).catch(() => {});
+    });
   }
 
   onLine(cb) {
@@ -45,6 +53,8 @@ export class ServerPlugin extends Plugin {
     es.onerror = () => this.status.set({ ...this.status(), state: "disconnected" });
     es.addEventListener("status", (e) => this.status.set(JSON.parse(e.data)));
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
+    // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log
+    es.addEventListener("event", (e) => this.eventLog.add(JSON.parse(e.data).text));
   }
 
   buildStartConfig(targetId, otherArgs) {

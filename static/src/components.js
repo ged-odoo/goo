@@ -2387,6 +2387,9 @@ class TestsScreen extends Component {
             </select>
             <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
                    placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
+            <button type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
+                    title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
+                    t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
             <button type="submit" t-att-disabled="!this.tests.target or this.tests.runActive() or !this.tags().trim()"><span class="play"/>Run</button>
             <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
             <div class="log-controls">
@@ -2408,7 +2411,16 @@ class TestsScreen extends Component {
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
   clearIcon = m(ICONS.clear);
+  copyIcon = m(ICONS.copy);
   tags = signal("");
+
+  // copy a `goo --test-tags …` command for the current tags (single-quoted so the
+  // shell doesn't mangle globs); an agent can run it to run this test from the CLI
+  copyCommand() {
+    const tags = this.tags().trim();
+    if (!tags) return;
+    navigator.clipboard?.writeText(`goo --test-tags '${tags.replace(/'/g, "'\\''")}'`);
+  }
 
   // a compact result chip shown next to the title, replacing the old status text
   get badge() {

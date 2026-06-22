@@ -86,6 +86,9 @@ export class TestsPlugin extends Plugin {
   }
 
   _onStatus(status) {
+    // only track runs this tab started; CLI/external test runs (no runActive) are
+    // surfaced via the event log + Server console, not the Tests tab
+    if (!this.runActive()) return;
     const active = status.state === "starting" || status.state === "running";
     const testing = active && status.mode === "test";
     if (testing) {
