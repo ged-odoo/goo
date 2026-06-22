@@ -54,7 +54,10 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("status", (e) => this.status.set(JSON.parse(e.data)));
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
     // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log
-    es.addEventListener("event", (e) => this.eventLog.add(JSON.parse(e.data).text));
+    es.addEventListener("event", (e) => {
+      const d = JSON.parse(e.data);
+      this.eventLog.add(d.text, "", d.level || "");
+    });
   }
 
   buildStartConfig(targetId, otherArgs) {

@@ -74,14 +74,14 @@ class EventBus:
         for q in subscribers:
             q.put(("status", status))
 
-    def publish_event(self, text):
+    def publish_event(self, text, level=""):
         """A business event: logged to the goo server stdout and pushed to the
-        browser event log via an SSE 'event' message."""
+        browser event log via an SSE 'event' message (level "error" tints it)."""
         print(f"{TAG} {time.strftime('%H:%M:%S')} • {text}", flush=True)
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
-            q.put(("event", {"text": text}))
+            q.put(("event", {"text": text, "level": level}))
 
     def subscribe(self):
         """Register a client queue. Returns (queue, log backlog) atomically so
@@ -103,6 +103,14 @@ class EventBus:
 # =============================================================================
 # Helpers
 # =============================================================================
+
+
+def free_port():
+    """An OS-assigned free TCP port, so a CLI test run can use its own http /
+    gevent ports and not clash with the running server's."""
+    with socket.socket() as s:
+        s.bind((HOST, 0))
+        return s.getsockname()[1]
 
 
 def port_busy(port):
@@ -2025,10 +2033,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True})
 
     def _handle_cli_test(self):
-        """Run a one-shot test (triggered by the `goo --test-tags` CLI) and stream
-        its log back as plain text. Announces the run on the server log + the
-        browser event log, and reuses the last start/test config (target, db,
-        repos, venv) so agents need only pass the tags."""
+        """Run a one-shot test (triggered by the `goo --test-tags` CLI) as its own
+        odoo process — on free ports, so a running server is left untouched — and
+        stream the log back as plain text. Announces the run on the server log +
+        the browser event log, reusing the last config (target, db, repos, venv)."""
         body, err = self._read_json()
         tags = ((body or {}).get("test_tags") or "").strip()
         if err or not tags:
@@ -2039,40 +2047,46 @@ class Handler(BaseHTTPRequestHandler):
             )
         cfg = dict(LAST_CONFIG)
         cfg["start"] = {**(LAST_CONFIG.get("start") or {}), "test_tags": tags}
-
-        q, _ = BUS.subscribe()  # subscribe before triggering so no line is missed
         try:
-            BUS.publish_event(f"CLI test run (tags: {tags})")
-            MANAGER.stop()
-            ok, detail = MANAGER.start(cfg)
-            self.send_response(200 if ok else 409)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            if not ok:
-                self.wfile.write(f"{TAG} could not start: {detail}\n".encode())
-                return
-            self.wfile.write(f"{TAG} running tests (tags: {tags})\n".encode())
+            cmd, _db, _is_new = build_odoo_cmd(cfg)
+        except ValueError as e:
+            return self._send_json(400, {"ok": False, "error": str(e)})
+        # run on free ports so a running server (on the default ports) is undisturbed
+        cmd += f" --http-port {free_port()} --gevent-port {free_port()}"
+
+        BUS.publish_event(f"CLI test run (tags: {tags})")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(f"{TAG} running tests (tags: {tags})\n".encode())
+        self.wfile.flush()
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            executable="/bin/bash",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            preexec_fn=os.setsid,
+        )
+        try:
+            for line in proc.stdout:
+                self.wfile.write(line.encode("utf-8", "replace"))
+                self.wfile.flush()
+            rc = proc.wait()
+            BUS.publish_event(
+                f"CLI test {'passed' if rc == 0 else f'failed (exit {rc})'} (tags: {tags})",
+                "" if rc == 0 else "error",
+            )
+            self.wfile.write(f"{TAG} test run finished (exit {rc})\n".encode())
             self.wfile.flush()
-            started = False
-            while True:
-                kind, payload = q.get()
-                if kind == "log":
-                    self.wfile.write((payload["line"] + "\n").encode("utf-8", "replace"))
-                    self.wfile.flush()
-                elif kind == "status":
-                    state = payload.get("state")
-                    if state in ("starting", "running"):
-                        started = True
-                    elif started and state == "stopped":
-                        rc = payload.get("returncode") or 0
-                        self.wfile.write(f"{TAG} test run finished (exit {rc})\n".encode())
-                        self.wfile.flush()
-                        break
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass  # client gone
-        finally:
-            BUS.unsubscribe(q)
+            try:  # CLI client gone — don't leave the test running orphaned
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
 
     def _send_event(self, event, payload):
         # json.dumps guarantees a single-line data field
