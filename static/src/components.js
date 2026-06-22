@@ -428,19 +428,16 @@ class DashboardScreen extends Component {
                     <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
                   </div>
                   <t t-if="row.present">
-                    <a t-if="row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="row.subject" t-out="row.subject || '—'"/>
-                    <span t-else="" class="dash-row-commit" t-att-title="row.subject" t-out="row.subject || '—'"/>
+                    <a t-if="row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                    <span t-else="" class="dash-row-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
                     <div class="dash-row-meta">
+                      <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
                       <t t-set="ci" t-value="this.ciBadge(row)"/>
                       <a class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </a>
-                      <t t-if="row.pr and row.github">
-                        <a class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                        <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
-                      </t>
-                      <span class="dash-row-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                      <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
                     </div>
                   </t>
                   <div t-else="" class="dash-row-missing">
@@ -597,6 +594,12 @@ class DashboardScreen extends Component {
   // the fetched runbot status for a row's branch ({result, running} or null)
   rbState(row) {
     return this.code.runbot()[row.branch] || null;
+  }
+
+  // commit tooltip: the last-commit date (no longer shown inline) before the title
+  commitTip(row) {
+    const subject = row.subject || "—";
+    return row.date ? `${this.cell(row.date)} · ${subject}` : subject;
   }
 
   // CI badge model for a card repo row: the result (ok/ko) plus a `running` flag

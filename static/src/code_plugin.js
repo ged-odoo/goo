@@ -260,13 +260,18 @@ export class CodePlugin extends Plugin {
   // then reload branch state
   async rebase(repos) {
     this.busy.set(true);
+    for (const r of repos) this.eventLog.add(`rebasing ${r.repo} onto ${r.base}`);
     try {
       const res = await postJSON("/api/code/rebase", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
-      if (failed.length)
+      if (failed.length) {
+        for (const f of failed)
+          this.eventLog.add(`rebase failed: ${f.repo} — ${f.error}`, "", "error");
         alert("Rebase failed:\n" + failed.map((r) => `${r.repo}: ${r.error}`).join("\n"));
+      }
       await this.load(true);
     } catch (e) {
+      this.eventLog.add(`rebase failed: ${e.message}`, "", "error");
       alert(`Rebase failed: ${e.message}`);
     } finally {
       this.busy.set(false);
