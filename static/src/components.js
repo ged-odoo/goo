@@ -432,7 +432,11 @@ class DashboardScreen extends Component {
                     <div class="dash-row-meta">
                       <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
                       <t t-set="ci" t-value="this.ciBadge(row)"/>
-                      <a class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
+                      <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
+                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                        <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                      </button>
+                      <a t-else="" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </a>
@@ -543,18 +547,25 @@ class DashboardScreen extends Component {
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
     // fetch runbot + mergebot status only for what the target cards actually show
     useEffect(() => {
-      const branches = this._branches();
+      const branches = this._runbotBranches();
       if (branches.length) this.code.loadRunbot(branches);
       const prs = this._prs();
       if (prs.length) this.code.loadMergebot(prs);
     });
   }
 
-  // present branches shown on the dashboard (for the runbot fetch)
-  _branches() {
+  // branches that still need the scraped runbot fallback: shown on the dashboard
+  // and NOT already covered by a PR's GitHub CI rollup (those come for free with
+  // the PR list, so there's no point scraping the bundle page for them)
+  _runbotBranches() {
     const seen = new Set();
     for (const tgt of this.targets)
-      for (const row of this.rows(tgt)) if (row.present) seen.add(row.branch);
+      for (const row of this.rows(tgt)) {
+        if (!row.present) continue;
+        const ci = row.pr && row.pr.ci;
+        if (ci && ci.checks && ci.checks.length) continue; // covered by the GitHub API
+        seen.add(row.branch);
+      }
     return [...seen];
   }
 
@@ -601,9 +612,29 @@ class DashboardScreen extends Component {
     return row.date ? `${this.cell(row.date)} · ${subject}` : subject;
   }
 
-  // CI badge model for a card repo row: the result (ok/ko) plus a `running` flag
-  // so the badge can show a "still running" indicator alongside the verdict
+  // CI badge model for a card row. Prefer the PR's GitHub status rollup (runbot
+  // + every other CI check, fetched alongside the PR list); fall back to the
+  // scraped runbot bundle for branches that have no PR. `running` adds a "still
+  // running" indicator next to a verdict; `checks` (when set) drives the
+  // click-through breakdown popover.
   ciBadge(row) {
+    const ci = row.pr && row.pr.ci;
+    if (ci && ci.checks && ci.checks.length) {
+      const pending = ci.checks.some((c) => c.state === "pending");
+      let badge;
+      if (ci.overall === "failure")
+        badge = { cls: "fail", label: "ko", title: "a CI check failed" };
+      else if (ci.overall === "success")
+        badge = { cls: "pass", label: "ok", title: "all CI checks passing" };
+      else if (ci.overall === "pending" || pending)
+        badge = { cls: "run", label: "running", title: "CI running" };
+      else badge = { cls: "unknown", label: "—", title: "no CI status" };
+      // a definitive verdict while other checks are still pending → "still running"
+      badge.running = pending && (ci.overall === "success" || ci.overall === "failure");
+      badge.checks = ci.checks; // breakdown popover
+      return badge;
+    }
+    // fallback: scraped runbot bundle status (branch has no PR)
     const s = this.rbState(row);
     const result = (s && s.result) || "";
     const running = !!(s && s.running);
@@ -616,6 +647,12 @@ class DashboardScreen extends Component {
     badge.running = running && !!result;
     if (badge.running) badge.title += " — still running";
     return badge;
+  }
+
+  // open the CI breakdown popover (full per-check status) anchored to the badge
+  openCiMenu(ev, checks) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
   }
 
 
@@ -2865,6 +2902,55 @@ class ActionMenu extends Component {
   }
 }
 
+// ─────────────────────────── CI breakdown popover ────────────────────────────
+
+// The full per-check CI status of a PR (runbot, style, lint, security, install,
+// upgrade, l10n…), each row linking to its build. Opened via the appBus
+// "ci-menu" event with an anchor rect + the checks list; fixed-positioned (like
+// ActionMenu) so it escapes overflow-clipped containers.
+class CiMenu extends Component {
+  static template = xml`
+    <div class="dash-menu ci-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <a t-foreach="this.checks()" t-as="c" t-key="c_index" class="ci-menu-item" t-att-class="c.state || 'unknown'"
+         t-att-href="c.url || undefined" t-att-target="c.url ? '_blank' : undefined">
+        <span class="ci-menu-dot"/>
+        <span class="ci-menu-ctx" t-out="c.context"/>
+        <span class="ci-menu-state" t-out="this.stateLabel(c.state)"/>
+      </a>
+    </div>`;
+
+  open = signal(false);
+  checks = signal([]);
+  _el = null;
+
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".ci-menu");
+      appBus.addEventListener("ci-menu", (e) => this.openMenu(e.detail));
+      document.addEventListener("click", () => this.open.set(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.open.set(false);
+      });
+    });
+  }
+
+  async openMenu({ rect, checks }) {
+    this.checks.set(checks);
+    this.open.set(true);
+    await Promise.resolve(); // let the list render so offsetWidth/Height are real
+    const w = this._el.offsetWidth;
+    const h = this._el.offsetHeight;
+    let top = rect.bottom + 4;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
+    this._el.style.top = `${top}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+  }
+
+  stateLabel(state) {
+    return { success: "ok", failure: "ko", pending: "running" }[state] || "—";
+  }
+}
+
 // ─────────────────────────── Remote branch dialog ────────────────────────────
 // Search for a branch on GitHub across all configured repos, select one, then
 // hand back { branch, repos } to the caller to create a local tracking branch.
@@ -3468,6 +3554,7 @@ export class App extends Component {
     AddonsScreen,
     ConfigScreen,
     ActionMenu,
+    CiMenu,
     DirtyMenu,
     EventLog,
     TerminalPanel,
@@ -3481,6 +3568,7 @@ export class App extends Component {
         <main><t t-component="this.currentScreen()"/></main>
       </div>
       <ActionMenu/>
+      <CiMenu/>
       <DirtyMenu/>
       <EventLog/>
       <TerminalPanel/>

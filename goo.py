@@ -821,8 +821,60 @@ def mergebot_statuses(prs):
         return {f"{p['github']}#{p['number']}": s for p, s in zip(prs, states, strict=False)}
 
 
+def _ci_state(raw):
+    """Normalize a GitHub status/check state to success | failure | pending | ""."""
+    s = (raw or "").lower()
+    if s == "success":
+        return "success"
+    if s in ("failure", "error", "timed_out", "cancelled", "action_required", "stale", "startup_failure"):
+        return "failure"
+    if s in ("pending", "expected", "queued", "in_progress", "waiting", "requested"):
+        return "pending"
+    return ""
+
+
+def _ci_rollup(rollup):
+    """Compress a PR's statusCheckRollup into {overall, runbot, checks}.
+
+    `checks` is [{context, state, url}] (state normalized via _ci_state); `runbot`
+    is the ci/runbot context's state; `overall` is failure if any check failed,
+    else pending if any is still pending, else success if all passed (else "").
+    Handles both StatusContext (.context/.state, what Odoo's CI posts) and
+    CheckRun (.name/.status/.conclusion)."""
+    checks = []
+    for c in rollup or []:
+        context = c.get("context") or c.get("name") or ""
+        if not context:
+            continue
+        raw = c.get("state") or c.get("conclusion") or c.get("status") or ""
+        checks.append(
+            {
+                "context": context,
+                "state": _ci_state(raw),
+                "url": c.get("targetUrl") or c.get("detailsUrl") or "",
+            }
+        )
+    checks.sort(key=lambda c: c["context"])
+    states = {c["state"] for c in checks}
+    if "failure" in states:
+        overall = "failure"
+    elif "pending" in states:
+        overall = "pending"
+    elif states == {"success"}:
+        overall = "success"
+    else:
+        overall = ""
+    runbot = next((c["state"] for c in checks if c["context"] == "ci/runbot"), "")
+    return {"overall": overall, "runbot": runbot, "checks": checks}
+
+
 def github_prs(repos):
-    """For each repo {id, github}: the user's PRs (all states) via the gh CLI."""
+    """For each repo {id, github}: the user's PRs (all states) via the gh CLI.
+
+    `statusCheckRollup` rides along in the same call, so each PR carries a
+    normalized `ci` ({overall, runbot, checks}) built from the runbot/CI commit
+    statuses GitHub already aggregates — no separate runbot scrape needed for
+    branches that have a PR."""
     out = []
     for repo in repos:
         rid, gh_repo = repo.get("id"), repo.get("github")
@@ -845,7 +897,7 @@ def github_prs(repos):
                     "--limit",
                     "200",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,updatedAt",
+                    "number,title,url,state,isDraft,headRefName,updatedAt,statusCheckRollup",
                 ],
                 capture_output=True,
                 text=True,
@@ -854,7 +906,10 @@ def github_prs(repos):
             if r.returncode != 0:
                 entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
             else:
-                entry["prs"] = json.loads(r.stdout)
+                prs = json.loads(r.stdout)
+                for pr in prs:
+                    pr["ci"] = _ci_rollup(pr.pop("statusCheckRollup", None))
+                entry["prs"] = prs
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
         except json.JSONDecodeError:
