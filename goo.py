@@ -660,18 +660,21 @@ def git_branch_create(path, name, start_point):
     return True, None
 
 
-def git_fetch_rebase(path, base, github):
+def git_fetch_rebase(path, base, github, repo=""):
     """Fetch the base branch from the canonical (main) repo and rebase the
     current branch onto it — e.g. master-owl-update is rebased onto odoo/odoo's
-    master. Returns (ok, error); on conflict the rebase is left in progress for
-    manual resolution."""
+    master. Announces the fetch and rebase phases as they happen (browser event
+    log + goo server log). Returns (ok, error); on conflict the rebase is left in
+    progress for manual resolution."""
     if not path or not base:
         return False, "missing path or base branch"
     remote = main_remote(path, github)
     if not remote:
         return False, f"no remote points at {github}"
     p = os.path.expanduser(path)
+    label = repo or os.path.basename(p)
     try:
+        BUS.publish_event(f"fetching {base} ({label})")
         f = subprocess.run(
             ["git", "-C", p, "fetch", remote, base],
             capture_output=True,
@@ -680,6 +683,7 @@ def git_fetch_rebase(path, base, github):
         )
         if f.returncode != 0:
             return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
+        BUS.publish_event(f"rebasing {label} onto {base}")
         r = subprocess.run(
             ["git", "-C", p, "rebase", "FETCH_HEAD"],
             capture_output=True,
@@ -1715,7 +1719,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             results = []
             for r in repos:
-                ok, error = git_fetch_rebase(r.get("path"), r.get("base"), r.get("github"))
+                ok, error = git_fetch_rebase(
+                    r.get("path"), r.get("base"), r.get("github"), r.get("repo")
+                )
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/databases/drop":
