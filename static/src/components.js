@@ -339,98 +339,92 @@ class DashboardScreen extends Component {
 
           <div class="dash-layout">
           <!-- favorite repositories (flat list, fetch &amp; rebase per repo) -->
-          <section t-if="this.favRepos.length" class="dash-repos">
-            <table class="dash-repos-table">
-              <thead>
-                <tr>
-                  <th>Repository</th>
-                  <th>Branch</th>
-                  <th>When</th>
-                  <th>Last commit</th>
-                  <th class="dash-repos-act">
-                    <button class="dash-rebase dash-rebase-all" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-                      <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr t-foreach="this.favRepos" t-as="r" t-key="r.id">
-                  <td class="dash-repo-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></td>
-                  <td class="dash-branch">
-                    <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
-                    <t t-else="">
-                      <a t-if="r.remote and r.github and r.current" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
-                      <span t-else="" t-out="r.current || '—'"/>
-                      <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
-                      <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
-                        <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
-                        <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
-                      </span>
-                    </t>
-                  </td>
-                  <td class="dash-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
-                  <td class="dash-commit">
-                    <a t-if="r.pushed and r.github and r.sha" class="branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
-                    <span t-else="" t-att-title="r.subject" t-out="r.subject || '—'"/>
-                  </td>
-                  <td class="dash-repo-actions">
-                    <div class="dash-kebab-wrap">
-                      <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
-                      <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
-                        <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
-                        <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
-                        <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
-                        <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
-                        <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
-                        <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
-                        <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
-                        <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <!-- build targets (cards) -->
-          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
-          <div t-else="" class="dash-cards">
-            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-card" t-att-class="{active: this.isActive(tgt)}">
-              <div class="dash-card-head">
-                <div class="dash-card-title">
-                  <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
-                  <span class="dash-name" t-out="tgt.name"/>
-                  <span class="dash-db" t-att-title="tgt.db || ''"><t t-out="this.dbIcon"/><span class="dash-db-name" t-out="tgt.db || '—'"/></span>
+          <section t-if="this.favRepos.length" class="dash-sec">
+            <div class="dash-sec-head">
+              <span class="dash-sec-icon"><t t-out="this.addonsIcon"/></span>
+              <span class="dash-sec-title">Repositories</span>
+              <span class="dash-sec-count" t-out="this.favRepos.length"/>
+              <button class="dash-rebase dash-sec-action" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
+              </button>
+            </div>
+            <div class="dash-sec-rows">
+              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-rrow">
+                <div class="dash-rrow-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></div>
+                <div class="dash-rrow-branch">
+                  <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
+                  <t t-else="">
+                    <a t-if="r.remote and r.github and r.current" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
+                    <span t-else="" t-out="r.current || '—'"/>
+                    <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
+                    <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
+                      <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
+                      <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
+                    </span>
+                  </t>
                 </div>
-                <span t-if="this.isActive(tgt)" class="dash-active-badge">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  Active
+                <span class="dash-rrow-commit">
+                  <a t-if="r.pushed and r.github and r.sha" class="branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
+                  <span t-else="" t-att-title="r.subject" t-out="r.subject || '—'"/>
                 </span>
-                <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Apply</button>
+                <span class="dash-rrow-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
                 <div class="dash-kebab-wrap">
-                  <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
-                  <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
-                    <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
-                    <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                  <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
+                  <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
+                    <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
+                    <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
+                    <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
+                    <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
                   </div>
                 </div>
               </div>
-              <div class="dash-card-body">
-                <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-card-row">
-                  <div class="dash-row-repo">
+            </div>
+          </section>
+
+          <!-- build targets (one card, a section per target) -->
+          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
+          <section t-else="" class="dash-sec">
+            <div class="dash-sec-head">
+              <span class="dash-sec-icon"><t t-out="this.targetIcon"/></span>
+              <span class="dash-sec-title">Targets</span>
+              <span class="dash-sec-count" t-out="this.targets.length"/>
+            </div>
+            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
+              <div class="dash-tgt-head">
+                <div class="dash-tgt-title">
+                  <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
+                  <span class="dash-name" t-out="tgt.name"/>
+                  <span class="dash-db" t-att-title="tgt.db || ''"><t t-out="this.dbIcon"/><span class="dash-db-name" t-out="tgt.db || '—'"/></span>
+                  <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
+                </div>
+                <div class="dash-tgt-actions">
+                  <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Apply</button>
+                  <div class="dash-kebab-wrap">
+                    <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
+                    <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
+                      <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
+                      <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
+                      <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="dash-sec-rows">
+                <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-trow">
+                  <div class="dash-trow-repo">
                     <div class="dash-row-name" t-out="row.repo"/>
                     <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
                     <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
                   </div>
                   <t t-if="row.present">
-                    <a t-if="row.remote and row.github and row.sha" class="dash-row-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                    <span t-else="" class="dash-row-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                    <div class="dash-row-meta">
-                      <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                    <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                    <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                    <div class="dash-trow-ci">
                       <t t-set="ci" t-value="this.ciBadge(row)"/>
                       <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
@@ -440,8 +434,13 @@ class DashboardScreen extends Component {
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </a>
-                      <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
                     </div>
+                    <div class="dash-trow-pr">
+                      <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                      <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
+                      <span t-if="!row.pr" class="dash-trow-dash">—</span>
+                    </div>
+                    <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                   </t>
                   <div t-else="" class="dash-row-missing">
                     <span>no local branch</span>
@@ -450,7 +449,7 @@ class DashboardScreen extends Component {
                 </div>
               </div>
             </div>
-          </div>
+          </section>
           </div><!-- /.dash-layout -->
         </div>
       </div>
@@ -465,6 +464,8 @@ class DashboardScreen extends Component {
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
   dbIcon = m(ICONS.databases);
+  addonsIcon = m(ICONS.addons); // "Repositories" section header
+  targetIcon = m(ICONS.target); // "Targets" section header
   kebabIcon = m(ICONS.kebab);
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);

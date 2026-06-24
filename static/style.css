@@ -784,63 +784,113 @@ section.hidden {
 .dash-layout {
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  max-width: calc(2 * 580px + 22px);
+  gap: 16px;
+  max-width: 1080px;
 }
-.dash-repos {
+/* a list card: section header + indented rows joined by a vertical guide line */
+.dash-sec {
   background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 14px;
   box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04);
-  padding: 6px 8px 8px;
+  /* no overflow:hidden — the kebab dropdowns must be able to escape the card */
 }
-/* one table → shared column widths across the header and every row; columns
-   size to content (natural), Last commit is the lone fluid+truncating column */
-.dash-repos-table {
-  width: 100%;
-  border-collapse: collapse;
+.dash-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 20px;
+  background: var(--l-panel);
+  border-bottom: 1px solid var(--l-line);
+  border-radius: 13px 13px 0 0; /* match the card's rounded top corners */
 }
-.dash-repos-table th {
-  text-align: left;
-  padding: 10px 16px 8px;
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+.dash-sec-icon svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  fill: none;
+  stroke: var(--l-text-dim);
+  stroke-width: 2;
+}
+.dash-sec-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
+  color: var(--l-text-mid);
+}
+.dash-sec-count {
+  font-size: 11.5px;
+  font-weight: 600;
   color: var(--l-text-faint);
+  background: var(--l-panel-line);
+  padding: 1px 9px;
+  border-radius: 20px;
 }
-.dash-repos-table td {
-  padding: 9px 16px;
-  border-top: 1px solid var(--l-line-soft);
-  white-space: nowrap;
-  vertical-align: middle;
+.dash-sec-action {
+  margin-left: auto;
 }
-.dash-repos-act,
-.dash-repo-actions {
-  text-align: right;
+.dash-sec-rows {
+  position: relative;
+  padding: 4px 0 6px;
 }
-.dash-repos-table .dash-kebab-wrap {
-  display: inline-block;
+.dash-sec-rows::before {
+  content: "";
+  position: absolute;
+  left: 31px;
+  top: 6px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--l-line);
 }
-.dash-repo-name {
+/* favorite-repo row */
+.dash-rrow {
+  display: grid;
+  grid-template-columns: 180px 230px minmax(0, 1fr) 56px auto;
+  gap: 16px;
+  align-items: center;
+  padding: 7px 20px 7px 52px;
+}
+.dash-rrow:hover {
+  background: var(--l-hover);
+}
+.dash-rrow-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--l-text);
 }
-.dash-repo-name svg {
-  width: 14px;
-  height: 14px;
-  margin-right: 8px;
-  vertical-align: -2px;
+.dash-rrow-name svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
   fill: none;
   stroke: var(--l-text-faint);
   stroke-width: 2;
 }
-.dash-branch {
+.dash-rrow-branch {
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--l-text-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-rrow-commit {
+  font-size: 13px;
+  color: var(--l-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-rrow-when {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text-faint);
 }
 /* commits ahead/behind the base (target) branch */
 .dash-diff {
@@ -854,20 +904,6 @@ section.hidden {
 .dash-diff .behind {
   color: var(--l-amber);
   margin-left: 5px;
-}
-/* Last commit: the only fluid column — takes the remaining width and truncates */
-.dash-commit {
-  width: 100%;
-  max-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 13px;
-  color: var(--l-text-dim);
-}
-.dash-when {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--l-text-faint);
 }
 .dash-rebase {
   display: inline-flex;
@@ -899,53 +935,46 @@ section.hidden {
   opacity: 0.6;
   cursor: default;
 }
-/* the "Fetch & rebase all" header action: accent-tinted pill */
-.dash-rebase-all {
-  color: var(--l-accent);
-  background: var(--l-accent-soft);
-  border-color: var(--l-accent-line);
-  justify-self: end;
+/* build targets — one card, a section per target */
+/* one target = a header (dot, name, db, active/apply) + its indented repo rows */
+.dash-tgt {
+  border-top: 1px solid var(--l-line);
 }
-.dash-rebase-all:hover:not(:disabled) {
-  color: var(--l-accent);
-  border-color: var(--l-accent);
-  background: oklch(0.66 0.16 300 / 0.18);
+.dash-tgt:first-child {
+  border-top: none;
 }
-
-/* build target cards — 2-column grid */
-.dash-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(520px, 580px));
-  gap: 22px;
-}
-.dash-card {
-  background: var(--l-card);
-  border: 1px solid var(--l-line);
-  border-radius: 16px;
-  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04), 0 8px 24px -16px oklch(0.27 0.012 264 / 0.12);
-  overflow: hidden;
-}
-.dash-card.active {
-  border-color: var(--l-line);
-  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.08), 0 10px 28px -16px oklch(0.27 0.012 264 / 0.4), 0 0 0 1px var(--l-text);
-}
-.dash-card-head {
+.dash-tgt-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 9px 20px;
-  background: var(--l-bg);
-  border-bottom: 1px solid var(--l-line-soft);
+  gap: 14px;
+  padding: 6px 20px;
 }
-.dash-card.active .dash-card-head {
-  background: var(--l-bg);
+.dash-tgt.active .dash-tgt-head {
+  background: var(--l-accent-soft);
 }
-.dash-card-title {
+.dash-tgt-title {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 11px;
   min-width: 0;
+  flex-wrap: wrap;
+}
+.dash-tgt-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.dash-tgt-active {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+  padding: 2px 8px;
+  border-radius: 5px;
 }
 .dash-dot {
   width: 9px;
@@ -953,11 +982,21 @@ section.hidden {
   border-radius: 50%;
   flex: none;
   background: var(--l-text-faint);
-  box-shadow: 0 0 0 3px var(--l-line);
 }
 .dash-dot.active {
-  background: var(--l-text);
-  box-shadow: 0 0 0 3px var(--l-line);
+  background: var(--l-accent);
+  animation: dash-pulse 2s infinite;
+}
+@keyframes dash-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--l-accent-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 .dash-name {
   font-size: 15.5px;
@@ -991,25 +1030,6 @@ section.hidden {
   stroke: var(--l-text-faint);
   fill: none;
   stroke-width: 2;
-}
-.dash-active-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--l-text-faint);
-  background: var(--l-panel);
-  border: 1px solid var(--l-line);
-  border-radius: 9px;
-  padding: 5px 14px;
-}
-.dash-active-badge svg {
-  width: 13px;
-  height: 13px;
-  flex: none;
 }
 .dash-activate {
   display: inline-flex;
@@ -1114,27 +1134,42 @@ section.hidden {
 }
 
 /* card body: white bg, rows with 3-column layout */
-.dash-card-body {
+/* target repo row: repo+branch | commit | CI | PR | when */
+.dash-trow {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) auto;
-  padding: 4px 8px 8px;
-  background: var(--l-card);
-}
-.dash-card-row {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: subgrid;
-  column-gap: 16px;
+  grid-template-columns: 190px minmax(0, 1fr) 108px 132px 56px;
+  gap: 14px;
   align-items: center;
-  padding: 10px 12px;
-  border-top: 1px solid var(--l-line-soft);
-  border-radius: 9px;
+  padding: 5px 20px 5px 52px;
 }
-.dash-card-row:first-child {
-  border-top: none;
+.dash-trow:hover {
+  background: var(--l-hover);
 }
-.dash-row-repo {
+.dash-trow-repo {
   min-width: 0;
+}
+.dash-trow-commit {
+  font-size: 12.5px;
+  color: var(--l-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-trow-ci,
+.dash-trow-pr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.dash-trow-when {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--l-text-faint);
+  text-align: right;
+}
+.dash-trow-dash {
+  color: var(--l-text-faint);
 }
 .dash-row-name {
   font-size: 13px;
@@ -1155,13 +1190,6 @@ section.hidden {
 a.dash-row-branch:hover {
   color: var(--l-accent);
   text-decoration: underline;
-}
-.dash-row-commit {
-  font-size: 13px;
-  color: var(--l-text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .dash-ci {
   display: inline-flex;
@@ -1236,16 +1264,6 @@ a.dash-row-branch:hover {
 .dash-ci.unknown .dash-ci-dot {
   opacity: 0.5;
 }
-.dash-row-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  justify-content: flex-end;
-  white-space: nowrap;
-}
-.dash-row-pr {
-  display: contents;
-}
 .dash-pr-num {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -1287,13 +1305,6 @@ a.dash-row-branch:hover {
 .dash-pr-state.other {
   color: var(--l-text-dim);
   background: var(--l-panel);
-}
-.dash-row-when {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--l-text-faint);
-  min-width: 58px;
-  text-align: right;
 }
 .git-state {
   font-family: var(--mono);
