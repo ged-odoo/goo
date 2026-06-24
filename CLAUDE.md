@@ -20,8 +20,9 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
     git checkout live.
   - `effects.py` — the IO seam: the one place raw subprocess/network happen
     (`run`, `http_get`, `log_request`). Fake this in tests.
-  - `services.py` — domain services over the seam (`GitHubService`, `RunbotService`,
-    `MergebotService`, `DatabaseService`, …); fetch + parse + cache external state.
+  - `services.py` — domain services over the seam (`GitService`, `GitHubService`,
+    `RunbotService`, `MergebotService`, `DatabaseService`); fetch + parse external
+    state, cached server-side where it's worth it (git reads are volatile, uncached).
   - `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
 - `tests/` — stdlib `unittest` suite; services run against a fake IO (no network).
   Being migrated incrementally: side effects → `backend/effects`+`services`,

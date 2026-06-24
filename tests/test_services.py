@@ -20,15 +20,21 @@ def completed(stdout="", returncode=0, stderr=""):
 class FakeIO:
     """Canned stand-in for effects.py — records calls, returns scripted results."""
 
+    TAG = "[goo]"
+
     def __init__(self, *, run_result=None, runs=None, http=None):
         self._run_result = run_result if run_result is not None else completed()
         self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
         self.run_calls = []
         self.http_calls = []
+        self.logs = []
 
     def log_request(self, target):
         pass
+
+    def log(self, message):
+        self.logs.append(message)
 
     def run(self, cmd, **kwargs):
         self.run_calls.append(cmd)
@@ -215,6 +221,109 @@ class DatabaseServiceTest(unittest.TestCase):
         svc.databases()  # cache invalidated → list query runs again
         list_calls = sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls)
         self.assertEqual(list_calls, 2)
+
+
+class GitServiceTest(unittest.TestCase):
+    def test_branches_parses_state(self):
+        io = FakeIO(
+            runs={
+                "branch --show-current": completed(stdout="master-owl-update\n"),
+                "status --porcelain": completed(stdout=" M file.py\n"),  # dirty
+                "log -1": completed(stdout="abc123\n[FIX] thing\n2024-06-20T10:00:00\n"),
+                "--not --remotes --count": completed(stdout="0\n"),  # pushed
+                "--left-right --count": completed(stdout="2\t3\n"),  # behind 2, ahead 3
+                "for-each-ref refs/remotes": completed(stdout="master-owl-update\nmaster\n"),
+                "for-each-ref refs/heads": completed(
+                    stdout="master-owl-update\t2024-06-20T10:00:00\t[FIX] thing\tabc123\n"
+                ),
+                "master@{upstream}": completed(stdout="origin/master\n"),
+            }
+        )
+        svc = services.GitService(io)
+        [entry] = svc.branches([{"id": "community", "path": "/repo", "github": "odoo/odoo"}])
+        self.assertEqual(entry["current"], "master-owl-update")
+        self.assertTrue(entry["dirty"])
+        self.assertTrue(entry["head_pushed"])
+        self.assertEqual((entry["behind"], entry["ahead"]), (2, 3))
+        self.assertTrue(entry["head_remote"])  # current branch has a remote ref
+        self.assertEqual(entry["branches"][0]["name"], "master-owl-update")
+        self.assertTrue(entry["branches"][0]["remote"])
+
+    def test_branches_reports_not_a_repo(self):
+        io = FakeIO(
+            runs={"branch --show-current": completed(returncode=128, stderr="not a git repo")}
+        )
+        [entry] = services.GitService(io).branches([{"id": "x", "path": "/nope"}])
+        self.assertEqual(entry["error"], "not a git repo")
+
+    def test_checkout_error(self):
+        io = FakeIO(
+            run_result=completed(returncode=1, stderr="error: pathspec 'nope' did not match")
+        )
+        ok, err = services.GitService(io).checkout("/repo", "nope")
+        self.assertFalse(ok)
+        self.assertIn("pathspec", err)
+
+    def test_delete_branch_no_dev_remote_skips_remote(self):
+        # local delete ok; no odoo-dev remote → remote delete skipped (no error)
+        io = FakeIO(
+            runs={
+                "branch -D": completed(),
+                "remote -v": completed(stdout="origin\tgit@github:odoo/odoo\n"),
+            }
+        )
+        ok, err, remote_err = services.GitService(io).delete_branch("/r", "b", delete_remote=True)
+        self.assertEqual((ok, err, remote_err), (True, None, None))
+        self.assertFalse(any("--delete" in " ".join(c) for c in io.run_calls))  # never pushed
+
+    def test_log_parses_commits(self):
+        rec = "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1fbody line\x1e"
+        io = FakeIO(runs={"git -C /r log": completed(stdout=rec)})
+        commits, err = services.GitService(io).log("/r")
+        self.assertIsNone(err)
+        self.assertEqual(
+            commits[0],
+            {
+                "sha": "sha1",
+                "author": "Alice",
+                "date": "2024-06-20",
+                "subject": "[FIX] a",
+                "body": "body line",
+            },
+        )
+
+    def test_main_remote_falls_back_to_origin(self):
+        # no upstream and no github match → "origin"
+        io = FakeIO(runs={"master@{upstream}": completed(returncode=128, stderr="no upstream")})
+        self.assertEqual(services.GitService(io).main_remote("/r"), "origin")
+
+    def test_main_remote_from_github_url(self):
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(returncode=128),
+                "remote -v": completed(stdout="upstream\tgit@github.com:odoo/odoo.git (fetch)\n"),
+            }
+        )
+        self.assertEqual(services.GitService(io).main_remote("/r", "odoo/odoo"), "upstream")
+
+    def test_fetch_rebase_notifies_phases(self):
+        notes = []
+        io = FakeIO(runs={"master@{upstream}": completed(stdout="origin/master\n")})
+        svc = services.GitService(io, notify=notes.append)
+        ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
+        self.assertTrue(ok)
+        self.assertEqual(notes, ["fetching master (community)", "rebasing community onto master"])
+
+
+class GitHubSearchBranchesTest(unittest.TestCase):
+    def test_search_branches(self):
+        io = FakeIO(
+            runs={"matching-refs": completed(stdout="refs/heads/master-x\nrefs/heads/master-y\n")}
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        found = svc.search_branches([{"id": "community", "github": "odoo/odoo"}], "master-")
+        self.assertEqual(sorted(f["branch"] for f in found), ["master-x", "master-y"])
+        self.assertTrue(all(f["repo"] == "community" for f in found))
 
 
 if __name__ == "__main__":

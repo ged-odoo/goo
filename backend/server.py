@@ -35,9 +35,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import effects, services
 from .cache import TTLCache
 
-# the IO seam (effects) and the services layer over it; the remaining git/psql/fs
-# functions here keep calling run()/log_request() — now sourced from effects.
-from .effects import TAG, log_request, run
+# the IO seam (effects) and the services layer over it; the server's remaining
+# subprocess calls (kill_port, the goo self-update probes) go through run().
+from .effects import TAG, run
 
 HOST = "127.0.0.1"
 PORT = 8068
@@ -166,394 +166,6 @@ def write_data_file(path, data):
         return True, None
     except OSError as e:
         return False, str(e)
-
-
-_BASE_BRANCH_RE = re.compile(r"^(saas-\d+\.\d+|\d+\.\d+|master)")
-
-
-def base_branch(name):
-    """The canonical base a branch derives from (master-owl-update -> master,
-    19.0-fix -> 19.0). Defaults to master."""
-    m = _BASE_BRANCH_RE.match(name or "")
-    return m.group(1) if m else "master"
-
-
-def git_branches(repos):
-    """For each repo {id, path}: the checked-out branch and all local
-    branches with their last-commit date."""
-    out = []
-    for repo in repos:
-        rid = repo.get("id")
-        path = os.path.expanduser(repo.get("path", ""))
-        if not rid or not path:
-            continue
-        entry = {
-            "id": rid,
-            "current": None,
-            "dirty": False,
-            "head_subject": "",
-            "head_date": "",
-            "head_sha": "",  # HEAD commit sha
-            "head_pushed": False,  # HEAD is reachable from some remote (so linkable)
-            "head_remote": False,  # the current branch has a remote-tracking ref
-            "ahead": 0,  # current branch commits not on its base (target) branch
-            "behind": 0,  # base branch commits not on the current branch
-            "branches": [],
-            "error": None,
-        }
-        try:
-            r = run(
-                ["git", "-C", path, "branch", "--show-current"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if r.returncode != 0:
-                entry["error"] = r.stderr.strip().split("\n")[0] or "not a git repository"
-                out.append(entry)
-                continue
-            entry["current"] = r.stdout.strip() or "(detached)"
-            # uncommitted changes in the working tree (only the current branch)
-            st = run(
-                ["git", "-C", path, "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            entry["dirty"] = bool(st.stdout.strip())
-            # HEAD's sha + last commit subject + date (for the dashboard summary)
-            hl = run(
-                ["git", "-C", path, "log", "-1", "--format=%H%n%s%n%cI"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if hl.returncode == 0:
-                lines = hl.stdout.splitlines()
-                entry["head_sha"] = lines[0] if lines else ""
-                entry["head_subject"] = lines[1] if len(lines) > 1 else ""
-                entry["head_date"] = lines[2] if len(lines) > 2 else ""
-            # is HEAD reachable from any remote ref? (i.e. pushed -> linkable)
-            rp = run(
-                ["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes", "--count"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if rp.returncode == 0:
-                entry["head_pushed"] = rp.stdout.strip() == "0"
-            # how far the current branch diverges from its canonical base (the
-            # "target" it would rebase onto), e.g. master-owl-update vs origin/master
-            base = base_branch(entry["current"])
-            ref = f"{main_remote(path, repo.get('github'))}/{base}"
-            # quiet: the base ref may not be fetched locally (→ "bad revision"); that's
-            # expected, we just leave ahead/behind at 0 rather than log every refresh
-            ad = run(
-                ["git", "-C", path, "rev-list", "--left-right", "--count", f"{ref}...HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                quiet=True,
-            )
-            if ad.returncode == 0 and len(ad.stdout.split()) == 2:
-                behind, ahead = ad.stdout.split()
-                entry["behind"], entry["ahead"] = int(behind), int(ahead)
-            # branch names that have a remote-tracking ref, i.e. were pushed to
-            # some remote from this clone (refname minus refs/remotes/<remote>/)
-            rr = run(
-                ["git", "-C", path, "for-each-ref", "refs/remotes", "--format=%(refname:lstrip=3)"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            remote_branches = set(rr.stdout.split())
-            entry["head_remote"] = entry["current"] in remote_branches
-            r = run(
-                [
-                    "git",
-                    "-C",
-                    path,
-                    "for-each-ref",
-                    "refs/heads",
-                    "--format=%(refname:short)%09%(committerdate:iso8601-strict)%09%(contents:subject)%09%(objectname)",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            for line in r.stdout.splitlines():
-                parts = line.split("\t")
-                name = parts[0]
-                date = parts[1] if len(parts) > 1 else ""
-                subject = parts[2] if len(parts) > 2 else ""
-                sha = parts[3] if len(parts) > 3 else ""
-                if name:
-                    entry["branches"].append(
-                        {
-                            "name": name,
-                            "date": date,
-                            "subject": subject,
-                            "sha": sha,
-                            "remote": name in remote_branches,
-                        }
-                    )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            entry["error"] = str(e)
-        out.append(entry)
-    # runbot status is fetched lazily for the few branches the dashboard shows
-    # (see /api/runbot) rather than for every branch on every load.
-    return out
-
-
-def git_delete_branch(path, branch, delete_remote=False):
-    """Force-delete a local branch, and optionally its branch on the odoo-dev
-    remote too. Returns (ok, error, remote_error): `ok`/`error` are for the local
-    delete; `remote_error` is set when the local delete succeeded but the remote
-    branch could not be removed (None on success or when not requested)."""
-    path = os.path.expanduser(path)
-    try:
-        result = run(
-            ["git", "-C", path, "branch", "-D", branch],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e), None
-    if result.returncode != 0:
-        return False, result.stderr.strip().split("\n")[0] or "git branch -D failed", None
-    remote_error = None
-    if delete_remote:
-        # delete straight away — no `ls-remote` pre-check (it adds a network
-        # round-trip per branch). If the branch was never pushed (or only exists
-        # on the canonical remote), git fails with "remote ref does not exist",
-        # which we treat as success: there was nothing to remove.
-        remote, _ = dev_remote(path)
-        if not remote:
-            # no odoo-dev fork configured → nothing could have been pushed there
-            return True, None, None
-        log_request(f"git push {remote} --delete {branch}")
-        try:
-            r = run(
-                ["git", "-C", path, "push", remote, "--delete", branch],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if r.returncode != 0 and "remote ref does not exist" not in r.stderr:
-                remote_error = r.stderr.strip().split("\n")[-1] or "git push --delete failed"
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            remote_error = str(e)
-    return True, None, remote_error
-
-
-def git_wip_commit(path):
-    """Stage all changes and create a WIP commit. Returns (ok, error)."""
-    path = os.path.expanduser(path)
-    try:
-        r = run(
-            ["git", "-C", path, "add", "-A"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return False, r.stderr.strip() or "git add failed"
-        r = run(
-            ["git", "-C", path, "commit", "--no-verify", "-m", "WIP"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return False, r.stderr.strip() or "git commit failed"
-        return True, None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-
-
-def git_log(path, n=20, ref=""):
-    """Return the last n commits on <ref> (default: the current branch / HEAD).
-    Returns (commits, error); commits is a list of {sha, author, date, subject,
-    body}. Fields are \\x1f-separated, commits \\x1e-terminated so multi-line
-    bodies survive."""
-    path = os.path.expanduser(path)
-    cmd = ["git", "-C", path, "log", "-n", str(n),
-           "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"]
-    if ref:
-        cmd += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
-    try:
-        r = run(cmd, capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            return None, r.stderr.strip() or "git log failed"
-        commits = []
-        for rec in r.stdout.split("\x1e"):
-            rec = rec.strip("\n")
-            if not rec:
-                continue
-            parts = rec.split("\x1f")
-            if len(parts) < 4:
-                continue
-            commits.append({
-                "sha": parts[0],
-                "author": parts[1],
-                "date": parts[2],
-                "subject": parts[3],
-                "body": parts[4].strip() if len(parts) > 4 else "",
-            })
-        return commits, None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return None, str(e)
-
-
-def git_discard(path):
-    """Make the working tree pristine: reset tracked files (staged + unstaged)
-    to HEAD, then remove untracked files/dirs. Mirrors the dirty check, which
-    flags any non-empty `git status --porcelain` (untracked files included).
-    `git clean -fd` (no -x) leaves ignored files alone. Returns (ok, error)."""
-    path = os.path.expanduser(path)
-    try:
-        r = run(
-            ["git", "-C", path, "reset", "--hard", "HEAD"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return False, r.stderr.strip() or "git reset failed"
-        r = run(
-            ["git", "-C", path, "clean", "-fd"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return False, r.stderr.strip() or "git clean failed"
-        return True, None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-
-
-def search_remote_branches(repos, query):
-    """Search GitHub for branches whose name starts with `query`, across all
-    repos that have a github field. Runs one gh api call per repo in parallel.
-    Returns a list of {repo: id, branch: name} dicts."""
-    results = []
-    lock = threading.Lock()
-
-    def search_one(r):
-        github = r.get("github", "")
-        if not github:
-            return
-        try:
-            res = run(
-                ["gh", "api", f"repos/{github}/git/matching-refs/heads/{query}",
-                 "--jq", ".[].ref"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if res.returncode != 0:
-                return
-            found = []
-            for line in res.stdout.splitlines():
-                branch = line.strip()
-                if branch.startswith("refs/heads/"):
-                    branch = branch[len("refs/heads/"):]
-                if branch:
-                    found.append({"repo": r["id"], "branch": branch})
-            with lock:
-                results.extend(found)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-
-    threads = [threading.Thread(target=search_one, args=(r,), daemon=True) for r in repos]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=20)
-    return results
-
-
-def git_fetch_remote_branch(path, branch):
-    """Fetch a remote branch and create/reset the local branch to track it.
-    Equivalent to: git fetch origin {branch}:{branch}. Returns (ok, error)."""
-    path = os.path.expanduser(path)
-    try:
-        r = run(
-            ["git", "-C", path, "fetch", "origin", f"{branch}:{branch}"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            return False, r.stderr.strip().split("\n")[0] or "git fetch failed"
-        return True, None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-
-
-def git_checkout(path, branch):
-    """Checkout a local branch in a repo. Returns (ok, error)."""
-    if not path or not branch:
-        return False, "missing path or branch"
-    try:
-        result = run(
-            ["git", "-C", os.path.expanduser(path), "checkout", branch],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-    if result.returncode != 0:
-        return False, result.stderr.strip().split("\n")[0] or "git checkout failed"
-    return True, None
-
-
-def git_branch_create(path, name, start_point):
-    """Create a new local branch <name> at <start_point> WITHOUT checking it out
-    (the working tree / current branch is left untouched). Returns (ok, error)."""
-    if not path or not name or not start_point:
-        return False, "missing path, name or start point"
-    try:
-        result = run(
-            ["git", "-C", os.path.expanduser(path), "branch", name, start_point],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-    if result.returncode != 0:
-        return False, result.stderr.strip().split("\n")[0] or "git branch failed"
-    return True, None
-
-
-def git_fetch_rebase(path, base, github, repo=""):
-    """Fetch the base branch from the canonical (main) repo and rebase the
-    current branch onto it — e.g. master-owl-update is rebased onto odoo/odoo's
-    master. Announces the fetch and rebase phases as they happen (browser event
-    log + goo server log). Returns (ok, error); on conflict the rebase is left in
-    progress for manual resolution."""
-    if not path or not base:
-        return False, "missing path or base branch"
-    remote = main_remote(path, github)
-    if not remote:
-        return False, f"no remote points at {github}"
-    p = os.path.expanduser(path)
-    label = repo or os.path.basename(p)
-    try:
-        BUS.publish_event(f"fetching {base} ({label})")
-        f = run(
-            ["git", "-C", p, "fetch", remote, base],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        if f.returncode != 0:
-            return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
-        BUS.publish_event(f"rebasing {label} onto {base}")
-        r = run(
-            ["git", "-C", p, "rebase", "FETCH_HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-    if r.returncode != 0:
-        msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[0]
-        return False, msg or "git rebase failed"
-    return True, None
 
 
 def open_in_editor(editor, path):
@@ -773,129 +385,6 @@ def list_addons(repos):
     return mods
 
 
-def dev_remote(path):
-    """Name of the remote pointing at the odoo-dev fork. (remote, error)."""
-    try:
-        r = run(
-            ["git", "-C", os.path.expanduser(path), "remote", "-v"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return None, str(e)
-    for line in r.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and "odoo-dev" in parts[1]:
-            return parts[0], None
-    return None, "no odoo-dev remote configured"
-
-
-def remote_branch_exists(path, branch):
-    """Whether <branch> exists on the odoo-dev remote. (exists, error)."""
-    remote, err = dev_remote(path)
-    if err:
-        return None, err
-    log_request(f"git ls-remote {remote} {branch}")
-    try:
-        r = run(
-            ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return None, str(e)
-    if r.returncode != 0:
-        return None, r.stderr.strip().split("\n")[0] or "git ls-remote failed"
-    return bool(r.stdout.strip()), None
-
-
-def push_branch(path, branch, force=False):
-    """Push <branch> to the odoo-dev remote, setting upstream. With force, use
-    --force-with-lease (a safe force that aborts if the remote moved
-    unexpectedly). Returns (ok, error)."""
-    remote, err = dev_remote(path)
-    if err:
-        return False, err
-    args = ["push", "--set-upstream"]
-    if force:
-        args.append("--force-with-lease")
-    args += [remote, branch]
-    log_request("git " + " ".join(args))
-    try:
-        r = run(
-            ["git", "-C", os.path.expanduser(path), *args],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-    if r.returncode != 0:
-        return False, r.stderr.strip().split("\n")[-1] or "git push failed"
-    return True, None
-
-
-def main_remote(path, github=None):
-    """Best guess at the remote that hosts the canonical master, in order:
-    1. the upstream configured for the local `master` branch (git's own answer);
-    2. the remote whose URL matches the canonical github slug (e.g. odoo/odoo),
-       i.e. not the odoo-dev fork — the mirror of dev_remote();
-    3. "origin".
-    """
-    p = os.path.expanduser(path)
-    try:
-        # a non-zero exit just means master has no upstream here — expected, we fall
-        # back to the remote-URL match / "origin" below, so don't log it
-        r = run(
-            ["git", "-C", p, "rev-parse", "--abbrev-ref", "master@{upstream}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            quiet=True,
-        )
-        if r.returncode == 0 and "/" in r.stdout.strip():
-            return r.stdout.strip().split("/", 1)[0]
-        if github:
-            rv = run(
-                ["git", "-C", p, "remote", "-v"], capture_output=True, text=True, timeout=10
-            )
-            for line in rv.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 2 and github in parts[1]:
-                    return parts[0]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return "origin"
-
-
-def fetch_master(repo):
-    """Fetch master objects for one repo (no merge, no working-tree change).
-    Slow on stale odoo clones, so callers run this off the main thread."""
-    rid = repo.get("id") or "?"
-    path = repo.get("path")
-    if not path:
-        return
-    remote = main_remote(path, repo.get("github"))
-    log_request(f"git fetch {remote} master  (auto-reload {rid})")
-    try:
-        r = run(
-            ["git", "-C", os.path.expanduser(path), "fetch", remote, "master"],
-            capture_output=True,
-            text=True,
-            timeout=900,
-            quiet=True,  # fetch_master prints its own auto-reload summary below
-        )
-        if r.returncode != 0:
-            tail = r.stderr.strip().splitlines()
-            print(f"{TAG} auto-reload {rid} failed: {tail[-1] if tail else 'git fetch failed'}", flush=True)
-        else:
-            print(f"{TAG} auto-reload {rid}: fetched {remote}/master", flush=True)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"{TAG} auto-reload {rid} failed: {e}", flush=True)
-
-
 class AutoReloader:
     """Fetches master for opted-in repos every INTERVAL seconds, in the
     background. The repo set is pushed by the frontend (config lives there).
@@ -926,7 +415,7 @@ class AutoReloader:
                 for r in due:
                     self._next[r["path"]] = now + self.INTERVAL
             for r in due:
-                fetch_master(r)
+                GIT.fetch_master(r)
 
 
 def build_odoo_cmd(config):
@@ -1332,6 +821,9 @@ GITHUB = services.GitHubService(effects, TTLCache(600))
 RUNBOT = services.RunbotService(effects, TTLCache(300))
 MERGEBOT = services.MergebotService(effects, TTLCache(300))
 DATABASE = services.DatabaseService(effects, TTLCache(60))
+# git on the user's repos — uncached (branch reads are volatile + fast); notify
+# routes the fetch/rebase progress phases to the browser event log
+GIT = services.GitService(effects, notify=BUS.publish_event)
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -1427,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
             repos = (body or {}).get("repos")
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            self._send_json(200, {"ok": True, "repos": git_branches(repos)})
+            self._send_json(200, {"ok": True, "repos": GIT.branches(repos)})
         elif path == "/api/prs":
             body, err = self._read_json()
             repos = (body or {}).get("repos")
@@ -1473,7 +965,7 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error, remote_error = git_delete_branch(
+            ok, error, remote_error = GIT.delete_branch(
                 repo_path, branch, bool((body or {}).get("delete_remote"))
             )
             if ok:
@@ -1487,7 +979,7 @@ class Handler(BaseHTTPRequestHandler):
             start_point = (body or {}).get("start_point")
             if err or not repo_path or not name or not start_point:
                 return self._send_json(400, {"ok": False, "error": "missing path, name or start point"})
-            ok, error = git_branch_create(repo_path, name, start_point)
+            ok, error = GIT.create_branch(repo_path, name, start_point)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/open-editor":
             body, err = self._read_json()
@@ -1518,7 +1010,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             results = []
             for r in repos:
-                ok, error = git_checkout(r.get("path"), r.get("branch"))
+                ok, error = GIT.checkout(r.get("path"), r.get("branch"))
                 results.append({"branch": r.get("branch"), "ok": ok, "error": error})
             self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/code/rebase":
@@ -1528,7 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             results = []
             for r in repos:
-                ok, error = git_fetch_rebase(
+                ok, error = GIT.fetch_rebase(
                     r.get("path"), r.get("base"), r.get("github"), r.get("repo")
                 )
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
@@ -1570,7 +1062,7 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            exists, error = remote_branch_exists(repo_path, branch)
+            exists, error = GIT.remote_branch_exists(repo_path, branch)
             if error:
                 self._send_json(400, {"ok": False, "error": error})
             else:
@@ -1581,7 +1073,7 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = push_branch(repo_path, branch, bool((body or {}).get("force")))
+            ok, error = GIT.push_branch(repo_path, branch, bool((body or {}).get("force")))
             if ok:
                 self._send_json(200, {"ok": True})
             else:
@@ -1592,7 +1084,7 @@ class Handler(BaseHTTPRequestHandler):
             query = (body or {}).get("query", "")
             if err or not query or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing query or repos"})
-            results = search_remote_branches(repos, query)
+            results = GITHUB.search_branches(repos, query)
             self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/code/remote-branch/fetch":
             body, err = self._read_json()
@@ -1600,21 +1092,21 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = git_fetch_remote_branch(repo_path, branch)
+            ok, error = GIT.fetch_remote_branch(repo_path, branch)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/wip-commit":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")
             if err or not repo_path:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = git_wip_commit(repo_path)
+            ok, error = GIT.wip_commit(repo_path)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/discard":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")
             if err or not repo_path:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = git_discard(repo_path)
+            ok, error = GIT.discard(repo_path)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/log":
             body, err = self._read_json()
@@ -1623,7 +1115,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             count = int((body or {}).get("count") or 20)
             ref = (body or {}).get("ref") or ""
-            commits, error = git_log(repo_path, count, ref)
+            commits, error = GIT.log(repo_path, count, ref)
             self._send_json(
                 200 if error is None else 400,
                 {"ok": error is None, "commits": commits or [], "error": error},

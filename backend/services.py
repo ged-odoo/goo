@@ -7,8 +7,10 @@ server-side; the HTTP handlers in goo.py just delegate here.
 """
 
 import json
+import os
 import re
 import subprocess
+import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
@@ -145,6 +147,49 @@ class GitHubService:
             return False, r.stderr.strip().split("\n")[0] or "gh pr close failed"
         self.cache.invalidate()
         return True, None
+
+    def search_branches(self, repos, query):
+        """Search GitHub for branches whose name starts with `query`, across all
+        repos that have a github field (one `gh api` call per repo, in parallel).
+        Returns a list of {repo: id, branch: name}."""
+        results = []
+        lock = threading.Lock()
+
+        def search_one(r):
+            github = r.get("github", "")
+            if not github:
+                return
+            try:
+                res = self.io.run(
+                    [
+                        "gh",
+                        "api",
+                        f"repos/{github}/git/matching-refs/heads/{query}",
+                        "--jq",
+                        ".[].ref",
+                    ],
+                    timeout=15,
+                )
+                if res.returncode != 0:
+                    return
+                found = []
+                for line in res.stdout.splitlines():
+                    branch = line.strip()
+                    if branch.startswith("refs/heads/"):
+                        branch = branch[len("refs/heads/") :]
+                    if branch:
+                        found.append({"repo": r["id"], "branch": branch})
+                with lock:
+                    results.extend(found)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+
+        threads = [threading.Thread(target=search_one, args=(r,), daemon=True) for r in repos]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=20)
+        return results
 
 
 # ─────────────────────────── Runbot (HTML scraping) ─────────────────────────
@@ -434,3 +479,390 @@ class DatabaseService:
                 name, ts = line.split("|", 1)
                 out[name] = ts or None
         return out
+
+
+# ─────────────────────────── git (user repos) ───────────────────────────
+
+_BASE_BRANCH_RE = re.compile(r"^(saas-\d+\.\d+|\d+\.\d+|master)")
+
+
+def base_branch(name):
+    """The canonical base a branch derives from (master-owl-update -> master,
+    19.0-fix -> 19.0). Defaults to master."""
+    m = _BASE_BRANCH_RE.match(name or "")
+    return m.group(1) if m else "master"
+
+
+class GitService:
+    """Local git operations on the user's repos, over the IO seam. Branch reads are
+    volatile (dirty / current-branch state) and fast, so they're not cached — callers
+    fetch fresh each time. `notify` (optional) reports progress events (the fetch /
+    rebase phases) — wired to the event bus in production, a no-op in tests."""
+
+    def __init__(self, io, notify=None):
+        self.io = io
+        self.notify = notify or (lambda *a, **k: None)
+
+    def branches(self, repos):
+        """For each repo {id, path}: the checked-out branch and all local branches
+        with their last-commit date, plus dirty / pushed / ahead-behind state."""
+        out = []
+        for repo in repos:
+            rid = repo.get("id")
+            path = os.path.expanduser(repo.get("path", ""))
+            if not rid or not path:
+                continue
+            entry = {
+                "id": rid,
+                "current": None,
+                "dirty": False,
+                "head_subject": "",
+                "head_date": "",
+                "head_sha": "",  # HEAD commit sha
+                "head_pushed": False,  # HEAD is reachable from some remote (so linkable)
+                "head_remote": False,  # the current branch has a remote-tracking ref
+                "ahead": 0,  # current branch commits not on its base (target) branch
+                "behind": 0,  # base branch commits not on the current branch
+                "branches": [],
+                "error": None,
+            }
+            try:
+                r = self.io.run(["git", "-C", path, "branch", "--show-current"], timeout=10)
+                if r.returncode != 0:
+                    entry["error"] = r.stderr.strip().split("\n")[0] or "not a git repository"
+                    out.append(entry)
+                    continue
+                entry["current"] = r.stdout.strip() or "(detached)"
+                # uncommitted changes in the working tree (only the current branch)
+                st = self.io.run(["git", "-C", path, "status", "--porcelain"], timeout=10)
+                entry["dirty"] = bool(st.stdout.strip())
+                # HEAD's sha + last commit subject + date (for the dashboard summary)
+                hl = self.io.run(
+                    ["git", "-C", path, "log", "-1", "--format=%H%n%s%n%cI"], timeout=10
+                )
+                if hl.returncode == 0:
+                    lines = hl.stdout.splitlines()
+                    entry["head_sha"] = lines[0] if lines else ""
+                    entry["head_subject"] = lines[1] if len(lines) > 1 else ""
+                    entry["head_date"] = lines[2] if len(lines) > 2 else ""
+                # is HEAD reachable from any remote ref? (i.e. pushed -> linkable)
+                rp = self.io.run(
+                    ["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes", "--count"],
+                    timeout=10,
+                )
+                if rp.returncode == 0:
+                    entry["head_pushed"] = rp.stdout.strip() == "0"
+                # how far the current branch diverges from its canonical base (the
+                # "target" it would rebase onto), e.g. master-owl-update vs origin/master
+                base = base_branch(entry["current"])
+                ref = f"{self.main_remote(path, repo.get('github'))}/{base}"
+                # quiet: the base ref may not be fetched locally (→ "bad revision"); that's
+                # expected, we just leave ahead/behind at 0 rather than log every refresh
+                ad = self.io.run(
+                    ["git", "-C", path, "rev-list", "--left-right", "--count", f"{ref}...HEAD"],
+                    timeout=10,
+                    quiet=True,
+                )
+                if ad.returncode == 0 and len(ad.stdout.split()) == 2:
+                    behind, ahead = ad.stdout.split()
+                    entry["behind"], entry["ahead"] = int(behind), int(ahead)
+                # branch names with a remote-tracking ref (pushed from this clone)
+                rr = self.io.run(
+                    [
+                        "git",
+                        "-C",
+                        path,
+                        "for-each-ref",
+                        "refs/remotes",
+                        "--format=%(refname:lstrip=3)",
+                    ],
+                    timeout=10,
+                )
+                remote_branches = set(rr.stdout.split())
+                entry["head_remote"] = entry["current"] in remote_branches
+                r = self.io.run(
+                    [
+                        "git",
+                        "-C",
+                        path,
+                        "for-each-ref",
+                        "refs/heads",
+                        "--format=%(refname:short)%09%(committerdate:iso8601-strict)%09%(contents:subject)%09%(objectname)",
+                    ],
+                    timeout=10,
+                )
+                for line in r.stdout.splitlines():
+                    parts = line.split("\t")
+                    name = parts[0]
+                    if name:
+                        entry["branches"].append(
+                            {
+                                "name": name,
+                                "date": parts[1] if len(parts) > 1 else "",
+                                "subject": parts[2] if len(parts) > 2 else "",
+                                "sha": parts[3] if len(parts) > 3 else "",
+                                "remote": name in remote_branches,
+                            }
+                        )
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                entry["error"] = str(e)
+            out.append(entry)
+        return out
+
+    def checkout(self, path, branch):
+        """Checkout a local branch in a repo. Returns (ok, error)."""
+        if not path or not branch:
+            return False, "missing path or branch"
+        try:
+            r = self.io.run(["git", "-C", os.path.expanduser(path), "checkout", branch], timeout=60)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[0] or "git checkout failed"
+        return True, None
+
+    def create_branch(self, path, name, start_point):
+        """Create a new local branch <name> at <start_point> WITHOUT checking it
+        out (working tree / current branch untouched). Returns (ok, error)."""
+        if not path or not name or not start_point:
+            return False, "missing path, name or start point"
+        try:
+            r = self.io.run(
+                ["git", "-C", os.path.expanduser(path), "branch", name, start_point], timeout=10
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[0] or "git branch failed"
+        return True, None
+
+    def delete_branch(self, path, branch, delete_remote=False):
+        """Force-delete a local branch, and optionally its branch on the odoo-dev
+        remote too. Returns (ok, error, remote_error): the first two are for the
+        local delete; remote_error is set when the local delete succeeded but the
+        remote branch could not be removed (None otherwise)."""
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(["git", "-C", path, "branch", "-D", branch], timeout=10)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e), None
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[0] or "git branch -D failed", None
+        remote_error = None
+        if delete_remote:
+            # delete straight away — no `ls-remote` pre-check (a round-trip per branch).
+            # If the branch was never pushed, git fails with "remote ref does not
+            # exist", which we treat as success: there was nothing to remove.
+            remote, _ = self.dev_remote(path)
+            if not remote:
+                return True, None, None  # no odoo-dev fork → nothing could be there
+            self.io.log_request(f"git push {remote} --delete {branch}")
+            try:
+                r = self.io.run(
+                    ["git", "-C", path, "push", remote, "--delete", branch], timeout=120
+                )
+                if r.returncode != 0 and "remote ref does not exist" not in r.stderr:
+                    remote_error = r.stderr.strip().split("\n")[-1] or "git push --delete failed"
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                remote_error = str(e)
+        return True, None, remote_error
+
+    def wip_commit(self, path):
+        """Stage all changes and create a WIP commit. Returns (ok, error)."""
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(["git", "-C", path, "add", "-A"], timeout=30)
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git add failed"
+            r = self.io.run(["git", "-C", path, "commit", "--no-verify", "-m", "WIP"], timeout=30)
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git commit failed"
+            return True, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
+    def discard(self, path):
+        """Make the working tree pristine: reset tracked files to HEAD, then remove
+        untracked files/dirs (git clean -fd, leaving ignored files). (ok, error)."""
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(["git", "-C", path, "reset", "--hard", "HEAD"], timeout=30)
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git reset failed"
+            r = self.io.run(["git", "-C", path, "clean", "-fd"], timeout=30)
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git clean failed"
+            return True, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
+    def log(self, path, n=20, ref=""):
+        """The last n commits on <ref> (default HEAD). Returns (commits, error);
+        commits is a list of {sha, author, date, subject, body}. Fields are
+        \\x1f-separated, commits \\x1e-terminated so multi-line bodies survive."""
+        path = os.path.expanduser(path)
+        cmd = ["git", "-C", path, "log", "-n", str(n), "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"]
+        if ref:
+            cmd += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
+        try:
+            r = self.io.run(cmd, timeout=30)
+            if r.returncode != 0:
+                return None, r.stderr.strip() or "git log failed"
+            commits = []
+            for rec in r.stdout.split("\x1e"):
+                rec = rec.strip("\n")
+                if not rec:
+                    continue
+                parts = rec.split("\x1f")
+                if len(parts) < 4:
+                    continue
+                commits.append(
+                    {
+                        "sha": parts[0],
+                        "author": parts[1],
+                        "date": parts[2],
+                        "subject": parts[3],
+                        "body": parts[4].strip() if len(parts) > 4 else "",
+                    }
+                )
+            return commits, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+
+    def fetch_remote_branch(self, path, branch):
+        """Fetch a remote branch and create/reset the local branch to track it
+        (git fetch origin {branch}:{branch}). Returns (ok, error)."""
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(
+                ["git", "-C", path, "fetch", "origin", f"{branch}:{branch}"], timeout=60
+            )
+            if r.returncode != 0:
+                return False, r.stderr.strip().split("\n")[0] or "git fetch failed"
+            return True, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
+    def fetch_rebase(self, path, base, github, repo=""):
+        """Fetch the base branch from the canonical (main) repo and rebase the
+        current branch onto it. Announces the fetch and rebase phases via notify.
+        Returns (ok, error); on conflict the rebase is left in progress."""
+        if not path or not base:
+            return False, "missing path or base branch"
+        remote = self.main_remote(path, github)
+        if not remote:
+            return False, f"no remote points at {github}"
+        p = os.path.expanduser(path)
+        label = repo or os.path.basename(p)
+        try:
+            self.notify(f"fetching {base} ({label})")
+            f = self.io.run(["git", "-C", p, "fetch", remote, base], timeout=180)
+            if f.returncode != 0:
+                return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
+            self.notify(f"rebasing {label} onto {base}")
+            r = self.io.run(["git", "-C", p, "rebase", "FETCH_HEAD"], timeout=120)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[0]
+            return False, msg or "git rebase failed"
+        return True, None
+
+    def dev_remote(self, path):
+        """Name of the remote pointing at the odoo-dev fork. (remote, error)."""
+        try:
+            r = self.io.run(["git", "-C", os.path.expanduser(path), "remote", "-v"], timeout=10)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and "odoo-dev" in parts[1]:
+                return parts[0], None
+        return None, "no odoo-dev remote configured"
+
+    def remote_branch_exists(self, path, branch):
+        """Whether <branch> exists on the odoo-dev remote. (exists, error)."""
+        remote, err = self.dev_remote(path)
+        if err:
+            return None, err
+        self.io.log_request(f"git ls-remote {remote} {branch}")
+        try:
+            r = self.io.run(
+                ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
+                timeout=20,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+        if r.returncode != 0:
+            return None, r.stderr.strip().split("\n")[0] or "git ls-remote failed"
+        return bool(r.stdout.strip()), None
+
+    def push_branch(self, path, branch, force=False):
+        """Push <branch> to the odoo-dev remote, setting upstream. With force, use
+        --force-with-lease (aborts if the remote moved unexpectedly). (ok, error)."""
+        remote, err = self.dev_remote(path)
+        if err:
+            return False, err
+        args = ["push", "--set-upstream"]
+        if force:
+            args.append("--force-with-lease")
+        args += [remote, branch]
+        self.io.log_request("git " + " ".join(args))
+        try:
+            r = self.io.run(["git", "-C", os.path.expanduser(path), *args], timeout=120)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[-1] or "git push failed"
+        return True, None
+
+    def main_remote(self, path, github=None):
+        """Best guess at the remote hosting the canonical master: (1) the upstream
+        of the local `master` branch; (2) the remote whose URL matches the github
+        slug (not the odoo-dev fork); (3) "origin"."""
+        p = os.path.expanduser(path)
+        try:
+            # quiet: a non-zero exit just means master has no upstream here — expected,
+            # we fall back to the remote-URL match / "origin" below
+            r = self.io.run(
+                ["git", "-C", p, "rev-parse", "--abbrev-ref", "master@{upstream}"],
+                timeout=10,
+                quiet=True,
+            )
+            if r.returncode == 0 and "/" in r.stdout.strip():
+                return r.stdout.strip().split("/", 1)[0]
+            if github:
+                rv = self.io.run(["git", "-C", p, "remote", "-v"], timeout=10)
+                for line in rv.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and github in parts[1]:
+                        return parts[0]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return "origin"
+
+    def fetch_master(self, repo):
+        """Fetch master objects for one repo (no merge, no working-tree change).
+        Slow on stale odoo clones, so callers run this off the main thread."""
+        rid = repo.get("id") or "?"
+        path = repo.get("path")
+        if not path:
+            return
+        remote = self.main_remote(path, repo.get("github"))
+        self.io.log_request(f"git fetch {remote} master  (auto-reload {rid})")
+        tag = getattr(self.io, "TAG", "[goo]")
+        try:
+            r = self.io.run(
+                ["git", "-C", os.path.expanduser(path), "fetch", remote, "master"],
+                timeout=900,
+                quiet=True,  # we print our own auto-reload summary below
+            )
+            if r.returncode != 0:
+                tail = r.stderr.strip().splitlines()
+                self.io.log(
+                    f"{tag} auto-reload {rid} failed: {tail[-1] if tail else 'git fetch failed'}"
+                )
+            else:
+                self.io.log(f"{tag} auto-reload {rid}: fetched {remote}/master")
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.io.log(f"{tag} auto-reload {rid} failed: {e}")
