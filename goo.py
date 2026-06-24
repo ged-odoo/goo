@@ -775,9 +775,10 @@ def goo_update_status():
 
 
 def check_goo_update():
-    """Startup task (daemon thread): fetch origin/master, then record how goo's
-    checkout compares and announce it once if behind. Silent on anything unusual
-    (not a git repo, no origin remote, offline) — never nags on failure."""
+    """Fetch origin/master, then record how goo's checkout compares and announce it
+    when new commits appear. Silent on anything unusual (not a git repo, no origin
+    remote, offline) — never nags on failure. Only re-announces when `behind` grows,
+    so the hourly re-check (see goo_update_loop) doesn't spam an unchanged state."""
     global GOO_UPDATE
     inside = _git_goo("rev-parse", "--is-inside-work-tree")
     if not inside or inside.returncode != 0 or inside.stdout.strip() != "true":
@@ -788,14 +789,23 @@ def check_goo_update():
     fetch = _git_goo("fetch", "origin", "master", timeout=30)
     if not fetch or fetch.returncode != 0:
         return  # offline / no such branch — stay quiet
+    prev_behind = GOO_UPDATE.get("behind", 0)
     GOO_UPDATE = goo_update_status()
-    if GOO_UPDATE["behind"] > 0:
-        n = GOO_UPDATE["behind"]
+    n = GOO_UPDATE["behind"]
+    if n > prev_behind:  # new commits since we last looked
         msg = f"goo update available — {n} commit{'s' if n != 1 else ''} behind origin/master"
         if GOO_UPDATE["ahead"]:
             m = GOO_UPDATE["ahead"]
             msg += f", {m} local commit{'s' if m != 1 else ''} ahead"
         BUS.publish_event(msg)
+
+
+def goo_update_loop():
+    """Check for a goo update at startup and then hourly, so a permanently running
+    goo keeps surfacing new commits on origin/master."""
+    while True:
+        check_goo_update()
+        time.sleep(3600)
 
 
 def goo_fast_forward():
@@ -2391,8 +2401,8 @@ def main():
 
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
     atexit.register(MANAGER.shutdown)
-    # check (in the background) whether goo's own checkout is behind origin/master
-    threading.Thread(target=check_goo_update, daemon=True).start()
+    # check whether goo's checkout is behind origin/master — at startup, then hourly
+    threading.Thread(target=goo_update_loop, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

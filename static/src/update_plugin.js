@@ -15,6 +15,9 @@ export class UpdatePlugin extends Plugin {
 
   setup() {
     this._load();
+    // the backend re-checks hourly; refresh periodically so the badge appears on
+    // long-open tabs without needing a reload
+    setInterval(() => this._load(true), 30 * 60 * 1000);
   }
 
   async _load(retried = false) {
