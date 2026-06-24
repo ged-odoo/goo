@@ -543,6 +543,7 @@ section.hidden {
   min-height: 0;
   overflow-y: auto;
   padding: 18px 30px 32px;
+  padding-bottom: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
