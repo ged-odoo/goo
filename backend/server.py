@@ -6,7 +6,6 @@ start request; the backend is stateless apart from the server-side caches.
 """
 
 import argparse
-import ast
 import atexit
 import base64
 import collections
@@ -139,33 +138,6 @@ def kill_port(port):
                     pass
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-
-
-def read_data_file(path):
-    """Read a JSON data file. Returns (data, error). A missing file is not an
-    error: it returns (None, None) so the caller can create it on first use."""
-    p = os.path.expanduser(path)
-    if not os.path.exists(p):
-        return None, None
-    try:
-        with open(p, encoding="utf-8") as f:
-            return json.load(f), None
-    except (OSError, ValueError) as e:
-        return None, str(e)
-
-
-def write_data_file(path, data):
-    """Write data as pretty JSON to a file, creating parent dirs. (ok, error)."""
-    p = os.path.expanduser(path)
-    try:
-        parent = os.path.dirname(p)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        return True, None
-    except OSError as e:
-        return False, str(e)
 
 
 def open_in_editor(editor, path):
@@ -326,63 +298,6 @@ def restart_goo():
     MANAGER.shutdown()
     args = [a for a in sys.argv[1:] if a != "--open"]
     os.execv(sys.executable, [sys.executable, os.path.join(GOO_DIR, "goo.py"), *args])
-
-
-def _addon_roots(repo_id, path):
-    """Directories that hold modules for a repo, matching the addons-path."""
-    p = os.path.expanduser(path)
-    if repo_id == "community":
-        return [os.path.join(p, "addons"), os.path.join(p, "odoo", "addons")]
-    return [p]
-
-
-def module_manifest(module_path):
-    """Parse a module's __manifest__.py into a dict, or None."""
-    manifest = os.path.join(module_path, "__manifest__.py")
-    try:
-        with open(manifest, encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-    except (OSError, SyntaxError):
-        return None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Dict):
-            try:
-                return ast.literal_eval(node)
-            except (ValueError, TypeError):
-                return None
-    return None
-
-
-def list_addons(repos):
-    """Scan each repo {id, path} for modules with a manifest. A module name
-    found in an earlier repo wins (community before enterprise, etc.)."""
-    mods = []
-    seen = set()
-    for repo in repos:
-        rid, path = repo.get("id"), repo.get("path")
-        if not rid or not path:
-            continue
-        for root in _addon_roots(rid, path):
-            if not os.path.isdir(root):
-                continue
-            for name in sorted(os.listdir(root)):
-                if name.startswith((".", "_")) or name in seen:
-                    continue
-                man = module_manifest(os.path.join(root, name))
-                if not man:
-                    continue
-                seen.add(name)
-                mods.append(
-                    {
-                        "name": name,
-                        "repo": rid,
-                        "category": man.get("category") or "",
-                        "summary": man.get("summary") or "",
-                        "application": bool(man.get("application")),
-                        "installable": man.get("installable", True),
-                    }
-                )
-    return mods
 
 
 class AutoReloader:
@@ -824,6 +739,7 @@ DATABASE = services.DatabaseService(effects, TTLCache(60))
 # git on the user's repos — uncached (branch reads are volatile + fast); notify
 # routes the fetch/rebase progress phases to the browser event log
 GIT = services.GitService(effects, notify=BUS.publish_event)
+ADDONS = services.AddonsService(effects)
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -880,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
             fpath = (qs.get("path") or [""])[0]
             if not fpath:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
-            data, error = read_data_file(fpath)
+            data, error = effects.read_json_file(fpath)
             if error:
                 return self._send_json(400, {"ok": False, "error": error})
             self._send_json(200, {"ok": True, "data": data})
@@ -954,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
             db = (body or {}).get("db")
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            mods = list_addons(repos)
+            mods = ADDONS.modules(repos)
             state = DATABASE.installed_modules(db) if db else {}
             for m in mods:
                 m["state"] = state.get(m["name"])
@@ -1040,7 +956,7 @@ class Handler(BaseHTTPRequestHandler):
             fpath = (body or {}).get("path")
             if err or not fpath:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = write_data_file(fpath, (body or {}).get("data"))
+            ok, error = effects.write_json_file(fpath, (body or {}).get("data"))
             if ok:
                 self._send_json(200, {"ok": True})
             else:

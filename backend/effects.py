@@ -1,8 +1,11 @@
-"""The IO seam: the single place goo reaches outside the process — subprocess and
-network. The services layer (see services.py) depends on this module, or a fake of
-it, so services can be unit-tested without spawning commands or hitting the network.
+"""The IO seam: the single place goo reaches outside the process — subprocess,
+network, and the filesystem. The services layer (see services.py) depends on this
+module, or a fake of it, so services can be unit-tested without spawning commands,
+hitting the network, or touching disk.
 """
 
+import json
+import os
 import subprocess
 import time
 import urllib.request
@@ -51,3 +54,54 @@ def http_get(url, *, timeout=10):
             return resp.read().decode("utf-8", errors="replace"), None
     except Exception as e:  # any network/HTTP error just means "unreachable"
         return "", str(e)
+
+
+# ─────────────────────────── filesystem ───────────────────────────
+
+
+def is_dir(path):
+    return os.path.isdir(os.path.expanduser(path))
+
+
+def list_dir(path):
+    """Sorted directory entries, or [] if it can't be read."""
+    try:
+        return sorted(os.listdir(os.path.expanduser(path)))
+    except OSError:
+        return []
+
+
+def read_text(path):
+    """A file's contents as text, or None if it can't be read."""
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def read_json_file(path):
+    """Read a JSON data file. Returns (data, error); a missing file is not an error
+    — it returns (None, None) so the caller can create it on first use."""
+    p = os.path.expanduser(path)
+    if not os.path.exists(p):
+        return None, None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f), None
+    except (OSError, ValueError) as e:
+        return None, str(e)
+
+
+def write_json_file(path, data):
+    """Write data as pretty JSON, creating parent dirs. Returns (ok, error)."""
+    p = os.path.expanduser(path)
+    try:
+        parent = os.path.dirname(p)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True, None
+    except OSError as e:
+        return False, str(e)

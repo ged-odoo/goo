@@ -22,10 +22,12 @@ class FakeIO:
 
     TAG = "[goo]"
 
-    def __init__(self, *, run_result=None, runs=None, http=None):
+    def __init__(self, *, run_result=None, runs=None, http=None, dirs=None, files=None):
         self._run_result = run_result if run_result is not None else completed()
         self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
+        self._dirs = dirs or {}  # {dir path: [entry names]}
+        self._files = files or {}  # {file path: text content}
         self.run_calls = []
         self.http_calls = []
         self.logs = []
@@ -50,6 +52,15 @@ class FakeIO:
             if needle in url:
                 return resp
         return "", "not stubbed"
+
+    def is_dir(self, path):
+        return path in self._dirs
+
+    def list_dir(self, path):
+        return sorted(self._dirs.get(path, []))
+
+    def read_text(self, path):
+        return self._files.get(path)
 
 
 class RunbotServiceTest(unittest.TestCase):
@@ -324,6 +335,42 @@ class GitHubSearchBranchesTest(unittest.TestCase):
         found = svc.search_branches([{"id": "community", "github": "odoo/odoo"}], "master-")
         self.assertEqual(sorted(f["branch"] for f in found), ["master-x", "master-y"])
         self.assertTrue(all(f["repo"] == "community" for f in found))
+
+
+class AddonsServiceTest(unittest.TestCase):
+    def test_modules_scanned_and_deduped(self):
+        man = "{'name': 'Sale', 'category': 'Sales', 'summary': 's', 'application': True}"
+        io = FakeIO(
+            dirs={
+                "/community/addons": ["sale", "_skip", ".hidden", "no_manifest"],
+                "/community/odoo/addons": ["base"],
+                "/enterprise": ["sale", "account"],  # sale dup → community wins
+            },
+            files={
+                "/community/addons/sale/__manifest__.py": man,
+                "/community/odoo/addons/base/__manifest__.py": "{'name': 'Base'}",
+                "/enterprise/sale/__manifest__.py": man,
+                "/enterprise/account/__manifest__.py": "{'name': 'Acc', 'installable': False}",
+            },
+        )
+        svc = services.AddonsService(io)
+        mods = svc.modules(
+            [{"id": "community", "path": "/community"}, {"id": "enterprise", "path": "/enterprise"}]
+        )
+        by = {m["name"]: m for m in mods}
+        self.assertEqual(set(by), {"sale", "base", "account"})  # _skip/.hidden/no_manifest excluded
+        self.assertEqual(by["sale"]["repo"], "community")  # earlier repo wins the dup
+        self.assertTrue(by["sale"]["application"])
+        self.assertEqual(by["sale"]["category"], "Sales")
+        self.assertFalse(by["account"]["installable"])
+        self.assertTrue(by["base"]["installable"])  # defaults to True
+
+    def test_bad_manifest_is_skipped(self):
+        io = FakeIO(
+            dirs={"/r": ["broken"]},
+            files={"/r/broken/__manifest__.py": "{not valid python"},
+        )
+        self.assertEqual(services.AddonsService(io).modules([{"id": "x", "path": "/r"}]), [])
 
 
 if __name__ == "__main__":

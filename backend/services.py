@@ -6,6 +6,7 @@ where external state (GitHub PRs, runbot, mergebot) is fetched, parsed, and cach
 server-side; the HTTP handlers in goo.py just delegate here.
 """
 
+import ast
 import json
 import os
 import re
@@ -866,3 +867,71 @@ class GitService:
                 self.io.log(f"{tag} auto-reload {rid}: fetched {remote}/master")
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             self.io.log(f"{tag} auto-reload {rid} failed: {e}")
+
+
+# ─────────────────────────── Addons (filesystem scan) ───────────────────────
+
+
+class AddonsService:
+    """Odoo modules discovered by scanning each repo's addons roots for a
+    __manifest__.py. Over the IO seam (filesystem reads), so it's testable without
+    a real checkout. The install state per db comes from DatabaseService."""
+
+    def __init__(self, io):
+        self.io = io
+
+    def modules(self, repos):
+        """Scan each repo {id, path} for modules with a manifest. A module name
+        found in an earlier repo wins (community before enterprise, etc.)."""
+        mods = []
+        seen = set()
+        for repo in repos:
+            rid, path = repo.get("id"), repo.get("path")
+            if not rid or not path:
+                continue
+            for root in self._roots(rid, path):
+                if not self.io.is_dir(root):
+                    continue
+                for name in self.io.list_dir(root):
+                    if name.startswith((".", "_")) or name in seen:
+                        continue
+                    man = self._manifest(os.path.join(root, name))
+                    if not man:
+                        continue
+                    seen.add(name)
+                    mods.append(
+                        {
+                            "name": name,
+                            "repo": rid,
+                            "category": man.get("category") or "",
+                            "summary": man.get("summary") or "",
+                            "application": bool(man.get("application")),
+                            "installable": man.get("installable", True),
+                        }
+                    )
+        return mods
+
+    @staticmethod
+    def _roots(rid, path):
+        """Directories that hold modules for a repo, matching the addons-path."""
+        p = os.path.expanduser(path)
+        if rid == "community":
+            return [os.path.join(p, "addons"), os.path.join(p, "odoo", "addons")]
+        return [p]
+
+    def _manifest(self, module_path):
+        """Parse a module's __manifest__.py into a dict, or None."""
+        content = self.io.read_text(os.path.join(module_path, "__manifest__.py"))
+        if content is None:
+            return None
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                try:
+                    return ast.literal_eval(node)
+                except (ValueError, TypeError):
+                    return None
+        return None
