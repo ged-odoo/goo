@@ -10,6 +10,7 @@ export const DEFAULT_CONFIG = {
   start_cmd: "cd /home/odoo/work/community && ./odoo-bin",
   db_user: "odoo",
   db_password: "odoo",
+  editor: "code", // command used by the dashboard's "Open with editor" action
   auto_open_event_log: false, // open the event log overlay when new events arrive
   repos: [
     { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo", favorite: true },

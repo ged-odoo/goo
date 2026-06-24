@@ -366,6 +366,25 @@ export class CodePlugin extends Plugin {
   // commit / discard the working tree. On failure the event log records the
   // failure and the error is surfaced in a (scrollable) dialog — opened by the
   // plugin itself via the DialogPlugin, no component involvement needed.
+  // open a repo's working directory in the configured editor (default "code");
+  // no git mutation, so no busy/reload — just fire the launch and log it
+  async openEditor(path, repo) {
+    const editor = (this.config.config.editor || "code").trim();
+    this.eventLog.add(`opening ${repo} in ${editor}`);
+    try {
+      await postJSON("/api/open-editor", { editor, path });
+    } catch (e) {
+      this.eventLog.add(`open with editor failed (${repo}): ${e.message}`, "", "error");
+      this.dialogs.open({
+        title: "Could not open the editor",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
+    }
+  }
+
   async wipCommit(path, repo) {
     this.busy.set(true);
     try {

@@ -698,6 +698,32 @@ def git_fetch_rebase(path, base, github, repo=""):
     return True, None
 
 
+def open_in_editor(editor, path):
+    """Launch the configured editor (e.g. `code`) on a repo directory, detached so
+    it outlives goo and isn't part of its process group. The editor string may
+    carry flags (`code --reuse-window`), so it's run through bash with the path
+    quoted. Returns (ok, error)."""
+    editor = (editor or "").strip()
+    path = os.path.expanduser(path or "")
+    if not editor:
+        return False, "no editor configured"
+    if not os.path.isdir(path):
+        return False, f"not a directory: {path}"
+    try:
+        subprocess.Popen(
+            f"{editor} {shlex.quote(path)}",
+            shell=True,
+            executable="/bin/bash",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return False, str(e)
+    return True, None
+
+
 def runbot_badge_status(branch):
     """Fetch the runbot status badge for a branch and parse its result.
 
@@ -1701,6 +1727,13 @@ class Handler(BaseHTTPRequestHandler):
             if err or not repo_path or not name or not start_point:
                 return self._send_json(400, {"ok": False, "error": "missing path, name or start point"})
             ok, error = git_branch_create(repo_path, name, start_point)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/open-editor":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            if err or not repo_path:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            ok, error = open_in_editor((body or {}).get("editor"), repo_path)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/checkout":
             body, err = self._read_json()
