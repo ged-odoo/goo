@@ -1436,9 +1436,12 @@ class TargetsScreen extends Component {
         <div>
           <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
           <div t-else="" class="br-card">
-            <table class="br-table">
+            <!-- full-width card = scroll container (scrollbar on the right); the
+                 wrapper sizes the table to its natural width, like the Branches list -->
+            <div class="brg-table">
+            <table class="br-table tgt-table">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/><th class="br-spacer"/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id), dragging: this.dragId() === tgt.id, 'drag-over': this.dragOverId() === tgt.id}" t-on-dragover="ev => this.onDragOver(ev, tgt)" t-on-drop="ev => this.onDrop(ev, tgt)">
@@ -1473,10 +1476,10 @@ class TargetsScreen extends Component {
                       </div>
                     </td>
                   </t>
-                  <td class="br-spacer"/>
                 </tr>
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       </div>

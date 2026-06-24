@@ -2181,6 +2181,18 @@ a.dash-row-branch:hover {
   display: grid;
   grid-template-columns: var(--brg-name-col) auto;
 }
+/* Targets list: reuse the .brg-table wrapper for natural width + right border;
+   the table sizes to its content (no greedy spacer) with a lighter sticky header,
+   so it shares the Branches list's overall look. (PRs keeps the plain .br-table.) */
+.br-table.tgt-table {
+  width: auto;
+}
+.tgt-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--l-bg);
+}
 .brg-head {
   position: sticky;
   top: 0;
