@@ -1103,9 +1103,12 @@ class DatabasesScreen extends Component {
           <div t-if="this.db.error()" class="dim br-empty" t-out="'Failed to load: ' + this.db.error()"/>
           <div t-elif="!this.db.databases().length" class="dim br-empty">No databases.</div>
           <div t-else="" class="br-card">
-            <table class="br-table">
+            <!-- full-width card = scroll container (scrollbar on the right); the
+                 wrapper sizes the table to its natural width, like the Branches list -->
+            <div class="brg-table">
+            <table class="br-table brg-flat">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/><th class="br-spacer"/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active, 'row-sel': this.selected().has(d.name)}">
@@ -1126,10 +1129,10 @@ class DatabasesScreen extends Component {
                               t-on-click="() => this.dropDb(d)">Drop</button>
                     </div>
                   </td>
-                  <td class="br-spacer"/>
                 </tr>
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       </div>
@@ -1439,7 +1442,7 @@ class TargetsScreen extends Component {
             <!-- full-width card = scroll container (scrollbar on the right); the
                  wrapper sizes the table to its natural width, like the Branches list -->
             <div class="brg-table">
-            <table class="br-table tgt-table">
+            <table class="br-table brg-flat">
               <thead>
                 <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/></tr>
               </thead>
@@ -2281,9 +2284,12 @@ class PrsScreen extends Component {
           <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.rows().length" class="dim br-empty">No pull requests.</div>
           <div t-else="" class="br-card">
-            <table class="br-table">
+            <!-- full-width card = scroll container (scrollbar on the right); the
+                 wrapper sizes the table to its natural width, like the Branches list -->
+            <div class="brg-table">
+            <table class="br-table brg-flat">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/><th class="br-spacer"/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number" t-att-class="{'row-sel': this.selected().has(row.repo + ':' + row.number)}">
@@ -2307,10 +2313,10 @@ class PrsScreen extends Component {
                               t-on-click="() => this.code.closePr(row.github, row.number)">Close PR</button>
                     </div>
                   </td>
-                  <td class="br-spacer"/>
                 </tr>
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       </div>

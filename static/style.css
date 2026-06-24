@@ -1952,11 +1952,6 @@ a.dash-row-branch:hover {
   border-collapse: collapse;
   width: 100%;
 }
-/* greedy empty trailing column: soaks up the slack so the real columns stay
-   content-sized while the table spans the full width */
-.br-spacer {
-  width: 100%;
-}
 .br-table th {
   text-align: left;
   white-space: nowrap;
@@ -2181,13 +2176,13 @@ a.dash-row-branch:hover {
   display: grid;
   grid-template-columns: var(--brg-name-col) auto;
 }
-/* Targets list: reuse the .brg-table wrapper for natural width + right border;
-   the table sizes to its content (no greedy spacer) with a lighter sticky header,
-   so it shares the Branches list's overall look. (PRs keeps the plain .br-table.) */
-.br-table.tgt-table {
+/* Flat lists (Targets, PRs, Databases): a real <table> wrapped in .brg-table for
+   natural width + right border, sized to its content (no greedy spacer) with a
+   lighter sticky header — so every list shares the Branches list's overall look. */
+.br-table.brg-flat {
   width: auto;
 }
-.tgt-table thead th {
+.brg-flat thead th {
   position: sticky;
   top: 0;
   z-index: 1;
