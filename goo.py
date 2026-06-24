@@ -51,6 +51,27 @@ def log_request(target):
     print(f"{TAG} {time.strftime('%H:%M:%S')} → {target}", flush=True)
 
 
+_subprocess_run = subprocess.run  # raw reference, so the rename to run() doesn't recurse
+
+
+def run(cmd, *, quiet=False, **kwargs):
+    """Run a command, capturing its output. On a non-zero exit (unless quiet), dump
+    the command and its raw stderr to the goo log — verbatim, no [goo] prefix — so a
+    failed git/gh/psql/… call is never silent. Returns the CompletedProcess; raised
+    errors (FileNotFoundError, TimeoutExpired, …) propagate to the caller as before."""
+    if "capture_output" not in kwargs and "stdout" not in kwargs and "stderr" not in kwargs:
+        kwargs["capture_output"] = True
+    kwargs.setdefault("text", True)
+    result = _subprocess_run(cmd, **kwargs)
+    if result.returncode and not quiet:
+        shown = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
+        detail = (result.stderr or result.stdout or "").strip()
+        print(f"$ {shown}", flush=True)
+        if detail:
+            print(detail, flush=True)
+    return result
+
+
 # =============================================================================
 # Event bus: log ring buffer + SSE fan-out
 # =============================================================================
@@ -125,7 +146,7 @@ def port_busy(port):
 def kill_port(port):
     """Kill any process listening on the given port."""
     try:
-        result = subprocess.run(
+        result = run(
             ["lsof", "-ti", f":{port}"],
             capture_output=True,
             text=True,
@@ -148,7 +169,7 @@ def db_initialized(db_name):
     run); odoo then refuses to load it without -i, so treat it as new.
     """
     try:
-        result = subprocess.run(
+        result = run(
             [
                 "psql",
                 "-d",
@@ -159,6 +180,7 @@ def db_initialized(db_name):
             capture_output=True,
             text=True,
             timeout=5,
+            quiet=True,  # non-zero just means the database doesn't exist
         )
         if result.returncode != 0:
             return False  # database doesn't exist
@@ -175,7 +197,7 @@ def odoo_info(db_name):
     are written whenever a server runs against the db, logins create
     res_users_log rows."""
     try:
-        result = subprocess.run(
+        result = run(
             [
                 "psql",
                 "-d",
@@ -190,6 +212,7 @@ def odoo_info(db_name):
             capture_output=True,
             text=True,
             timeout=5,
+            quiet=True,  # non-zero just means the db isn't an odoo database
         )
         line = result.stdout.strip()
         if result.returncode != 0 or not line:
@@ -205,7 +228,7 @@ def db_creation_times():
     each database's PG_VERSION file. Needs superuser / pg_read_server_files;
     returns {} if unavailable."""
     try:
-        r = subprocess.run(
+        r = run(
             [
                 "psql",
                 "-d",
@@ -218,6 +241,7 @@ def db_creation_times():
             capture_output=True,
             text=True,
             timeout=5,
+            quiet=True,  # best-effort (needs superuser); a failure just yields {}
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
@@ -234,7 +258,7 @@ def db_creation_times():
 def list_databases():
     """All non-template databases with their odoo version. Raises RuntimeError."""
     try:
-        result = subprocess.run(
+        result = run(
             [
                 "psql",
                 "-d",
@@ -274,7 +298,7 @@ def list_databases():
 def drop_database(db_name):
     """Drop a database. Returns (ok, error)."""
     try:
-        result = subprocess.run(
+        result = run(
             ["dropdb", db_name],
             capture_output=True,
             text=True,
@@ -348,7 +372,7 @@ def git_branches(repos):
             "error": None,
         }
         try:
-            r = subprocess.run(
+            r = run(
                 ["git", "-C", path, "branch", "--show-current"],
                 capture_output=True,
                 text=True,
@@ -360,7 +384,7 @@ def git_branches(repos):
                 continue
             entry["current"] = r.stdout.strip() or "(detached)"
             # uncommitted changes in the working tree (only the current branch)
-            st = subprocess.run(
+            st = run(
                 ["git", "-C", path, "status", "--porcelain"],
                 capture_output=True,
                 text=True,
@@ -368,7 +392,7 @@ def git_branches(repos):
             )
             entry["dirty"] = bool(st.stdout.strip())
             # HEAD's sha + last commit subject + date (for the dashboard summary)
-            hl = subprocess.run(
+            hl = run(
                 ["git", "-C", path, "log", "-1", "--format=%H%n%s%n%cI"],
                 capture_output=True,
                 text=True,
@@ -380,7 +404,7 @@ def git_branches(repos):
                 entry["head_subject"] = lines[1] if len(lines) > 1 else ""
                 entry["head_date"] = lines[2] if len(lines) > 2 else ""
             # is HEAD reachable from any remote ref? (i.e. pushed -> linkable)
-            rp = subprocess.run(
+            rp = run(
                 ["git", "-C", path, "rev-list", "HEAD", "--not", "--remotes", "--count"],
                 capture_output=True,
                 text=True,
@@ -392,7 +416,7 @@ def git_branches(repos):
             # "target" it would rebase onto), e.g. master-owl-update vs origin/master
             base = base_branch(entry["current"])
             ref = f"{main_remote(path, repo.get('github'))}/{base}"
-            ad = subprocess.run(
+            ad = run(
                 ["git", "-C", path, "rev-list", "--left-right", "--count", f"{ref}...HEAD"],
                 capture_output=True,
                 text=True,
@@ -403,7 +427,7 @@ def git_branches(repos):
                 entry["behind"], entry["ahead"] = int(behind), int(ahead)
             # branch names that have a remote-tracking ref, i.e. were pushed to
             # some remote from this clone (refname minus refs/remotes/<remote>/)
-            rr = subprocess.run(
+            rr = run(
                 ["git", "-C", path, "for-each-ref", "refs/remotes", "--format=%(refname:lstrip=3)"],
                 capture_output=True,
                 text=True,
@@ -411,7 +435,7 @@ def git_branches(repos):
             )
             remote_branches = set(rr.stdout.split())
             entry["head_remote"] = entry["current"] in remote_branches
-            r = subprocess.run(
+            r = run(
                 [
                     "git",
                     "-C",
@@ -455,7 +479,7 @@ def git_delete_branch(path, branch, delete_remote=False):
     branch could not be removed (None on success or when not requested)."""
     path = os.path.expanduser(path)
     try:
-        result = subprocess.run(
+        result = run(
             ["git", "-C", path, "branch", "-D", branch],
             capture_output=True,
             text=True,
@@ -477,7 +501,7 @@ def git_delete_branch(path, branch, delete_remote=False):
             return True, None, None
         log_request(f"git push {remote} --delete {branch}")
         try:
-            r = subprocess.run(
+            r = run(
                 ["git", "-C", path, "push", remote, "--delete", branch],
                 capture_output=True,
                 text=True,
@@ -494,13 +518,13 @@ def git_wip_commit(path):
     """Stage all changes and create a WIP commit. Returns (ok, error)."""
     path = os.path.expanduser(path)
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", path, "add", "-A"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode != 0:
             return False, r.stderr.strip() or "git add failed"
-        r = subprocess.run(
+        r = run(
             ["git", "-C", path, "commit", "--no-verify", "-m", "WIP"],
             capture_output=True, text=True, timeout=30,
         )
@@ -522,7 +546,7 @@ def git_log(path, n=20, ref=""):
     if ref:
         cmd += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = run(cmd, capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
             return None, r.stderr.strip() or "git log failed"
         commits = []
@@ -552,13 +576,13 @@ def git_discard(path):
     `git clean -fd` (no -x) leaves ignored files alone. Returns (ok, error)."""
     path = os.path.expanduser(path)
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", path, "reset", "--hard", "HEAD"],
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode != 0:
             return False, r.stderr.strip() or "git reset failed"
-        r = subprocess.run(
+        r = run(
             ["git", "-C", path, "clean", "-fd"],
             capture_output=True, text=True, timeout=30,
         )
@@ -581,7 +605,7 @@ def search_remote_branches(repos, query):
         if not github:
             return
         try:
-            res = subprocess.run(
+            res = run(
                 ["gh", "api", f"repos/{github}/git/matching-refs/heads/{query}",
                  "--jq", ".[].ref"],
                 capture_output=True, text=True, timeout=15,
@@ -613,7 +637,7 @@ def git_fetch_remote_branch(path, branch):
     Equivalent to: git fetch origin {branch}:{branch}. Returns (ok, error)."""
     path = os.path.expanduser(path)
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", path, "fetch", "origin", f"{branch}:{branch}"],
             capture_output=True, text=True, timeout=60,
         )
@@ -629,7 +653,7 @@ def git_checkout(path, branch):
     if not path or not branch:
         return False, "missing path or branch"
     try:
-        result = subprocess.run(
+        result = run(
             ["git", "-C", os.path.expanduser(path), "checkout", branch],
             capture_output=True,
             text=True,
@@ -648,7 +672,7 @@ def git_branch_create(path, name, start_point):
     if not path or not name or not start_point:
         return False, "missing path, name or start point"
     try:
-        result = subprocess.run(
+        result = run(
             ["git", "-C", os.path.expanduser(path), "branch", name, start_point],
             capture_output=True,
             text=True,
@@ -676,7 +700,7 @@ def git_fetch_rebase(path, base, github, repo=""):
     label = repo or os.path.basename(p)
     try:
         BUS.publish_event(f"fetching {base} ({label})")
-        f = subprocess.run(
+        f = run(
             ["git", "-C", p, "fetch", remote, base],
             capture_output=True,
             text=True,
@@ -685,7 +709,7 @@ def git_fetch_rebase(path, base, github, repo=""):
         if f.returncode != 0:
             return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
         BUS.publish_event(f"rebasing {label} onto {base}")
-        r = subprocess.run(
+        r = run(
             ["git", "-C", p, "rebase", "FETCH_HEAD"],
             capture_output=True,
             text=True,
@@ -703,25 +727,40 @@ def open_in_editor(editor, path):
     """Launch the configured editor (e.g. `code`) on a repo directory, detached so
     it outlives goo and isn't part of its process group. The editor string may
     carry flags (`code --reuse-window`), so it's run through bash with the path
-    quoted. Returns (ok, error)."""
+    quoted. Returns (ok, error).
+
+    A missing/failing editor command exits quickly with a non-zero code — we wait
+    briefly to catch that and return its stderr (so the UI shows why it failed,
+    e.g. `code: command not found`). A GUI editor that keeps running past the
+    grace period is taken as a successful launch."""
     editor = (editor or "").strip()
     path = os.path.expanduser(path or "")
     if not editor:
         return False, "no editor configured"
     if not os.path.isdir(path):
         return False, f"not a directory: {path}"
+    cmd = f"{editor} {shlex.quote(path)}"
     try:
-        subprocess.Popen(
-            f"{editor} {shlex.quote(path)}",
+        proc = subprocess.Popen(
+            cmd,
             shell=True,
             executable="/bin/bash",
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             start_new_session=True,
+            text=True,
         )
     except OSError as e:
         return False, str(e)
+    try:
+        _, stderr = proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        return True, None  # still running → launched OK
+    if proc.returncode:
+        err = (stderr or "").strip() or f"editor exited with code {proc.returncode}"
+        print(f"$ {cmd}\n{err}", flush=True)  # log the raw failure to the goo log too
+        return False, err
     return True, None
 
 
@@ -729,11 +768,14 @@ def _git_goo(*args, timeout=10):
     """Run a git command in goo's own checkout. Returns the CompletedProcess, or
     None if git is missing / times out."""
     try:
-        return subprocess.run(
+        # probes for the update check — a non-zero exit (no repo / no origin/master)
+        # is an expected outcome, not an error to log
+        return run(
             ["git", "-C", GOO_DIR, *args],
             capture_output=True,
             text=True,
             timeout=timeout,
+            quiet=True,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -1030,7 +1072,7 @@ def github_prs(repos):
         entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
         log_request(f"gh pr list --repo {gh_repo} --author @me")
         try:
-            r = subprocess.run(
+            r = run(
                 [
                     "gh",
                     "pr",
@@ -1093,7 +1135,7 @@ def module_manifest(module_path):
 def installed_modules(db):
     """Map of module name -> state from a database (empty if unreadable)."""
     try:
-        r = subprocess.run(
+        r = run(
             ["psql", "-d", db, "-tAc", "SELECT name, state FROM ir_module_module"],
             capture_output=True,
             text=True,
@@ -1146,7 +1188,7 @@ def list_addons(repos):
 def dev_remote(path):
     """Name of the remote pointing at the odoo-dev fork. (remote, error)."""
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", os.path.expanduser(path), "remote", "-v"],
             capture_output=True,
             text=True,
@@ -1168,7 +1210,7 @@ def remote_branch_exists(path, branch):
         return None, err
     log_request(f"git ls-remote {remote} {branch}")
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
             capture_output=True,
             text=True,
@@ -1194,7 +1236,7 @@ def push_branch(path, branch, force=False):
     args += [remote, branch]
     log_request("git " + " ".join(args))
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", os.path.expanduser(path), *args],
             capture_output=True,
             text=True,
@@ -1211,7 +1253,7 @@ def close_pr(github, number):
     """Close a GitHub PR via the gh CLI. Returns (ok, error)."""
     log_request(f"gh pr close {number} --repo {github}")
     try:
-        r = subprocess.run(
+        r = run(
             ["gh", "pr", "close", str(number), "--repo", github],
             capture_output=True,
             text=True,
@@ -1233,7 +1275,7 @@ def main_remote(path, github=None):
     """
     p = os.path.expanduser(path)
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", p, "rev-parse", "--abbrev-ref", "master@{upstream}"],
             capture_output=True,
             text=True,
@@ -1242,7 +1284,7 @@ def main_remote(path, github=None):
         if r.returncode == 0 and "/" in r.stdout.strip():
             return r.stdout.strip().split("/", 1)[0]
         if github:
-            rv = subprocess.run(
+            rv = run(
                 ["git", "-C", p, "remote", "-v"], capture_output=True, text=True, timeout=10
             )
             for line in rv.stdout.splitlines():
@@ -1264,7 +1306,7 @@ def fetch_master(repo):
     remote = main_remote(path, repo.get("github"))
     log_request(f"git fetch {remote} master  (auto-reload {rid})")
     try:
-        r = subprocess.run(
+        r = run(
             ["git", "-C", os.path.expanduser(path), "fetch", remote, "master"],
             capture_output=True,
             text=True,
