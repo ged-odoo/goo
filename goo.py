@@ -31,10 +31,16 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TAG = "[goo]"
+import effects
+import services
+from cache import TTLCache
+
+# the IO seam (effects) and the services layer over it; goo.py's remaining git/psql/
+# fs functions keep calling run()/log_request() — now sourced from effects.
+from effects import TAG, log_request, run
+
 HOST = "127.0.0.1"
 PORT = 8068
 ODOO_PORT = 8069
@@ -43,33 +49,6 @@ GOO_DIR = os.path.dirname(os.path.abspath(__file__))  # goo's own checkout
 STATIC_DIR = os.path.join(GOO_DIR, "static")
 ADDONS_DIR = os.path.join(GOO_DIR, "addons")
 LOG_BUFFER_SIZE = 2000
-
-
-def log_request(target):
-    """Announce an outgoing network request on the terminal, so the user can
-    see what goo is reaching out to (runbot, GitHub, git remotes)."""
-    print(f"{TAG} {time.strftime('%H:%M:%S')} → {target}", flush=True)
-
-
-_subprocess_run = subprocess.run  # raw reference, so the rename to run() doesn't recurse
-
-
-def run(cmd, *, quiet=False, **kwargs):
-    """Run a command, capturing its output. On a non-zero exit (unless quiet), dump
-    the command and its raw stderr to the goo log — verbatim, no [goo] prefix — so a
-    failed git/gh/psql/… call is never silent. Returns the CompletedProcess; raised
-    errors (FileNotFoundError, TimeoutExpired, …) propagate to the caller as before."""
-    if "capture_output" not in kwargs and "stdout" not in kwargs and "stderr" not in kwargs:
-        kwargs["capture_output"] = True
-    kwargs.setdefault("text", True)
-    result = _subprocess_run(cmd, **kwargs)
-    if result.returncode and not quiet:
-        shown = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
-        detail = (result.stderr or result.stdout or "").strip()
-        print(f"$ {shown}", flush=True)
-        if detail:
-            print(detail, flush=True)
-    return result
 
 
 # =============================================================================
@@ -883,230 +862,6 @@ def restart_goo():
     os.execv(sys.executable, [sys.executable, os.path.join(GOO_DIR, "goo.py"), *args])
 
 
-def runbot_badge_status(branch):
-    """Fetch the runbot status badge for a branch and parse its result.
-
-    Returns "success", "failure", "pending", or "" (no build / unreachable).
-    The badge SVG carries the status as its right-hand <text> label, e.g.
-    <text ...>success</text>.
-    """
-    url = f"https://runbot.odoo.com/runbot/badge/1/{urllib.parse.quote(branch)}.svg"
-    log_request(f"GET {url}")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            svg = resp.read().decode("utf-8", errors="replace")
-    except Exception:
-        return ""
-    texts = re.findall(r"<text[^>]*>([^<]*)</text>", svg)
-    label = texts[-1].strip().lower() if texts else ""
-    if "success" in label:
-        return "success"
-    if any(k in label for k in ("fail", "ko", "error", "killed")):
-        return "failure"
-    if any(k in label for k in ("pending", "running", "testing", "progress")):
-        return "pending"
-    return ""
-
-
-def runbot_bundle_page(branch):
-    """Fetch a bundle's runbot page HTML ("" if unreachable)."""
-    url = f"https://runbot.odoo.com/runbot/bundle/{urllib.parse.quote(branch)}"
-    log_request(f"GET {url}")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except Exception:
-        return ""
-
-
-def runbot_status(branch):
-    """Runbot status for a branch's bundle as {"result": ..., "running": bool}.
-
-    `result` ("success" / "failure" / "") comes from the bundle page favicon
-    (icon_ok / icon_ko / icon_killed …) — runbot's own overall verdict, which
-    already reflects a failure even mid-run. `running` is true when the latest
-    batch still has a build in progress — runbot colours an in-progress build
-    `btn-info` (blue), which reliably distinguishes a running batch from a
-    finished one. So the UI can show the result *and* a "still running" indicator
-    at once. Falls back to the badge's last-finished result if the page can't be
-    read."""
-    html = runbot_bundle_page(branch)
-    if not html:
-        s = runbot_badge_status(branch)
-        return {"result": s if s in ("success", "failure") else "", "running": s == "pending"}
-    m = re.search(r'rel="[^"]*icon"[^>]*href="[^"]*?icon_([a-z]+)\.', html)
-    state = m.group(1) if m else ""
-    result = "failure" if state in ("ko", "killed") else "success" if state == "ok" else ""
-    parts = html.split('class="batch_tile', 1)
-    latest = parts[1].split('class="batch_tile', 1)[0] if len(parts) > 1 else ""
-    running = "btn-info" in latest or "fa-spin" in latest
-    return {"result": result, "running": running}
-
-
-def runbot_statuses(branches):
-    """For a list of branch names: their runbot status keyed by name, fetched
-    in parallel."""
-    branches = [b for b in dict.fromkeys(branches) if b]  # unique, non-empty
-    if not branches:
-        return {}
-    with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
-        states = pool.map(runbot_status, branches)
-        return dict(zip(branches, states, strict=False))
-
-
-MERGEBOT_STATES = frozenset(
-    (
-        "merged",
-        "staged",
-        "staging",
-        "blocked",
-        "ready",
-        "approved",
-        "validated",
-        "mergeable",
-        "reviewed",
-        "squashed",
-        "pending",
-        "error",
-        "closed",
-    )
-)
-
-
-def mergebot_status(github, number):
-    """Scrape the mergebot PR page and return its merge state, e.g. 'blocked',
-    'staged', 'merged' ("" on failure / unknown). The state is rendered
-    inconsistently per state (a colored <p> for blocked/staged/ready/…, an alert
-    <div> for merged/closed), so scan for the first element with a bg-* or alert
-    class whose leading word is a known state."""
-    url = f"https://mergebot.odoo.com/{github}/pull/{number}"
-    log_request(f"GET {url}")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception:
-        return ""
-    for m in re.finditer(r'<\w+[^>]*class="[^"]*(?:\bbg-\w+|\balert\b)[^"]*"[^>]*>(.*?)</', html, re.S):
-        txt = re.sub(r"<[^>]+>", " ", m.group(1)).strip()
-        if not txt:
-            continue
-        word = re.sub(r"[^a-z]", "", txt.split()[0].lower())
-        if word in MERGEBOT_STATES:
-            return word
-    return ""
-
-
-def mergebot_statuses(prs):
-    """For a list of {github, number}: their mergebot states keyed
-    'github#number', fetched in parallel."""
-    prs = [p for p in prs if p.get("github") and p.get("number")]
-    if not prs:
-        return {}
-    with ThreadPoolExecutor(max_workers=min(8, len(prs))) as pool:
-        states = pool.map(lambda p: mergebot_status(p["github"], p["number"]), prs)
-        return {f"{p['github']}#{p['number']}": s for p, s in zip(prs, states, strict=False)}
-
-
-def _ci_state(raw):
-    """Normalize a GitHub status/check state to success | failure | pending | ""."""
-    s = (raw or "").lower()
-    if s == "success":
-        return "success"
-    if s in ("failure", "error", "timed_out", "cancelled", "action_required", "stale", "startup_failure"):
-        return "failure"
-    if s in ("pending", "expected", "queued", "in_progress", "waiting", "requested"):
-        return "pending"
-    return ""
-
-
-def _ci_rollup(rollup):
-    """Compress a PR's statusCheckRollup into {overall, runbot, checks}.
-
-    `checks` is [{context, state, url}] (state normalized via _ci_state); `runbot`
-    is the ci/runbot context's state; `overall` is failure if any check failed,
-    else pending if any is still pending, else success if all passed (else "").
-    Handles both StatusContext (.context/.state, what Odoo's CI posts) and
-    CheckRun (.name/.status/.conclusion)."""
-    checks = []
-    for c in rollup or []:
-        context = c.get("context") or c.get("name") or ""
-        if not context:
-            continue
-        raw = c.get("state") or c.get("conclusion") or c.get("status") or ""
-        checks.append(
-            {
-                "context": context,
-                "state": _ci_state(raw),
-                "url": c.get("targetUrl") or c.get("detailsUrl") or "",
-            }
-        )
-    checks.sort(key=lambda c: c["context"])
-    states = {c["state"] for c in checks}
-    if "failure" in states:
-        overall = "failure"
-    elif "pending" in states:
-        overall = "pending"
-    elif states == {"success"}:
-        overall = "success"
-    else:
-        overall = ""
-    runbot = next((c["state"] for c in checks if c["context"] == "ci/runbot"), "")
-    return {"overall": overall, "runbot": runbot, "checks": checks}
-
-
-def github_prs(repos):
-    """For each repo {id, github}: the user's PRs (all states) via the gh CLI.
-
-    `statusCheckRollup` rides along in the same call, so each PR carries a
-    normalized `ci` ({overall, runbot, checks}) built from the runbot/CI commit
-    statuses GitHub already aggregates — no separate runbot scrape needed for
-    branches that have a PR."""
-    out = []
-    for repo in repos:
-        rid, gh_repo = repo.get("id"), repo.get("github")
-        if not rid or not gh_repo:
-            continue
-        entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
-        log_request(f"gh pr list --repo {gh_repo} --author @me")
-        try:
-            r = run(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--repo",
-                    gh_repo,
-                    "--author",
-                    "@me",
-                    "--state",
-                    "all",
-                    "--limit",
-                    "200",
-                    "--json",
-                    "number,title,url,state,isDraft,headRefName,updatedAt,statusCheckRollup",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if r.returncode != 0:
-                entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
-            else:
-                prs = json.loads(r.stdout)
-                for pr in prs:
-                    pr["ci"] = _ci_rollup(pr.pop("statusCheckRollup", None))
-                entry["prs"] = prs
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            entry["error"] = str(e)
-        except json.JSONDecodeError:
-            entry["error"] = "unexpected gh output"
-        out.append(entry)
-    return out
-
-
 def _addon_roots(repo_id, path):
     """Directories that hold modules for a repo, matching the addons-path."""
     p = os.path.expanduser(path)
@@ -1246,23 +1001,6 @@ def push_branch(path, branch, force=False):
         return False, str(e)
     if r.returncode != 0:
         return False, r.stderr.strip().split("\n")[-1] or "git push failed"
-    return True, None
-
-
-def close_pr(github, number):
-    """Close a GitHub PR via the gh CLI. Returns (ok, error)."""
-    log_request(f"gh pr close {number} --repo {github}")
-    try:
-        r = run(
-            ["gh", "pr", "close", str(number), "--repo", github],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-    if r.returncode != 0:
-        return False, r.stderr.strip().split("\n")[0] or "gh pr close failed"
     return True, None
 
 
@@ -1750,6 +1488,12 @@ class OdooManager:
 
 BUS = EventBus()
 MANAGER = OdooManager(BUS)
+# services layer over the IO seam (effects): external state fetched + parsed +
+# cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min. A `refresh` flag on
+# the read endpoints bypasses the cache (the UI's manual Refresh).
+GITHUB = services.GitHubService(effects, TTLCache(600))
+RUNBOT = services.RunbotService(effects, TTLCache(300))
+MERGEBOT = services.MergebotService(effects, TTLCache(300))
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -1850,19 +1594,22 @@ class Handler(BaseHTTPRequestHandler):
             repos = (body or {}).get("repos")
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            self._send_json(200, {"ok": True, "repos": github_prs(repos)})
+            prs = GITHUB.prs(repos, refresh=bool((body or {}).get("refresh")))
+            self._send_json(200, {"ok": True, "repos": prs})
         elif path == "/api/mergebot":
             body, err = self._read_json()
             prs = (body or {}).get("prs")
             if err or not isinstance(prs, list):
                 return self._send_json(400, {"ok": False, "error": "missing prs list"})
-            self._send_json(200, {"ok": True, "states": mergebot_statuses(prs)})
+            states = MERGEBOT.statuses(prs, refresh=bool((body or {}).get("refresh")))
+            self._send_json(200, {"ok": True, "states": states})
         elif path == "/api/runbot":
             body, err = self._read_json()
             branches = (body or {}).get("branches")
             if err or not isinstance(branches, list):
                 return self._send_json(400, {"ok": False, "error": "missing branches list"})
-            self._send_json(200, {"ok": True, "states": runbot_statuses(branches)})
+            states = RUNBOT.statuses(branches, refresh=bool((body or {}).get("refresh")))
+            self._send_json(200, {"ok": True, "states": states})
         elif path == "/api/autoreload":
             body, err = self._read_json()
             repos = (body or {}).get("repos")
@@ -1973,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
             number = (body or {}).get("number")
             if err or not repo or not number:
                 return self._send_json(400, {"ok": False, "error": "missing repo or number"})
-            ok, error = close_pr(repo, number)
+            ok, error = GITHUB.close_pr(repo, number)
             if ok:
                 self._send_json(200, {"ok": True})
             else:

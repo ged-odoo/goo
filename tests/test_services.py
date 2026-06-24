@@ -1,0 +1,156 @@
+"""Unit tests for the services layer — the payoff of the IO seam: each service is
+exercised against a FakeIO, so there's no real subprocess, network, or sleep.
+
+Run from the repo root: `python3 -m unittest discover`
+"""
+
+import subprocess
+import threading
+import time
+import unittest
+
+import services
+from cache import TTLCache
+
+
+def completed(stdout="", returncode=0, stderr=""):
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class FakeIO:
+    """Canned stand-in for effects.py — records calls, returns scripted results."""
+
+    def __init__(self, *, run_result=None, http=None):
+        self._run_result = run_result if run_result is not None else completed()
+        self._http = http or {}  # {url_substring: (text, error)}
+        self.run_calls = []
+        self.http_calls = []
+
+    def log_request(self, target):
+        pass
+
+    def run(self, cmd, **kwargs):
+        self.run_calls.append(cmd)
+        return self._run_result
+
+    def http_get(self, url, **kwargs):
+        self.http_calls.append(url)
+        for needle, resp in self._http.items():
+            if needle in url:
+                return resp
+        return "", "not stubbed"
+
+
+class RunbotServiceTest(unittest.TestCase):
+    def test_bundle_pass_and_running(self):
+        html = (
+            '<link rel="shortcut icon" href="/web/static/icon_ok.png">'
+            '<div class="batch_tile"><a class="btn btn-info">building</a></div>'
+            '<div class="batch_tile">older</div>'
+        )
+        svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
+        self.assertEqual(
+            svc.statuses(["master"]), {"master": {"result": "success", "running": True}}
+        )
+
+    def test_bundle_fail_not_running(self):
+        html = '<link rel="icon" href="x/icon_ko.png"><div class="batch_tile">done</div>'
+        svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
+        self.assertEqual(svc.statuses(["b"]), {"b": {"result": "failure", "running": False}})
+
+    def test_badge_fallback_when_bundle_unreachable(self):
+        io = FakeIO(
+            http={
+                "bundle": ("", "boom"),
+                "badge": ("<svg><text>x</text><text>success</text></svg>", None),
+            }
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        self.assertEqual(svc.statuses(["b"]), {"b": {"result": "success", "running": False}})
+
+
+class MergebotServiceTest(unittest.TestCase):
+    def test_merged(self):
+        io = FakeIO(http={"pull": ('<div class="alert alert-success">merged</div>', None)})
+        svc = services.MergebotService(io, TTLCache(ttl=0))
+        self.assertEqual(
+            svc.statuses([{"github": "odoo/odoo", "number": 1}]), {"odoo/odoo#1": "merged"}
+        )
+
+    def test_blocked(self):
+        io = FakeIO(http={"pull": ('<p class="bg-warning">blocked: CI</p>', None)})
+        svc = services.MergebotService(io, TTLCache(ttl=0))
+        self.assertEqual(svc.statuses([{"github": "o/o", "number": 7}]), {"o/o#7": "blocked"})
+
+    def test_unreachable_is_blank(self):
+        svc = services.MergebotService(FakeIO(http={"pull": ("", "down")}), TTLCache(ttl=0))
+        self.assertEqual(svc.statuses([{"github": "o/o", "number": 7}]), {"o/o#7": ""})
+
+
+class GitHubServiceTest(unittest.TestCase):
+    def test_prs_maps_ci_rollup(self):
+        payload = (
+            '[{"number": 5, "title": "t", "url": "u", "state": "OPEN", "isDraft": false,'
+            ' "headRefName": "br", "updatedAt": "x", "statusCheckRollup": ['
+            '{"context": "ci/runbot", "state": "SUCCESS", "targetUrl": "ru"},'
+            '{"context": "ci/style", "state": "FAILURE", "targetUrl": "su"}]}]'
+        )
+        io = FakeIO(run_result=completed(stdout=payload))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        repos = svc.prs([{"id": "community", "github": "odoo/odoo"}])
+        pr = repos[0]["prs"][0]
+        self.assertEqual(pr["ci"]["runbot"], "success")
+        self.assertEqual(pr["ci"]["overall"], "failure")  # ci/style failed
+        self.assertEqual([c["context"] for c in pr["ci"]["checks"]], ["ci/runbot", "ci/style"])
+
+    def test_prs_reports_gh_error(self):
+        io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        repos = svc.prs([{"id": "community", "github": "odoo/odoo"}])
+        self.assertEqual(repos[0]["error"], "gh: not logged in")
+
+    def test_close_pr_invalidates_cache(self):
+        cache = TTLCache(ttl=600)
+        io = FakeIO(run_result=completed(stdout="[]"))
+        svc = services.GitHubService(io, cache)
+        svc.prs([{"id": "c", "github": "o/o"}])  # populates the cache
+        svc.prs([{"id": "c", "github": "o/o"}])  # served from cache → no 2nd gh call
+        self.assertEqual(len(io.run_calls), 1)
+        ok, _ = svc.close_pr("o/o", 3)
+        self.assertTrue(ok)
+        svc.prs([{"id": "c", "github": "o/o"}])  # cache was invalidated → fetches again
+        self.assertEqual(len(io.run_calls), 3)  # 1 prs + 1 close + 1 prs
+
+
+class TTLCacheTest(unittest.TestCase):
+    def test_single_flight(self):
+        cache = TTLCache(ttl=60)
+        calls = []
+
+        def compute():
+            calls.append(1)
+            time.sleep(0.05)  # hold the key lock so concurrent gets queue
+            return "v"
+
+        threads = [threading.Thread(target=lambda: cache.get("k", compute)) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(calls), 1)  # computed exactly once despite 8 concurrent gets
+
+    def test_ttl_expiry_and_invalidate(self):
+        now = [1000.0]
+        cache = TTLCache(ttl=10, clock=lambda: now[0])
+        n = []
+        compute = lambda: (n.append(1), len(n))[1]  # noqa: E731
+        self.assertEqual(cache.get("k", compute), 1)
+        self.assertEqual(cache.get("k", compute), 1)  # fresh → cached
+        now[0] += 11  # past the TTL
+        self.assertEqual(cache.get("k", compute), 2)  # recomputed
+        cache.invalidate("k")
+        self.assertEqual(cache.get("k", compute), 3)  # invalidated → recomputed
+
+
+if __name__ == "__main__":
+    unittest.main()

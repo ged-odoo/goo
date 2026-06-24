@@ -1,7 +1,7 @@
 // Branches & PRs across repos: grouped view model and the per-branch actions
 // (delete, close PR, push).
 
-import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT, CACHE_TTL } from "./config.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
@@ -18,53 +18,43 @@ export class CodePlugin extends Plugin {
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
   branchRepos = signal((this._cache() || {}).branchRepos || []);
-  prRepos = signal((this._cache() || {}).prRepos || []);
+  prRepos = signal([]); // PRs are cached server-side now, fetched fresh each load
   at = signal((this._cache() || {}).at || 0);
   loading = signal(false);
   error = signal("");
   busy = signal(false);
-  mergebot = signal({}); // "github#number" -> mergebot state (scraped lazily)
-  runbot = signal({}); // branch name -> runbot status (fetched lazily)
-  _mbPending = new Set(); // keys currently being scraped (avoid duplicate fetches)
-  _rbPending = new Set();
+  mergebot = signal({}); // "github#number" -> mergebot state (cached server-side)
+  runbot = signal({}); // branch name -> runbot status (cached server-side)
+  _refreshExternal = false; // true during a forced load: bypass the server cache
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
 
-  // scrape the mergebot state for PRs not already known or in flight; the
-  // dashboard effect can fire several times before a scrape resolves, so the
-  // pending guard keeps us from re-fetching the same PR each time.
+  // mergebot state for the given PRs. The server caches + single-flights, so we
+  // just request the ones we don't already hold (or all, on a forced refresh).
   async loadMergebot(prs) {
+    const refresh = this._refreshExternal;
     const have = this.mergebot();
-    const todo = prs.filter((p) => {
-      const k = `${p.github}#${p.number}`;
-      return !(k in have) && !this._mbPending.has(k);
-    });
+    const todo = refresh ? prs : prs.filter((p) => !(`${p.github}#${p.number}` in have));
     if (!todo.length) return;
-    const keys = todo.map((p) => `${p.github}#${p.number}`);
-    keys.forEach((k) => this._mbPending.add(k));
     try {
-      const res = await postJSON("/api/mergebot", { prs: todo });
+      const res = await postJSON("/api/mergebot", { prs: todo, refresh });
       this.mergebot.set({ ...this.mergebot(), ...res.states });
     } catch {
       /* leave states blank on failure */
-    } finally {
-      keys.forEach((k) => this._mbPending.delete(k));
     }
   }
 
-  // fetch the runbot status for branches not already known or in flight
+  // runbot status for the given branches (server-cached + single-flighted)
   async loadRunbot(branches) {
+    const refresh = this._refreshExternal;
     const have = this.runbot();
-    const todo = branches.filter((b) => !(b in have) && !this._rbPending.has(b));
+    const todo = refresh ? branches : branches.filter((b) => !(b in have));
     if (!todo.length) return;
-    todo.forEach((b) => this._rbPending.add(b));
     try {
-      const res = await postJSON("/api/runbot", { branches: todo });
+      const res = await postJSON("/api/runbot", { branches: todo, refresh });
       this.runbot.set({ ...this.runbot(), ...res.states });
     } catch {
       /* leave status blank on failure */
-    } finally {
-      todo.forEach((b) => this._rbPending.delete(b));
     }
   }
 
@@ -75,26 +65,26 @@ export class CodePlugin extends Plugin {
     }));
   }
 
+  // last-known branches, kept only for an instant first paint on reload (PRs are
+  // now server-cached and always fetched fresh, so they're no longer stored here)
   _cache() {
     try {
       const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
-      return c && c.at && c.branchRepos && c.prRepos ? c : null;
+      return c && c.at && c.branchRepos ? c : null;
     } catch {
       return null;
     }
   }
 
+  // Branches come from local git (fast, volatile) and PRs/runbot/mergebot are now
+  // cached server-side, so we simply request everything and let the backend decide
+  // freshness. `force` (the manual Refresh) passes refresh:true to bypass the cache.
   async load(force = false) {
-    const cache = this._cache();
-    // PRs come from GitHub (slow) — reuse the cache while it's fresh. Branches
-    // come from local git (fast) and carry the *volatile* dirty / current-branch
-    // state, so they are ALWAYS re-fetched: caching them made the dashboard show
-    // stale (e.g. not-dirty) state between refreshes.
-    const prsFresh = !force && cache && Date.now() - cache.at < CACHE_TTL;
     this.loading.set(true);
     this.error.set("");
-    if (!prsFresh) {
-      this.mergebot.set({}); // re-scrape mergebot/runbot states on a real refresh
+    this._refreshExternal = force;
+    if (force) {
+      this.mergebot.set({}); // re-display fresh runbot/mergebot on a real refresh
       this.runbot.set({});
     }
     const repos = this.reposWithGithub();
@@ -107,31 +97,20 @@ export class CodePlugin extends Plugin {
         this.error.set(e.message);
         return null;
       });
-    let prsP;
-    if (prsFresh) {
-      this.prRepos.set(cache.prRepos);
-      this.at.set(cache.at);
-      prsP = Promise.resolve(cache.prRepos);
-    } else {
-      prsP = postJSON("/api/prs", { repos: repos.filter((r) => r.github) })
-        .then((p) => {
-          this.prRepos.set(p.repos);
-          return p.repos;
-        })
-        .catch((e) => {
-          this.error.set(e.message);
-          return null;
-        });
-    }
-    const [b, p] = await Promise.all([branchesP, prsP]);
+    const prsP = postJSON("/api/prs", { repos: repos.filter((r) => r.github), refresh: force })
+      .then((p) => {
+        this.prRepos.set(p.repos);
+        return p.repos;
+      })
+      .catch((e) => {
+        this.error.set(e.message);
+        return null;
+      });
+    const [b] = await Promise.all([branchesP, prsP]);
     this.loading.set(false);
-    // refresh the cache only when PRs were actually fetched (keeps the PR TTL
-    // meaningful) — store the fresh branches alongside them
-    if (!prsFresh && b && p) {
-      const at = Date.now();
-      this.at.set(at);
-      localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b, prRepos: p }));
-    }
+    const at = Date.now();
+    this.at.set(at);
+    if (b) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b }));
   }
 
   _groups() {
@@ -332,8 +311,9 @@ export class CodePlugin extends Plugin {
     });
   }
 
-  // mark a PR closed in the view + cache, no reload (which would re-fetch every
-  // branch's runbot badge just to flip one PR's state)
+  // optimistically mark a PR closed in the view, no reload (which would re-fetch
+  // everything just to flip one PR's state). The server already invalidated its PR
+  // cache in close_pr, so the next load reflects it too.
   _closePrLocally(github, number) {
     const prRepos = this.prRepos().map((r) =>
       r.github === github
@@ -341,8 +321,6 @@ export class CodePlugin extends Plugin {
         : r,
     );
     this.prRepos.set(prRepos);
-    const cache = this._cache();
-    if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, prRepos }));
   }
 
   closePr(github, number) {

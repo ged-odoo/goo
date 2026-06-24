@@ -5,13 +5,21 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 
 ## Stack
 
-- **Backend**: `goo.py` — single-file, Python 3.10+, **stdlib only** (no pip deps).
+- **Backend**: a few same-dir Python 3.10+ modules, **stdlib only** (no pip deps).
 - **Frontend**: `static/` — Owl 3, served as-is (**no bundler**, no build step).
 - Runs straight from the checkout: `python3 goo.py` (UI on `127.0.0.1:8068`).
 
 ## Layout
 
-- `goo.py` — the whole server (routing, git, db, Odoo process mgmt).
+- `goo.py` — the HTTP server: routing + thin request handlers, plus the side
+  effects not yet moved behind the layer (git, db, Odoo process mgmt).
+- `effects.py` — the IO seam: the one place raw subprocess/network happen
+  (`run`, `http_get`, `log_request`). Fake this in tests.
+- `services.py` — domain services over the seam (`GitHubService`, `RunbotService`,
+  `MergebotService`, …); they fetch + parse + cache external state server-side.
+- `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
+- `tests/` — stdlib `unittest` suite; services run against a fake IO (no network).
+  Being migrated incrementally: side effects → `effects`/`services`, caching → server-side.
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path
 - `static/src/` a owl 3 frontend application
@@ -20,6 +28,7 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 ## Commands
 
 - `python3 goo.py` — run (add `--open` to launch the browser).
+- `python3 -m unittest discover` — run the backend tests (from the repo root).
 - `npm run lint` / `npm run lint:fix` — eslint (`static/src` only).
 - `npm run format` — prettier (js/css/html/md).
 - `ruff check --fix` / `ruff format` — Python lint+format.
