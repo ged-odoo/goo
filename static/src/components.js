@@ -78,7 +78,7 @@ class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/><button t-if="this.updateAvailable" class="nav-update" t-att-title="this.updateTip" t-on-click="() => this.showUpdate()">↑ update</button></div>
+        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/><button t-if="this.updateAvailable" class="nav-update" t-att-title="this.updateTip" t-on-click="() => this.update.promptUpdate()">↑ update</button></div>
       </div>
       <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
         <span class="nt-name">
@@ -95,7 +95,6 @@ class Topbar extends Component {
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
   update = plugin(UpdatePlugin);
-  dialogs = plugin(DialogPlugin);
 
   version = `v${VERSION}`;
 
@@ -116,42 +115,6 @@ class Topbar extends Component {
     if (u.ahead) tip += `, ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} ahead`;
     if (u.dirty) tip += ", working tree dirty";
     return tip;
-  }
-
-  // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
-  // otherwise just explain how to update manually so local work is never clobbered
-  async showUpdate() {
-    const u = this.update.info() || {};
-    if (!u.can_fast_forward) {
-      let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
-      if (u.ahead) why += `, with ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} on top`;
-      if (u.dirty) why += ", and the working tree has uncommitted changes";
-      why += ". Update manually to keep your work, e.g. `git pull --rebase`.";
-      return void this.dialogs.open({
-        title: "goo update available",
-        message: why,
-        okLabel: "OK",
-        cancelLabel: null,
-      });
-    }
-    const serverNote =
-      this.server.status().state === "running" ? " The running Odoo server will be stopped." : "";
-    const ok = await this.dialogs.open({
-      title: "goo update available",
-      message: `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master and can be updated cleanly. goo will fast-forward, restart, and this page will reload automatically.${serverNote}`,
-      okLabel: "Update & restart",
-      cancelLabel: "Later",
-    });
-    if (!ok) return;
-    const res = await this.update.applyAndRestart();
-    if (!res.ok)
-      this.dialogs.open({
-        title: "Update failed",
-        message: res.error,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
   }
 
   get active() {
@@ -2829,7 +2792,11 @@ class ConfigScreen extends Component {
   static components = { ListEditor };
   static template = xml`
     <section>
-      <div class="panel"><div class="panel-top"><h1>Config</h1></div></div>
+      <div class="panel"><div class="panel-top"><h1>Config</h1>
+        <div class="panel-top-right">
+          <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
+        </div>
+      </div></div>
       <div class="content">
         <div class="config-block">
           <h2 class="subtitle">Settings</h2>
@@ -2884,11 +2851,40 @@ class ConfigScreen extends Component {
     </section>`;
 
   config = plugin(ConfigPlugin);
+  update = plugin(UpdatePlugin);
+  dialogs = plugin(DialogPlugin);
+  refreshIcon = m(ICONS.refresh);
+  checking = signal(false);
   path = signal(this.config.getDataFile());
   msg = signal("");
   backupMsg = signal("");
   settingsFields = SETTINGS_FIELDS;
   settings = signal(this._loadSettings());
+
+  // manually re-check whether goo is behind origin/master, then report the result
+  async checkUpdate() {
+    if (this.checking()) return;
+    this.checking.set(true);
+    const r = await this.update.check();
+    this.checking.set(false);
+    if (r.behind > 0) return void this.update.promptUpdate();
+    this.dialogs.open(
+      r.ok
+        ? {
+            title: "goo is up to date",
+            message: "Your checkout is at origin/master.",
+            okLabel: "OK",
+            cancelLabel: null,
+          }
+        : {
+            title: "Couldn't check for updates",
+            message: "Make sure goo runs from a git checkout with an 'origin' remote and that you're online.",
+            cls: "dialog-error",
+            okLabel: "OK",
+            cancelLabel: null,
+          },
+    );
+  }
 
   _loadSettings() {
     const c = this.config.config;

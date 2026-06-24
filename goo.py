@@ -778,17 +778,18 @@ def check_goo_update():
     """Fetch origin/master, then record how goo's checkout compares and announce it
     when new commits appear. Silent on anything unusual (not a git repo, no origin
     remote, offline) — never nags on failure. Only re-announces when `behind` grows,
-    so the hourly re-check (see goo_update_loop) doesn't spam an unchanged state."""
+    so the hourly re-check (see goo_update_loop) doesn't spam an unchanged state.
+    Returns True when the fetch + recompute succeeded (used by the manual check)."""
     global GOO_UPDATE
     inside = _git_goo("rev-parse", "--is-inside-work-tree")
     if not inside or inside.returncode != 0 or inside.stdout.strip() != "true":
-        return
+        return False
     remotes = _git_goo("remote")
     if not remotes or remotes.returncode != 0 or "origin" not in remotes.stdout.split():
-        return
+        return False
     fetch = _git_goo("fetch", "origin", "master", timeout=30)
     if not fetch or fetch.returncode != 0:
-        return  # offline / no such branch — stay quiet
+        return False  # offline / no such branch — stay quiet
     prev_behind = GOO_UPDATE.get("behind", 0)
     GOO_UPDATE = goo_update_status()
     n = GOO_UPDATE["behind"]
@@ -798,6 +799,7 @@ def check_goo_update():
             m = GOO_UPDATE["ahead"]
             msg += f", {m} local commit{'s' if m != 1 else ''} ahead"
         BUS.publish_event(msg)
+    return True
 
 
 def goo_update_loop():
@@ -814,7 +816,7 @@ def goo_fast_forward():
     status = goo_update_status()
     if not status["can_fast_forward"]:
         if status["ahead"]:
-            return False, "you have local commits on top of master — update manually (git pull --rebase)"
+            return False, "local commits on top of master — update manually (git pull --rebase)"
         if status["dirty"]:
             return False, "the working tree is dirty — commit or stash first"
         return False, "nothing to fast-forward"
@@ -1872,6 +1874,10 @@ class Handler(BaseHTTPRequestHandler):
             if ok:
                 GOO_UPDATE = goo_update_status()
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/goo/check":
+            # on-demand re-check (the "Check for update" button) — fetches + recomputes
+            ok = check_goo_update()
+            self._send_json(200, {"ok": ok, **GOO_UPDATE, "boot": BOOT_ID})
         elif path == "/api/goo/restart":
             # reply first, then re-exec from a short-delayed thread so the response
             # reaches the client before the process is replaced
