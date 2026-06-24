@@ -2791,8 +2791,31 @@ a.dash-row-branch:hover {
 
 .edit-row {
   display: flex;
+  align-items: center;
   gap: 8px;
   max-width: 880px;
+}
+/* drag handle for reorderable lists (navbar links) */
+.row-handle {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--l-text-faint);
+  cursor: grab;
+  user-select: none;
+}
+.row-handle:active {
+  cursor: grabbing;
+}
+.edit-row.dragging {
+  opacity: 0.4;
+}
+.edit-row.drag-over {
+  box-shadow: inset 0 2px 0 var(--l-accent);
 }
 .edit-row input {
   padding: 7px 10px;

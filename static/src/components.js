@@ -2691,7 +2691,11 @@ class ListEditor extends Component {
     <div class="config-block">
       <h2 class="subtitle" t-out="this.spec.title"/>
       <div class="rows">
-        <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row">
+        <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
+             t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
+             t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
+          <span t-if="this.spec.reorderable" class="row-handle" draggable="true" title="drag to reorder"
+                t-on-dragstart="ev => this.onDragStart(ev, row_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
           <t t-foreach="this.spec.fields" t-as="f" t-key="f.key">
             <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.title || f.name">
               <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => { row[f.key] = ev.target.checked; this.saveAuto(); }"/>
@@ -2716,8 +2720,45 @@ class ListEditor extends Component {
   rows = signal([]);
   msgText = signal("");
   msgCls = signal("");
+  dragIndex = signal(-1); // row being dragged (-1 = none); only set for reorderable specs
+  dragOverIndex = signal(-1); // row the drag is hovering over
   setup() {
     this.load();
+  }
+
+  onDragStart(ev, i) {
+    this.dragIndex.set(i);
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", String(i)); // some browsers need data to start a drag
+  }
+
+  onDragOver(ev, i) {
+    if (this.dragIndex() < 0) return; // no handle drag in progress (e.g. non-reorderable list)
+    ev.preventDefault(); // mark this row as a valid drop target
+    ev.dataTransfer.dropEffect = "move";
+    if (this.dragOverIndex() !== i) this.dragOverIndex.set(i);
+  }
+
+  onDrop(ev, i) {
+    if (this.dragIndex() < 0) return;
+    ev.preventDefault();
+    this.reorderRows(this.dragIndex(), i);
+    this.onDragEnd();
+  }
+
+  onDragEnd() {
+    this.dragIndex.set(-1);
+    this.dragOverIndex.set(-1);
+  }
+
+  // move the dragged row to sit immediately before the drop target, then persist
+  reorderRows(from, to) {
+    if (from < 0 || to < 0 || from === to) return;
+    const rows = [...this.rows()];
+    const [moved] = rows.splice(from, 1);
+    rows.splice(from < to ? to - 1 : to, 0, moved); // account for the removed row's shift
+    this.rows.set(rows);
+    this.saveAuto();
   }
 
   load() {
@@ -3813,6 +3854,7 @@ const SPECS = {
     key: "links",
     title: "Navbar links",
     itemName: "link",
+    reorderable: true, // drag the handle to reorder how links appear in the navbar
     fields: [
       { key: "label", name: "label", placeholder: "label (e.g. /odoo)", className: "w-name" },
       { key: "href", name: "href", placeholder: "href (e.g. https://…)", className: "w-flex" },
