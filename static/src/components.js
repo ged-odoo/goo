@@ -1473,10 +1473,8 @@ class TargetsScreen extends Component {
                     <td class="dim"><div class="br-ellip" t-att-title="tgt.on_create_args" t-out="tgt.on_create_args || '—'"/></td>
                     <td>
                       <div class="br-act">
-                        <button class="drop-btn pr-close" t-on-click="() => this.startEdit(tgt)">Edit</button>
-                        <button class="drop-btn pr-close" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Apply</button>
-                        <button class="drop-btn pr-close" t-on-click="() => this.duplicateTarget(tgt)">Duplicate</button>
-                        <button class="drop-btn" t-att-disabled="this.isActive(tgt)" t-att-title="this.isActive(tgt) ? 'the active target cannot be deleted' : ''" t-on-click="() => this.deleteTarget(tgt)">Delete</button>
+                        <button class="dash-kebab" title="target actions"
+                                t-on-click.stop="(ev) => this.openRowMenu(ev, tgt)"><t t-out="this.kebabIcon"/></button>
                       </div>
                     </td>
                   </t>
@@ -1496,6 +1494,7 @@ class TargetsScreen extends Component {
   dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
   starIcon = m(ICONS.star);
+  kebabIcon = m(ICONS.kebab);
   editId = signal(""); // id of the row being edited inline ("" = none)
   draftName = signal("");
   draftConfig = signal("");
@@ -1760,6 +1759,30 @@ class TargetsScreen extends Component {
       });
     }
     await createTargetFromRemoteBranch(this.config, this.eventLog, this.dialogs, branch, repos);
+  }
+
+  // regroup the per-target actions into the floating kebab menu (shared ActionMenu)
+  openRowMenu(ev, tgt) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const active = this.isActive(tgt);
+    const actions = [
+      { label: "Edit", onClick: () => this.startEdit(tgt) },
+      {
+        label: "Apply",
+        disabled: !this.canActivate(tgt),
+        title: this.activateTitle(tgt),
+        onClick: () => this.activate(tgt),
+      },
+      { label: "Duplicate", onClick: () => this.duplicateTarget(tgt) },
+      {
+        label: "Delete",
+        danger: true,
+        disabled: active,
+        title: active ? "the active target cannot be deleted" : "",
+        onClick: () => this.deleteTarget(tgt),
+      },
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
   }
 
   // turn one row into inline inputs, pre-filled with the target's values
