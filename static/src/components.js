@@ -1114,8 +1114,8 @@ class DatabasesScreen extends Component {
                   <td class="br-when" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
                   <td>
                     <div class="br-act">
-                      <button class="drop-btn" t-att-disabled="d.active" t-att-title="d.active ? 'in use by the running server' : ''"
-                              t-on-click="() => this.dropDb(d)">Drop</button>
+                      <button class="dash-kebab" title="database actions"
+                              t-on-click.stop="(ev) => this.openRowMenu(ev, d)"><t t-out="this.kebabIcon"/></button>
                     </div>
                   </td>
                 </tr>
@@ -1130,6 +1130,7 @@ class DatabasesScreen extends Component {
   db = plugin(DatabasePlugin);
   dialogs = plugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
+  kebabIcon = m(ICONS.kebab);
   selected = signal(new Set()); // database names ticked for batch actions
   // sorted, view-ready rows — recomputed only when the db list / active db change
   rows = computed(() => {
@@ -1168,6 +1169,21 @@ class DatabasesScreen extends Component {
     const sel = new Set(this.selected());
     sel.has(name) ? sel.delete(name) : sel.add(name);
     this.selected.set(sel);
+  }
+
+  // per-database actions in the floating kebab menu (shared ActionMenu)
+  openRowMenu(ev, d) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const actions = [
+      {
+        label: "Drop",
+        danger: true,
+        disabled: d.active,
+        title: d.active ? "in use by the running server" : "",
+        onClick: () => this.dropDb(d),
+      },
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
   }
 
   get _selectableDbs() {
@@ -2321,8 +2337,8 @@ class PrsScreen extends Component {
                   <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
                   <td>
                     <div class="br-act">
-                      <button t-if="row.state === 'OPEN' and row.github" class="drop-btn pr-close"
-                              t-on-click="() => this.code.closePr(row.github, row.number)">Close PR</button>
+                      <button t-if="row.state === 'OPEN' and row.github" class="dash-kebab" title="PR actions"
+                              t-on-click.stop="(ev) => this.openRowMenu(ev, row)"><t t-out="this.kebabIcon"/></button>
                     </div>
                   </td>
                 </tr>
@@ -2337,6 +2353,7 @@ class PrsScreen extends Component {
   code = plugin(CodePlugin);
   dialogs = plugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
+  kebabIcon = m(ICONS.kebab);
   openOnly = signal(true); // show only open PRs by default
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
@@ -2344,6 +2361,19 @@ class PrsScreen extends Component {
 
   setup() {
     this.code.load();
+  }
+
+  // per-PR actions in the floating kebab menu (shared ActionMenu)
+  openRowMenu(ev, row) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const actions = [
+      {
+        label: "Close PR",
+        danger: true,
+        onClick: () => this.code.closePr(row.github, row.number),
+      },
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
   }
 
   // tick/untick a PR (by "repo:number") for batch actions
