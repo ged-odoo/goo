@@ -2,8 +2,8 @@
 
 `goo` is a local web app for Odoo development. It manages Odoo server instances,
 git workflows across multiple repositories, test execution, and PR tracking —
-all from the browser, backed by a single stdlib Python server (`goo.py`) with an
-Owl 3 frontend (`static/`, served as-is, no bundler).
+all from the browser, backed by a stdlib Python server (the `backend/` package,
+launched by `goo.py`) with an Owl 3 frontend (`static/`, served as-is, no bundler).
 
 ## Requirements
 

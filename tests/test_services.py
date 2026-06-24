@@ -9,8 +9,8 @@ import threading
 import time
 import unittest
 
-import services
-from cache import TTLCache
+from backend import services
+from backend.cache import TTLCache
 
 
 def completed(stdout="", returncode=0, stderr=""):

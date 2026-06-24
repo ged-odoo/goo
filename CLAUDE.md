@@ -5,21 +5,27 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 
 ## Stack
 
-- **Backend**: a few same-dir Python 3.10+ modules, **stdlib only** (no pip deps).
+- **Backend**: the `backend/` package, Python 3.10+, **stdlib only** (no pip deps).
 - **Frontend**: `static/` — Owl 3, served as-is (**no bundler**, no build step).
 - Runs straight from the checkout: `python3 goo.py` (UI on `127.0.0.1:8068`).
 
 ## Layout
 
-- `goo.py` — the HTTP server: routing + thin request handlers, plus the side
-  effects not yet moved behind the layer (git, db, Odoo process mgmt).
-- `effects.py` — the IO seam: the one place raw subprocess/network happen
-  (`run`, `http_get`, `log_request`). Fake this in tests.
-- `services.py` — domain services over the seam (`GitHubService`, `RunbotService`,
-  `MergebotService`, …); they fetch + parse + cache external state server-side.
-- `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
+- `goo.py` — thin launcher at the repo root (executable, shebang); just calls
+  `backend.server.main()`. Keeps `python3 goo.py` / `alias goo=…/goo.py` working.
+- `backend/` — the Python package (import with `from backend import …`):
+  - `server.py` — the HTTP server: routing + thin request handlers, plus the side
+    effects not yet moved behind the layer (git, Odoo process mgmt). `GOO_DIR` is
+    the repo root (parent of this package) — where `static/`, `addons/`, and the
+    git checkout live.
+  - `effects.py` — the IO seam: the one place raw subprocess/network happen
+    (`run`, `http_get`, `log_request`). Fake this in tests.
+  - `services.py` — domain services over the seam (`GitHubService`, `RunbotService`,
+    `MergebotService`, `DatabaseService`, …); fetch + parse + cache external state.
+  - `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
 - `tests/` — stdlib `unittest` suite; services run against a fake IO (no network).
-  Being migrated incrementally: side effects → `effects`/`services`, caching → server-side.
+  Being migrated incrementally: side effects → `backend/effects`+`services`,
+  caching → server-side.
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path
 - `static/src/` a owl 3 frontend application
