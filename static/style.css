@@ -2788,6 +2788,16 @@ a.dash-row-branch:hover {
 .edit-row.drag-over {
   box-shadow: inset 0 2px 0 var(--l-accent);
 }
+/* a sidebar-tab row in the Tabs editor: checkbox + label next to the drag handle */
+.tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--l-text);
+  cursor: pointer;
+  user-select: none;
+}
 /* "up to date" confirmation next to the Check-for-update button */
 .check-uptodate {
   display: inline-flex;

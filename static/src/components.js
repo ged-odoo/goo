@@ -183,8 +183,29 @@ class Sidebar extends Component {
 
   router = plugin(RouterPlugin);
   eventLog = plugin(EventLogPlugin);
-  nav = NAV;
+  config = plugin(ConfigPlugin);
   journalIcon = m(ICONS.journal);
+
+  // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
+  // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from
+  // config are appended (a newly-added tab shows up); Config is always kept.
+  get nav() {
+    const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
+    const configured = this.config.config.tabs;
+    if (!configured || !configured.length) return NAV;
+    const out = [];
+    const seen = new Set();
+    for (const t of configured) {
+      const m = meta[t.id];
+      if (!m || seen.has(t.id)) continue;
+      seen.add(t.id);
+      if (t.id === "config" || t.visible !== false) out.push(m);
+    }
+    for (const n of NAV) if (!seen.has(n.id)) out.push(n);
+    if (!out.some((n) => n.id === "config")) out.push(meta.config);
+    return out;
+  }
+
   icon(s) {
     return m(s);
   }
@@ -2698,7 +2719,7 @@ class ListEditor extends Component {
   static template = xml`
     <div class="config-block">
       <h2 class="subtitle" t-out="this.spec.title"/>
-      <div class="rows">
+      <div class="rows" data-form-type="other">
         <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
              t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
              t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
@@ -2828,6 +2849,89 @@ class ListEditor extends Component {
   }
 }
 
+// Show/hide and reorder the sidebar tabs. Stored in config.tabs as [{id, visible}]
+// in display order; NAV is the source of tab metadata (label/icon) and defaults.
+class TabsEditor extends Component {
+  static template = xml`
+    <div class="config-block">
+      <h2 class="subtitle">Tabs</h2>
+      <p class="dim">Show, hide and reorder the sidebar tabs (drag the handle to reorder).</p>
+      <div class="rows" data-form-type="other">
+        <div t-foreach="this.rows" t-as="row" t-key="row.id" class="edit-row"
+             t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
+             t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
+          <span class="row-handle" draggable="true" title="drag to reorder"
+                t-on-dragstart="ev => this.onDragStart(ev, row_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+          <label class="tab-row">
+            <input type="checkbox" t-att-checked="row.visible" t-att-disabled="row.id === 'config'"
+                   t-att-title="row.id === 'config' ? 'the Config tab is always shown' : ''"
+                   t-on-change="ev => this.toggle(row.id, ev.target.checked)"/>
+            <t t-out="row.label"/>
+          </label>
+        </div>
+      </div>
+    </div>`;
+
+  config = plugin(ConfigPlugin);
+  dragIndex = signal(-1);
+  dragOverIndex = signal(-1);
+
+  // configured order first (unknown ids dropped), then any NAV tab missing from
+  // config appended (so a newly-added tab shows up). Config is always visible.
+  get rows() {
+    const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
+    const configured = this.config.config.tabs || [];
+    const out = [];
+    const seen = new Set();
+    for (const t of configured) {
+      if (!meta[t.id] || seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push({ id: t.id, label: meta[t.id].label, visible: t.id === "config" || t.visible !== false });
+    }
+    for (const n of NAV) if (!seen.has(n.id)) out.push({ id: n.id, label: n.label, visible: true });
+    return out;
+  }
+
+  _save(rows) {
+    this.config.updateConfig({ tabs: rows.map((r) => ({ id: r.id, visible: r.visible })) });
+  }
+
+  toggle(id, visible) {
+    if (id === "config") return; // can't hide Config (no way back otherwise)
+    this._save(this.rows.map((r) => (r.id === id ? { ...r, visible } : r)));
+  }
+
+  onDragStart(ev, i) {
+    this.dragIndex.set(i);
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", String(i));
+  }
+
+  onDragOver(ev, i) {
+    if (this.dragIndex() < 0) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+    if (this.dragOverIndex() !== i) this.dragOverIndex.set(i);
+  }
+
+  onDrop(ev, i) {
+    if (this.dragIndex() < 0) return;
+    ev.preventDefault();
+    const from = this.dragIndex();
+    this.onDragEnd();
+    if (from === i) return;
+    const rows = [...this.rows];
+    const [moved] = rows.splice(from, 1);
+    rows.splice(from < i ? i - 1 : i, 0, moved); // account for the removed row's shift
+    this._save(rows);
+  }
+
+  onDragEnd() {
+    this.dragIndex.set(-1);
+    this.dragOverIndex.set(-1);
+  }
+}
+
 // scalar config fields editable in the Config tab's Settings block
 const SETTINGS_FIELDS = [
   { key: "venv_activate", name: "venv activate" },
@@ -2838,7 +2942,7 @@ const SETTINGS_FIELDS = [
 ];
 
 class ConfigScreen extends Component {
-  static components = { ListEditor };
+  static components = { ListEditor, TabsEditor };
   static template = xml`
     <section>
       <div class="panel">
@@ -2869,6 +2973,7 @@ class ConfigScreen extends Component {
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
           </div>
         </div>
+        <TabsEditor/>
         <ListEditor kind="'repos'"/>
         <ListEditor kind="'links'"/>
         <div class="config-block">
