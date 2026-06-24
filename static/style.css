@@ -140,6 +140,60 @@ a {
   font-weight: 600;
   color: var(--text-dim);
 }
+/* goo self-update badge (shown when the checkout is behind origin/master) */
+.nav-update {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: 0.13s;
+}
+.nav-update:hover {
+  background: var(--accent);
+  color: #fff;
+}
+/* full-screen overlay while goo updates + restarts (the page then reloads itself) */
+.goo-updating {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: oklch(0.165 0.011 264 / 0.72);
+}
+.goo-updating-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 24px;
+  box-shadow: 0 16px 48px oklch(0 0 0 / 0.5);
+}
+.goo-updating-box .spin {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  animation: goo-spin 0.8s linear infinite;
+}
+@keyframes goo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* current target chip — sits at the start of the main area, just past the sidebar */
 .nav-target {

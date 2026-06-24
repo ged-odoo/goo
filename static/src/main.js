@@ -11,6 +11,7 @@ import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
+import { UpdatePlugin } from "./update_plugin.js";
 
 const PLUGINS = [
   ConfigPlugin,
@@ -23,6 +24,7 @@ const PLUGINS = [
   AddonsPlugin,
   TerminalPlugin,
   DialogPlugin,
+  UpdatePlugin,
 ];
 
 async function boot() {

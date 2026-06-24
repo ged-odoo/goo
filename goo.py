@@ -39,8 +39,9 @@ HOST = "127.0.0.1"
 PORT = 8068
 ODOO_PORT = 8069
 READY_MARKER = "odoo.registry: Registry loaded"
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-ADDONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "addons")
+GOO_DIR = os.path.dirname(os.path.abspath(__file__))  # goo's own checkout
+STATIC_DIR = os.path.join(GOO_DIR, "static")
+ADDONS_DIR = os.path.join(GOO_DIR, "addons")
 LOG_BUFFER_SIZE = 2000
 
 
@@ -722,6 +723,110 @@ def open_in_editor(editor, path):
     except OSError as e:
         return False, str(e)
     return True, None
+
+
+def _git_goo(*args, timeout=10):
+    """Run a git command in goo's own checkout. Returns the CompletedProcess, or
+    None if git is missing / times out."""
+    try:
+        return subprocess.run(
+            ["git", "-C", GOO_DIR, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def goo_update_status():
+    """How goo's checkout compares to (the already-fetched) origin/master — no
+    network. Returns {checked, is_repo, branch, behind, ahead, dirty,
+    can_fast_forward}. `behind` = commits on origin/master missing locally; `ahead`
+    = local commits not on origin/master (the user's own work). A fast-forward is
+    only offered when behind>0, ahead==0 and the tree is clean."""
+    base = {
+        "checked": True,
+        "is_repo": False,
+        "branch": "",
+        "behind": 0,
+        "ahead": 0,
+        "dirty": False,
+        "can_fast_forward": False,
+    }
+    inside = _git_goo("rev-parse", "--is-inside-work-tree")
+    if not inside or inside.returncode != 0 or inside.stdout.strip() != "true":
+        return base
+    base["is_repo"] = True
+    branch = _git_goo("rev-parse", "--abbrev-ref", "HEAD")
+    base["branch"] = branch.stdout.strip() if branch and branch.returncode == 0 else ""
+    # need origin/master to compare against (populated by the startup fetch)
+    om = _git_goo("rev-parse", "--verify", "--quiet", "origin/master")
+    if not om or om.returncode != 0:
+        return base
+    behind = _git_goo("rev-list", "--count", "HEAD..origin/master")
+    ahead = _git_goo("rev-list", "--count", "origin/master..HEAD")
+    dirty = _git_goo("status", "--porcelain")
+    base["behind"] = int(behind.stdout.strip()) if behind and behind.returncode == 0 else 0
+    base["ahead"] = int(ahead.stdout.strip()) if ahead and ahead.returncode == 0 else 0
+    base["dirty"] = bool(dirty.stdout.strip()) if dirty and dirty.returncode == 0 else False
+    base["can_fast_forward"] = base["behind"] > 0 and base["ahead"] == 0 and not base["dirty"]
+    return base
+
+
+def check_goo_update():
+    """Startup task (daemon thread): fetch origin/master, then record how goo's
+    checkout compares and announce it once if behind. Silent on anything unusual
+    (not a git repo, no origin remote, offline) — never nags on failure."""
+    global GOO_UPDATE
+    inside = _git_goo("rev-parse", "--is-inside-work-tree")
+    if not inside or inside.returncode != 0 or inside.stdout.strip() != "true":
+        return
+    remotes = _git_goo("remote")
+    if not remotes or remotes.returncode != 0 or "origin" not in remotes.stdout.split():
+        return
+    fetch = _git_goo("fetch", "origin", "master", timeout=30)
+    if not fetch or fetch.returncode != 0:
+        return  # offline / no such branch — stay quiet
+    GOO_UPDATE = goo_update_status()
+    if GOO_UPDATE["behind"] > 0:
+        n = GOO_UPDATE["behind"]
+        msg = f"goo update available — {n} commit{'s' if n != 1 else ''} behind origin/master"
+        if GOO_UPDATE["ahead"]:
+            m = GOO_UPDATE["ahead"]
+            msg += f", {m} local commit{'s' if m != 1 else ''} ahead"
+        BUS.publish_event(msg)
+
+
+def goo_fast_forward():
+    """Fast-forward goo onto origin/master, but only when it's still provably safe
+    (re-validated to avoid a TOCTOU race). Returns (ok, error)."""
+    status = goo_update_status()
+    if not status["can_fast_forward"]:
+        if status["ahead"]:
+            return False, "you have local commits on top of master — update manually (git pull --rebase)"
+        if status["dirty"]:
+            return False, "the working tree is dirty — commit or stash first"
+        return False, "nothing to fast-forward"
+    r = _git_goo("merge", "--ff-only", "origin/master", timeout=30)
+    if not r:
+        return False, "git not available or timed out"
+    if r.returncode != 0:
+        msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[-1]
+        return False, msg or "git merge --ff-only failed"
+    return True, None
+
+
+def restart_goo():
+    """Restart goo in place (re-exec) so a just-applied update is loaded. Stops the
+    managed odoo process first — execv keeps the same PID but does NOT run atexit
+    handlers, and the new goo starts with a fresh MANAGER that wouldn't know about
+    a leftover child. The listening socket is close-on-exec, so the new process
+    rebinds the port. `--open` is dropped so no extra browser tab opens (the client
+    reloads its existing tab)."""
+    MANAGER.shutdown()
+    args = [a for a in sys.argv[1:] if a != "--open"]
+    os.execv(sys.executable, [sys.executable, os.path.join(GOO_DIR, "goo.py"), *args])
 
 
 def runbot_badge_status(branch):
@@ -1595,6 +1700,20 @@ MANAGER = OdooManager(BUS)
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
 AUTORELOAD = AutoReloader()
+# how goo's own checkout compares to origin/master (filled by check_goo_update at
+# startup; the navbar reads it via GET /api/goo/update)
+GOO_UPDATE = {
+    "checked": False,
+    "is_repo": False,
+    "branch": "",
+    "behind": 0,
+    "ahead": 0,
+    "dirty": False,
+    "can_fast_forward": False,
+}
+# per-process boot id (changes on every (re-)exec) so the client can tell a
+# restarted goo apart from the still-shutting-down old one when it polls
+BOOT_ID = time.time()
 
 
 # =============================================================================
@@ -1614,6 +1733,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/") :])
         elif path == "/api/status":
             self._send_json(200, MANAGER.status())
+        elif path == "/api/goo/update":
+            self._send_json(200, {**GOO_UPDATE, "boot": BOOT_ID})
         elif path == "/api/databases":
             try:
                 self._send_json(200, {"ok": True, "databases": list_databases()})
@@ -1735,6 +1856,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             ok, error = open_in_editor((body or {}).get("editor"), repo_path)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/goo/update":
+            global GOO_UPDATE
+            ok, error = goo_fast_forward()
+            if ok:
+                GOO_UPDATE = goo_update_status()
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/goo/restart":
+            # reply first, then re-exec from a short-delayed thread so the response
+            # reaches the client before the process is replaced
+            self._send_json(200, {"ok": True})
+            threading.Thread(target=lambda: (time.sleep(0.5), restart_goo()), daemon=True).start()
         elif path == "/api/code/checkout":
             body, err = self._read_json()
             repos = (body or {}).get("repos")
@@ -2259,6 +2391,8 @@ def main():
 
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
     atexit.register(MANAGER.shutdown)
+    # check (in the background) whether goo's own checkout is behind origin/master
+    threading.Thread(target=check_goo_update, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

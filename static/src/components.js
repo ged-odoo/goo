@@ -15,6 +15,7 @@ import { AddonsPlugin } from "./addons_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
+import { UpdatePlugin } from "./update_plugin.js";
 import { timeAgo, tintCmd } from "./utils.js";
 
 const {
@@ -77,7 +78,7 @@ class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/></div>
+        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/><button t-if="this.updateAvailable" class="nav-update" t-att-title="this.updateTip" t-on-click="() => this.showUpdate()">↑ update</button></div>
       </div>
       <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
         <span class="nt-name">
@@ -93,6 +94,8 @@ class Topbar extends Component {
 
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
+  update = plugin(UpdatePlugin);
+  dialogs = plugin(DialogPlugin);
 
   version = `v${VERSION}`;
 
@@ -100,6 +103,55 @@ class Topbar extends Component {
   // the autologin addon and only resolve while the server is up)
   get routes() {
     return this.config.config.links;
+  }
+
+  // goo's own checkout is behind origin/master (see UpdatePlugin)
+  get updateAvailable() {
+    return (this.update.info()?.behind || 0) > 0;
+  }
+
+  get updateTip() {
+    const u = this.update.info() || {};
+    let tip = `${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
+    if (u.ahead) tip += `, ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} ahead`;
+    if (u.dirty) tip += ", working tree dirty";
+    return tip;
+  }
+
+  // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
+  // otherwise just explain how to update manually so local work is never clobbered
+  async showUpdate() {
+    const u = this.update.info() || {};
+    if (!u.can_fast_forward) {
+      let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
+      if (u.ahead) why += `, with ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} on top`;
+      if (u.dirty) why += ", and the working tree has uncommitted changes";
+      why += ". Update manually to keep your work, e.g. `git pull --rebase`.";
+      return void this.dialogs.open({
+        title: "goo update available",
+        message: why,
+        okLabel: "OK",
+        cancelLabel: null,
+      });
+    }
+    const serverNote =
+      this.server.status().state === "running" ? " The running Odoo server will be stopped." : "";
+    const ok = await this.dialogs.open({
+      title: "goo update available",
+      message: `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master and can be updated cleanly. goo will fast-forward, restart, and this page will reload automatically.${serverNote}`,
+      okLabel: "Update & restart",
+      cancelLabel: "Later",
+    });
+    if (!ok) return;
+    const res = await this.update.applyAndRestart();
+    if (!res.ok)
+      this.dialogs.open({
+        title: "Update failed",
+        message: res.error,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
   }
 
   get active() {
@@ -3644,11 +3696,15 @@ export class App extends Component {
       <EventLog/>
       <TerminalPanel/>
       <div t-ref="this.dialogRoot"/>
+      <div t-if="this.update.applying()" class="goo-updating">
+        <div class="goo-updating-box"><span class="spin"/>Updating goo and restarting…</div>
+      </div>
     </div>`;
 
   dialogRoot = plugin(DialogPlugin).root;
   router = plugin(RouterPlugin);
   server = plugin(ServerPlugin);
+  update = plugin(UpdatePlugin);
   // the active screen's component class (a class, not an instance)
   currentScreen = computed(() => SCREENS[this.router.section()] || DashboardScreen);
   setup() {
