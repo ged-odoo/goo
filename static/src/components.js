@@ -2854,7 +2854,7 @@ class ConfigScreen extends Component {
         </div>
         <div class="config-block">
           <h2 class="subtitle">Miscellaneous</h2>
-          <div class="settings-grid">
+          <div class="settings-grid" data-form-type="other">
             <label for="setting-auto-open-event-log" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open).">auto-open event log</label>
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
