@@ -2624,23 +2624,31 @@ class AddonsScreen extends Component {
         <div t-if="!this.addons.targetDb()" class="dim addons-empty">No active target — start a server to browse its addons.</div>
         <t t-else="">
           <div class="addons-grid-wrap">
-            <div t-if="this.addons.loading()" class="dim">Loading…</div>
-            <div t-elif="this.addons.error()" class="dim" t-out="'Failed to load: ' + this.addons.error()"/>
-            <div t-elif="!this.view.total" class="dim">No modules match.</div>
+            <div t-if="this.addons.loading()" class="dim addons-msg">Loading…</div>
+            <div t-elif="this.addons.error()" class="dim addons-msg" t-out="'Failed to load: ' + this.addons.error()"/>
+            <div t-elif="!this.view.total" class="dim addons-msg">No modules match.</div>
             <t t-else="">
-              <div class="addons-grid">
-                <div t-foreach="this.view.shown" t-as="mod" t-key="mod.name" class="addon-card" t-att-class="{installed: mod.state === 'installed'}">
-                  <div class="addon-card-row">
-                    <div class="addon-card-name" t-att-title="mod.summary" t-out="mod.name"/>
-                    <span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/>
-                  </div>
-                  <div class="addon-card-row">
-                    <div class="addon-card-repo" t-out="mod.repo"/>
-                    <button class="addon-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
-                            t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name)"
-                            t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
-                  </div>
-                </div>
+              <div class="brg-table">
+                <table class="br-table brg-flat">
+                  <thead>
+                    <tr><th>Module</th><th>Summary</th><th>Repository</th><th>State</th><th/></tr>
+                  </thead>
+                  <tbody>
+                    <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
+                      <td class="addon-name" t-att-title="mod.summary" t-out="mod.name"/>
+                      <td class="dim"><div class="br-ellip" t-att-title="mod.summary" t-out="mod.summary || '—'"/></td>
+                      <td class="dim" t-out="mod.repo"/>
+                      <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
+                      <td>
+                        <div class="br-act">
+                          <button class="addon-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
+                                  t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name)"
+                                  t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
               <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
                    t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>

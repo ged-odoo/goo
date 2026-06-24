@@ -2644,6 +2644,9 @@ a.dash-row-branch:hover {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+/* loading / error / empty messages keep the old inset */
+.addons-msg {
   padding: 18px 30px;
 }
 .addons-empty {
@@ -2653,53 +2656,11 @@ a.dash-row-branch:hover {
   justify-content: center;
   font-size: 15px;
 }
-.addons-grid {
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 8px;
-}
-.addon-card {
-  width: 340px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 8px 11px;
-  border: 1px solid var(--l-panel-line);
-  border-radius: 9px;
-  background: oklch(0.975 0.002 264);
-}
-.addon-card.installed {
-  border-color: var(--l-accent-line);
-}
-.addon-card-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.addon-card-name {
+/* module-name cell in the addons list */
+.addon-name {
   font-family: var(--mono);
-  font-size: 13px;
   font-weight: 600;
   color: var(--l-text);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.addon-card-repo {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--l-text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.addon-state {
-  flex: none;
-  white-space: nowrap;
 }
 .addon-btn {
   flex: none;
@@ -2721,7 +2682,7 @@ a.dash-row-branch:hover {
   cursor: default;
 }
 .addons-more {
-  padding: 8px 2px;
+  padding: 10px 16px;
 }
 .addon-state {
   font-family: var(--mono);
