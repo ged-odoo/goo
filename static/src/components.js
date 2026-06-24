@@ -440,9 +440,9 @@ class DashboardScreen extends Component {
                   <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
                   <span class="dash-name" t-out="tgt.name"/>
                   <span class="dash-db" t-att-title="tgt.db || ''"><t t-out="this.dbIcon"/><span class="dash-db-name" t-out="tgt.db || '—'"/></span>
-                  <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
                 </div>
                 <div class="dash-tgt-actions">
+                  <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
                   <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Apply</button>
                   <div class="dash-kebab-wrap">
                     <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>

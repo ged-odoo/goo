@@ -992,10 +992,7 @@ section.hidden {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 6px 20px;
-}
-.dash-tgt.active .dash-tgt-head {
-  background: var(--l-accent-soft);
+  padding: 6px 20px 1px;
 }
 .dash-tgt-title {
   display: flex;
