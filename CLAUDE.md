@@ -14,19 +14,24 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 - `goo.py` — thin launcher at the repo root (executable, shebang); just calls
   `backend.server.main()`. Keeps `python3 goo.py` / `alias goo=…/goo.py` working.
 - `backend/` — the Python package (import with `from backend import …`):
-  - `server.py` — the HTTP server: routing + thin request handlers, plus the side
-    effects not yet moved behind the layer (git, Odoo process mgmt). `GOO_DIR` is
-    the repo root (parent of this package) — where `static/`, `addons/`, and the
-    git checkout live.
-  - `effects.py` — the IO seam: the one place raw subprocess/network happen
-    (`run`, `http_get`, `log_request`). Fake this in tests.
+  - `server.py` — the HTTP server: routing + thin request handlers, the `EventBus`
+    (SSE), and the **process subsystem** (`OdooManager` + the PTY/CLI websocket
+    handlers + the goo self-update), which owns its own inherent process
+    side-effects. `GOO_DIR` is the repo root (parent of this package) — where
+    `static/`, `addons/`, and the git checkout live.
+  - `effects.py` — the IO seam: the one place raw subprocess / network / filesystem
+    happen (`run`, `http_get`, `read_text`/`list_dir`/`read_json_file`/…,
+    `log_request`). Fake this in tests.
   - `services.py` — domain services over the seam (`GitService`, `GitHubService`,
-    `RunbotService`, `MergebotService`, `DatabaseService`); fetch + parse external
-    state, cached server-side where it's worth it (git reads are volatile, uncached).
+    `RunbotService`, `MergebotService`, `DatabaseService`, `AddonsService`); fetch +
+    parse external state, cached server-side where it's worth it (PRs/runbot/
+    mergebot/databases have TTLs; git reads are volatile so they're uncached).
   - `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
-- `tests/` — stdlib `unittest` suite; services run against a fake IO (no network).
-  Being migrated incrementally: side effects → `backend/effects`+`services`,
-  caching → server-side.
+- `tests/` — stdlib `unittest` suite; services run against a fake IO (no network,
+  subprocess, or disk). Run `python3 -m unittest discover`.
+- Architecture: scattered fetch/parse/IO is behind the `effects` seam + `services`;
+  the cohesive `OdooManager`/PTY subsystem keeps its own process side-effects (it's
+  integration-proven, not unit-tested — abstracting it buys little).
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path
 - `static/src/` a owl 3 frontend application
