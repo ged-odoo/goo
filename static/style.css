@@ -2168,8 +2168,9 @@ a.dash-row-branch:hover {
 .brg-table {
   width: fit-content;
   max-width: 100%;
-  /* clean right edge on the natural-width table, matching the header rule color */
+  /* clean right + bottom edges on the natural-width table, matching the header rule */
   border-right: 1px solid var(--l-line);
+  border-bottom: 1px solid var(--l-line);
 }
 .brg-head,
 .brg-group {
