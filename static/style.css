@@ -917,12 +917,22 @@ section.hidden {
   stroke-width: 2;
 }
 .dash-rrow-branch {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--l-text-mid);
-  white-space: nowrap;
+}
+/* only the branch name truncates — the dirty badge + ahead/behind diff stay visible */
+.dash-rrow-branch .dash-bname {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-rrow-branch .dash-diff {
+  flex: none;
 }
 .dash-rrow-commit {
   font-size: 13px;

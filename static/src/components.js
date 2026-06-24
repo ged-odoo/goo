@@ -354,10 +354,10 @@ class DashboardScreen extends Component {
               <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-rrow">
                 <div class="dash-rrow-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></div>
                 <div class="dash-rrow-branch">
-                  <t t-if="r.error"><span class="git-state missing" t-out="r.error"/></t>
+                  <t t-if="r.error"><span class="git-state missing dash-bname" t-out="r.error"/></t>
                   <t t-else="">
-                    <a t-if="r.remote and r.github and r.current" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
-                    <span t-else="" t-out="r.current || '—'"/>
+                    <a t-if="r.remote and r.github and r.current" class="branch-link dash-bname" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
+                    <span t-else="" class="dash-bname" t-out="r.current || '—'"/>
                     <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
                     <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
                       <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
