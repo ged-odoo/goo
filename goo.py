@@ -395,11 +395,14 @@ def git_branches(repos):
             # "target" it would rebase onto), e.g. master-owl-update vs origin/master
             base = base_branch(entry["current"])
             ref = f"{main_remote(path, repo.get('github'))}/{base}"
+            # quiet: the base ref may not be fetched locally (→ "bad revision"); that's
+            # expected, we just leave ahead/behind at 0 rather than log every refresh
             ad = run(
                 ["git", "-C", path, "rev-list", "--left-right", "--count", f"{ref}...HEAD"],
                 capture_output=True,
                 text=True,
                 timeout=10,
+                quiet=True,
             )
             if ad.returncode == 0 and len(ad.stdout.split()) == 2:
                 behind, ahead = ad.stdout.split()
@@ -1013,11 +1016,14 @@ def main_remote(path, github=None):
     """
     p = os.path.expanduser(path)
     try:
+        # a non-zero exit just means master has no upstream here — expected, we fall
+        # back to the remote-URL match / "origin" below, so don't log it
         r = run(
             ["git", "-C", p, "rev-parse", "--abbrev-ref", "master@{upstream}"],
             capture_output=True,
             text=True,
             timeout=10,
+            quiet=True,
         )
         if r.returncode == 0 and "/" in r.stdout.strip():
             return r.stdout.strip().split("/", 1)[0]
@@ -1049,6 +1055,7 @@ def fetch_master(repo):
             capture_output=True,
             text=True,
             timeout=900,
+            quiet=True,  # fetch_master prints its own auto-reload summary below
         )
         if r.returncode != 0:
             tail = r.stderr.strip().splitlines()
