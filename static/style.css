@@ -2817,6 +2817,14 @@ a.dash-row-branch:hover {
 .edit-row.drag-over {
   box-shadow: inset 0 2px 0 var(--l-accent);
 }
+/* "up to date" confirmation next to the Check-for-update button */
+.check-uptodate {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--l-green);
+}
 .edit-row input {
   padding: 7px 10px;
   border: 1px solid var(--l-panel-line);

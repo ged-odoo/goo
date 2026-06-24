@@ -2837,6 +2837,7 @@ class ConfigScreen extends Component {
         <div class="panel-top"><h1>Config</h1></div>
         <div class="panel-actions">
           <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
+          <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
         </div>
       </div>
       <div class="content">
@@ -2898,6 +2899,7 @@ class ConfigScreen extends Component {
   eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   checking = signal(false);
+  upToDate = signal(false); // brief green check by the button when already up to date
   path = signal(this.config.getDataFile());
   msg = signal("");
   backupMsg = signal("");
@@ -2908,6 +2910,7 @@ class ConfigScreen extends Component {
   async checkUpdate() {
     if (this.checking()) return;
     this.checking.set(true);
+    this.upToDate.set(false);
     const r = await this.update.check();
     this.checking.set(false);
     if (r.behind > 0) {
@@ -2917,29 +2920,22 @@ class ConfigScreen extends Component {
       );
       return void this.update.promptUpdate();
     }
-    this.eventLog.add(
-      r.ok
-        ? "checked for updates — goo is up to date"
-        : "checked for updates — could not reach origin",
-      "",
-      r.ok ? "" : "error",
-    );
-    this.dialogs.open(
-      r.ok
-        ? {
-            title: "goo is up to date",
-            message: "Your checkout is at origin/master.",
-            okLabel: "OK",
-            cancelLabel: null,
-          }
-        : {
-            title: "Couldn't check for updates",
-            message: "Make sure goo runs from a git checkout with an 'origin' remote and that you're online.",
-            cls: "dialog-error",
-            okLabel: "OK",
-            cancelLabel: null,
-          },
-    );
+    if (r.ok) {
+      // up to date — a quiet green check next to the button rather than a dialog
+      this.eventLog.add("checked for updates — goo is up to date");
+      this.upToDate.set(true);
+      setTimeout(() => this.upToDate.set(false), 3000);
+      return;
+    }
+    this.eventLog.add("checked for updates — could not reach origin", "", "error");
+    this.dialogs.open({
+      title: "Couldn't check for updates",
+      message:
+        "Make sure goo runs from a git checkout with an 'origin' remote and that you're online.",
+      cls: "dialog-error",
+      okLabel: "OK",
+      cancelLabel: null,
+    });
   }
 
   _loadSettings() {
