@@ -2158,6 +2158,139 @@ a.dash-row-branch:hover {
 .br-table tr.drag-over td {
   box-shadow: inset 0 2px 0 var(--l-accent);
 }
+
+/* ── Branches: grouped grid ──────────────────────────────────────────────────
+   The branch name shows once in a recessed left column; its repo rows sit on the
+   right. The header and every repo row share the same 5-column sub-grid so the
+   columns line up. (PRs tab keeps the .br-table layout — these classes are new.) */
+.brg {
+  --brg-name-col: 280px;
+  font-size: 13px;
+}
+/* the card stays full-width so it's the scroll container (vertical scrollbar on
+   the right of the content area); this inner wrapper sizes to the table's
+   natural width and stays left-aligned inside it */
+.brg-table {
+  width: fit-content;
+  max-width: 100%;
+  /* clean right edge on the natural-width table, matching the header rule color */
+  border-right: 1px solid var(--l-line);
+}
+.brg-head,
+.brg-group {
+  display: grid;
+  grid-template-columns: var(--brg-name-col) auto;
+}
+.brg-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--l-bg);
+  border-bottom: 1px solid var(--l-line);
+}
+.brg-group {
+  border-top: 1px solid var(--l-line);
+}
+.brg-group:first-of-type {
+  border-top: none;
+}
+/* name column — header label + the per-group cell (recessed, right-bordered) */
+.brg-name-head,
+.brg-name {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 20px;
+  background: var(--l-bg);
+  border-right: 1px solid var(--l-line);
+}
+.brg-name-head {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+  cursor: pointer;
+  user-select: none;
+}
+.brg-group.row-sel .brg-name {
+  background: var(--l-accent-soft);
+}
+/* long branch names wrap inside the fixed-width name column instead of overflowing */
+.brg-name .br-branch {
+  min-width: 0;
+  word-break: break-all;
+  line-height: 1.35;
+}
+/* the 5 sub-columns, shared by the header and every repo row → aligned columns.
+   Fixed widths (Last commit truncates) so the whole table has a natural width. */
+.brg-cols {
+  display: grid;
+  grid-template-columns: 110px 96px 340px 200px 44px;
+  gap: 22px;
+  align-items: center;
+  padding: 11px 20px;
+}
+.brg-colhead {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+}
+.brg-colhead .br-sort {
+  cursor: pointer;
+  user-select: none;
+}
+.brg-row {
+  border-top: 1px solid var(--l-line-soft);
+}
+.brg-row:first-child {
+  border-top: none;
+}
+.brg-row:hover {
+  background: var(--l-hover);
+}
+.brg-row.active {
+  background: var(--l-accent-soft);
+  box-shadow: inset 3px 0 0 var(--l-accent);
+}
+.brg-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.brg-when {
+  font-size: 12.5px;
+  color: var(--l-text-dim);
+}
+.brg-commit {
+  font-size: 12.5px;
+  color: var(--l-text-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brg-row.active .brg-commit {
+  color: var(--l-text);
+  font-weight: 600;
+}
+.brg-pr {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.brg-pr .pr-state {
+  margin-left: 6px;
+}
+.brg-dash {
+  color: var(--l-text-faint);
+}
+.brg-act {
+  display: flex;
+  justify-content: flex-end;
+}
 .pr-link {
   font-family: var(--mono);
   font-size: 12.5px;

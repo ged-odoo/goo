@@ -1879,48 +1879,54 @@ class BranchesScreen extends Component {
         <div t-att-class="{busy: this.code.busy()}">
           <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.groups().length" class="dim br-empty">No branches.</div>
-          <div t-else="" class="br-card">
-            <table class="br-table">
-              <thead>
-                <tr>
-                  <th class="br-sort" t-on-click="() => this.sort('name')"><span t-on-click.stop=""><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all branches"/></span>Branch<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
-                  <th>Repository</th>
-                  <th class="br-sort" t-on-click="() => this.sort('update')">Last update<span class="br-arrow" t-out="this.sortArrow('update')"/></th>
-                  <th>PR</th>
-                  <th/><th class="br-spacer"/>
-                </tr>
-              </thead>
-              <tbody t-foreach="this.groups()" t-as="g" t-key="g.name" t-att-class="{'br-tight': g.repos.length > 1}">
-                <tr t-foreach="g.repos" t-as="r" t-key="r.repo" t-att-class="{active: r.active, 'row-sel': this.selected().has(g.name)}">
-                  <td t-if="r_index === 0" t-att-rowspan="g.repos.length" class="br-name">
-                    <div class="br-name-inner">
-                      <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
-                      <span class="br-branch select-toggle" t-on-click="() => this.toggleSelect(g.name)" t-out="g.name"/>
-                    </div>
-                  </td>
-                  <td class="br-repo">
+          <div t-else="" class="br-card brg">
+            <!-- full-width card = scroll container (scrollbar stays on the right);
+                 this wrapper sizes to the table's natural width, left-aligned -->
+            <div class="brg-table">
+            <!-- column header: "Branch" over the name column, the rest over the repo rows -->
+            <div class="brg-head">
+              <div class="brg-name-head br-sort" t-on-click="() => this.sort('name')">
+                <span t-on-click.stop=""><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all branches"/></span>
+                Branch<span class="br-arrow" t-out="this.sortArrow('name')"/>
+              </div>
+              <div class="brg-cols brg-colhead">
+                <span>Repository</span>
+                <span class="br-sort" t-on-click="() => this.sort('update')">Last update<span class="br-arrow" t-out="this.sortArrow('update')"/></span>
+                <span>Last commit</span>
+                <span>PR</span>
+                <span/>
+              </div>
+            </div>
+            <!-- one group per branch name: the name shown once on the left, repo rows on the right -->
+            <div t-foreach="this.groups()" t-as="g" t-key="g.name" class="brg-group" t-att-class="{'row-sel': this.selected().has(g.name)}">
+              <div class="brg-name">
+                <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
+                <span class="br-branch select-toggle" t-on-click="() => this.toggleSelect(g.name)" t-out="g.name"/>
+              </div>
+              <div class="brg-rows">
+                <div t-foreach="g.repos" t-as="r" t-key="r.repo" class="brg-cols brg-row" t-att-class="{active: r.active}">
+                  <span class="brg-repo">
                     <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
                     <span t-else="" t-out="r.repo"/>
                     <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
-                  </td>
-                  <td class="br-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
-                  <td class="br-pr">
+                  </span>
+                  <span class="brg-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
+                  <span class="brg-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
+                  <span class="brg-pr">
                     <t t-if="r.pr">
                       <a class="pr-link" target="_blank" t-att-href="r.pr.url" t-out="'#' + r.pr.number"/>
                       <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
                     </t>
-                    <t t-else="">—</t>
-                  </td>
-                  <td>
-                    <div class="br-act">
-                      <button class="dash-kebab" title="branch actions"
-                              t-on-click.stop="(ev) => this.openRowMenu(ev, r)"><t t-out="this.kebabIcon"/></button>
-                    </div>
-                  </td>
-                  <td class="br-spacer"/>
-                </tr>
-              </tbody>
-            </table>
+                    <span t-else="" class="brg-dash">—</span>
+                  </span>
+                  <span class="brg-act">
+                    <button class="dash-kebab" title="branch actions"
+                            t-on-click.stop="(ev) => this.openRowMenu(ev, r)"><t t-out="this.kebabIcon"/></button>
+                  </span>
+                </div>
+              </div>
+            </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1959,6 +1965,7 @@ class BranchesScreen extends Component {
           remote: b.remote,
           base: BASE_BRANCH_RE.test(b.name),
           date: b.date,
+          subject: b.subject || "",
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
           repoDirty: repo.dirty, // the repo's working tree (its current branch)
