@@ -20,8 +20,9 @@ def completed(stdout="", returncode=0, stderr=""):
 class FakeIO:
     """Canned stand-in for effects.py — records calls, returns scripted results."""
 
-    def __init__(self, *, run_result=None, http=None):
+    def __init__(self, *, run_result=None, runs=None, http=None):
         self._run_result = run_result if run_result is not None else completed()
+        self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
         self.run_calls = []
         self.http_calls = []
@@ -31,6 +32,10 @@ class FakeIO:
 
     def run(self, cmd, **kwargs):
         self.run_calls.append(cmd)
+        joined = " ".join(str(c) for c in cmd)
+        for needle, res in self._runs.items():
+            if needle in joined:
+                return res
         return self._run_result
 
     def http_get(self, url, **kwargs):
@@ -150,6 +155,66 @@ class TTLCacheTest(unittest.TestCase):
         self.assertEqual(cache.get("k", compute), 2)  # recomputed
         cache.invalidate("k")
         self.assertEqual(cache.get("k", compute), 3)  # invalidated → recomputed
+
+
+class DatabaseServiceTest(unittest.TestCase):
+    def _io(self, **extra):
+        runs = {
+            "ORDER BY datname": completed(stdout="alpha\nbeta\n"),  # the db list
+            "pg_stat_file": completed(stdout="alpha|2024-01-01 00:00:00\n"),  # creation times
+            "latest_version": completed(stdout="17.0|f|2024-06-20T10:00:00\n"),  # odoo_info
+        }
+        runs.update(extra)
+        return FakeIO(runs=runs)
+
+    def test_databases_lists_with_info(self):
+        svc = services.DatabaseService(self._io(), TTLCache(ttl=0))
+        dbs = svc.databases()
+        self.assertEqual([d["name"] for d in dbs], ["alpha", "beta"])
+        self.assertEqual(dbs[0]["odoo_version"], "17.0")
+        self.assertEqual(dbs[0]["created"], "2024-01-01 00:00:00")
+        self.assertIsNone(dbs[1]["created"])  # only alpha had a creation time
+
+    def test_databases_raises_when_psql_fails(self):
+        io = self._io()
+        io._runs["ORDER BY datname"] = completed(returncode=2, stderr="psql: connection refused")
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        with self.assertRaises(RuntimeError):
+            svc.databases()
+
+    def test_db_initialized(self):
+        ok = services.DatabaseService(
+            FakeIO(runs={"information_schema.tables": completed(stdout="1")}), TTLCache(ttl=0)
+        )
+        self.assertTrue(ok.db_initialized("d"))
+        empty = services.DatabaseService(
+            FakeIO(runs={"information_schema.tables": completed(stdout="")}), TTLCache(ttl=0)
+        )
+        self.assertFalse(empty.db_initialized("d"))  # shell db, no schema
+        missing = services.DatabaseService(
+            FakeIO(runs={"information_schema.tables": completed(returncode=2)}), TTLCache(ttl=0)
+        )
+        self.assertFalse(missing.db_initialized("d"))  # db doesn't exist
+
+    def test_installed_modules(self):
+        io = FakeIO(runs={"name, state": completed(stdout="sale|installed\naccount|uninstalled\n")})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        self.assertEqual(
+            svc.installed_modules("d"), {"sale": "installed", "account": "uninstalled"}
+        )
+
+    def test_drop_invalidates_cache(self):
+        cache = TTLCache(ttl=600)
+        svc = services.DatabaseService(self._io(dropdb=completed()), cache)
+        svc.databases()  # cache the list
+        svc.databases()  # served from cache → one list query only
+        list_calls = sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls)
+        self.assertEqual(list_calls, 1)
+        ok, _ = svc.drop("alpha")
+        self.assertTrue(ok)
+        svc.databases()  # cache invalidated → list query runs again
+        list_calls = sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls)
+        self.assertEqual(list_calls, 2)
 
 
 if __name__ == "__main__":

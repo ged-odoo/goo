@@ -141,155 +141,6 @@ def kill_port(port):
         pass
 
 
-def db_initialized(db_name):
-    """Check if the database exists AND holds an initialized odoo schema.
-
-    A database can exist as an empty shell (e.g. leftover from an aborted
-    run); odoo then refuses to load it without -i, so treat it as new.
-    """
-    try:
-        result = run(
-            [
-                "psql",
-                "-d",
-                db_name,
-                "-tAc",
-                "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module'",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            quiet=True,  # non-zero just means the database doesn't exist
-        )
-        if result.returncode != 0:
-            return False  # database doesn't exist
-        return result.stdout.strip() == "1"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return True  # can't check: assume initialized, avoid surprise installs
-
-
-def odoo_info(db_name):
-    """(version, is_enterprise, last_update) of the odoo installed in a
-    database. (None, False, None) if it holds no odoo.
-
-    last_update is a UTC timestamp of the last detectable activity: crons
-    are written whenever a server runs against the db, logins create
-    res_users_log rows."""
-    try:
-        result = run(
-            [
-                "psql",
-                "-d",
-                db_name,
-                "-tAc",
-                "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
-                " EXISTS (SELECT 1 FROM ir_module_module"
-                " WHERE name = 'web_enterprise' AND state = 'installed'),"
-                " GREATEST((SELECT max(write_date) FROM ir_cron),"
-                " (SELECT max(create_date) FROM res_users_log))",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            quiet=True,  # non-zero just means the db isn't an odoo database
-        )
-        line = result.stdout.strip()
-        if result.returncode != 0 or not line:
-            return None, False, None  # no odoo tables: not an odoo database
-        version, enterprise, last_update = line.split("|", 2)
-        return version or None, enterprise == "t", last_update or None
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None, False, None
-
-
-def db_creation_times():
-    """Map db name -> creation timestamp (naive UTC ISO), from the mtime of
-    each database's PG_VERSION file. Needs superuser / pg_read_server_files;
-    returns {} if unavailable."""
-    try:
-        r = run(
-            [
-                "psql",
-                "-d",
-                "postgres",
-                "-tAc",
-                "SELECT datname,"
-                " (pg_stat_file('base/' || oid || '/PG_VERSION')).modification AT TIME ZONE 'UTC'"
-                " FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            quiet=True,  # best-effort (needs superuser); a failure just yields {}
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return {}
-    if r.returncode != 0:
-        return {}
-    out = {}
-    for line in r.stdout.splitlines():
-        if "|" in line:
-            name, ts = line.split("|", 1)
-            out[name] = ts or None
-    return out
-
-
-def list_databases():
-    """All non-template databases with their odoo version. Raises RuntimeError."""
-    try:
-        result = run(
-            [
-                "psql",
-                "-d",
-                "postgres",
-                "-tAc",
-                "SELECT datname FROM pg_database"
-                " WHERE NOT datistemplate AND datname <> 'postgres'"
-                " ORDER BY datname",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        raise RuntimeError(f"cannot list databases: {e}") from e
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "psql failed")
-    created = db_creation_times()
-    dbs = []
-    for line in result.stdout.split("\n"):
-        name = line.strip()
-        if not name:
-            continue
-        version, enterprise, last_update = odoo_info(name)
-        dbs.append(
-            {
-                "name": name,
-                "odoo_version": version,
-                "enterprise": enterprise,
-                "last_update": last_update,
-                "created": created.get(name),
-            }
-        )
-    return dbs
-
-
-def drop_database(db_name):
-    """Drop a database. Returns (ok, error)."""
-    try:
-        result = run(
-            ["dropdb", db_name],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return False, str(e)
-    if result.returncode != 0:
-        return False, result.stderr.strip() or "dropdb failed"
-    return True, None
-
-
 def read_data_file(path):
     """Read a JSON data file. Returns (data, error). A missing file is not an
     error: it returns (None, None) so the caller can create it on first use."""
@@ -890,27 +741,6 @@ def module_manifest(module_path):
     return None
 
 
-def installed_modules(db):
-    """Map of module name -> state from a database (empty if unreadable)."""
-    try:
-        r = run(
-            ["psql", "-d", db, "-tAc", "SELECT name, state FROM ir_module_module"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return {}
-    if r.returncode != 0:
-        return {}
-    out = {}
-    for line in r.stdout.splitlines():
-        if "|" in line:
-            name, state = line.split("|", 1)
-            out[name] = state
-    return out
-
-
 def list_addons(repos):
     """Scan each repo {id, path} for modules with a manifest. A module name
     found in an earlier repo wins (community before enterprise, etc.)."""
@@ -1167,7 +997,7 @@ def build_odoo_cmd(config):
         # initialize it in the same run by applying the target's on_create_args
         # (e.g. `-i <modules>`) — odoo then installs the modules AND runs the
         # tests, instead of failing against an empty/missing database
-        is_new = not db_initialized(db)
+        is_new = not DATABASE.db_initialized(db)
         on_create_args = start.get("on_create_args", "")
         if is_new and on_create_args:
             cmd += f" {on_create_args}"
@@ -1187,7 +1017,7 @@ def build_odoo_cmd(config):
     if other_args:
         cmd += f" {other_args}"
 
-    is_new = not db_initialized(db)
+    is_new = not DATABASE.db_initialized(db)
     on_create_args = start.get("on_create_args", "")
     if is_new and on_create_args:
         cmd += f" {on_create_args}"
@@ -1295,7 +1125,7 @@ class OdooManager:
                 status["returncode"] = self.returncode
         status["odoo_port_busy"] = port_busy(ODOO_PORT)
         if status["db"]:
-            version, enterprise, _ = odoo_info(status["db"])
+            version, enterprise, _ = DATABASE.odoo_info(status["db"])
             status["odoo_version"] = version
             status["enterprise"] = enterprise
         return status
@@ -1496,11 +1326,12 @@ class OdooManager:
 BUS = EventBus()
 MANAGER = OdooManager(BUS)
 # services layer over the IO seam (effects): external state fetched + parsed +
-# cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min. A `refresh` flag on
-# the read endpoints bypasses the cache (the UI's manual Refresh).
+# cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min, databases 1 min.
+# A `refresh` flag on the read endpoints bypasses the cache (the UI's manual Refresh).
 GITHUB = services.GitHubService(effects, TTLCache(600))
 RUNBOT = services.RunbotService(effects, TTLCache(300))
 MERGEBOT = services.MergebotService(effects, TTLCache(300))
+DATABASE = services.DatabaseService(effects, TTLCache(60))
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -1541,8 +1372,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/goo/update":
             self._send_json(200, {**GOO_UPDATE, "boot": BOOT_ID})
         elif path == "/api/databases":
+            refresh = "refresh" in urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
-                self._send_json(200, {"ok": True, "databases": list_databases()})
+                self._send_json(200, {"ok": True, "databases": DATABASE.databases(refresh=refresh)})
             except RuntimeError as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
         elif path == "/api/events":
@@ -1631,7 +1463,7 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             mods = list_addons(repos)
-            state = installed_modules(db) if db else {}
+            state = DATABASE.installed_modules(db) if db else {}
             for m in mods:
                 m["state"] = state.get(m["name"])
             self._send_json(200, {"ok": True, "modules": mods, "db": db})
@@ -1706,7 +1538,7 @@ class Handler(BaseHTTPRequestHandler):
             name = (body or {}).get("name")
             if err or not name or not isinstance(name, str):
                 return self._send_json(400, {"ok": False, "error": "missing database name"})
-            ok, error = drop_database(name)
+            ok, error = DATABASE.drop(name)
             if ok:
                 self._send_json(200, {"ok": True})
             else:

@@ -269,3 +269,168 @@ class MergebotService:
             if word in MERGEBOT_STATES:
                 return word
         return ""
+
+
+# ─────────────────────────── PostgreSQL databases ───────────────────────────
+
+
+class DatabaseService:
+    """PostgreSQL databases: the list (with odoo version + last activity), the
+    existence/info probes, and drop. The list is cached server-side and fetched
+    with parallel per-db probes; drop invalidates the cache. The probes are quiet
+    (a non-zero exit just means "no such db" / "not an odoo db")."""
+
+    def __init__(self, io, cache):
+        self.io = io
+        self.cache = cache
+
+    def databases(self, refresh=False):
+        """All non-template databases with their odoo info. Cached; pass
+        refresh=True to bypass. Raises RuntimeError if psql can't be reached."""
+        if refresh:
+            self.cache.invalidate("list")
+        return self.cache.get("list", self._list)
+
+    def _list(self):
+        try:
+            r = self.io.run(
+                [
+                    "psql",
+                    "-d",
+                    "postgres",
+                    "-tAc",
+                    "SELECT datname FROM pg_database"
+                    " WHERE NOT datistemplate AND datname <> 'postgres'"
+                    " ORDER BY datname",
+                ],
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            raise RuntimeError(f"cannot list databases: {e}") from e
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or "psql failed")
+        names = [ln.strip() for ln in r.stdout.split("\n") if ln.strip()]
+        if not names:
+            return []
+        created = self._creation_times()
+        with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
+            infos = list(pool.map(self.odoo_info, names))  # one psql per db, in parallel
+        return [
+            {
+                "name": n,
+                "odoo_version": v,
+                "enterprise": e,
+                "last_update": u,
+                "created": created.get(n),
+            }
+            for n, (v, e, u) in zip(names, infos, strict=False)
+        ]
+
+    def drop(self, name):
+        """Drop a database. Returns (ok, error); invalidates the list cache."""
+        try:
+            r = self.io.run(["dropdb", name], timeout=15)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "dropdb failed"
+        self.cache.invalidate("list")
+        return True, None
+
+    def db_initialized(self, db):
+        """Whether the database exists AND holds an initialized odoo schema. A db
+        can exist as an empty shell; odoo refuses to load it without -i, so treat
+        that as new. On a probe error (no psql), assume initialized to avoid a
+        surprise reinstall."""
+        try:
+            r = self.io.run(
+                [
+                    "psql",
+                    "-d",
+                    db,
+                    "-tAc",
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module'",
+                ],
+                timeout=5,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return True
+        if r.returncode != 0:
+            return False  # database doesn't exist
+        return r.stdout.strip() == "1"
+
+    def odoo_info(self, db):
+        """(version, is_enterprise, last_update) of the odoo in a database, or
+        (None, False, None) if it holds no odoo. last_update is the UTC timestamp
+        of the last detectable activity (cron writes, login rows)."""
+        try:
+            r = self.io.run(
+                [
+                    "psql",
+                    "-d",
+                    db,
+                    "-tAc",
+                    "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
+                    " EXISTS (SELECT 1 FROM ir_module_module"
+                    " WHERE name = 'web_enterprise' AND state = 'installed'),"
+                    " GREATEST((SELECT max(write_date) FROM ir_cron),"
+                    " (SELECT max(create_date) FROM res_users_log))",
+                ],
+                timeout=5,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None, False, None
+        line = r.stdout.strip()
+        if r.returncode != 0 or not line:
+            return None, False, None  # no odoo tables: not an odoo database
+        version, enterprise, last_update = line.split("|", 2)
+        return version or None, enterprise == "t", last_update or None
+
+    def installed_modules(self, db):
+        """Map of module name -> state for a database (empty if unreadable)."""
+        try:
+            r = self.io.run(
+                ["psql", "-d", db, "-tAc", "SELECT name, state FROM ir_module_module"],
+                timeout=5,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return {}
+        if r.returncode != 0:
+            return {}
+        out = {}
+        for line in r.stdout.splitlines():
+            if "|" in line:
+                name, state = line.split("|", 1)
+                out[name] = state
+        return out
+
+    def _creation_times(self):
+        """Map db name -> creation timestamp (naive UTC ISO) from each database's
+        PG_VERSION mtime. Needs superuser / pg_read_server_files; {} if not."""
+        try:
+            r = self.io.run(
+                [
+                    "psql",
+                    "-d",
+                    "postgres",
+                    "-tAc",
+                    "SELECT datname,"
+                    " (pg_stat_file('base/' || oid || '/PG_VERSION')).modification AT TIME ZONE 'UTC'"
+                    " FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'",
+                ],
+                timeout=5,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return {}
+        if r.returncode != 0:
+            return {}
+        out = {}
+        for line in r.stdout.splitlines():
+            if "|" in line:
+                name, ts = line.split("|", 1)
+                out[name] = ts or None
+        return out

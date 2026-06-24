@@ -101,4 +101,3 @@ export const SECTIONS = [
 export const RUNBOT = "https://runbot.odoo.com";
 export const MERGEBOT = "https://mergebot.odoo.com";
 export const BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
-export const CACHE_TTL = 10 * 60 * 1000;
