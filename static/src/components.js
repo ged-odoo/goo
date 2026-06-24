@@ -2843,10 +2843,10 @@ class ConfigScreen extends Component {
       <div class="content">
         <div class="config-block">
           <h2 class="subtitle">Settings</h2>
-          <div class="settings-grid">
+          <div class="settings-grid" data-form-type="other">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
-              <label t-out="f.name"/>
-              <input type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
+              <label t-att-for="'setting-' + f.key" t-out="f.name"/>
+              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
@@ -2855,8 +2855,8 @@ class ConfigScreen extends Component {
         <div class="config-block">
           <h2 class="subtitle">Miscellaneous</h2>
           <div class="settings-grid">
-            <label title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open).">auto-open event log</label>
-            <input type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
+            <label for="setting-auto-open-event-log" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open).">auto-open event log</label>
+            <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
           </div>
