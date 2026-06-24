@@ -90,45 +90,48 @@ class GitHubService:
         return self.cache.get(key, lambda: self._fetch(repos))
 
     def _fetch(self, repos):
-        out = []
-        for repo in repos:
-            rid, gh_repo = repo.get("id"), repo.get("github")
-            if not rid or not gh_repo:
-                continue
-            entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
-            self.io.log_request(f"gh pr list --repo {gh_repo} --author @me")
-            try:
-                r = self.io.run(
-                    [
-                        "gh",
-                        "pr",
-                        "list",
-                        "--repo",
-                        gh_repo,
-                        "--author",
-                        "@me",
-                        "--state",
-                        "all",
-                        "--limit",
-                        "200",
-                        "--json",
-                        "number,title,url,state,isDraft,headRefName,updatedAt,statusCheckRollup",
-                    ],
-                    timeout=30,
-                )
-                if r.returncode != 0:
-                    entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
-                else:
-                    prs = json.loads(r.stdout)
-                    for pr in prs:
-                        pr["ci"] = _ci_rollup(pr.pop("statusCheckRollup", None))
-                    entry["prs"] = prs
-            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                entry["error"] = str(e)
-            except json.JSONDecodeError:
-                entry["error"] = "unexpected gh output"
-            out.append(entry)
-        return out
+        # one `gh pr list` per repo, in parallel (pool.map preserves order)
+        valid = [r for r in repos if r.get("id") and r.get("github")]
+        if not valid:
+            return []
+        with ThreadPoolExecutor(max_workers=min(8, len(valid))) as pool:
+            return list(pool.map(self._fetch_one, valid))
+
+    def _fetch_one(self, repo):
+        rid, gh_repo = repo["id"], repo["github"]
+        entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
+        self.io.log_request(f"gh pr list --repo {gh_repo} --author @me")
+        try:
+            r = self.io.run(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    gh_repo,
+                    "--author",
+                    "@me",
+                    "--state",
+                    "all",
+                    "--limit",
+                    "200",
+                    "--json",
+                    "number,title,url,state,isDraft,headRefName,updatedAt,statusCheckRollup",
+                ],
+                timeout=30,
+            )
+            if r.returncode != 0:
+                entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
+            else:
+                prs = json.loads(r.stdout)
+                for pr in prs:
+                    pr["ci"] = _ci_rollup(pr.pop("statusCheckRollup", None))
+                entry["prs"] = prs
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            entry["error"] = str(e)
+        except json.JSONDecodeError:
+            entry["error"] = "unexpected gh output"
+        return entry
 
     def close_pr(self, github, number):
         """Close a GitHub PR. Returns (ok, error); invalidates the PR cache on
