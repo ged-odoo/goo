@@ -25,36 +25,50 @@ export class CodePlugin extends Plugin {
   busy = signal(false);
   mergebot = signal({}); // "github#number" -> mergebot state (cached server-side)
   runbot = signal({}); // branch name -> runbot status (cached server-side)
-  _refreshExternal = false; // true during a forced load: bypass the server cache
+  _refreshExternal = false; // true during a forced load: ask the server to bypass its cache
+  _mbPending = new Set(); // keys in flight, so the dashboard effect doesn't double-fetch
+  _rbPending = new Set();
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
 
-  // mergebot state for the given PRs. The server caches + single-flights, so we
-  // just request the ones we don't already hold (or all, on a forced refresh).
+  // mergebot state for the given PRs. Only fetch what we don't already hold and
+  // isn't already in flight — that `have`-based dedup is what stops the dashboard
+  // effect (which re-runs when the signal updates) from looping. A forced refresh
+  // clears the signal in load() and passes refresh:true so the server re-scrapes.
   async loadMergebot(prs) {
     const refresh = this._refreshExternal;
     const have = this.mergebot();
-    const todo = refresh ? prs : prs.filter((p) => !(`${p.github}#${p.number}` in have));
+    const todo = prs.filter((p) => {
+      const k = `${p.github}#${p.number}`;
+      return !(k in have) && !this._mbPending.has(k);
+    });
     if (!todo.length) return;
+    const keys = todo.map((p) => `${p.github}#${p.number}`);
+    keys.forEach((k) => this._mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
       this.mergebot.set({ ...this.mergebot(), ...res.states });
     } catch {
       /* leave states blank on failure */
+    } finally {
+      keys.forEach((k) => this._mbPending.delete(k));
     }
   }
 
-  // runbot status for the given branches (server-cached + single-flighted)
+  // runbot status for the given branches — same dedup as loadMergebot
   async loadRunbot(branches) {
     const refresh = this._refreshExternal;
     const have = this.runbot();
-    const todo = refresh ? branches : branches.filter((b) => !(b in have));
+    const todo = branches.filter((b) => !(b in have) && !this._rbPending.has(b));
     if (!todo.length) return;
+    todo.forEach((b) => this._rbPending.add(b));
     try {
       const res = await postJSON("/api/runbot", { branches: todo, refresh });
       this.runbot.set({ ...this.runbot(), ...res.states });
     } catch {
       /* leave status blank on failure */
+    } finally {
+      todo.forEach((b) => this._rbPending.delete(b));
     }
   }
 
