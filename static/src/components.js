@@ -2792,11 +2792,12 @@ class ConfigScreen extends Component {
   static components = { ListEditor };
   static template = xml`
     <section>
-      <div class="panel"><div class="panel-top"><h1>Config</h1>
-        <div class="panel-top-right">
+      <div class="panel">
+        <div class="panel-top"><h1>Config</h1></div>
+        <div class="panel-actions">
           <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
         </div>
-      </div></div>
+      </div>
       <div class="content">
         <div class="config-block">
           <h2 class="subtitle">Settings</h2>
@@ -2853,6 +2854,7 @@ class ConfigScreen extends Component {
   config = plugin(ConfigPlugin);
   update = plugin(UpdatePlugin);
   dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   checking = signal(false);
   path = signal(this.config.getDataFile());
@@ -2867,7 +2869,20 @@ class ConfigScreen extends Component {
     this.checking.set(true);
     const r = await this.update.check();
     this.checking.set(false);
-    if (r.behind > 0) return void this.update.promptUpdate();
+    if (r.behind > 0) {
+      const n = r.behind;
+      this.eventLog.add(
+        `checked for updates — ${n} commit${n === 1 ? "" : "s"} behind origin/master`,
+      );
+      return void this.update.promptUpdate();
+    }
+    this.eventLog.add(
+      r.ok
+        ? "checked for updates — goo is up to date"
+        : "checked for updates — could not reach origin",
+      "",
+      r.ok ? "" : "error",
+    );
     this.dialogs.open(
       r.ok
         ? {
