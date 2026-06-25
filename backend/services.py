@@ -357,32 +357,52 @@ class MergebotService:
         self.cache = cache
 
     def statuses(self, prs, refresh=False):
-        """{"github#number": state} for the given PRs, cached per PR and fetched in
-        parallel. Pass refresh=True to bypass the cache."""
+        """Return ({"github#number": state}, [unsupported repos]) for the given PRs,
+        cached per PR and fetched in parallel. Pass refresh=True to bypass the cache.
+
+        A repo is reported "unsupported" when, in this batch, at least one of its PRs
+        404s (no mergebot page) and none of its PRs is reachable — so the caller can
+        remember it and stop asking. A repo with one un-indexed 404 but another
+        reachable PR is NOT unsupported (its reachable PR clears it)."""
         prs = [p for p in prs if p.get("github") and p.get("number")]
         if not prs:
-            return {}
+            return {}, []
         if refresh:
             for p in prs:
                 self.cache.invalidate(f"{p['github']}#{p['number']}")
         with ThreadPoolExecutor(max_workers=min(8, len(prs))) as pool:
-            states = pool.map(
-                lambda p: self.cache.get(
-                    f"{p['github']}#{p['number']}",
-                    lambda p=p: self._status(p["github"], p["number"]),
-                ),
-                prs,
+            results = list(
+                pool.map(
+                    lambda p: self.cache.get(
+                        f"{p['github']}#{p['number']}",
+                        lambda p=p: self._status(p["github"], p["number"]),
+                    ),
+                    prs,
+                )
             )
-            return {f"{p['github']}#{p['number']}": s for p, s in zip(prs, states, strict=False)}
+        states, reachable, missing = {}, set(), set()
+        for p, (state, supported) in zip(prs, results, strict=False):
+            states[f"{p['github']}#{p['number']}"] = state
+            if supported is None:
+                # transient failure — don't pin a blank for the whole TTL
+                self.cache.invalidate(f"{p['github']}#{p['number']}")
+            elif supported:
+                reachable.add(p["github"])
+            else:
+                missing.add(p["github"])
+        unsupported = sorted(missing - reachable)
+        return states, unsupported
 
     def _status(self, github, number):
-        """The merge state, e.g. 'blocked', 'staged', 'merged' ("" on failure /
-        unknown). State is rendered inconsistently (a colored <p> for blocked/
-        staged/ready/…, an alert <div> for merged/closed), so scan for the first
-        element with a bg-* or alert class whose leading word is a known state."""
-        html, _ = self.io.http_get(f"{MERGEBOT_BASE}/{github}/pull/{number}")
-        if not html:
-            return ""
+        """(merge state, supported) — e.g. ('blocked', True), ('merged', True), or
+        ('', True) when the page loads but shows no known state. `supported` is
+        False on a 404 (repo/PR not on mergebot) and None on a transient failure.
+        State is rendered inconsistently (a colored <p> for blocked/staged/ready/…,
+        an alert <div> for merged/closed), so scan for the first element with a bg-*
+        or alert class whose leading word is a known state."""
+        html, err = self.io.http_get(f"{MERGEBOT_BASE}/{github}/pull/{number}")
+        if err:
+            return "", (False if "404" in err else None)
         for m in re.finditer(
             r'<\w+[^>]*class="[^"]*(?:\bbg-\w+|\balert\b)[^"]*"[^>]*>(.*?)</', html, re.S
         ):
@@ -391,8 +411,8 @@ class MergebotService:
                 continue
             word = re.sub(r"[^a-z]", "", txt.split()[0].lower())
             if word in MERGEBOT_STATES:
-                return word
-        return ""
+                return word, True
+        return "", True
 
 
 # ─────────────────────────── PostgreSQL databases ───────────────────────────

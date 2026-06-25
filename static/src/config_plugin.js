@@ -12,7 +12,18 @@ export const LAST_TARGET_KEY = "oo-last-target";
 const DATA_FILE_KEY = "oo-data-file";
 export const FAVORITES_KEY = "oo-prs-favorites";
 export const TEST_HISTORY_KEY = "oo-test-history";
-const PERSISTENT_KEYS = [STORAGE_KEY, FAVORITES_KEY, LAST_TARGET_KEY, TEST_HISTORY_KEY];
+// Reviews tab: PRs known merged (terminal — never re-fetched) and repos with no
+// mergebot support (skipped). Persisted so the work survives reloads/restarts.
+export const REVIEWS_MERGED_KEY = "oo-reviews-merged";
+export const REVIEWS_NO_MERGEBOT_KEY = "oo-reviews-no-mergebot";
+const PERSISTENT_KEYS = [
+  STORAGE_KEY,
+  FAVORITES_KEY,
+  LAST_TARGET_KEY,
+  TEST_HISTORY_KEY,
+  REVIEWS_MERGED_KEY,
+  REVIEWS_NO_MERGEBOT_KEY,
+];
 
 // a stable, unique id for a new target (referenced internally so renaming is safe)
 export function newTargetId() {

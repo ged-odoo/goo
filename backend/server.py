@@ -734,7 +734,7 @@ MANAGER = OdooManager(BUS)
 # A `refresh` flag on the read endpoints bypasses the cache (the UI's manual Refresh).
 GITHUB = services.GitHubService(effects, TTLCache(600))
 RUNBOT = services.RunbotService(effects, TTLCache(300))
-MERGEBOT = services.MergebotService(effects, TTLCache(300))
+MERGEBOT = services.MergebotService(effects, TTLCache(8 * 3600))  # 8h TTL (states change slowly)
 DATABASE = services.DatabaseService(effects, TTLCache(60))
 # git on the user's repos — uncached (branch reads are volatile + fast); notify
 # routes the fetch/rebase progress phases to the browser event log
@@ -859,8 +859,8 @@ class Handler(BaseHTTPRequestHandler):
             prs = (body or {}).get("prs")
             if err or not isinstance(prs, list):
                 return self._send_json(400, {"ok": False, "error": "missing prs list"})
-            states = MERGEBOT.statuses(prs, refresh=bool((body or {}).get("refresh")))
-            self._send_json(200, {"ok": True, "states": states})
+            states, unsupported = MERGEBOT.statuses(prs, refresh=bool((body or {}).get("refresh")))
+            self._send_json(200, {"ok": True, "states": states, "unsupported": unsupported})
         elif path == "/api/runbot":
             body, err = self._read_json()
             branches = (body or {}).get("branches")

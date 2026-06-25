@@ -4,7 +4,7 @@
 // is held in individual signals (read via signal() in templates); component
 // props use the props({...}) helper with `t` types.
 
-import { BASE_BRANCH_RE, VERSION } from "./config.js";
+import { BASE_BRANCH_RE, MERGEBOT, VERSION } from "./config.js";
 import { ConfigPlugin, newTargetId } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -2574,7 +2574,7 @@ class ReviewScreen extends Component {
           </div>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.review.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
@@ -2592,7 +2592,7 @@ class ReviewScreen extends Component {
                  PRs of the same branch read as one block (no rule between them) -->
             <table class="br-table brg-flat rev-table">
               <thead>
-                <tr><th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Last update</th></tr>
+                <tr><th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th>Last update</th></tr>
               </thead>
               <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
                 <tr t-foreach="g.prs" t-as="row" t-key="row.repo + ':' + row.number">
@@ -2601,6 +2601,10 @@ class ReviewScreen extends Component {
                   <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
                   <td class="dim" t-out="row.repo"/>
                   <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
+                  <td>
+                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
+                    <span t-else="" class="dim">—</span>
+                  </td>
                   <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
                 </tr>
               </tbody>
@@ -2618,6 +2622,41 @@ class ReviewScreen extends Component {
 
   setup() {
     this.review.load();
+    // load mergebot status for every listed PR (dedup + storage skips make repeat
+    // renders cheap; the plugin only requests the unknown, non-merged, supported ones)
+    useEffect(() => {
+      const prs = this.review.prs();
+      if (prs.length) this.review.loadMergebot(this._mbPrs());
+    });
+  }
+
+  // the listed PRs in mergebot's {github, number} shape (repo === the github slug)
+  _mbPrs() {
+    return this.review.prs().map((pr) => ({ github: pr.repo, number: pr.number }));
+  }
+
+  // Refresh: reload the PR list, then re-probe mergebot (merged PRs stay terminal;
+  // unsupported repos get re-checked so a false positive can recover)
+  async refresh() {
+    await this.review.load(true);
+    this.review.loadMergebot(this._mbPrs(), { refresh: true });
+  }
+
+  mbState(row) {
+    return this.review.mergebot()[`${row.repo}#${row.number}`] || "";
+  }
+
+  mbClass(row) {
+    const s = this.mbState(row);
+    if (s === "merged") return "merged";
+    if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
+    if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
+    if (["blocked", "error"].includes(s)) return "blocked";
+    return "other";
+  }
+
+  mergebotUrl(row) {
+    return `${MERGEBOT}/${row.repo}/pull/${row.number}`;
   }
 
   get stamp() {

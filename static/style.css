@@ -2085,7 +2085,8 @@ a.dash-row-branch:hover {
   border-right: 1px solid var(--l-line);
   white-space: normal;
   word-break: break-all;
-  max-width: 280px;
+  min-width: 240px;
+  max-width: 360px;
 }
 .rev-group tr:not(:first-child) td {
   border-top: none;

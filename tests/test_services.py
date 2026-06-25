@@ -96,18 +96,44 @@ class MergebotServiceTest(unittest.TestCase):
     def test_merged(self):
         io = FakeIO(http={"pull": ('<div class="alert alert-success">merged</div>', None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        self.assertEqual(
-            svc.statuses([{"github": "odoo/odoo", "number": 1}]), {"odoo/odoo#1": "merged"}
-        )
+        states, unsupported = svc.statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(states, {"odoo/odoo#1": "merged"})
+        self.assertEqual(unsupported, [])
 
     def test_blocked(self):
         io = FakeIO(http={"pull": ('<p class="bg-warning">blocked: CI</p>', None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        self.assertEqual(svc.statuses([{"github": "o/o", "number": 7}]), {"o/o#7": "blocked"})
+        states, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
+        self.assertEqual(states, {"o/o#7": "blocked"})
+        self.assertEqual(unsupported, [])
 
-    def test_unreachable_is_blank(self):
+    def test_transient_failure_is_blank_not_unsupported(self):
         svc = services.MergebotService(FakeIO(http={"pull": ("", "down")}), TTLCache(ttl=0))
-        self.assertEqual(svc.statuses([{"github": "o/o", "number": 7}]), {"o/o#7": ""})
+        states, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
+        self.assertEqual(states, {"o/o#7": ""})
+        self.assertEqual(unsupported, [])  # a non-404 error is transient, not "no mergebot"
+
+    def test_404_marks_repo_unsupported(self):
+        io = FakeIO(http={"pull": ("", "HTTP Error 404: Not Found")})
+        svc = services.MergebotService(io, TTLCache(ttl=0))
+        states, unsupported = svc.statuses([{"github": "odoo/owl", "number": 5}])
+        self.assertEqual(states, {"odoo/owl#5": ""})
+        self.assertEqual(unsupported, ["odoo/owl"])
+
+    def test_reachable_sibling_keeps_repo_supported(self):
+        # one PR 404s but another in the same repo loads → repo is NOT unsupported
+        io = FakeIO(
+            http={
+                "pull/1": ('<div class="alert alert-success">merged</div>', None),
+                "pull/2": ("", "HTTP Error 404: Not Found"),
+            }
+        )
+        svc = services.MergebotService(io, TTLCache(ttl=0))
+        states, unsupported = svc.statuses(
+            [{"github": "odoo/odoo", "number": 1}, {"github": "odoo/odoo", "number": 2}]
+        )
+        self.assertEqual(states, {"odoo/odoo#1": "merged", "odoo/odoo#2": ""})
+        self.assertEqual(unsupported, [])
 
 
 class GitHubServiceTest(unittest.TestCase):
