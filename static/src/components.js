@@ -3402,7 +3402,7 @@ class ConfigScreen extends Component {
       </div>
       <div class="content">
         <div class="config-block">
-          <h2 class="subtitle">Settings</h2>
+          <h2 class="subtitle">Odoo settings</h2>
           <div class="settings-grid" data-form-type="other">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
               <label t-att-for="'setting-' + f.key" t-out="f.name"/>
@@ -3415,6 +3415,10 @@ class ConfigScreen extends Component {
         <div class="config-block">
           <h2 class="subtitle">Miscellaneous</h2>
           <div class="settings-grid" data-form-type="other">
+            <label for="setting-editor">editor command</label>
+            <input id="setting-editor" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings().editor"
+                   t-on-input="ev => this.setSetting('editor', ev.target.value)"
+                   t-on-change="() => this.saveSettings()"/>
             <label for="setting-auto-open-event-log" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open).">auto-open event log</label>
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
@@ -3464,7 +3468,7 @@ class ConfigScreen extends Component {
   path = signal(this.config.getDataFile());
   msg = signal("");
   backupMsg = signal("");
-  settingsFields = SETTINGS_FIELDS;
+  settingsFields = SETTINGS_FIELDS.filter((f) => f.key !== "editor"); // editor lives in Miscellaneous
   settings = signal(this._loadSettings());
 
   // manually re-check whether goo is behind origin/master, then report the result
