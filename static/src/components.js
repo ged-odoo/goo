@@ -18,7 +18,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
-import { timeAgo, tintCmd } from "./utils.js";
+import { timeAgo, tintCmd, formatBytes } from "./utils.js";
 
 const {
   Component,
@@ -1201,7 +1201,7 @@ class DatabasesScreen extends Component {
             <div class="brg-table">
             <table class="br-table brg-flat">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Created</th><th>Last activity</th><th/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Size</th><th>Created</th><th>Last activity</th><th/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active, 'row-sel': this.selected().has(d.name)}">
@@ -1214,6 +1214,7 @@ class DatabasesScreen extends Component {
                     <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
                   </td>
                   <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
+                  <td class="br-when" t-att-class="{dim: !d.size}" t-out="d.size || '—'"/>
                   <td class="br-when" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
                   <td class="br-when" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
                   <td>
@@ -1252,6 +1253,7 @@ class DatabasesScreen extends Component {
         last: d.last_update,
         lastAgo: d.last_update && timeAgo(d.last_update),
         lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
+        size: formatBytes(d.size),
       }));
   });
 

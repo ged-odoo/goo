@@ -266,6 +266,7 @@ class DatabaseServiceTest(unittest.TestCase):
         runs = {
             "ORDER BY datname": completed(stdout="alpha\nbeta\n"),  # the db list
             "pg_stat_file": completed(stdout="alpha|2024-01-01 00:00:00\n"),  # creation times
+            "pg_database_size": completed(stdout="alpha|1048576\n"),  # sizes (bytes)
             "latest_version": completed(stdout="17.0|f|2024-06-20T10:00:00\n"),  # odoo_info
         }
         runs.update(extra)
@@ -278,6 +279,8 @@ class DatabaseServiceTest(unittest.TestCase):
         self.assertEqual(dbs[0]["odoo_version"], "17.0")
         self.assertEqual(dbs[0]["created"], "2024-01-01 00:00:00")
         self.assertIsNone(dbs[1]["created"])  # only alpha had a creation time
+        self.assertEqual(dbs[0]["size"], 1048576)
+        self.assertIsNone(dbs[1]["size"])  # only alpha had a size
 
     def test_databases_raises_when_psql_fails(self):
         io = self._io()

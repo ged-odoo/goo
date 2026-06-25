@@ -467,6 +467,7 @@ class DatabaseService:
         if not names:
             return []
         created = self._creation_times()
+        sizes = self._sizes()
         with ThreadPoolExecutor(max_workers=min(8, len(names))) as pool:
             infos = list(pool.map(self.odoo_info, names))  # one psql per db, in parallel
         return [
@@ -476,6 +477,7 @@ class DatabaseService:
                 "enterprise": e,
                 "last_update": u,
                 "created": created.get(n),
+                "size": sizes.get(n),
             }
             for n, (v, e, u) in zip(names, infos, strict=False)
         ]
@@ -623,6 +625,36 @@ class DatabaseService:
             if "|" in line:
                 name, ts = line.split("|", 1)
                 out[name] = ts or None
+        return out
+
+    def _sizes(self):
+        """Map db name -> on-disk size in bytes (pg_database_size). Best-effort: {}
+        on any error — the size is just informational, never blocks the listing."""
+        try:
+            r = self.io.run(
+                [
+                    "psql",
+                    "-d",
+                    "postgres",
+                    "-tAc",
+                    "SELECT datname, pg_database_size(datname)"
+                    " FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'",
+                ],
+                timeout=5,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return {}
+        if r.returncode != 0:
+            return {}
+        out = {}
+        for line in r.stdout.splitlines():
+            if "|" in line:
+                name, size = line.split("|", 1)
+                try:
+                    out[name] = int(size)
+                except ValueError:
+                    pass
         return out
 
 

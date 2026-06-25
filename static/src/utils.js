@@ -13,6 +13,21 @@ export function timeAgo(ts) {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
+// a byte count as a compact human size (e.g. 0 -> "0 B", 1536 -> "1.5 kB",
+// 21000000 -> "20 MB"). Returns "" for null/undefined (size unknown).
+export function formatBytes(n) {
+  if (n == null || isNaN(n)) return "";
+  if (n < 1024) return `${n} B`;
+  const units = ["kB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v >= 10 || Number.isInteger(v) ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
 export function escapeHtml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
