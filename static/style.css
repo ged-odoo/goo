@@ -1036,7 +1036,7 @@ section.hidden {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
   gap: 16px;
-  align-items: start;
+  align-items: stretch; /* cards on the same row share the tallest one's height */
 }
 /* one target = a card: header (dot, name, status, [bundle], active/apply) + repo rows */
 .dash-tgt {
@@ -1058,11 +1058,9 @@ section.hidden {
   justify-content: space-between;
   gap: 12px;
   padding: 9px 12px 9px 14px;
-  border-bottom: 1px solid var(--l-line-soft);
+  background: var(--l-panel); /* same as the Repositories card header */
+  border-bottom: 1px solid var(--l-line);
   border-radius: 13px 13px 0 0;
-}
-.dash-tgt.active .dash-tgt-head {
-  background: var(--l-hover);
 }
 .dash-tgt-title {
   display: flex;
