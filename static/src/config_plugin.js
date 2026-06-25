@@ -17,6 +17,8 @@ export const TEST_HISTORY_KEY = "oo-test-history";
 // mergebot support (skipped). Persisted so the work survives reloads/restarts.
 export const REVIEWS_MERGED_KEY = "oo-reviews-merged";
 export const REVIEWS_NO_MERGEBOT_KEY = "oo-reviews-no-mergebot";
+// branch groups the user starred in the Reviews tab (by branch name), sorted first
+export const REVIEWS_FAVORITES_KEY = "oo-reviews-favorites";
 const PERSISTENT_KEYS = [
   STORAGE_KEY,
   FAVORITES_KEY,
@@ -24,6 +26,7 @@ const PERSISTENT_KEYS = [
   TEST_HISTORY_KEY,
   REVIEWS_MERGED_KEY,
   REVIEWS_NO_MERGEBOT_KEY,
+  REVIEWS_FAVORITES_KEY,
 ];
 
 // a stable, unique id for a new target (referenced internally so renaming is safe)

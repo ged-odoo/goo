@@ -2119,6 +2119,24 @@ a.dash-row-branch:hover {
 .rev-group tr:not(:first-child) td {
   border-top: none;
 }
+/* per-branch favorite star (in the group's branch cell; starred groups sort first) */
+.rev-star {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--l-line);
+  background: none;
+  border: none;
+  padding: 0;
+  margin-right: 12px;
+  cursor: pointer;
+  transition: 0.13s;
+}
+.rev-star:hover {
+  color: var(--l-text-faint);
+}
+.rev-star.on {
+  color: var(--l-amber);
+}
 /* inline row editing: inputs sit flush inside the table cells */
 .br-table tr.br-editing td {
   padding-top: 6px;

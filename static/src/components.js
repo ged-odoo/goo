@@ -2707,7 +2707,9 @@ class ReviewScreen extends Component {
               </thead>
               <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
                 <tr t-foreach="g.prs" t-as="row" t-key="row.repo + ':' + row.number">
-                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch" t-out="g.branch || '—'"/>
+                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
+                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button><t t-out="g.branch || '—'"/>
+                  </td>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
                   <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
                   <td class="dim" t-out="row.repo"/>
@@ -2786,7 +2788,8 @@ class ReviewScreen extends Component {
   // in config sort last. Groups themselves are ordered by their most recent PR. The
   // same branch often has a PR in odoo and one in enterprise — grouping keeps that
   // work together. The mergebot-status filter is group-level: a group is kept whole
-  // (all its PRs shown) when ANY of its PRs has the selected state.
+  // (all its PRs shown) when ANY of its PRs has the selected state. Starred branch
+  // groups sort first (then by recency).
   groups() {
     const q = this.search().trim().toLowerCase();
     const byBranch = new Map();
@@ -2811,13 +2814,20 @@ class ReviewScreen extends Component {
           .slice()
           .sort((a, b) => rank(a) - rank(b) || a.repo.localeCompare(b.repo) || ts(b) - ts(a)),
         updated: Math.max(...prs.map(ts)),
+        fav: this.review.isFavorite(branch),
       }))
       .filter((g) => {
         if (!status) return true;
         if (status === "unmerged") return g.prs.some((pr) => this.mbState(pr) !== "merged");
         return g.prs.some((pr) => this.mbState(pr) === status);
       })
-      .sort((a, b) => b.updated - a.updated);
+      .sort((a, b) => b.fav - a.fav || b.updated - a.updated);
+  }
+
+  // favorite (star) a whole branch group — keyed by branch name (see ReviewPlugin);
+  // starred groups sort first
+  toggleFav(g) {
+    this.review.toggleFavorite(g.branch);
   }
 
   cell(date) {
