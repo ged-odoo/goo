@@ -2571,6 +2571,13 @@ class ReviewScreen extends Component {
           <h1>Reviews</h1>
           <div class="panel-filters">
             <SearchBox value="this.search"/>
+            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
+              <option value="">All</option>
+              <option value="unmerged">All (except merged)</option>
+              <option value="merged">Merged</option>
+              <option value="error">Error</option>
+              <option value="blocked">Blocked</option>
+            </select>
           </div>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
@@ -2619,6 +2626,7 @@ class ReviewScreen extends Component {
   config = plugin(ConfigPlugin);
   refreshIcon = m(ICONS.refresh);
   search = signal("");
+  statusFilter = signal("unmerged"); // default; "" = all, "unmerged" = all but fully-merged, else a state
 
   setup() {
     this.review.load();
@@ -2673,7 +2681,8 @@ class ReviewScreen extends Component {
   // repository order from config (e.g. odoo/odoo before odoo/enterprise); repos not
   // in config sort last. Groups themselves are ordered by their most recent PR. The
   // same branch often has a PR in odoo and one in enterprise — grouping keeps that
-  // work together.
+  // work together. The mergebot-status filter is group-level: a group is kept whole
+  // (all its PRs shown) when ANY of its PRs has the selected state.
   groups() {
     const q = this.search().trim().toLowerCase();
     const byBranch = new Map();
@@ -2690,6 +2699,7 @@ class ReviewScreen extends Component {
       const i = repoOrder.indexOf(pr.repo);
       return i === -1 ? repoOrder.length : i; // unknown repos sort last
     };
+    const status = this.statusFilter();
     return [...byBranch.entries()]
       .map(([branch, prs]) => ({
         branch,
@@ -2698,6 +2708,11 @@ class ReviewScreen extends Component {
           .sort((a, b) => rank(a) - rank(b) || a.repo.localeCompare(b.repo) || ts(b) - ts(a)),
         updated: Math.max(...prs.map(ts)),
       }))
+      .filter((g) => {
+        if (!status) return true;
+        if (status === "unmerged") return g.prs.some((pr) => this.mbState(pr) !== "merged");
+        return g.prs.some((pr) => this.mbState(pr) === status);
+      })
       .sort((a, b) => b.updated - a.updated);
   }
 
