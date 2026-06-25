@@ -1232,7 +1232,6 @@ class DatabasesScreen extends Component {
 
   db = plugin(DatabasePlugin);
   dialogs = plugin(DialogPlugin);
-  server = plugin(ServerPlugin); // stop/resume around cloning the active db
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   selected = signal(new Set()); // database names ticked for batch actions
@@ -1377,12 +1376,9 @@ class DatabasesScreen extends Component {
       validate: (v) => this._badName((v.target || "").trim()),
     });
     if (!res) return;
-    // free the source: stop the server (synchronous — connections are released
-    // before it returns) and resume it once the clone is done
-    const resume = d.active && this.server.status().state !== "stopped";
-    if (resume) await this.server.stop();
-    const error = await this.db.clone(d.name, res.target.trim());
-    if (resume) await this.server.resume();
+    // cloneStoppingServer frees the source by stopping the server when it's the
+    // active db (the clone needs exclusive access), then resumes it
+    const error = await this.db.cloneStoppingServer(d.name, res.target.trim());
     if (error)
       await this.dialogs.open({ title: "Clone failed", message: error, okLabel: "OK", cancelLabel: null });
   }
@@ -1543,9 +1539,10 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
     }
   }
   // clone the chosen source database into the target's database name (skip when it
-  // would clone onto itself — the destination already exists in that case)
+  // would clone onto itself — the destination already exists in that case). When the
+  // source is the active db, the server is stopped for the clone and resumed after.
   if (res.cloneDb && target.db && res.cloneDb !== target.db) {
-    await db.clone(res.cloneDb, target.db);
+    await db.cloneStoppingServer(res.cloneDb, target.db);
   }
 }
 

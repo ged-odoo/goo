@@ -76,6 +76,17 @@ export class DatabasePlugin extends Plugin {
     }
   }
 
+  // clone `source` into `target`, transparently stopping + resuming the server when
+  // `source` is the active db (postgres createdb -T needs exclusive access). Returns
+  // null on success or an error message; the server is resumed even if the clone fails.
+  async cloneStoppingServer(source, target) {
+    const resume = this.activeDb === source && this.server.status().state !== "stopped";
+    if (resume) await this.server.stop();
+    const error = await this.clone(source, target);
+    if (resume) await this.server.resume();
+    return error;
+  }
+
   // rename `name` to `newName`; returns null on success or an error message
   async rename(name, newName) {
     this.eventLog.add(`renaming database ${name} → ${newName}`);
