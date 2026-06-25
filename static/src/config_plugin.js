@@ -3,6 +3,7 @@
 // through (favorites, last target).
 
 import { DEFAULT_CONFIG } from "./config.js";
+import { PRESETS } from "./presets.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, signal, useEffect } = owl;
@@ -118,18 +119,44 @@ export class ConfigPlugin extends Plugin {
     this.persist();
   }
 
-  // Nuke the complete current config: drop every goo-owned localStorage key
-  // (config, favorites, last target, history, caches…) so everything reverts to
-  // the initial data (DEFAULT_CONFIG). The data-file link is kept; the wiped
-  // state is flushed to it synchronously so a reload can't rehydrate stale data.
-  async resetConfig() {
+  // drop every goo-owned localStorage key (config, favorites, last target,
+  // history, caches…) except the data-file link, so the config reverts to the
+  // built-in defaults. Shared by resetConfig and applyPreset.
+  _wipeKeys() {
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
       if (k && k.startsWith("oo-") && k !== DATA_FILE_KEY) localStorage.removeItem(k);
     }
+  }
+
+  // Nuke the complete current config back to the initial data (DEFAULT_CONFIG).
+  // The data-file link is kept; the wiped state is flushed to it synchronously so
+  // a reload can't rehydrate stale data.
+  async resetConfig() {
+    this._wipeKeys();
     this.cfg.set(this._merged());
     const path = this.getDataFile();
     if (path) await this.flush(path);
+  }
+
+  // Replace the whole config with a preset (see presets.js): wipe everything, then
+  // write the preset's persisted entries. Normal's data is empty → pure defaults.
+  // Flushed to the data file (if linked) so a reload reflects the new config.
+  async applyPreset(id) {
+    const preset = PRESETS.find((p) => p.id === id);
+    if (!preset) return false;
+    this._wipeKeys();
+    // some presets detach from the data file (back to browser storage); _wipeKeys
+    // keeps oo-data-file by default, so drop it here when the preset asks for it
+    if (preset.clearDataFile) {
+      localStorage.removeItem(DATA_FILE_KEY);
+      this.dataFileSig.set("");
+    }
+    for (const [k, v] of Object.entries(preset.data || {})) localStorage.setItem(k, v);
+    this.cfg.set(this._merged());
+    const path = this.getDataFile();
+    if (path) await this.flush(path);
+    return true;
   }
 
   // generic persistent key/value (favorites, last target)

@@ -6,7 +6,7 @@ export const VERSION = "1.0.0";
 // values; "Reset to initial config" wipes those overrides to come back here.
 export const DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
-  venv_activate: "source /home/odoo/work/env20/bin/activate",
+  venv_activate: "", // optional; when set, prefixed before the start command (source … && odoo-bin)
   start_cmd: "cd /home/odoo/work/community && ./odoo-bin",
   db_user: "odoo",
   db_password: "odoo",
@@ -20,7 +20,6 @@ export const DEFAULT_CONFIG = {
       github: "odoo/enterprise",
       favorite: true,
     },
-    { id: "tutorials", path: "/home/odoo/work/tutorials", github: "odoo/tutorials" },
   ],
   // First-class targets — what you actually work with. This is just the initial
   // set; each carries a stable `id` (used internally so renaming `name` is safe),
@@ -79,11 +78,6 @@ export const DEFAULT_CONFIG = {
       label: "/web/tests",
       href: "http://localhost:8069/dev/autologin?to=%2Fweb%2Ftests%3Fdebug%3Dassets%26timeout%3D500000%26manual%3Dtrue",
     },
-    { label: "owl docs", href: "https://odoo.github.io/owl/documentation/v3/owl/" },
-    { label: "owl playground", href: "https://odoo.github.io/owl/playground/" },
-    { label: "owl github", href: "https://github.com/odoo/owl" },
-    { label: "runbot", href: "https://runbot.odoo.com" },
-    { label: "mergebot", href: "https://mergebot.odoo.com" },
   ],
 };
 

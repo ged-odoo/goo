@@ -103,7 +103,7 @@ export class Dialog extends Component {
     <div class="dialog-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog" t-att-class="this.spec.cls || ''" t-on-click.stop="() => {}">
         <h2 class="dialog-title" t-out="this.spec.title"/>
-        <div class="dialog-body">
+        <div class="dialog-body" data-form-type="other">
           <p t-if="this.spec.message" class="dialog-msg" t-out="this.spec.message"/>
           <div t-foreach="this.spec.fields || []" t-as="f" t-key="f.key" class="dialog-field">
             <label t-if="f.type === 'checkbox'" class="edit-check">

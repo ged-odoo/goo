@@ -5,6 +5,7 @@
 // props use the props({...}) helper with `t` types.
 
 import { BASE_BRANCH_RE, MERGEBOT, VERSION } from "./config.js";
+import { PRESETS } from "./presets.js";
 import { ConfigPlugin, newTargetId } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -3382,7 +3383,7 @@ class LinksEditor extends Component {
 
 // scalar config fields editable in the Config tab's Settings block
 const SETTINGS_FIELDS = [
-  { key: "venv_activate", name: "venv activate" },
+  { key: "venv_activate", name: "venv activate (optional)" },
   { key: "start_cmd", name: "start server command" },
   { key: "db_user", name: "database user" },
   { key: "db_password", name: "database password" },
@@ -3396,6 +3397,7 @@ class ConfigScreen extends Component {
       <div class="panel">
         <div class="panel-top"><h1>Config</h1></div>
         <div class="panel-actions">
+          <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
           <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
           <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
         </div>
@@ -3530,6 +3532,30 @@ class ConfigScreen extends Component {
     )
       return;
     await this.config.resetConfig();
+    location.reload();
+  }
+
+  // pick a preset (presets.js) and replace the whole config with it
+  async openPresets() {
+    const res = await this.dialogs.open({
+      title: "Configuration presets",
+      message:
+        "Applying a preset replaces your current configuration (settings, repos, targets, links, tabs, favorites). This cannot be undone.",
+      fields: [
+        {
+          key: "preset",
+          type: "select",
+          label: "Preset",
+          value: "normal",
+          options: PRESETS.map((p) => ({ value: p.id, label: p.label })),
+        },
+      ],
+      okLabel: "Apply",
+      cancelLabel: "Cancel",
+      validate: (v) => (v.preset ? "" : "Choose a preset to apply."),
+    });
+    if (!res) return;
+    await this.config.applyPreset(res.preset);
     location.reload();
   }
 
