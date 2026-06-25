@@ -83,6 +83,15 @@ class EventBus:
         for q in subscribers:
             q.put(("event", {"text": text, "level": level}))
 
+    def publish_goo_update(self, status):
+        """Push the recomputed goo-update status to the browser (SSE 'goo_update')
+        so the navbar update badge appears live when the hourly check finds new
+        commits — not only on reload / the next 30-min poll / a manual check."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("goo_update", status))
+
     def subscribe(self):
         """Register a client queue. Returns (queue, log backlog) atomically so
         no line is lost between the backlog replay and the live stream."""
@@ -252,6 +261,8 @@ def check_goo_update():
     prev_behind = GOO_UPDATE.get("behind", 0)
     GOO_UPDATE = goo_update_status()
     n = GOO_UPDATE["behind"]
+    if n != prev_behind:  # state changed → push it so the navbar badge stays in sync
+        BUS.publish_goo_update({**GOO_UPDATE, "boot": BOOT_ID})
     if n > prev_behind:  # new commits since we last looked
         msg = f"goo update available — {n} commit{'s' if n != 1 else ''} behind origin/master"
         if GOO_UPDATE["ahead"]:

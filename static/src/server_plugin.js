@@ -20,6 +20,7 @@ export class ServerPlugin extends Plugin {
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
   lineListeners = new Set(); // tests/addons mirror lines from here
+  gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
   lastConfig = null; // last server start config (to resume after a one-shot run)
   // the active target (last started or activated), persisted + reactive
   activeTarget = signal(this.config.read(LAST_TARGET_KEY) || "");
@@ -42,6 +43,11 @@ export class ServerPlugin extends Plugin {
     return () => this.lineListeners.delete(cb);
   }
 
+  onGooUpdate(cb) {
+    this.gooUpdateListeners.add(cb);
+    return () => this.gooUpdateListeners.delete(cb);
+  }
+
   log(line) {
     this.output.append(line);
     for (const cb of this.lineListeners) cb(line);
@@ -57,6 +63,12 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("event", (e) => {
       const d = JSON.parse(e.data);
       this.eventLog.add(d.text, "", d.level || "");
+    });
+    // the hourly goo-update check pushes its recomputed status here so the navbar
+    // badge updates live (UpdatePlugin listens via onGooUpdate)
+    es.addEventListener("goo_update", (e) => {
+      const d = JSON.parse(e.data);
+      for (const cb of this.gooUpdateListeners) cb(d);
     });
   }
 

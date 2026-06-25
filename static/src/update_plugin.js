@@ -22,6 +22,9 @@ export class UpdatePlugin extends Plugin {
     // the backend re-checks hourly; refresh periodically so the badge appears on
     // long-open tabs without needing a reload
     setInterval(() => this._load(true), 30 * 60 * 1000);
+    // …and react immediately when the backend's hourly check pushes a new status
+    // over SSE, so the navbar badge appears without waiting for the next poll
+    this.server.onGooUpdate((status) => this.info.set(status));
   }
 
   // on-demand re-check (the Config tab's "Check for update" button): fetch +
