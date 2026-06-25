@@ -107,13 +107,15 @@ const GED_CONFIG = {
     { label: "🦉 playground", href: "https://odoo.github.io/owl/playground/" },
     { label: "🦉 github", href: "https://github.com/odoo/owl" },
     {
-      label: "dev",
+      label: "misc",
       children: [
         { label: "myprs", href: "https://github.com/pulls/authored" },
         { label: "runbot", href: "https://runbot.odoo.com" },
         { label: "mergebot", href: "https://mergebot.odoo.com" },
         { label: "odoo/odoo", href: "https://github.com/odoo/odoo/tree/master" },
         { label: "odoo/enterprise", href: "https://github.com/odoo/enterprise/tree/master" },
+        { label: "odoo/tutorials", href: "https://github.com/odoo/tutorials/tree/master" },
+        { label: "documentation", href: "https://www.odoo.com/documentation/master/" },
       ],
     },
   ],
