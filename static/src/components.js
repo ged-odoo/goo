@@ -352,7 +352,6 @@ class DashboardScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
-          <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
         </div>
       </div>
@@ -417,6 +416,7 @@ class DashboardScreen extends Component {
               <span class="dash-sec-icon"><t t-out="this.targetIcon"/></span>
               <span class="dash-sec-title">Targets</span>
               <span class="dash-sec-count" t-out="this.targets.length"/>
+              <button class="pbtn primary dash-sec-action" t-on-click="() => this.startCreate()">New target</button>
             </div>
             <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
               <div class="dash-tgt-head">
