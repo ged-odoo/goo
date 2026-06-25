@@ -962,6 +962,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/databases/clone":
+            body, err = self._read_json()
+            source = (body or {}).get("source")
+            target = (body or {}).get("target")
+            if (
+                err
+                or not isinstance(source, str)
+                or not isinstance(target, str)
+                or not source
+                or not target
+            ):
+                return self._send_json(400, {"ok": False, "error": "missing source or target"})
+            ok, error = DATABASE.clone(source, target)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/databases/rename":
+            body, err = self._read_json()
+            name = (body or {}).get("name")
+            new_name = (body or {}).get("new_name")
+            if (
+                err
+                or not isinstance(name, str)
+                or not isinstance(new_name, str)
+                or not name
+                or not new_name
+            ):
+                return self._send_json(400, {"ok": False, "error": "missing name or new_name"})
+            ok, error = DATABASE.rename(name, new_name)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/data":
             body, err = self._read_json()
             fpath = (body or {}).get("path")

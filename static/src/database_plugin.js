@@ -56,4 +56,30 @@ export class DatabasePlugin extends Plugin {
       this.dropping.set("");
     }
   }
+
+  // clone `name` into a new database `target`; returns null on success or an error
+  async clone(name, target) {
+    this.eventLog.add(`cloning database ${name} → ${target}`);
+    try {
+      await postJSON("/api/databases/clone", { source: name, target });
+      await this.load(true); // server cache was invalidated; pull the fresh list
+      return null;
+    } catch (e) {
+      this.eventLog.add(`failed to clone database ${name}: ${e.message}`);
+      return e.message;
+    }
+  }
+
+  // rename `name` to `newName`; returns null on success or an error message
+  async rename(name, newName) {
+    this.eventLog.add(`renaming database ${name} → ${newName}`);
+    try {
+      await postJSON("/api/databases/rename", { name, new_name: newName });
+      await this.load(true);
+      return null;
+    } catch (e) {
+      this.eventLog.add(`failed to rename database ${name}: ${e.message}`);
+      return e.message;
+    }
+  }
 }

@@ -1263,10 +1263,25 @@ class DatabasesScreen extends Component {
     this.selected.set(sel);
   }
 
-  // per-database actions in the floating kebab menu (shared ActionMenu)
+  // per-database actions in the floating kebab menu (shared ActionMenu). Clone,
+  // rename and drop all need the db to have no active connections, so they're
+  // disabled while the server is running on it.
   openRowMenu(ev, d) {
     const rect = ev.currentTarget.getBoundingClientRect();
+    const busyTitle = d.active ? "stop the server first (no active connections allowed)" : "";
     const actions = [
+      {
+        label: "Clone",
+        disabled: d.active,
+        title: busyTitle,
+        onClick: () => this.cloneDb(d),
+      },
+      {
+        label: "Rename",
+        disabled: d.active,
+        title: busyTitle,
+        onClick: () => this.renameDb(d),
+      },
       {
         label: "Drop",
         danger: true,
@@ -1323,6 +1338,48 @@ class DatabasesScreen extends Component {
     const error = await this.db.drop(d.name);
     if (error)
       await this.dialogs.open({ title: "Drop failed", message: error, okLabel: "OK", cancelLabel: null });
+  }
+
+  // valid db name: letters/digits then letters/digits/._- (mirrors the backend)
+  _badName(name) {
+    if (!name) return "a name is required";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return "use letters, digits, . _ - (not starting with -)";
+    if (this.db.databases().some((x) => x.name === name)) return `a database named "${name}" already exists`;
+    return "";
+  }
+
+  // ask for a target name, then clone; report any failure in a dialog
+  async cloneDb(d) {
+    const res = await this.dialogs.open({
+      title: `Clone "${d.name}"`,
+      fields: [
+        { key: "target", type: "text", label: "New database name", value: `${d.name}-copy`, placeholder: "new database name" },
+      ],
+      okLabel: "Clone",
+      validate: (v) => this._badName((v.target || "").trim()),
+    });
+    if (!res) return;
+    const error = await this.db.clone(d.name, res.target.trim());
+    if (error)
+      await this.dialogs.open({ title: "Clone failed", message: error, okLabel: "OK", cancelLabel: null });
+  }
+
+  // ask for a new name, then rename; report any failure in a dialog
+  async renameDb(d) {
+    const res = await this.dialogs.open({
+      title: `Rename "${d.name}"`,
+      fields: [{ key: "name", type: "text", label: "New name", value: d.name, placeholder: "new database name" }],
+      okLabel: "Rename",
+      validate: (v) => {
+        const t = (v.name || "").trim();
+        if (t === d.name) return "choose a different name";
+        return this._badName(t);
+      },
+    });
+    if (!res) return;
+    const error = await this.db.rename(d.name, res.name.trim());
+    if (error)
+      await this.dialogs.open({ title: "Rename failed", message: error, okLabel: "OK", cancelLabel: null });
   }
 }
 

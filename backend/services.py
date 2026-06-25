@@ -418,6 +418,16 @@ class MergebotService:
 # ─────────────────────────── PostgreSQL databases ───────────────────────────
 
 
+# a safe database name: letters/digits then letters/digits/._- (no leading dash so
+# it can't be read as a CLI flag, no quotes/spaces so it's safe to quote in SQL).
+# Covers typical odoo db names (master, 19.0, master-feat-xyz, test_db).
+_DB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _valid_db_name(name):
+    return bool(name) and isinstance(name, str) and bool(_DB_NAME_RE.match(name))
+
+
 class DatabaseService:
     """PostgreSQL databases: the list (with odoo version + last activity), the
     existence/info probes, and drop. The list is cached server-side and fetched
@@ -478,6 +488,42 @@ class DatabaseService:
             return False, str(e)
         if r.returncode != 0:
             return False, r.stderr.strip() or "dropdb failed"
+        self.cache.invalidate("list")
+        return True, None
+
+    def clone(self, source, target):
+        """Clone `source` into a new database `target` (createdb -T). Returns
+        (ok, error); invalidates the list cache on success. The source must have no
+        active connections (a postgres requirement) — stop the server if it's on it."""
+        if not _valid_db_name(source):
+            return False, f"invalid source name: {source}"
+        if not _valid_db_name(target):
+            return False, f"invalid target name: {target}"
+        try:
+            r = self.io.run(["createdb", "-T", source, target], timeout=120)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "createdb failed"
+        self.cache.invalidate("list")
+        return True, None
+
+    def rename(self, old, new):
+        """Rename database `old` to `new` (ALTER DATABASE … RENAME). Returns
+        (ok, error); invalidates the list cache on success. `old` must have no
+        active connections (a postgres requirement)."""
+        if not _valid_db_name(old):
+            return False, f"invalid name: {old}"
+        if not _valid_db_name(new):
+            return False, f"invalid name: {new}"
+        # names are validated to the safe charset above, so quoting is injection-free
+        sql = f'ALTER DATABASE "{old}" RENAME TO "{new}"'
+        try:
+            r = self.io.run(["psql", "-d", "postgres", "-tAc", sql], timeout=15)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "rename failed"
         self.cache.invalidate("list")
         return True, None
 

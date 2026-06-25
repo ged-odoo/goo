@@ -320,6 +320,43 @@ class DatabaseServiceTest(unittest.TestCase):
         list_calls = sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls)
         self.assertEqual(list_calls, 2)
 
+    def test_clone_runs_createdb_and_invalidates_cache(self):
+        cache = TTLCache(ttl=600)
+        svc = services.DatabaseService(self._io(), cache)
+        svc.databases()  # cache the list
+        ok, err = svc.clone("alpha", "alpha-copy")
+        self.assertTrue(ok, err)
+        self.assertTrue(
+            any(c[:3] == ["createdb", "-T", "alpha"] and c[-1] == "alpha-copy" for c in svc.io.run_calls)
+        )
+        svc.databases()  # cache invalidated → list query runs again
+        self.assertEqual(sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls), 2)
+
+    def test_clone_rejects_invalid_target(self):
+        svc = services.DatabaseService(self._io(), TTLCache(ttl=0))
+        ok, err = svc.clone("alpha", "bad name!")
+        self.assertFalse(ok)
+        self.assertIn("invalid", err)
+        self.assertFalse(any("createdb" in " ".join(c) for c in svc.io.run_calls))
+
+    def test_rename_runs_alter_and_invalidates_cache(self):
+        cache = TTLCache(ttl=600)
+        svc = services.DatabaseService(self._io(), cache)
+        svc.databases()  # cache the list
+        ok, err = svc.rename("alpha", "gamma")
+        self.assertTrue(ok, err)
+        self.assertTrue(
+            any('ALTER DATABASE "alpha" RENAME TO "gamma"' in " ".join(c) for c in svc.io.run_calls)
+        )
+        svc.databases()  # cache invalidated → list query runs again
+        self.assertEqual(sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls), 2)
+
+    def test_rename_rejects_invalid_name(self):
+        svc = services.DatabaseService(self._io(), TTLCache(ttl=0))
+        ok, err = svc.rename("alpha", 'evil"; DROP')
+        self.assertFalse(ok)
+        self.assertFalse(any("ALTER DATABASE" in " ".join(c) for c in svc.io.run_calls))
+
 
 class GitServiceTest(unittest.TestCase):
     def test_branches_parses_state(self):
