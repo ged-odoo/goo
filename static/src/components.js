@@ -1232,6 +1232,7 @@ class DatabasesScreen extends Component {
 
   db = plugin(DatabasePlugin);
   dialogs = plugin(DialogPlugin);
+  server = plugin(ServerPlugin); // stop/resume around cloning the active db
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   selected = signal(new Set()); // database names ticked for batch actions
@@ -1276,16 +1277,16 @@ class DatabasesScreen extends Component {
   }
 
   // per-database actions in the floating kebab menu (shared ActionMenu). Clone,
-  // rename and drop all need the db to have no active connections, so they're
-  // disabled while the server is running on it.
+  // rename and drop all need the source db to have no active connections. Rename
+  // and drop stay disabled on the active db; Clone is allowed — it stops the
+  // server (releasing connections), clones, then restarts.
   openRowMenu(ev, d) {
     const rect = ev.currentTarget.getBoundingClientRect();
     const busyTitle = d.active ? "stop the server first (no active connections allowed)" : "";
     const actions = [
       {
         label: "Clone",
-        disabled: d.active,
-        title: busyTitle,
+        title: d.active ? "stops the server to clone, then restarts it" : "",
         onClick: () => this.cloneDb(d),
       },
       {
@@ -1360,10 +1361,15 @@ class DatabasesScreen extends Component {
     return "";
   }
 
-  // ask for a target name, then clone; report any failure in a dialog
+  // ask for a target name, then clone; report any failure in a dialog. Cloning the
+  // active db requires exclusive access (postgres createdb -T), so the server is
+  // stopped first and restarted afterwards.
   async cloneDb(d) {
     const res = await this.dialogs.open({
       title: `Clone "${d.name}"`,
+      message: d.active
+        ? "This database is in use by the running server. goo will stop the server to clone it, then restart it."
+        : "",
       fields: [
         { key: "target", type: "text", label: "New database name", value: `${d.name}-copy`, placeholder: "new database name" },
       ],
@@ -1371,7 +1377,12 @@ class DatabasesScreen extends Component {
       validate: (v) => this._badName((v.target || "").trim()),
     });
     if (!res) return;
+    // free the source: stop the server (synchronous — connections are released
+    // before it returns) and resume it once the clone is done
+    const resume = d.active && this.server.status().state !== "stopped";
+    if (resume) await this.server.stop();
     const error = await this.db.clone(d.name, res.target.trim());
+    if (resume) await this.server.resume();
     if (error)
       await this.dialogs.open({ title: "Clone failed", message: error, okLabel: "OK", cancelLabel: null });
   }
