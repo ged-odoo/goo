@@ -460,7 +460,22 @@ class DashboardScreen extends Component {
                 <div class="dash-tgt-title">
                   <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
                   <span class="dash-name" t-out="tgt.name"/>
-                  <span class="dash-db" t-att-title="tgt.db || ''"><t t-out="this.dbIcon"/><span class="dash-db-name" t-out="tgt.db || '—'"/></span>
+                  <a t-if="this.bundleBranch(tgt)" class="dash-ci-bundle" target="_blank" t-att-href="this.code.bundleUrl(this.bundleBranch(tgt))" title="open the runbot bundle for this target">[bundle]</a>
+                  <!-- one runbot/CI badge per target (the build is per bundle, the same
+                       across the target's repos): a dropdown button when there's a CI
+                       breakdown, else a plain badge -->
+                  <t t-set="brow" t-value="this.bundleRow(tgt)"/>
+                  <t t-if="brow">
+                    <t t-set="ci" t-value="this.ciBadge(brow)"/>
+                    <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
+                      <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                      <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                    </button>
+                    <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="'runbot: ' + ci.title">
+                      <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                      <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
+                    </span>
+                  </t>
                 </div>
                 <div class="dash-tgt-actions">
                   <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
@@ -485,17 +500,6 @@ class DashboardScreen extends Component {
                   <t t-if="row.present">
                     <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
                     <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                    <div class="dash-trow-ci">
-                      <t t-set="ci" t-value="this.ciBadge(row)"/>
-                      <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
-                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                        <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
-                      </button>
-                      <a t-else="" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="this.code.bundleUrl(row.branch)" t-att-title="'runbot: ' + ci.title">
-                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                        <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
-                      </a>
-                    </div>
                     <div class="dash-trow-pr">
                       <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
                       <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
@@ -524,7 +528,6 @@ class DashboardScreen extends Component {
   eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
-  dbIcon = m(ICONS.databases);
   addonsIcon = m(ICONS.addons); // "Repositories" section header
   targetIcon = m(ICONS.target); // "Targets" section header
   kebabIcon = m(ICONS.kebab);
@@ -661,6 +664,22 @@ class DashboardScreen extends Component {
     if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
     if (["blocked", "error"].includes(s)) return "blocked";
     return "other";
+  }
+
+  // the runbot bundle branch for a target: a bundle is per branch name and a
+  // target's repos share one, so prefer its feature (non-base) branch, else the
+  // shared base branch ("" if the target has no branches)
+  bundleBranch(tgt) {
+    const branches = (tgt.config || []).map((c) => c.branch).filter(Boolean);
+    return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
+  }
+
+  // a present row representing the target's bundle (the bundle-branch row, else the
+  // first present row) — drives the single runbot/CI badge in the target header
+  bundleRow(tgt) {
+    const present = this.rows(tgt).filter((r) => r.present);
+    const branch = this.bundleBranch(tgt);
+    return present.find((r) => r.branch === branch) || present[0] || null;
   }
 
   // the fetched runbot status for a row's branch ({result, running} or null)

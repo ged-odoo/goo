@@ -928,17 +928,7 @@ section.hidden {
   margin-left: auto;
 }
 .dash-sec-rows {
-  position: relative;
   padding: 4px 0 6px;
-}
-.dash-sec-rows::before {
-  content: "";
-  position: absolute;
-  left: 31px;
-  top: 6px;
-  bottom: 8px;
-  width: 1px;
-  background: var(--l-line);
 }
 /* favorite-repo row */
 .dash-rrow {
@@ -1108,32 +1098,6 @@ section.hidden {
   white-space: nowrap;
   flex: none;
 }
-.dash-db {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--l-text-dim);
-  background: var(--l-panel);
-  border: 1px solid var(--l-line);
-  padding: 3px 9px;
-  border-radius: 7px;
-  min-width: 0; /* allow the badge to shrink so the db name can ellipsize */
-}
-.dash-db-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dash-db svg {
-  width: 11px;
-  height: 11px;
-  flex: none;
-  stroke: var(--l-text-faint);
-  fill: none;
-  stroke-width: 2;
-}
 .dash-activate {
   display: inline-flex;
   align-items: center;
@@ -1240,7 +1204,7 @@ section.hidden {
 /* target repo row: repo+branch | commit | CI | PR | when */
 .dash-trow {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) 108px 132px 56px;
+  grid-template-columns: 190px minmax(0, 1fr) 132px 56px;
   gap: 14px;
   align-items: center;
   padding: 5px 20px 5px 52px;
@@ -1258,7 +1222,6 @@ section.hidden {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dash-trow-ci,
 .dash-trow-pr {
   display: flex;
   align-items: center;
@@ -1291,6 +1254,19 @@ section.hidden {
   text-decoration: none;
 }
 a.dash-row-branch:hover {
+  color: var(--l-accent);
+  text-decoration: underline;
+}
+/* small "[bundle]" link shown before the CI badge — always points to the runbot bundle */
+.dash-ci-bundle {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--l-text-faint);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.dash-ci-bundle:hover {
   color: var(--l-accent);
   text-decoration: underline;
 }
