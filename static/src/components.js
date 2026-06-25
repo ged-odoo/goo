@@ -74,7 +74,7 @@ const NAV = [
   { id: "reviews", label: "Reviews", icon: ICONS.review },
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
-  { id: "config", label: "Config", icon: ICONS.config },
+  { id: "config", label: "Configuration", icon: ICONS.config },
 ];
 // Merge a saved tab config with NAV → the ordered list of tab ids to show. The
 // user's order is preserved for tabs they've configured; any NAV tab missing from
@@ -2750,8 +2750,10 @@ class TestsScreen extends Component {
         <div class="panel-actions">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
             <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
-              <option value="">Presets</option>
-              <option value="/web:WebSuite[@web]">/web:WebSuite[@web]</option>
+              <option value="" selected="selected" hidden="hidden">Presets</option>
+              <optgroup t-if="this.presets.length" label="Presets">
+                <option t-foreach="this.presets" t-as="p" t-key="p_index" t-att-value="p.tags" t-out="p.tags"/>
+              </optgroup>
               <optgroup t-if="this.tests.history().length" label="Recent">
                 <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
               </optgroup>
@@ -2781,9 +2783,15 @@ class TestsScreen extends Component {
 
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");
+
+  // configured test-tag presets (Configuration tab), non-empty only
+  get presets() {
+    return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
+  }
 
   // copy a `goo --test-tags …` command for the current tags (single-quoted so the
   // shell doesn't mangle globs); an agent can run it to run this test from the CLI
@@ -3068,7 +3076,7 @@ class TabsEditor extends Component {
                 t-on-dragstart="ev => this.onDragStart(ev, row_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
           <label class="tab-row">
             <input type="checkbox" t-att-checked="row.visible" t-att-disabled="row.id === 'config'"
-                   t-att-title="row.id === 'config' ? 'the Config tab is always shown' : ''"
+                   t-att-title="row.id === 'config' ? 'the Configuration tab is always shown' : ''"
                    t-on-change="ev => this.toggle(row.id, ev.target.checked)"/>
             <t t-out="row.label"/>
           </label>
@@ -3395,7 +3403,7 @@ class ConfigScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top"><h1>Config</h1></div>
+        <div class="panel-top"><h1>Configuration</h1></div>
         <div class="panel-actions">
           <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
           <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
@@ -3429,6 +3437,7 @@ class ConfigScreen extends Component {
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
+        <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
         <div class="config-block">
           <h2 class="subtitle">Storage</h2>
@@ -4436,6 +4445,23 @@ const SPECS = {
         const used = (t.config || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by target "${t.name}"`;
       }
+      return null;
+    },
+  },
+  testPresets: {
+    key: "test_presets",
+    title: "Test presets",
+    itemName: "preset",
+    reorderable: true, // drag the handle to reorder how presets appear in the Tests selector
+    fields: [
+      {
+        key: "tags",
+        name: "test tags",
+        placeholder: "--test-tags, e.g. /web:WebSuite[@web]",
+        className: "w-flex",
+      },
+    ],
+    validate() {
       return null;
     },
   },

@@ -70,6 +70,9 @@ export const DEFAULT_CONFIG = {
     on_create_args: "-i sale_management",
     other_args: "--dev all",
   },
+  // test-tag presets offered in the Tests tab's selector (editable in the
+  // Configuration tab). Each is { tags: "<--test-tags value>" }.
+  test_presets: [{ tags: "/web:WebSuite[@web]" }],
   // navbar links (editable in the Config tab). /odoo + /web/tests go through the
   // autologin addon (?to=<url-encoded target>) and only work while the server is up.
   links: [
