@@ -10,6 +10,7 @@ import { DatabasePlugin } from "./database_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
+import { ReviewPlugin } from "./review_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 
@@ -22,6 +23,7 @@ const PLUGINS = [
   CodePlugin,
   TestsPlugin,
   AddonsPlugin,
+  ReviewPlugin,
   TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,

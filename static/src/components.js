@@ -12,6 +12,7 @@ import { DatabasePlugin } from "./database_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
+import { ReviewPlugin } from "./review_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
@@ -60,6 +61,7 @@ const ICONS = {
   journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
   terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
+  review: `<svg viewBox="0 0 24 24"><path d="M21 11.5a8 8 0 0 1-8.5 8 8.5 8.5 0 0 1-3.8-.9L3 20l1.4-4.7A8 8 0 0 1 12.5 3.5a8 8 0 0 1 8.5 8z"/><polyline points="8.5 11.5 11 14 15.5 9.5"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -68,10 +70,35 @@ const NAV = [
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
+  { id: "review", label: "Reviews", icon: ICONS.review },
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "config", label: "Config", icon: ICONS.config },
 ];
+// Merge a saved tab config with NAV → the ordered list of tab ids to show. The
+// user's order is preserved for tabs they've configured; any NAV tab missing from
+// their config (e.g. a newly-shipped one) is inserted at its natural NAV position
+// — right after its NAV predecessor — instead of tacked on at the end.
+function mergedTabIds(configured) {
+  const inNav = new Set(NAV.map((n) => n.id));
+  const out = [];
+  const seen = new Set();
+  for (const t of configured || []) {
+    if (!inNav.has(t.id) || seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push(t.id);
+  }
+  let anchor = -1; // index in `out` of the last NAV tab we've placed/seen
+  for (const n of NAV) {
+    const idx = out.indexOf(n.id);
+    if (idx !== -1) {
+      anchor = idx;
+    } else {
+      out.splice(++anchor, 0, n.id);
+    }
+  }
+  return out;
+}
 // ─────────────────────────── Topbar ───────────────────────────
 
 class Topbar extends Component {
@@ -188,20 +215,16 @@ class Sidebar extends Component {
 
   // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
   // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from
-  // config are appended (a newly-added tab shows up); Config is always kept.
+  // config slot in at their natural position (see mergedTabIds); Config is always
+  // kept, hidden tabs are filtered out.
   get nav() {
     const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
     const configured = this.config.config.tabs;
     if (!configured || !configured.length) return NAV;
-    const out = [];
-    const seen = new Set();
-    for (const t of configured) {
-      const m = meta[t.id];
-      if (!m || seen.has(t.id)) continue;
-      seen.add(t.id);
-      if (t.id === "config" || t.visible !== false) out.push(m);
-    }
-    for (const n of NAV) if (!seen.has(n.id)) out.push(n);
+    const hidden = new Set(configured.filter((t) => t.visible === false).map((t) => t.id));
+    const out = mergedTabIds(configured)
+      .filter((id) => id === "config" || !hidden.has(id))
+      .map((id) => meta[id]);
     if (!out.some((n) => n.id === "config")) out.push(meta.config);
     return out;
   }
@@ -2535,6 +2558,93 @@ class PrsScreen extends Component {
   }
 }
 
+// ─────────────────────────── Review screen ───────────────────────────
+
+// PRs I commented on in the last 14 days — one global GitHub search
+// (commenter:@me), across every repo, newest first. Read-only list.
+class ReviewScreen extends Component {
+  static components = { SearchBox };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top has-filters">
+          <h1>Review</h1>
+          <div class="panel-filters">
+            <SearchBox value="this.search"/>
+          </div>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.review.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <span class="dash-subtitle">Pull requests you commented on in the last 14 days.</span>
+          <span class="row-count" t-out="this.count"/>
+        </div>
+      </div>
+      <div class="content br-fill">
+        <div t-att-class="{busy: this.review.loading()}">
+          <div t-if="this.review.error()" class="dim br-empty" t-out="'Failed to load: ' + this.review.error()"/>
+          <div t-elif="!this.rows().length" class="dim br-empty">No PRs commented on in the last 14 days.</div>
+          <div t-else="" class="br-card">
+            <div class="brg-table">
+            <table class="br-table brg-flat">
+              <thead>
+                <tr><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Last update</th></tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number">
+                  <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
+                  <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
+                  <td class="dim" t-out="row.repo"/>
+                  <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
+                  <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+
+  review = plugin(ReviewPlugin);
+  refreshIcon = m(ICONS.refresh);
+  search = signal("");
+
+  setup() {
+    this.review.load();
+  }
+
+  get stamp() {
+    if (this.review.loading()) return "refreshing…";
+    return this.review.at() ? `updated ${timeAgo(new Date(this.review.at()).toISOString())}` : "";
+  }
+
+  get count() {
+    const n = this.rows().length;
+    return `${n} pull request${n === 1 ? "" : "s"}`;
+  }
+
+  // filtered (by the search box over title/repo/number), newest first
+  rows() {
+    const q = this.search().trim().toLowerCase();
+    return this.review
+      .prs()
+      .filter((pr) => !q || `${pr.title} ${pr.repo} #${pr.number}`.toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+  }
+
+  cell(date) {
+    return timeAgo(date);
+  }
+
+  prState(row) {
+    return row.draft && row.state === "open" ? "draft" : row.state;
+  }
+}
+
 // ─────────────────────────── Tests screen ───────────────────────────
 
 class TestsScreen extends Component {
@@ -2876,20 +2986,18 @@ class TabsEditor extends Component {
   dragIndex = signal(-1);
   dragOverIndex = signal(-1);
 
-  // configured order first (unknown ids dropped), then any NAV tab missing from
-  // config appended (so a newly-added tab shows up). Config is always visible.
+  // configured order, with any NAV tab missing from config slotted in at its
+  // natural position (see mergedTabIds, so a newly-added tab shows up next to its
+  // neighbours). Config is always visible; new tabs default to visible.
   get rows() {
     const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
     const configured = this.config.config.tabs || [];
-    const out = [];
-    const seen = new Set();
-    for (const t of configured) {
-      if (!meta[t.id] || seen.has(t.id)) continue;
-      seen.add(t.id);
-      out.push({ id: t.id, label: meta[t.id].label, visible: t.id === "config" || t.visible !== false });
-    }
-    for (const n of NAV) if (!seen.has(n.id)) out.push({ id: n.id, label: n.label, visible: true });
-    return out;
+    const hidden = new Set(configured.filter((t) => t.visible === false).map((t) => t.id));
+    return mergedTabIds(configured).map((id) => ({
+      id,
+      label: meta[id].label,
+      visible: id === "config" || !hidden.has(id),
+    }));
   }
 
   _save(rows) {
@@ -3818,6 +3926,7 @@ const SCREENS = {
   targets: TargetsScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
+  review: ReviewScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
   addons: AddonsScreen,
@@ -3833,6 +3942,7 @@ export class App extends Component {
     TargetsScreen,
     BranchesScreen,
     PrsScreen,
+    ReviewScreen,
     TestsScreen,
     DatabasesScreen,
     AddonsScreen,

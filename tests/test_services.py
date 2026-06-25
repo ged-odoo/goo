@@ -4,6 +4,7 @@ exercised against a FakeIO, so there's no real subprocess, network, or sleep.
 Run from the repo root: `python3 -m unittest discover`
 """
 
+import json
 import subprocess
 import threading
 import time
@@ -130,6 +131,60 @@ class GitHubServiceTest(unittest.TestCase):
         svc = services.GitHubService(io, TTLCache(ttl=0))
         repos = svc.prs([{"id": "community", "github": "odoo/odoo"}])
         self.assertEqual(repos[0]["error"], "gh: not logged in")
+
+    def test_reviewed_maps_search_items(self):
+        payload = json.dumps(
+            {
+                "total_count": 2,
+                "items": [
+                    {
+                        "number": 5,
+                        "title": "merged one",
+                        "html_url": "https://github.com/odoo/odoo/pull/5",
+                        "repository_url": "https://api.github.com/repos/odoo/odoo",
+                        "state": "closed",
+                        "updated_at": "2026-06-24T00:00:00Z",
+                        "draft": False,
+                        "comments": 3,
+                        "pull_request": {"merged_at": "2026-06-24T00:00:00Z"},
+                    },
+                    {
+                        "number": 7,
+                        "title": "open draft",
+                        "html_url": "https://github.com/odoo/enterprise/pull/7",
+                        "repository_url": "https://api.github.com/repos/odoo/enterprise",
+                        "state": "open",
+                        "updated_at": "2026-06-23T00:00:00Z",
+                        "draft": True,
+                        "comments": 0,
+                        "pull_request": {"merged_at": None},
+                    },
+                ],
+            }
+        )
+        io = FakeIO(run_result=completed(stdout=payload))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        result = svc.reviewed(days=14)
+        prs = result["prs"]
+        self.assertEqual(len(prs), 2)
+        self.assertEqual(prs[0]["repo"], "odoo/odoo")
+        self.assertEqual(prs[0]["state"], "merged")  # merged_at set → "merged"
+        self.assertEqual(prs[0]["url"], "https://github.com/odoo/odoo/pull/5")
+        self.assertEqual(prs[1]["repo"], "odoo/enterprise")
+        self.assertEqual(prs[1]["state"], "open")
+        self.assertTrue(prs[1]["draft"])
+        self.assertFalse(result["capped"])  # total_count == fetched
+        # one global search via `gh api search/issues`, filtered to commenter:@me
+        joined = " ".join(str(c) for c in io.run_calls[0])
+        self.assertIn("search/issues", joined)
+        self.assertIn("commenter:@me", joined)
+
+    def test_reviewed_reports_gh_error(self):
+        io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        result = svc.reviewed()
+        self.assertEqual(result["error"], "gh: not logged in")
+        self.assertEqual(result["prs"], [])
 
     def test_close_pr_invalidates_cache(self):
         cache = TTLCache(ttl=600)

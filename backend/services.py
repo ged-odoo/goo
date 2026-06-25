@@ -14,6 +14,7 @@ import subprocess
 import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 RUNBOT_BASE = "https://runbot.odoo.com"
 MERGEBOT_BASE = "https://mergebot.odoo.com"
@@ -135,6 +136,75 @@ class GitHubService:
         except json.JSONDecodeError:
             entry["error"] = "unexpected gh output"
         return entry
+
+    def reviewed(self, days=14, refresh=False):
+        """PRs the current user commented on in the last `days` days, across all of
+        GitHub (search: type:pr commenter:@me updated:>=<cutoff>), newest first.
+        Cached by `days`; pass refresh=True to bypass."""
+        key = ("reviewed", days)
+        if refresh:
+            self.cache.invalidate(key)
+        return self.cache.get(key, lambda: self._fetch_reviewed(days))
+
+    def _fetch_reviewed(self, days):
+        # one global GitHub search (this gh has no `gh search` subcommand, so go
+        # through `gh api search/issues`). Pages of 100, capped at 300 to bound it.
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+        query = f"type:pr commenter:@me updated:>={cutoff}"
+        prs, total = [], 0
+        self.io.log_request(f"gh api search/issues '{query}'")
+        try:
+            for page in (1, 2, 3):  # cap at 3 × 100 = 300 results
+                r = self.io.run(
+                    [
+                        "gh",
+                        "api",
+                        "-X",
+                        "GET",
+                        "search/issues",
+                        "-f",
+                        f"q={query}",
+                        "-f",
+                        "sort=updated",
+                        "-f",
+                        "order=desc",
+                        "-f",
+                        "per_page=100",
+                        "-f",
+                        f"page={page}",
+                    ],
+                    timeout=30,
+                )
+                if r.returncode != 0:
+                    err = r.stderr.strip().split("\n")[0] or "gh failed"
+                    return {"prs": [], "error": err}
+                data = json.loads(r.stdout)
+                total = data.get("total_count", 0)
+                items = data.get("items", [])
+                prs.extend(self._review_row(it) for it in items)
+                if len(items) < 100:
+                    break
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return {"prs": [], "error": str(e)}
+        except json.JSONDecodeError:
+            return {"prs": [], "error": "unexpected gh output"}
+        # surface truncation rather than silently dropping results
+        return {"prs": prs, "error": None, "capped": total > len(prs)}
+
+    @staticmethod
+    def _review_row(item):
+        pr = item.get("pull_request") or {}
+        state = "merged" if pr.get("merged_at") else item.get("state", "")
+        return {
+            "repo": item.get("repository_url", "").rsplit("/repos/", 1)[-1],
+            "number": item.get("number"),
+            "title": item.get("title", ""),
+            "url": item.get("html_url", ""),
+            "state": state,
+            "draft": item.get("draft", False),
+            "comments": item.get("comments", 0),
+            "updatedAt": item.get("updated_at", ""),
+        }
 
     def close_pr(self, github, number):
         """Close a GitHub PR. Returns (ok, error); invalidates the PR cache on
