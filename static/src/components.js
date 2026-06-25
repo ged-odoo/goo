@@ -458,22 +458,22 @@ class DashboardScreen extends Component {
                     <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
                     <span class="dash-name" t-out="tgt.name"/>
                     <!-- one runbot/CI badge per target (the build is per bundle, the same
-                         across the target's repos): a dropdown button when there's a CI
-                         breakdown, else a plain badge — followed by the bundle link -->
+                         across the target's repos): a link to the runbot bundle that, when
+                         there's a per-check CI breakdown, opens the breakdown popover on
+                         hover (info on hover, the runbot link on click) -->
                     <t t-set="brow" t-value="this.bundleRow(tgt)"/>
                     <t t-if="brow">
                       <t t-set="ci" t-value="this.ciBadge(brow)"/>
-                      <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
+                      <t t-set="rbUrl" t-value="this.runbotUrl(tgt)"/>
+                      <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
-                      </button>
+                      </a>
                       <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="'runbot: ' + ci.title">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </span>
                     </t>
-                    <a t-if="this.bundleBranch(tgt)" class="dash-ci-bundle" target="_blank" t-att-href="this.code.bundleUrl(this.bundleBranch(tgt))" title="open the runbot bundle for this target">[bundle]</a>
-                    <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
                   </div>
                   <div class="dash-tgt-actions">
                     <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)"><t t-out="this.checkIcon"/>Apply</button>
@@ -746,10 +746,24 @@ class DashboardScreen extends Component {
     return badge;
   }
 
-  // open the CI breakdown popover (full per-check status) anchored to the badge
-  openCiMenu(ev, checks) {
+  // the runbot bundle URL for a target ("" when it has no bundle branch)
+  runbotUrl(tgt) {
+    const branch = this.bundleBranch(tgt);
+    return branch ? this.code.bundleUrl(branch) : "";
+  }
+
+  // open the CI breakdown popover (full per-check status) anchored to the badge on
+  // hover; a no-op when the badge has no per-check breakdown. The badge itself is a
+  // link to runbot, so the popover is purely the on-hover info.
+  showCiMenu(ev, checks) {
+    if (!checks || !checks.length) return;
     const rect = ev.currentTarget.getBoundingClientRect();
     appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
+  }
+
+  // ask the popover to close (it lingers briefly so the mouse can move into it)
+  hideCiMenu() {
+    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
   }
 
 
@@ -3819,7 +3833,8 @@ class ActionMenu extends Component {
 // ActionMenu) so it escapes overflow-clipped containers.
 class CiMenu extends Component {
   static template = xml`
-    <div class="dash-menu ci-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+    <div class="dash-menu ci-menu" t-att-class="{hidden: !this.open()}"
+         t-on-mouseenter="() => this.cancelClose()" t-on-mouseleave="() => this.scheduleClose()">
       <a t-foreach="this.checks()" t-as="c" t-key="c_index" class="ci-menu-item" t-att-class="c.state || 'unknown'"
          t-att-href="c.url || undefined" t-att-target="c.url ? '_blank' : undefined">
         <span class="ci-menu-dot"/>
@@ -3831,19 +3846,40 @@ class CiMenu extends Component {
   open = signal(false);
   checks = signal([]);
   _el = null;
+  _closeTimer = null;
 
   setup() {
     onMounted(() => {
       this._el = document.querySelector(".ci-menu");
+      // opened on badge hover; lingers briefly on leave so the mouse can cross the
+      // gap into the popover (to use its per-check build links)
       appBus.addEventListener("ci-menu", (e) => this.openMenu(e.detail));
-      document.addEventListener("click", () => this.open.set(false));
+      appBus.addEventListener("ci-menu-hide", () => this.scheduleClose());
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.open.set(false);
+        if (e.key === "Escape") this.close();
       });
     });
   }
 
+  cancelClose() {
+    if (this._closeTimer) {
+      clearTimeout(this._closeTimer);
+      this._closeTimer = null;
+    }
+  }
+
+  scheduleClose() {
+    this.cancelClose();
+    this._closeTimer = setTimeout(() => this.open.set(false), 180);
+  }
+
+  close() {
+    this.cancelClose();
+    this.open.set(false);
+  }
+
   async openMenu({ rect, checks }) {
+    this.cancelClose(); // moving onto another badge cancels the pending close
     this.checks.set(checks);
     this.open.set(true);
     await Promise.resolve(); // let the list render so offsetWidth/Height are real

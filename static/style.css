@@ -1038,7 +1038,7 @@ section.hidden {
   gap: 16px;
   align-items: stretch; /* cards on the same row share the tallest one's height */
 }
-/* one target = a card: header (dot, name, status, [bundle], active/apply) + repo rows */
+/* one target = a card: header (dot, name, runbot status link, Apply) + repo rows */
 .dash-tgt {
   background: var(--l-card);
   border: 1px solid var(--l-line);
@@ -1074,16 +1074,6 @@ section.hidden {
   align-items: center;
   gap: 6px;
   flex: none;
-}
-.dash-tgt-active {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--l-accent);
-  background: var(--l-accent-soft);
-  padding: 2px 8px;
-  border-radius: 5px;
 }
 .dash-dot {
   width: 9px;
@@ -1292,19 +1282,6 @@ a.dash-row-branch:hover {
   color: var(--l-accent);
   text-decoration: underline;
 }
-/* small "[bundle]" link shown before the CI badge — always points to the runbot bundle */
-.dash-ci-bundle {
-  flex: none;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--l-text-faint);
-  text-decoration: none;
-  white-space: nowrap;
-}
-.dash-ci-bundle:hover {
-  color: var(--l-accent);
-  text-decoration: underline;
-}
 .dash-ci {
   display: inline-flex;
   align-items: center;
@@ -1317,6 +1294,10 @@ a.dash-row-branch:hover {
   text-decoration: none;
   color: var(--l-text-dim);
   background: var(--l-panel);
+}
+/* the badge is a link to runbot (the plain-span fallback isn't) — hint clickability */
+a.dash-ci:hover {
+  filter: brightness(0.95);
 }
 .dash-ci-dot {
   width: 6px;
