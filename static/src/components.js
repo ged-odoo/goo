@@ -55,6 +55,7 @@ const ICONS = {
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
   kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
+  check: `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`,
   push: `<svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
   stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
@@ -389,6 +390,7 @@ class DashboardScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
+          <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
         </div>
       </div>
@@ -445,71 +447,67 @@ class DashboardScreen extends Component {
             </div>
           </section>
 
-          <!-- build targets (one card, a section per target) -->
+          <!-- build targets — a responsive grid, one self-contained card per target -->
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
           <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
-          <section t-else="" class="dash-sec">
-            <div class="dash-sec-head">
-              <span class="dash-sec-icon"><t t-out="this.targetIcon"/></span>
-              <span class="dash-sec-title">Targets</span>
-              <span class="dash-sec-count" t-out="this.targets.length"/>
-              <button class="dash-rebase dash-sec-action" t-on-click="() => this.startCreate()">New target</button>
-            </div>
-            <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
-              <div class="dash-tgt-head">
-                <div class="dash-tgt-title">
-                  <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
-                  <span class="dash-name" t-out="tgt.name"/>
-                  <!-- one runbot/CI badge per target (the build is per bundle, the same
-                       across the target's repos): a dropdown button when there's a CI
-                       breakdown, else a plain badge — followed by the bundle link -->
-                  <t t-set="brow" t-value="this.bundleRow(tgt)"/>
-                  <t t-if="brow">
-                    <t t-set="ci" t-value="this.ciBadge(brow)"/>
-                    <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
-                      <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                      <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
-                    </button>
-                    <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="'runbot: ' + ci.title">
-                      <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                      <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
-                    </span>
-                  </t>
-                  <a t-if="this.bundleBranch(tgt)" class="dash-ci-bundle" target="_blank" t-att-href="this.code.bundleUrl(this.bundleBranch(tgt))" title="open the runbot bundle for this target">[bundle]</a>
-                </div>
-                <div class="dash-tgt-actions">
-                  <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
-                  <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)">Apply</button>
-                  <div class="dash-kebab-wrap">
-                    <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
-                    <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
-                      <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
-                      <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
-                      <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+          <section t-else="" class="dash-tgts-sec">
+            <div class="dash-tgts">
+              <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
+                <div class="dash-tgt-head">
+                  <div class="dash-tgt-title">
+                    <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
+                    <span class="dash-name" t-out="tgt.name"/>
+                    <!-- one runbot/CI badge per target (the build is per bundle, the same
+                         across the target's repos): a dropdown button when there's a CI
+                         breakdown, else a plain badge — followed by the bundle link -->
+                    <t t-set="brow" t-value="this.bundleRow(tgt)"/>
+                    <t t-if="brow">
+                      <t t-set="ci" t-value="this.ciBadge(brow)"/>
+                      <button t-if="ci.checks" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title + ' — click for the full CI breakdown'" t-on-click.stop="(ev) => this.openCiMenu(ev, ci.checks)">
+                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                        <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                      </button>
+                      <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="'runbot: ' + ci.title">
+                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                        <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
+                      </span>
+                    </t>
+                    <a t-if="this.bundleBranch(tgt)" class="dash-ci-bundle" target="_blank" t-att-href="this.code.bundleUrl(this.bundleBranch(tgt))" title="open the runbot bundle for this target">[bundle]</a>
+                    <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
+                  </div>
+                  <div class="dash-tgt-actions">
+                    <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)"><t t-out="this.checkIcon"/>Apply</button>
+                    <div class="dash-kebab-wrap">
+                      <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
+                      <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
+                        <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
+                        <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
+                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-              <div class="dash-sec-rows">
-                <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-trow">
-                  <div class="dash-trow-repo">
-                    <div class="dash-row-name" t-out="row.repo"/>
-                    <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
-                    <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
-                  </div>
-                  <t t-if="row.present">
-                    <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                    <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                    <div class="dash-trow-pr">
-                      <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                      <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
-                      <span t-if="!row.pr" class="dash-trow-dash">—</span>
+                <div class="dash-tgt-body">
+                  <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-trow">
+                    <div class="dash-trow-repo">
+                      <div class="dash-row-name" t-out="row.repo"/>
+                      <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
+                      <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
                     </div>
-                    <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
-                  </t>
-                  <div t-else="" class="dash-row-missing">
-                    <span>no local branch</span>
-                    <button class="dash-create" t-on-click="() => this.createTargetBranch(row)">create it</button>
+                    <t t-if="row.present">
+                      <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                      <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                      <div class="dash-trow-pr">
+                        <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                        <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
+                        <span t-if="!row.pr" class="dash-trow-dash">—</span>
+                      </div>
+                      <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                    </t>
+                    <div t-else="" class="dash-row-missing">
+                      <span>no local branch</span>
+                      <button class="dash-create" t-on-click="() => this.createTargetBranch(row)">create it</button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -529,8 +527,8 @@ class DashboardScreen extends Component {
   refreshIcon = m(ICONS.refresh);
   branchIcon = m(ICONS.branches);
   addonsIcon = m(ICONS.addons); // "Repositories" section header
-  targetIcon = m(ICONS.target); // "Targets" section header
   kebabIcon = m(ICONS.kebab);
+  checkIcon = m(ICONS.check); // Apply button
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
   historyIcon = m(ICONS.history);

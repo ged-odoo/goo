@@ -1031,32 +1031,50 @@ section.hidden {
   opacity: 0.6;
   cursor: default;
 }
-/* build targets — one card, a section per target */
-/* one target = a header (dot, name, db, active/apply) + its indented repo rows */
-.dash-tgt {
-  border-top: 1px solid var(--l-line);
+/* build targets — a responsive grid of self-contained cards (one per target) */
+.dash-tgts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 16px;
+  align-items: start;
 }
-.dash-tgt:first-child {
-  border-top: none;
+/* one target = a card: header (dot, name, status, [bundle], active/apply) + repo rows */
+.dash-tgt {
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 13px;
+  /* no overflow:hidden — the kebab dropdown must be able to escape the card */
+  box-shadow:
+    0 1px 2px oklch(0.27 0.012 264 / 0.04),
+    0 4px 14px oklch(0.27 0.012 264 / 0.05);
+}
+/* the active target's card stands out with a solid black border */
+.dash-tgt.active {
+  border-color: var(--l-text);
 }
 .dash-tgt-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 6px 20px 1px;
+  gap: 12px;
+  padding: 9px 12px 9px 14px;
+  border-bottom: 1px solid var(--l-line-soft);
+  border-radius: 13px 13px 0 0;
+}
+.dash-tgt.active .dash-tgt-head {
+  background: var(--l-hover);
 }
 .dash-tgt-title {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 9px;
   min-width: 0;
-  flex-wrap: wrap;
+  overflow: hidden;
 }
 .dash-tgt-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: none;
 }
 .dash-tgt-active {
@@ -1092,11 +1110,14 @@ section.hidden {
   }
 }
 .dash-name {
-  font-size: 15.5px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--l-text);
   white-space: nowrap;
-  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 40px;
 }
 .dash-activate {
   display: inline-flex;
@@ -1113,6 +1134,13 @@ section.hidden {
   border-radius: 7px;
   padding: 5px 10px;
   transition: 0.13s;
+}
+.dash-activate svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
 }
 .dash-activate:hover:not(:disabled) {
   color: var(--l-text);
@@ -1200,22 +1228,30 @@ section.hidden {
   cursor: default;
 }
 
-/* card body: white bg, rows with 3-column layout */
-/* target repo row: repo+branch | commit | CI | PR | when */
+/* card body: padded list of repo rows */
+.dash-tgt-body {
+  padding: 4px 6px 6px;
+}
+/* target repo row: repo+branch | commit | PR | when (flex so it adapts to the
+   card's width instead of a fixed grid) */
 .dash-trow {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) 132px 56px;
-  gap: 14px;
+  display: flex;
   align-items: center;
-  padding: 5px 20px 5px 52px;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
 }
 .dash-trow:hover {
   background: var(--l-hover);
 }
 .dash-trow-repo {
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 44%;
 }
 .dash-trow-commit {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12.5px;
   color: var(--l-text-dim);
   white-space: nowrap;
@@ -1225,10 +1261,11 @@ section.hidden {
 .dash-trow-pr {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 6px;
+  flex: none;
 }
 .dash-trow-when {
+  flex: none;
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--l-text-faint);
@@ -1320,7 +1357,7 @@ a.dash-row-branch:hover {
 }
 /* a target row whose branch does not exist locally: gray note + create button */
 .dash-row-missing {
-  grid-column: 2 / -1;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 12px;
