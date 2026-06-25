@@ -93,7 +93,10 @@ export class CodePlugin extends Plugin {
   // Branches come from local git (fast, volatile) and PRs/runbot/mergebot are now
   // cached server-side, so we simply request everything and let the backend decide
   // freshness. `force` (the manual Refresh) passes refresh:true to bypass the cache.
-  async load(force = false) {
+  // `prRepoIds` (a Set) narrows the PR fetch to those repo ids — the dashboard only
+  // shows PRs for its favorite/target repos, so there's no point fetching the rest
+  // (those gh calls hit GitHub). null = every repo with a github (Branches/PRs tabs).
+  async load(force = false, prRepoIds = null) {
     this.loading.set(true);
     this.error.set("");
     this._refreshExternal = force;
@@ -111,7 +114,8 @@ export class CodePlugin extends Plugin {
         this.error.set(e.message);
         return null;
       });
-    const prsP = postJSON("/api/prs", { repos: repos.filter((r) => r.github), refresh: force })
+    const prRepos = repos.filter((r) => r.github && (!prRepoIds || prRepoIds.has(r.id)));
+    const prsP = postJSON("/api/prs", { repos: prRepos, refresh: force })
       .then((p) => {
         this.prRepos.set(p.repos);
         return p.repos;

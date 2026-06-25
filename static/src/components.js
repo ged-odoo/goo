@@ -385,7 +385,7 @@ class DashboardScreen extends Component {
           <h1>Dashboard</h1>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+            <button class="pbtn" t-on-click="() => this.code.load(true, this._dashRepoIds())"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
@@ -460,10 +460,9 @@ class DashboardScreen extends Component {
                 <div class="dash-tgt-title">
                   <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
                   <span class="dash-name" t-out="tgt.name"/>
-                  <a t-if="this.bundleBranch(tgt)" class="dash-ci-bundle" target="_blank" t-att-href="this.code.bundleUrl(this.bundleBranch(tgt))" title="open the runbot bundle for this target">[bundle]</a>
                   <!-- one runbot/CI badge per target (the build is per bundle, the same
                        across the target's repos): a dropdown button when there's a CI
-                       breakdown, else a plain badge -->
+                       breakdown, else a plain badge — followed by the bundle link -->
                   <t t-set="brow" t-value="this.bundleRow(tgt)"/>
                   <t t-if="brow">
                     <t t-set="ci" t-value="this.ciBadge(brow)"/>
@@ -476,6 +475,7 @@ class DashboardScreen extends Component {
                       <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                     </span>
                   </t>
+                  <a t-if="this.bundleBranch(tgt)" class="dash-ci-bundle" target="_blank" t-att-href="this.code.bundleUrl(this.bundleBranch(tgt))" title="open the runbot bundle for this target">[bundle]</a>
                 </div>
                 <div class="dash-tgt-actions">
                   <span t-if="this.isActive(tgt)" class="dash-tgt-active">active</span>
@@ -604,7 +604,7 @@ class DashboardScreen extends Component {
   }
 
   setup() {
-    this.code.load();
+    this.code.load(false, this._dashRepoIds());
     this.db.load(); // the delete dialog needs the database list to offer "drop db"
     // close the kebab menu on any outside click
     const closeMenu = () => this.menuId() && this.menuId.set("");
@@ -632,6 +632,18 @@ class DashboardScreen extends Component {
         seen.add(row.branch);
       }
     return [...seen];
+  }
+
+  // repo ids the dashboard actually shows PRs for — favorite repos, the current
+  // target's repos, and every favorite target's repos. PRs for any other repo
+  // (e.g. tutorials/owl when neither favorited nor targeted) aren't displayed, so
+  // load() skips fetching them. Returns a Set of repo ids.
+  _dashRepoIds() {
+    const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
+    const current = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
+    for (const c of current?.config || []) ids.add(c.repo);
+    for (const tgt of this.targets) for (const c of tgt.config || []) ids.add(c.repo);
+    return ids;
   }
 
   // the unique {github, number} of every PR shown on the dashboard (for mergebot)
