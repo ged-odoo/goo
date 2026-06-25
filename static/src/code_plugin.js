@@ -24,6 +24,7 @@ export class CodePlugin extends Plugin {
   error = signal("");
   busy = signal(false);
   mergebot = signal({}); // "github#number" -> mergebot state (cached server-side)
+  mbDetails = signal({}); // "github#number" -> blocked-reason detail (e.g. "Review, CI")
   runbot = signal({}); // branch name -> runbot status (cached server-side)
   _refreshExternal = false; // true during a forced load: ask the server to bypass its cache
   _mbPending = new Set(); // keys in flight, so the dashboard effect doesn't double-fetch
@@ -48,6 +49,7 @@ export class CodePlugin extends Plugin {
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
       this.mergebot.set({ ...this.mergebot(), ...res.states });
+      this.mbDetails.set({ ...this.mbDetails(), ...(res.details || {}) });
     } catch {
       /* leave states blank on failure */
     } finally {
@@ -102,6 +104,7 @@ export class CodePlugin extends Plugin {
     this._refreshExternal = force;
     if (force) {
       this.mergebot.set({}); // re-display fresh runbot/mergebot on a real refresh
+      this.mbDetails.set({});
       this.runbot.set({});
     }
     const repos = this.reposWithGithub();

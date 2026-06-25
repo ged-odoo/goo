@@ -357,8 +357,10 @@ class MergebotService:
         self.cache = cache
 
     def statuses(self, prs, refresh=False):
-        """Return ({"github#number": state}, [unsupported repos]) for the given PRs,
-        cached per PR and fetched in parallel. Pass refresh=True to bypass the cache.
+        """Return ({"github#number": state}, {"github#number": detail}, [unsupported
+        repos]) for the given PRs, cached per PR and fetched in parallel. Pass
+        refresh=True to bypass the cache. `detail` (omitted when empty) lists the
+        unmet merge requirements behind a blocked state, e.g. "Review, CI".
 
         A repo is reported "unsupported" when, in this batch, at least one of its PRs
         404s (no mergebot page) and none of its PRs is reachable — so the caller can
@@ -366,7 +368,7 @@ class MergebotService:
         reachable PR is NOT unsupported (its reachable PR clears it)."""
         prs = [p for p in prs if p.get("github") and p.get("number")]
         if not prs:
-            return {}, []
+            return {}, {}, []
         if refresh:
             for p in prs:
                 self.cache.invalidate(f"{p['github']}#{p['number']}")
@@ -380,29 +382,34 @@ class MergebotService:
                     prs,
                 )
             )
-        states, reachable, missing = {}, set(), set()
-        for p, (state, supported) in zip(prs, results, strict=False):
-            states[f"{p['github']}#{p['number']}"] = state
+        states, details, reachable, missing = {}, {}, set(), set()
+        for p, (state, detail, supported) in zip(prs, results, strict=False):
+            key = f"{p['github']}#{p['number']}"
+            states[key] = state
+            if detail:
+                details[key] = detail
             if supported is None:
                 # transient failure — don't pin a blank for the whole TTL
-                self.cache.invalidate(f"{p['github']}#{p['number']}")
+                self.cache.invalidate(key)
             elif supported:
                 reachable.add(p["github"])
             else:
                 missing.add(p["github"])
         unsupported = sorted(missing - reachable)
-        return states, unsupported
+        return states, details, unsupported
 
     def _status(self, github, number):
-        """(merge state, supported) — e.g. ('blocked', True), ('merged', True), or
-        ('', True) when the page loads but shows no known state. `supported` is
-        False on a 404 (repo/PR not on mergebot) and None on a transient failure.
-        State is rendered inconsistently (a colored <p> for blocked/staged/ready/…,
-        an alert <div> for merged/closed), so scan for the first element with a bg-*
-        or alert class whose leading word is a known state."""
+        """(merge state, detail, supported) — e.g. ('blocked', 'Review, CI', True),
+        ('merged', '', True), or ('', '', True) when the page loads but shows no
+        known state. `detail` lists the unmet merge requirements when blocked, ''
+        otherwise. `supported` is False on a 404 (repo/PR not on mergebot) and None
+        on a transient failure. State is rendered inconsistently (a colored <p> for
+        blocked/staged/ready/…, an alert <div> for merged/closed), so scan for the
+        first element with a bg-* or alert class whose leading word is a known state."""
         html, err = self.io.http_get(f"{MERGEBOT_BASE}/{github}/pull/{number}")
         if err:
-            return "", (False if "404" in err else None)
+            return "", "", (False if "404" in err else None)
+        state = ""
         for m in re.finditer(
             r'<\w+[^>]*class="[^"]*(?:\bbg-\w+|\balert\b)[^"]*"[^>]*>(.*?)</', html, re.S
         ):
@@ -411,8 +418,22 @@ class MergebotService:
                 continue
             word = re.sub(r"[^a-z]", "", txt.split()[0].lower())
             if word in MERGEBOT_STATES:
-                return word, True
-        return "", True
+                state = word
+                break
+        return state, self._blocked_reasons(html), True
+
+    def _blocked_reasons(self, html):
+        """The unmet merge requirements from the page's `todo` checklist: the labels
+        of the top-level <li> items not marked satisfied (class 'ok'), joined like
+        "Review, CI". Nested per-CI-check items begin with an <a>, so their empty
+        leading text excludes them. Returns '' when nothing is unmet / no checklist."""
+        reasons = []
+        for m in re.finditer(r'<li(?:[^>]*\bclass="([^"]*)")?[^>]*>([^<]*)', html):
+            label = re.sub(r"\s+", " ", m.group(2)).strip()
+            if not label or "ok" in (m.group(1) or "").split():
+                continue
+            reasons.append(label)
+        return ", ".join(reasons)[:200]
 
 
 # ─────────────────────────── PostgreSQL databases ───────────────────────────

@@ -877,8 +877,13 @@ class Handler(BaseHTTPRequestHandler):
             prs = (body or {}).get("prs")
             if err or not isinstance(prs, list):
                 return self._send_json(400, {"ok": False, "error": "missing prs list"})
-            states, unsupported = MERGEBOT.statuses(prs, refresh=bool((body or {}).get("refresh")))
-            self._send_json(200, {"ok": True, "states": states, "unsupported": unsupported})
+            states, details, unsupported = MERGEBOT.statuses(
+                prs, refresh=bool((body or {}).get("refresh"))
+            )
+            self._send_json(
+                200,
+                {"ok": True, "states": states, "details": details, "unsupported": unsupported},
+            )
         elif path == "/api/runbot":
             body, err = self._read_json()
             branches = (body or {}).get("branches")

@@ -499,7 +499,7 @@ class DashboardScreen extends Component {
                       <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
                       <div class="dash-trow-pr">
                         <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                        <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
+                        <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
                         <span t-if="!row.pr" class="dash-trow-dash">—</span>
                       </div>
                       <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
@@ -664,6 +664,12 @@ class DashboardScreen extends Component {
   mbState(row) {
     if (!row.pr || !row.github) return "";
     return this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
+  }
+
+  // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
+  mbDetail(row) {
+    if (!row.pr || !row.github) return "";
+    return this.code.mbDetails()[`${row.github}#${row.pr.number}`] || "";
   }
 
   // color category for a mergebot state
@@ -2741,7 +2747,7 @@ class ReviewScreen extends Component {
                   <td class="dim" t-out="row.repo"/>
                   <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
                   <td>
-                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row)" t-out="this.mbState(row)"/>
+                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
                     <span t-else="" class="dim">—</span>
                   </td>
                   <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
@@ -2784,6 +2790,11 @@ class ReviewScreen extends Component {
 
   mbState(row) {
     return this.review.mergebot()[`${row.repo}#${row.number}`] || "";
+  }
+
+  // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
+  mbDetail(row) {
+    return this.review.mbDetails()[`${row.repo}#${row.number}`] || "";
   }
 
   mbClass(row) {

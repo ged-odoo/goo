@@ -29,6 +29,7 @@ export class ReviewPlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   mergebot = signal({}); // "github#number" -> mergebot state (or "" / "merged")
+  mbDetails = signal({}); // "github#number" -> blocked-reason detail (e.g. "Review, CI")
   favorites = signal(this._readArr(REVIEWS_FAVORITES_KEY)); // [branch, …] (starred groups, sorted first)
   _mbPending = new Set(); // in-flight mergebot keys (dedup)
   _merged = new Set(this._readArr(REVIEWS_MERGED_KEY)); // terminal merged PRs
@@ -91,6 +92,7 @@ export class ReviewPlugin extends Plugin {
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
       this.mergebot.set({ ...this.mergebot(), ...res.states });
+      this.mbDetails.set({ ...this.mbDetails(), ...(res.details || {}) });
       this._record(todo, res);
     } catch {
       /* leave states blank on failure */

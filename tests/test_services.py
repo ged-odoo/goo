@@ -121,27 +121,53 @@ class MergebotServiceTest(unittest.TestCase):
     def test_merged(self):
         io = FakeIO(http={"pull": ('<div class="alert alert-success">merged</div>', None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, unsupported = svc.statuses([{"github": "odoo/odoo", "number": 1}])
+        states, details, unsupported = svc.statuses([{"github": "odoo/odoo", "number": 1}])
         self.assertEqual(states, {"odoo/odoo#1": "merged"})
+        self.assertEqual(details, {})  # no `todo` checklist → no blocking detail
         self.assertEqual(unsupported, [])
 
     def test_blocked(self):
         io = FakeIO(http={"pull": ('<p class="bg-warning">blocked: CI</p>', None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
+        states, details, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
         self.assertEqual(states, {"o/o#7": "blocked"})
+        self.assertEqual(unsupported, [])
+
+    def test_blocked_reasons_lists_unmet_requirements(self):
+        # the real mergebot page renders a `todo` checklist; the unmet top-level <li>
+        # (class != "ok") are the blocking reasons. Whitespace is collapsed; satisfied
+        # items and the nested per-CI-check <li> (they start with <a>) are excluded.
+        html = (
+            '<p class="text-danger bg-danger">Blocked</p>'
+            '<ul class="todo">'
+            '  <li class="ok">\n  Merge method\n  </li>'
+            '  <li class="fail">\n  Review\n  </li>'
+            '  <li class="">\n  CI\n  '
+            '    <ul class="todo">'
+            '      <li class="ok"><a href="x">ci/runbot</a></li>'
+            '      <li class="fail"><a href="">ci/style</a></li>'
+            "    </ul>"
+            "  </li>"
+            "</ul>"
+        )
+        io = FakeIO(http={"pull": (html, None)})
+        svc = services.MergebotService(io, TTLCache(ttl=0))
+        states, details, unsupported = svc.statuses([{"github": "odoo/enterprise", "number": 9}])
+        self.assertEqual(states, {"odoo/enterprise#9": "blocked"})
+        self.assertEqual(details, {"odoo/enterprise#9": "Review, CI"})
         self.assertEqual(unsupported, [])
 
     def test_transient_failure_is_blank_not_unsupported(self):
         svc = services.MergebotService(FakeIO(http={"pull": ("", "down")}), TTLCache(ttl=0))
-        states, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
+        states, details, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
         self.assertEqual(states, {"o/o#7": ""})
+        self.assertEqual(details, {})
         self.assertEqual(unsupported, [])  # a non-404 error is transient, not "no mergebot"
 
     def test_404_marks_repo_unsupported(self):
         io = FakeIO(http={"pull": ("", "HTTP Error 404: Not Found")})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, unsupported = svc.statuses([{"github": "odoo/owl", "number": 5}])
+        states, details, unsupported = svc.statuses([{"github": "odoo/owl", "number": 5}])
         self.assertEqual(states, {"odoo/owl#5": ""})
         self.assertEqual(unsupported, ["odoo/owl"])
 
@@ -154,7 +180,7 @@ class MergebotServiceTest(unittest.TestCase):
             }
         )
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, unsupported = svc.statuses(
+        states, details, unsupported = svc.statuses(
             [{"github": "odoo/odoo", "number": 1}, {"github": "odoo/odoo", "number": 2}]
         )
         self.assertEqual(states, {"odoo/odoo#1": "merged", "odoo/odoo#2": ""})
