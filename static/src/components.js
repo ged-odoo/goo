@@ -70,7 +70,7 @@ const NAV = [
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
-  { id: "review", label: "Reviews", icon: ICONS.review },
+  { id: "reviews", label: "Reviews", icon: ICONS.review },
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "config", label: "Config", icon: ICONS.config },
@@ -2568,7 +2568,7 @@ class ReviewScreen extends Component {
     <section>
       <div class="panel">
         <div class="panel-top has-filters">
-          <h1>Review</h1>
+          <h1>Reviews</h1>
           <div class="panel-filters">
             <SearchBox value="this.search"/>
           </div>
@@ -2578,22 +2578,25 @@ class ReviewScreen extends Component {
           </div>
         </div>
         <div class="panel-actions">
-          <span class="dash-subtitle">Pull requests you commented on in the last 14 days.</span>
+          <span class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content br-fill">
         <div t-att-class="{busy: this.review.loading()}">
           <div t-if="this.review.error()" class="dim br-empty" t-out="'Failed to load: ' + this.review.error()"/>
-          <div t-elif="!this.rows().length" class="dim br-empty">No PRs commented on in the last 14 days.</div>
+          <div t-elif="!this.groups().length" class="dim br-empty">No PRs commented on in the last 14 days.</div>
           <div t-else="" class="br-card">
             <div class="brg-table">
-            <table class="br-table brg-flat">
+            <!-- one tbody per branch: the branch name spans its PRs (rowspan), and
+                 PRs of the same branch read as one block (no rule between them) -->
+            <table class="br-table brg-flat rev-table">
               <thead>
-                <tr><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Last update</th></tr>
+                <tr><th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Last update</th></tr>
               </thead>
-              <tbody>
-                <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number">
+              <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
+                <tr t-foreach="g.prs" t-as="row" t-key="row.repo + ':' + row.number">
+                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch" t-out="g.branch || '—'"/>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
                   <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
                   <td class="dim" t-out="row.repo"/>
@@ -2609,6 +2612,7 @@ class ReviewScreen extends Component {
     </section>`;
 
   review = plugin(ReviewPlugin);
+  config = plugin(ConfigPlugin);
   refreshIcon = m(ICONS.refresh);
   search = signal("");
 
@@ -2622,18 +2626,40 @@ class ReviewScreen extends Component {
   }
 
   get count() {
-    const n = this.rows().length;
+    const n = this.groups().reduce((sum, g) => sum + g.prs.length, 0);
     return `${n} pull request${n === 1 ? "" : "s"}`;
   }
 
-  // filtered (by the search box over title/repo/number), newest first
-  rows() {
+  // PRs (search-filtered) grouped by branch name. Within a group, PRs follow the
+  // repository order from config (e.g. odoo/odoo before odoo/enterprise); repos not
+  // in config sort last. Groups themselves are ordered by their most recent PR. The
+  // same branch often has a PR in odoo and one in enterprise — grouping keeps that
+  // work together.
+  groups() {
     const q = this.search().trim().toLowerCase();
-    return this.review
-      .prs()
-      .filter((pr) => !q || `${pr.title} ${pr.repo} #${pr.number}`.toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+    const byBranch = new Map();
+    for (const pr of this.review.prs()) {
+      if (q && !`${pr.title} ${pr.repo} ${pr.branch} #${pr.number}`.toLowerCase().includes(q)) {
+        continue;
+      }
+      const key = pr.branch || "—";
+      (byBranch.get(key) || byBranch.set(key, []).get(key)).push(pr);
+    }
+    const ts = (pr) => Date.parse(pr.updatedAt) || 0;
+    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
+    const rank = (pr) => {
+      const i = repoOrder.indexOf(pr.repo);
+      return i === -1 ? repoOrder.length : i; // unknown repos sort last
+    };
+    return [...byBranch.entries()]
+      .map(([branch, prs]) => ({
+        branch,
+        prs: prs
+          .slice()
+          .sort((a, b) => rank(a) - rank(b) || a.repo.localeCompare(b.repo) || ts(b) - ts(a)),
+        updated: Math.max(...prs.map(ts)),
+      }))
+      .sort((a, b) => b.updated - a.updated);
   }
 
   cell(date) {
@@ -3926,7 +3952,7 @@ const SCREENS = {
   targets: TargetsScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
-  review: ReviewScreen,
+  reviews: ReviewScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
   addons: AddonsScreen,

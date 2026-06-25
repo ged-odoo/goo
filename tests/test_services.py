@@ -135,31 +135,34 @@ class GitHubServiceTest(unittest.TestCase):
     def test_reviewed_maps_search_items(self):
         payload = json.dumps(
             {
-                "total_count": 2,
-                "items": [
-                    {
-                        "number": 5,
-                        "title": "merged one",
-                        "html_url": "https://github.com/odoo/odoo/pull/5",
-                        "repository_url": "https://api.github.com/repos/odoo/odoo",
-                        "state": "closed",
-                        "updated_at": "2026-06-24T00:00:00Z",
-                        "draft": False,
-                        "comments": 3,
-                        "pull_request": {"merged_at": "2026-06-24T00:00:00Z"},
-                    },
-                    {
-                        "number": 7,
-                        "title": "open draft",
-                        "html_url": "https://github.com/odoo/enterprise/pull/7",
-                        "repository_url": "https://api.github.com/repos/odoo/enterprise",
-                        "state": "open",
-                        "updated_at": "2026-06-23T00:00:00Z",
-                        "draft": True,
-                        "comments": 0,
-                        "pull_request": {"merged_at": None},
-                    },
-                ],
+                "data": {
+                    "search": {
+                        "issueCount": 2,
+                        "nodes": [
+                            {
+                                "number": 5,
+                                "title": "merged one",
+                                "url": "https://github.com/odoo/odoo/pull/5",
+                                "state": "MERGED",
+                                "isDraft": False,
+                                "updatedAt": "2026-06-24T00:00:00Z",
+                                "headRefName": "master-fix-abc",
+                                "repository": {"nameWithOwner": "odoo/odoo"},
+                            },
+                            {
+                                "number": 7,
+                                "title": "open draft",
+                                "url": "https://github.com/odoo/enterprise/pull/7",
+                                "state": "OPEN",
+                                "isDraft": True,
+                                "updatedAt": "2026-06-23T00:00:00Z",
+                                "headRefName": "saas-1.0-feat",
+                                "repository": {"nameWithOwner": "odoo/enterprise"},
+                            },
+                        ],
+                        "pageInfo": {"hasNextPage": False, "endCursor": "c1"},
+                    }
+                }
             }
         )
         io = FakeIO(run_result=completed(stdout=payload))
@@ -168,16 +171,19 @@ class GitHubServiceTest(unittest.TestCase):
         prs = result["prs"]
         self.assertEqual(len(prs), 2)
         self.assertEqual(prs[0]["repo"], "odoo/odoo")
-        self.assertEqual(prs[0]["state"], "merged")  # merged_at set → "merged"
+        self.assertEqual(prs[0]["state"], "merged")  # MERGED → "merged"
         self.assertEqual(prs[0]["url"], "https://github.com/odoo/odoo/pull/5")
+        self.assertEqual(prs[0]["branch"], "master-fix-abc")
         self.assertEqual(prs[1]["repo"], "odoo/enterprise")
         self.assertEqual(prs[1]["state"], "open")
         self.assertTrue(prs[1]["draft"])
-        self.assertFalse(result["capped"])  # total_count == fetched
-        # one global search via `gh api search/issues`, filtered to commenter:@me
+        self.assertEqual(prs[1]["branch"], "saas-1.0-feat")
+        self.assertFalse(result["capped"])  # issueCount == fetched
+        # one global GraphQL search: commented on but not authored by me
         joined = " ".join(str(c) for c in io.run_calls[0])
-        self.assertIn("search/issues", joined)
+        self.assertIn("graphql", joined)
         self.assertIn("commenter:@me", joined)
+        self.assertIn("-author:@me", joined)
 
     def test_reviewed_reports_gh_error(self):
         io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))

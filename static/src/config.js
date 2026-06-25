@@ -92,7 +92,7 @@ export const SECTIONS = [
   "server",
   "branches",
   "prs",
-  "review",
+  "reviews",
   "tests",
   "addons",
   "databases",

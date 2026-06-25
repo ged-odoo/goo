@@ -137,52 +137,62 @@ class GitHubService:
             entry["error"] = "unexpected gh output"
         return entry
 
+    # GraphQL search: one call gives us the PR head branch and a real MERGED state
+    # (the REST search/issues endpoint exposes neither). `$after` drives pagination.
+    _REVIEWED_QUERY = """
+    query($q: String!, $after: String) {
+      search(query: $q, type: ISSUE, first: 100, after: $after) {
+        issueCount
+        nodes {
+          ... on PullRequest {
+            number title url state isDraft updatedAt headRefName
+            repository { nameWithOwner }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+
     def reviewed(self, days=14, refresh=False):
-        """PRs the current user commented on in the last `days` days, across all of
-        GitHub (search: type:pr commenter:@me updated:>=<cutoff>), newest first.
-        Cached by `days`; pass refresh=True to bypass."""
+        """PRs the current user commented on (but didn't author) in the last `days`
+        days, across all of GitHub (search: type:pr commenter:@me -author:@me
+        updated:>=<cutoff>), newest first. Cached by `days`; refresh=True bypasses."""
         key = ("reviewed", days)
         if refresh:
             self.cache.invalidate(key)
         return self.cache.get(key, lambda: self._fetch_reviewed(days))
 
     def _fetch_reviewed(self, days):
-        # one global GitHub search (this gh has no `gh search` subcommand, so go
-        # through `gh api search/issues`). Pages of 100, capped at 300 to bound it.
+        # one global GitHub search via GraphQL (this gh has no `gh search`
+        # subcommand). Paginated by cursor, capped at 300 results to bound it.
+        # -author:@me drops PRs the user opened (commenting on your own PR ≠ review).
         cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-        query = f"type:pr commenter:@me updated:>={cutoff}"
-        prs, total = [], 0
-        self.io.log_request(f"gh api search/issues '{query}'")
+        query = f"type:pr commenter:@me -author:@me updated:>={cutoff} sort:updated-desc"
+        self.io.log_request(f"gh api graphql search '{query}'")
+        prs, total, after = [], 0, None
         try:
-            for page in (1, 2, 3):  # cap at 3 × 100 = 300 results
-                r = self.io.run(
-                    [
-                        "gh",
-                        "api",
-                        "-X",
-                        "GET",
-                        "search/issues",
-                        "-f",
-                        f"q={query}",
-                        "-f",
-                        "sort=updated",
-                        "-f",
-                        "order=desc",
-                        "-f",
-                        "per_page=100",
-                        "-f",
-                        f"page={page}",
-                    ],
-                    timeout=30,
-                )
+            for _ in range(3):  # cap at 3 × 100 = 300 results
+                cmd = [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-f",
+                    f"query={self._REVIEWED_QUERY}",
+                    "-f",
+                    f"q={query}",
+                ]
+                if after:
+                    cmd += ["-f", f"after={after}"]
+                r = self.io.run(cmd, timeout=30)
                 if r.returncode != 0:
-                    err = r.stderr.strip().split("\n")[0] or "gh failed"
-                    return {"prs": [], "error": err}
-                data = json.loads(r.stdout)
-                total = data.get("total_count", 0)
-                items = data.get("items", [])
-                prs.extend(self._review_row(it) for it in items)
-                if len(items) < 100:
+                    return {"prs": [], "error": r.stderr.strip().split("\n")[0] or "gh failed"}
+                search = (json.loads(r.stdout).get("data") or {}).get("search") or {}
+                total = search.get("issueCount", 0)
+                prs.extend(self._review_row(n) for n in search.get("nodes", []) if n.get("number"))
+                page = search.get("pageInfo") or {}
+                after = page.get("endCursor")
+                if not page.get("hasNextPage"):
                     break
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return {"prs": [], "error": str(e)}
@@ -192,18 +202,16 @@ class GitHubService:
         return {"prs": prs, "error": None, "capped": total > len(prs)}
 
     @staticmethod
-    def _review_row(item):
-        pr = item.get("pull_request") or {}
-        state = "merged" if pr.get("merged_at") else item.get("state", "")
+    def _review_row(node):
         return {
-            "repo": item.get("repository_url", "").rsplit("/repos/", 1)[-1],
-            "number": item.get("number"),
-            "title": item.get("title", ""),
-            "url": item.get("html_url", ""),
-            "state": state,
-            "draft": item.get("draft", False),
-            "comments": item.get("comments", 0),
-            "updatedAt": item.get("updated_at", ""),
+            "repo": (node.get("repository") or {}).get("nameWithOwner", ""),
+            "number": node.get("number"),
+            "title": node.get("title", ""),
+            "url": node.get("url", ""),
+            "state": (node.get("state") or "").lower(),  # open / closed / merged
+            "draft": node.get("isDraft", False),
+            "branch": node.get("headRefName", ""),
+            "updatedAt": node.get("updatedAt", ""),
         }
 
     def close_pr(self, github, number):

@@ -2078,6 +2078,18 @@ a.dash-row-branch:hover {
 .br-table tbody.br-tight td.br-name {
   padding-top: 10px;
 }
+/* Reviews tab: PRs grouped by branch (one tbody per branch). The branch name
+   spans its PRs; PRs of the same branch read as one block — no rule between them
+   — with a single soft rule separating one branch group from the next. */
+.rev-table td.br-name {
+  border-right: 1px solid var(--l-line);
+  white-space: normal;
+  word-break: break-all;
+  max-width: 280px;
+}
+.rev-group tr:not(:first-child) td {
+  border-top: none;
+}
 /* inline row editing: inputs sit flush inside the table cells */
 .br-table tr.br-editing td {
   padding-top: 6px;
