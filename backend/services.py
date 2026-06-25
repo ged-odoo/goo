@@ -482,8 +482,25 @@ class DatabaseService:
             for n, (v, e, u) in zip(names, infos, strict=False)
         ]
 
-    def drop(self, name):
-        """Drop a database. Returns (ok, error); invalidates the list cache."""
+    # ── filestore: an Odoo database's attachments live in <filestore>/<dbname>.
+    # goo keeps it in lockstep with the database — dropped/renamed/cloned to match —
+    # so a target's attachments survive a clone and don't leak after a drop. These
+    # are best-effort: a filestore failure is logged, never failing the DB op (the
+    # database change already happened). Names are charset-validated, so the joined
+    # path can't traverse out of the filestore root.
+    def _filestore_dir(self, filestore, name):
+        if not filestore or not _valid_db_name(name):
+            return None
+        return os.path.join(os.path.expanduser(filestore), name)
+
+    def _log_filestore(self, action, src, dst, err):
+        tag = getattr(self.io, "TAG", "[goo]")
+        where = f"{src} → {dst}" if dst else src
+        self.io.log(f"{tag} could not {action} filestore {where}: {err}")
+
+    def drop(self, name, filestore=None):
+        """Drop a database (and its filestore). Returns (ok, error); invalidates the
+        list cache."""
         try:
             r = self.io.run(["dropdb", name], timeout=15)
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
@@ -491,12 +508,18 @@ class DatabaseService:
         if r.returncode != 0:
             return False, r.stderr.strip() or "dropdb failed"
         self.cache.invalidate("list")
+        store = self._filestore_dir(filestore, name)
+        if store and self.io.is_dir(store):
+            ok, err = self.io.remove_tree(store)
+            if not ok:
+                self._log_filestore("delete", store, None, err)
         return True, None
 
-    def clone(self, source, target):
-        """Clone `source` into a new database `target` (createdb -T). Returns
-        (ok, error); invalidates the list cache on success. The source must have no
-        active connections (a postgres requirement) — stop the server if it's on it."""
+    def clone(self, source, target, filestore=None):
+        """Clone `source` into a new database `target` (createdb -T) and copy its
+        filestore. Returns (ok, error); invalidates the list cache on success. The
+        source must have no active connections (a postgres requirement) — stop the
+        server if it's on it."""
         if not _valid_db_name(source):
             return False, f"invalid source name: {source}"
         if not _valid_db_name(target):
@@ -508,12 +531,18 @@ class DatabaseService:
         if r.returncode != 0:
             return False, r.stderr.strip() or "createdb failed"
         self.cache.invalidate("list")
+        src = self._filestore_dir(filestore, source)
+        dst = self._filestore_dir(filestore, target)
+        if src and dst and self.io.is_dir(src):
+            ok, err = self.io.copy_tree(src, dst)
+            if not ok:
+                self._log_filestore("copy", src, dst, err)
         return True, None
 
-    def rename(self, old, new):
-        """Rename database `old` to `new` (ALTER DATABASE … RENAME). Returns
-        (ok, error); invalidates the list cache on success. `old` must have no
-        active connections (a postgres requirement)."""
+    def rename(self, old, new, filestore=None):
+        """Rename database `old` to `new` (ALTER DATABASE … RENAME) and move its
+        filestore. Returns (ok, error); invalidates the list cache on success. `old`
+        must have no active connections (a postgres requirement)."""
         if not _valid_db_name(old):
             return False, f"invalid name: {old}"
         if not _valid_db_name(new):
@@ -527,6 +556,12 @@ class DatabaseService:
         if r.returncode != 0:
             return False, r.stderr.strip() or "rename failed"
         self.cache.invalidate("list")
+        src = self._filestore_dir(filestore, old)
+        dst = self._filestore_dir(filestore, new)
+        if src and dst and self.io.is_dir(src):
+            ok, err = self.io.move_path(src, dst)
+            if not ok:
+                self._log_filestore("move", src, dst, err)
         return True, None
 
     def db_initialized(self, db):

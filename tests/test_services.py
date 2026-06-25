@@ -23,15 +23,17 @@ class FakeIO:
 
     TAG = "[goo]"
 
-    def __init__(self, *, run_result=None, runs=None, http=None, dirs=None, files=None):
+    def __init__(self, *, run_result=None, runs=None, http=None, dirs=None, files=None, fs_fail=None):
         self._run_result = run_result if run_result is not None else completed()
         self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
         self._dirs = dirs or {}  # {dir path: [entry names]}
         self._files = files or {}  # {file path: text content}
+        self.fs_fail = fs_fail  # path substring whose filesystem op should fail
         self.run_calls = []
         self.http_calls = []
         self.logs = []
+        self.fs_ops = []  # recorded (op, src, dst) filesystem mutations
 
     def log_request(self, target):
         pass
@@ -62,6 +64,29 @@ class FakeIO:
 
     def read_text(self, path):
         return self._files.get(path)
+
+    # filesystem mutations — record them and keep self._dirs consistent so a later
+    # is_dir() reflects the change. fs_fail (a path substring) forces an error.
+    def remove_tree(self, path):
+        self.fs_ops.append(("remove", path, None))
+        if self.fs_fail and self.fs_fail in path:
+            return False, "boom"
+        self._dirs.pop(path, None)
+        return True, None
+
+    def move_path(self, src, dst):
+        self.fs_ops.append(("move", src, dst))
+        if self.fs_fail and self.fs_fail in src:
+            return False, "boom"
+        self._dirs[dst] = self._dirs.pop(src, [])
+        return True, None
+
+    def copy_tree(self, src, dst):
+        self.fs_ops.append(("copy", src, dst))
+        if self.fs_fail and self.fs_fail in src:
+            return False, "boom"
+        self._dirs[dst] = list(self._dirs.get(src, []))
+        return True, None
 
 
 class RunbotServiceTest(unittest.TestCase):
@@ -262,7 +287,7 @@ class TTLCacheTest(unittest.TestCase):
 
 
 class DatabaseServiceTest(unittest.TestCase):
-    def _io(self, **extra):
+    def _io(self, *, dirs=None, fs_fail=None, **extra):
         runs = {
             "ORDER BY datname": completed(stdout="alpha\nbeta\n"),  # the db list
             "pg_stat_file": completed(stdout="alpha|2024-01-01 00:00:00\n"),  # creation times
@@ -270,7 +295,7 @@ class DatabaseServiceTest(unittest.TestCase):
             "latest_version": completed(stdout="17.0|f|2024-06-20T10:00:00\n"),  # odoo_info
         }
         runs.update(extra)
-        return FakeIO(runs=runs)
+        return FakeIO(runs=runs, dirs=dirs, fs_fail=fs_fail)
 
     def test_databases_lists_with_info(self):
         svc = services.DatabaseService(self._io(), TTLCache(ttl=0))
@@ -359,6 +384,49 @@ class DatabaseServiceTest(unittest.TestCase):
         ok, err = svc.rename("alpha", 'evil"; DROP')
         self.assertFalse(ok)
         self.assertFalse(any("ALTER DATABASE" in " ".join(c) for c in svc.io.run_calls))
+
+    # ── filestore kept in lockstep with the database ──
+    def test_drop_removes_filestore(self):
+        io = self._io(dropdb=completed(), dirs={"/fs/alpha": ["a.png"]})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, _ = svc.drop("alpha", filestore="/fs")
+        self.assertTrue(ok)
+        self.assertIn(("remove", "/fs/alpha", None), io.fs_ops)
+
+    def test_drop_without_filestore_leaves_disk(self):
+        io = self._io(dropdb=completed(), dirs={"/fs/alpha": ["a.png"]})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        svc.drop("alpha")  # no filestore arg → never touches disk
+        self.assertEqual(io.fs_ops, [])
+
+    def test_drop_filestore_failure_is_logged_not_fatal(self):
+        io = self._io(dropdb=completed(), dirs={"/fs/alpha": ["a.png"]}, fs_fail="/fs/alpha")
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.drop("alpha", filestore="/fs")
+        self.assertTrue(ok)  # the db is gone; a filestore failure doesn't fail the drop
+        self.assertIsNone(err)
+        self.assertTrue(any("filestore" in m for m in io.logs))
+
+    def test_clone_copies_filestore(self):
+        io = self._io(dirs={"/fs/alpha": ["a.png"]})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.clone("alpha", "beta", filestore="/fs")
+        self.assertTrue(ok, err)
+        self.assertIn(("copy", "/fs/alpha", "/fs/beta"), io.fs_ops)
+
+    def test_clone_skips_filestore_when_source_absent(self):
+        io = self._io(dirs={})  # the source db has no filestore on disk
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, _ = svc.clone("alpha", "beta", filestore="/fs")
+        self.assertTrue(ok)
+        self.assertEqual(io.fs_ops, [])
+
+    def test_rename_moves_filestore(self):
+        io = self._io(dirs={"/fs/alpha": ["a.png"]})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.rename("alpha", "gamma", filestore="/fs")
+        self.assertTrue(ok, err)
+        self.assertIn(("move", "/fs/alpha", "/fs/gamma"), io.fs_ops)
 
 
 class GitServiceTest(unittest.TestCase):

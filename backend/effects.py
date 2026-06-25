@@ -6,6 +6,7 @@ hitting the network, or touching disk.
 
 import json
 import os
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -104,4 +105,33 @@ def write_json_file(path, data):
             json.dump(data, f, indent=2)
         return True, None
     except OSError as e:
+        return False, str(e)
+
+
+def remove_tree(path):
+    """Recursively delete a directory. Returns (ok, error); a missing path is ok."""
+    p = os.path.expanduser(path)
+    try:
+        if os.path.exists(p):
+            shutil.rmtree(p)
+        return True, None
+    except (OSError, shutil.Error) as e:
+        return False, str(e)
+
+
+def move_path(src, dst):
+    """Move/rename a path (src → dst). Returns (ok, error)."""
+    try:
+        shutil.move(os.path.expanduser(src), os.path.expanduser(dst))
+        return True, None
+    except (OSError, shutil.Error) as e:
+        return False, str(e)
+
+
+def copy_tree(src, dst):
+    """Recursively copy a directory (src → dst). Returns (ok, error)."""
+    try:
+        shutil.copytree(os.path.expanduser(src), os.path.expanduser(dst))
+        return True, None
+    except (OSError, shutil.Error) as e:
         return False, str(e)

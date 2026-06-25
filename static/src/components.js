@@ -536,7 +536,7 @@ class DashboardScreen extends Component {
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs);
+    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs, this.db);
   }
 
   toggleMenu(id) {
@@ -1437,8 +1437,11 @@ async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, r
   config.updateConfig({ targets: [...config.config.targets, target] });
 }
 
-async function startCreateTarget(config, eventLog, code, dialogs) {
+async function startCreateTarget(config, eventLog, code, dialogs, db) {
   const existingTargets = config.config.targets;
+  await db.load(); // populate the "Clone db" select with the existing databases
+  const dbNames = new Set(db.databases().map((d) => d.name));
+  const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
   const res = await dialogs.open({
     title: "New target",
     okLabel: "Create",
@@ -1448,6 +1451,8 @@ async function startCreateTarget(config, eventLog, code, dialogs) {
       if (existingTargets.some((t) => t.name === name))
         return `a target named "${name}" already exists`;
       if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+      if ((v.cloneDb || "") && !(v.db || "").trim())
+        return "set a database name to clone the selected database into";
       return "";
     },
     fields: [
@@ -1472,6 +1477,8 @@ async function startCreateTarget(config, eventLog, code, dialogs) {
             db: tpl.db || "",
             args: tpl.on_create_args || "",
             fav: !!tpl.favorite,
+            // clone from the template's own database when it exists on disk
+            cloneDb: tpl.db && dbNames.has(tpl.db) ? tpl.db : "",
           };
         },
       },
@@ -1491,6 +1498,14 @@ async function startCreateTarget(config, eventLog, code, dialogs) {
       },
       { key: "config", type: "text", label: "Config", placeholder: "community:master,enterprise:master" },
       { key: "db", type: "text", label: "Database", placeholder: "database name" },
+      {
+        key: "cloneDb",
+        type: "select",
+        label: "Clone db",
+        placeholder: "— none —",
+        options: dbOptions,
+        value: "",
+      },
       { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
       { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
@@ -1515,6 +1530,11 @@ async function startCreateTarget(config, eventLog, code, dialogs) {
       const path = pathByRepo[c.repo];
       if (path) await code.createBranch(path, c.branch, baseBranchByRepo[c.repo]);
     }
+  }
+  // clone the chosen source database into the target's database name (skip when it
+  // would clone onto itself — the destination already exists in that case)
+  if (res.cloneDb && target.db && res.cloneDb !== target.db) {
+    await db.clone(res.cloneDb, target.db);
   }
 }
 
@@ -1904,7 +1924,7 @@ class TargetsScreen extends Component {
 
   // create a new target through a dialog form (validated before it closes)
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs);
+    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs, this.db);
   }
 
   // search for a remote branch across all repos, fetch it locally, then open
@@ -3493,6 +3513,7 @@ const SETTINGS_FIELDS = [
   { key: "start_cmd", name: "start server command" },
   { key: "db_user", name: "database user" },
   { key: "db_password", name: "database password" },
+  { key: "filestore", name: "filestore path" },
   { key: "editor", name: "editor command" },
 ];
 

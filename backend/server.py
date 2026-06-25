@@ -344,6 +344,13 @@ class AutoReloader:
                 GIT.fetch_master(r)
 
 
+def _filestore(body):
+    """The filestore root from a request body, or None when absent/blank. Lets the
+    database endpoints keep each db's <filestore>/<db> directory in lockstep."""
+    fs = (body or {}).get("filestore")
+    return fs if isinstance(fs, str) and fs.strip() else None
+
+
 def build_odoo_cmd(config):
     """Build the odoo-bin shell command from a client config.
 
@@ -968,7 +975,7 @@ class Handler(BaseHTTPRequestHandler):
             name = (body or {}).get("name")
             if err or not name or not isinstance(name, str):
                 return self._send_json(400, {"ok": False, "error": "missing database name"})
-            ok, error = DATABASE.drop(name)
+            ok, error = DATABASE.drop(name, _filestore(body))
             if ok:
                 self._send_json(200, {"ok": True})
             else:
@@ -985,7 +992,7 @@ class Handler(BaseHTTPRequestHandler):
                 or not target
             ):
                 return self._send_json(400, {"ok": False, "error": "missing source or target"})
-            ok, error = DATABASE.clone(source, target)
+            ok, error = DATABASE.clone(source, target, _filestore(body))
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/databases/rename":
             body, err = self._read_json()
@@ -999,7 +1006,7 @@ class Handler(BaseHTTPRequestHandler):
                 or not new_name
             ):
                 return self._send_json(400, {"ok": False, "error": "missing name or new_name"})
-            ok, error = DATABASE.rename(name, new_name)
+            ok, error = DATABASE.rename(name, new_name, _filestore(body))
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/data":
             body, err = self._read_json()

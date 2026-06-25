@@ -10,6 +10,9 @@ export const DEFAULT_CONFIG = {
   start_cmd: "cd /home/odoo/work/community && ./odoo-bin",
   db_user: "odoo",
   db_password: "odoo",
+  // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
+  // keeps it in lockstep with the db on drop/rename/clone. Empty = leave it alone.
+  filestore: "/home/odoo/.local/share/Odoo/filestore/",
   editor: "code", // command used by the dashboard's "Open with editor" action
   auto_open_event_log: false, // open the event log overlay when new events arrive
   repos: [

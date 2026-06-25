@@ -3,6 +3,7 @@
 
 import { ServerPlugin } from "./server_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
+import { ConfigPlugin } from "./config_plugin.js";
 import { postJSON } from "./utils.js";
 
 const { Plugin, plugin, signal } = owl;
@@ -12,6 +13,7 @@ export class DatabasePlugin extends Plugin {
 
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
+  config = plugin(ConfigPlugin);
   databases = signal([]); // view state; freshness is the server's job now
   at = signal(0);
   loading = signal(false);
@@ -46,7 +48,7 @@ export class DatabasePlugin extends Plugin {
     this.dropping.set(name);
     this.eventLog.add(`dropping database ${name}`);
     try {
-      await postJSON("/api/databases/drop", { name });
+      await postJSON("/api/databases/drop", { name, filestore: this._filestore() });
       await this.load(true); // drop invalidated the server cache; pull the fresh list
       return null;
     } catch (e) {
@@ -61,7 +63,11 @@ export class DatabasePlugin extends Plugin {
   async clone(name, target) {
     this.eventLog.add(`cloning database ${name} → ${target}`);
     try {
-      await postJSON("/api/databases/clone", { source: name, target });
+      await postJSON("/api/databases/clone", {
+        source: name,
+        target,
+        filestore: this._filestore(),
+      });
       await this.load(true); // server cache was invalidated; pull the fresh list
       return null;
     } catch (e) {
@@ -74,12 +80,22 @@ export class DatabasePlugin extends Plugin {
   async rename(name, newName) {
     this.eventLog.add(`renaming database ${name} → ${newName}`);
     try {
-      await postJSON("/api/databases/rename", { name, new_name: newName });
+      await postJSON("/api/databases/rename", {
+        name,
+        new_name: newName,
+        filestore: this._filestore(),
+      });
       await this.load(true);
       return null;
     } catch (e) {
       this.eventLog.add(`failed to rename database ${name}: ${e.message}`);
       return e.message;
     }
+  }
+
+  // the configured filestore root, sent with drop/clone/rename so the backend keeps
+  // each db's <filestore>/<db> directory in lockstep (empty = leave the disk alone)
+  _filestore() {
+    return this.config.config.filestore || "";
   }
 }
