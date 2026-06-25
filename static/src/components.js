@@ -115,7 +115,15 @@ class Topbar extends Component {
         <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
-        <a t-foreach="this.routes" t-as="r" t-key="r.label" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
+        <t t-foreach="this.routes" t-as="r" t-key="r_index">
+          <a t-if="!this.isMenu(r)" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
+          <div t-elif="r.children.length" class="route-menu">
+            <span class="route route-menu-label"><t t-out="r.label"/><span class="route-caret">▾</span></span>
+            <div class="route-menu-drop">
+              <a t-foreach="r.children" t-as="c" t-key="c_index" class="route-menu-item" t-att-href="c.href" target="_blank" t-out="c.label"/>
+            </div>
+          </div>
+        </t>
       </div>
     </header>`;
 
@@ -126,9 +134,14 @@ class Topbar extends Component {
   version = `v${VERSION}`;
 
   // user-configurable navbar links (/odoo + /web/tests included — they go through
-  // the autologin addon and only resolve while the server is up)
+  // the autologin addon and only resolve while the server is up). An entry with a
+  // `children` array is a menu, rendered as a dropdown of links.
   get routes() {
     return this.config.config.links;
+  }
+
+  isMenu(r) {
+    return Array.isArray(r.children);
   }
 
   // goo's own checkout is behind origin/master (see UpdatePlugin)
@@ -439,7 +452,7 @@ class DashboardScreen extends Component {
               <span class="dash-sec-icon"><t t-out="this.targetIcon"/></span>
               <span class="dash-sec-title">Targets</span>
               <span class="dash-sec-count" t-out="this.targets.length"/>
-              <button class="pbtn primary dash-sec-action" t-on-click="() => this.startCreate()">New target</button>
+              <button class="dash-rebase dash-sec-action" t-on-click="() => this.startCreate()">New target</button>
             </div>
             <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
               <div class="dash-tgt-head">
@@ -3120,6 +3133,253 @@ class TabsEditor extends Component {
   }
 }
 
+// Navbar links editor — a depth-1 tree. Top-level rows are links or menus; a menu
+// holds links. Drag the handle to reorder within a level, drop a link onto a menu's
+// body to move it inside (or onto a row to place it before that row). Saved to
+// config.links as [{label, href} | {label, children:[{label, href}]}]. Editor-only
+// `_id`s give drag/drop a stable identity and are stripped on save.
+class LinksEditor extends Component {
+  static template = xml`
+    <div class="config-block links-editor">
+      <h2 class="subtitle">Navbar links</h2>
+      <p class="dim">Drag the handle to reorder. Drop a link onto a menu to put it inside. Menus show as dropdowns in the top bar.</p>
+      <div class="links-tree" data-form-type="other">
+        <t t-foreach="this.items()" t-as="it" t-key="it._id">
+          <div t-if="this.isMenu(it)" class="link-menu">
+            <div class="edit-row link-menu-head" t-att-class="{dragging: this.dragId() === it._id, 'drag-over': this.overId() === it._id}"
+                 t-on-dragover="ev => this.onOver(ev, it._id)" t-on-drop="ev => this.onDrop(ev, it._id)">
+              <span class="row-handle" draggable="true" title="drag to reorder"
+                    t-on-dragstart="ev => this.onDragStart(ev, it._id)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+              <span class="link-menu-caret">▾</span>
+              <input class="w-flex" placeholder="menu name" t-att-value="it.label"
+                     t-on-input="ev => this.edit(it, 'label', ev.target.value)" t-on-change="() => this.save()"/>
+              <span class="link-menu-tag">menu</span>
+              <button class="row-remove" title="remove menu" t-on-click="() => this.remove(it._id)">✕</button>
+            </div>
+            <div class="link-menu-body" t-att-class="{'drag-over': this.overInto() === it._id}"
+                 t-on-dragover="ev => this.onOverInto(ev, it._id)" t-on-drop="ev => this.onDropInto(ev, it._id)">
+              <div t-foreach="it.children" t-as="c" t-key="c._id" class="edit-row link-child"
+                   t-att-class="{dragging: this.dragId() === c._id, 'drag-over': this.overId() === c._id}"
+                   t-on-dragover="ev => this.onOver(ev, c._id)" t-on-drop="ev => this.onDrop(ev, c._id)">
+                <span class="row-handle" draggable="true" title="drag to move"
+                      t-on-dragstart="ev => this.onDragStart(ev, c._id)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+                <input class="w-name" placeholder="label" t-att-value="c.label"
+                       t-on-input="ev => this.edit(c, 'label', ev.target.value)" t-on-change="() => this.save()"/>
+                <input class="w-flex" placeholder="href (https://…)" t-att-value="c.href"
+                       t-on-input="ev => this.edit(c, 'href', ev.target.value)" t-on-change="() => this.save()"/>
+                <button class="row-remove" title="remove" t-on-click="() => this.remove(c._id)">✕</button>
+              </div>
+              <button class="link-add-child" t-on-click="() => this.addLink(it._id)">+ link</button>
+            </div>
+          </div>
+          <div t-else="" class="edit-row link-row" t-att-class="{dragging: this.dragId() === it._id, 'drag-over': this.overId() === it._id}"
+               t-on-dragover="ev => this.onOver(ev, it._id)" t-on-drop="ev => this.onDrop(ev, it._id)">
+            <span class="row-handle" draggable="true" title="drag to reorder / into a menu"
+                  t-on-dragstart="ev => this.onDragStart(ev, it._id)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+            <input class="w-name" placeholder="label" t-att-value="it.label"
+                   t-on-input="ev => this.edit(it, 'label', ev.target.value)" t-on-change="() => this.save()"/>
+            <input class="w-flex" placeholder="href (https://…)" t-att-value="it.href"
+                   t-on-input="ev => this.edit(it, 'href', ev.target.value)" t-on-change="() => this.save()"/>
+            <button class="row-remove" title="remove" t-on-click="() => this.remove(it._id)">✕</button>
+          </div>
+        </t>
+        <div t-if="this.dragId()" class="links-drop-end" t-att-class="{'drag-over': this.overEnd()}"
+             t-on-dragover="ev => this.onOverEnd(ev)" t-on-drop="ev => this.onDropEnd(ev)">move here for top level</div>
+      </div>
+      <div class="config-actions">
+        <button t-on-click="() => this.addLink(null)">Add link</button>
+        <button t-on-click="() => this.addMenu()">Add menu</button>
+      </div>
+    </div>`;
+
+  config = plugin(ConfigPlugin);
+  items = signal([]); // [{label, href, _id} | {label, children:[{label, href, _id}], _id}]
+  dragId = signal(0); // _id of the dragged row (0 = none)
+  overId = signal(0); // row hovered as a "drop before" target
+  overInto = signal(0); // menu whose body is hovered (drop inside)
+  overEnd = signal(false); // trailing "top level" zone hovered
+  _nextId = 1;
+
+  setup() {
+    this.load();
+  }
+
+  isMenu(n) {
+    return Array.isArray(n.children);
+  }
+
+  load() {
+    this._nextId = 1;
+    this.items.set(
+      (this.config.config.links || []).map((n) => {
+        const node = { ...n, _id: this._nextId++ };
+        if (this.isMenu(n)) node.children = n.children.map((c) => ({ ...c, _id: this._nextId++ }));
+        return node;
+      }),
+    );
+  }
+
+  // mutate a node field in place (no re-render → no cursor jump); persisted on change
+  edit(node, key, value) {
+    node[key] = value;
+  }
+
+  addLink(menuId) {
+    const items = this.items();
+    const link = { label: "", href: "", _id: this._nextId++ };
+    if (menuId) {
+      const menu = items.find((n) => n._id === menuId && this.isMenu(n));
+      if (menu) menu.children.push(link);
+    } else {
+      items.push(link);
+    }
+    this.items.set([...items]);
+  }
+
+  addMenu() {
+    this.items.set([...this.items(), { label: "", children: [], _id: this._nextId++ }]);
+  }
+
+  remove(id) {
+    const items = this.items();
+    const loc = this._locate(items, id);
+    if (loc) loc.container.splice(loc.index, 1);
+    this.items.set([...items]);
+    this.save();
+  }
+
+  // {container, index, node} for the row with `id`, searching the top level then
+  // every menu's children; null if not found
+  _locate(items, id) {
+    const i = items.findIndex((n) => n._id === id);
+    if (i >= 0) return { container: items, index: i, node: items[i] };
+    for (const it of items) {
+      if (this.isMenu(it)) {
+        const ci = it.children.findIndex((c) => c._id === id);
+        if (ci >= 0) return { container: it.children, index: ci, node: it.children[ci] };
+      }
+    }
+    return null;
+  }
+
+  onDragStart(ev, id) {
+    this.dragId.set(id);
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", String(id)); // some browsers need data to start a drag
+  }
+
+  onDragEnd() {
+    this.dragId.set(0);
+    this.overId.set(0);
+    this.overInto.set(0);
+    this.overEnd.set(false);
+  }
+
+  onOver(ev, id) {
+    if (!this.dragId()) return;
+    ev.preventDefault();
+    ev.stopPropagation(); // a child row shouldn't also mark its menu body as the target
+    if (this.overId() !== id) this.overId.set(id);
+    this.overInto.set(0);
+    this.overEnd.set(false);
+  }
+
+  onOverInto(ev, menuId) {
+    if (!this.dragId()) return;
+    ev.preventDefault();
+    if (this.overInto() !== menuId) this.overInto.set(menuId);
+    this.overId.set(0);
+    this.overEnd.set(false);
+  }
+
+  onOverEnd(ev) {
+    if (!this.dragId()) return;
+    ev.preventDefault();
+    this.overEnd.set(true);
+    this.overId.set(0);
+    this.overInto.set(0);
+  }
+
+  onDrop(ev, targetId) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    this._moveBefore(this.dragId(), targetId);
+    this.onDragEnd();
+  }
+
+  onDropInto(ev, menuId) {
+    ev.preventDefault();
+    this._moveInto(this.dragId(), menuId);
+    this.onDragEnd();
+  }
+
+  onDropEnd(ev) {
+    ev.preventDefault();
+    this._moveEnd(this.dragId());
+    this.onDragEnd();
+  }
+
+  // place the dragged node immediately before the target row, in the target's
+  // container (top level or a menu). Menus can't nest (depth 1).
+  _moveBefore(dragId, targetId) {
+    if (!dragId || dragId === targetId) return;
+    const items = this.items();
+    const src = this._locate(items, dragId);
+    const tgt = this._locate(items, targetId);
+    if (!src || !tgt) return;
+    if (this.isMenu(src.node) && tgt.container !== items) return; // no menu inside a menu
+    src.container.splice(src.index, 1);
+    const t = this._locate(items, targetId); // re-locate: removal may have shifted indices
+    t.container.splice(t.index, 0, src.node);
+    this.items.set([...items]);
+    this.save();
+  }
+
+  // move the dragged link into a menu (appended); ignored for menus (depth 1)
+  _moveInto(dragId, menuId) {
+    if (!dragId) return;
+    const items = this.items();
+    const src = this._locate(items, dragId);
+    const menu = items.find((n) => n._id === menuId && this.isMenu(n));
+    if (!src || !menu || this.isMenu(src.node)) return;
+    src.container.splice(src.index, 1);
+    menu.children.push(src.node);
+    this.items.set([...items]);
+    this.save();
+  }
+
+  // move the dragged node to the end of the top level
+  _moveEnd(dragId) {
+    if (!dragId) return;
+    const items = this.items();
+    const src = this._locate(items, dragId);
+    if (!src) return;
+    src.container.splice(src.index, 1);
+    items.push(src.node);
+    this.items.set([...items]);
+    this.save();
+  }
+
+  // persist to config.links: strip _id, trim, drop blank top-level links and blank
+  // child links (a menu is kept even when empty so a freshly-added one sticks)
+  save() {
+    const links = this.items()
+      .map((it) => {
+        if (this.isMenu(it)) {
+          return {
+            label: (it.label || "").trim(),
+            children: it.children
+              .map((c) => ({ label: (c.label || "").trim(), href: (c.href || "").trim() }))
+              .filter((c) => c.label && c.href),
+          };
+        }
+        return { label: (it.label || "").trim(), href: (it.href || "").trim() };
+      })
+      .filter((it) => it.children || it.label || it.href);
+    this.config.updateConfig({ links });
+  }
+}
+
 // scalar config fields editable in the Config tab's Settings block
 const SETTINGS_FIELDS = [
   { key: "venv_activate", name: "venv activate" },
@@ -3130,7 +3390,7 @@ const SETTINGS_FIELDS = [
 ];
 
 class ConfigScreen extends Component {
-  static components = { ListEditor, TabsEditor };
+  static components = { ListEditor, TabsEditor, LinksEditor };
   static template = xml`
     <section>
       <div class="panel">
@@ -3163,7 +3423,7 @@ class ConfigScreen extends Component {
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
-        <ListEditor kind="'links'"/>
+        <LinksEditor/>
         <div class="config-block">
           <h2 class="subtitle">Storage</h2>
           <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
@@ -4146,19 +4406,6 @@ const SPECS = {
         const used = (t.config || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by target "${t.name}"`;
       }
-      return null;
-    },
-  },
-  links: {
-    key: "links",
-    title: "Navbar links",
-    itemName: "link",
-    reorderable: true, // drag the handle to reorder how links appear in the navbar
-    fields: [
-      { key: "label", name: "label", placeholder: "label (e.g. /odoo)", className: "w-name" },
-      { key: "href", name: "href", placeholder: "href (e.g. https://…)", className: "w-flex" },
-    ],
-    validate() {
       return null;
     },
   },

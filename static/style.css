@@ -354,6 +354,58 @@ a {
   background: var(--accent-soft);
   border-color: var(--accent-line);
 }
+/* a navbar menu: a label that reveals a dropdown of links on hover */
+.route-menu {
+  position: relative;
+}
+.route-menu-label {
+  cursor: default;
+}
+.route-caret {
+  font-size: 9px;
+  opacity: 0.75;
+  margin-left: 1px;
+}
+.route-menu-drop {
+  position: absolute;
+  top: 100%; /* touch the label so the hover region is continuous */
+  right: 0;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 170px;
+  margin-top: 6px;
+  padding: 5px;
+  background: var(--chrome-inset);
+  border: 1px solid var(--chrome-line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+}
+/* an invisible bridge across the 6px gap so the dropdown survives the mouse move */
+.route-menu-drop::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  height: 6px;
+}
+.route-menu:hover .route-menu-drop {
+  display: flex;
+}
+.route-menu-item {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #fff;
+  white-space: nowrap;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.route-menu-item:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 
 /* ───────────────── BODY / SIDEBAR (dark) ───────────────── */
 
@@ -2800,6 +2852,76 @@ a.dash-row-branch:hover {
 }
 .edit-row.drag-over {
   box-shadow: inset 0 2px 0 var(--l-accent);
+}
+/* navbar links tree editor (links + depth-1 menus) */
+.links-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-width: 880px;
+}
+.link-menu {
+  border: 1px solid var(--l-panel-line);
+  border-radius: 9px;
+  padding: 7px 8px;
+}
+.link-menu-caret {
+  flex: none;
+  color: var(--l-text-faint);
+  font-size: 11px;
+}
+.link-menu-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+  border: 1px solid var(--l-line);
+  border-radius: 20px;
+  padding: 1px 8px;
+}
+.link-menu-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 8px 0 2px 12px;
+  padding: 4px 0 4px 12px;
+  min-height: 26px;
+  border-left: 2px solid var(--l-line);
+}
+.link-menu-body.drag-over {
+  border-left-color: var(--l-accent);
+  background: var(--l-accent-soft);
+  border-radius: 0 7px 7px 0;
+}
+.link-add-child {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--l-text-mid);
+  background: none;
+  border: 1px dashed var(--l-line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.link-add-child:hover {
+  color: var(--l-text);
+  border-color: var(--l-text-faint);
+}
+.links-drop-end {
+  margin-top: 2px;
+  padding: 7px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--l-text-faint);
+  border: 1px dashed var(--l-line);
+  border-radius: 7px;
+}
+.links-drop-end.drag-over {
+  color: var(--l-accent);
+  border-color: var(--l-accent);
+  background: var(--l-accent-soft);
 }
 /* a sidebar-tab row in the Tabs editor: checkbox + label next to the drag handle */
 .tab-row {
