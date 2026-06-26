@@ -87,6 +87,16 @@ export class DatabasePlugin extends Plugin {
     return error;
   }
 
+  // drop `name`, stopping the server first when it's the active db (the server
+  // holds a connection to it). Unlike clone, we don't resume — the database is
+  // gone, so the server stays stopped. Returns null on success or an error message.
+  async dropStoppingServer(name) {
+    if (this.activeDb === name && this.server.status().state !== "stopped") {
+      await this.server.stop();
+    }
+    return this.drop(name);
+  }
+
   // rename `name` to `newName`; returns null on success or an error message
   async rename(name, newName) {
     this.eventLog.add(`renaming database ${name} → ${newName}`);

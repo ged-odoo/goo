@@ -489,6 +489,7 @@ class DashboardScreen extends Component {
                       <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
                         <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
                         <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
+                        <button class="dash-menu-item danger" t-att-disabled="!this.targetDbExists(tgt)" t-att-title="this.dropDbTitle(tgt)" t-on-click="() => this.menuDropDb(tgt)">Drop database</button>
                         <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
                       </div>
                     </div>
@@ -607,6 +608,43 @@ class DashboardScreen extends Component {
       t.id === tgt.id ? { ...t, favorite: false } : t,
     );
     this.config.updateConfig({ targets });
+  }
+
+  // whether the target's configured database actually exists (so there's something
+  // to drop) — drives the "Drop database" item's enabled state
+  targetDbExists(tgt) {
+    return !!tgt.db && this.db.databases().some((d) => d.name === tgt.db);
+  }
+
+  dropDbTitle(tgt) {
+    if (!tgt.db) return "no database set for this target";
+    if (!this.targetDbExists(tgt)) return `database "${tgt.db}" does not exist`;
+    return `drop database "${tgt.db}"`;
+  }
+
+  // drop the target's database, stopping the server first when it's running on it
+  // (the db is about to vanish, so the server stays stopped)
+  async menuDropDb(tgt) {
+    this.menuId.set("");
+    if (!this.targetDbExists(tgt)) return;
+    const stopping =
+      this.db.activeDb === tgt.db && this.server.status().state !== "stopped";
+    const res = await this.dialogs.open({
+      title: `Drop "${tgt.db}"?`,
+      message: stopping
+        ? `This permanently deletes the database and stops the server (it's running on "${tgt.db}"). This cannot be undone.`
+        : "This permanently deletes the database. This cannot be undone.",
+      okLabel: "Drop",
+    });
+    if (!res) return;
+    const error = await this.db.dropStoppingServer(tgt.db);
+    if (error)
+      await this.dialogs.open({
+        title: "Drop failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null,
+      });
   }
 
   setup() {
