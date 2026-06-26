@@ -933,7 +933,7 @@ section.hidden {
 /* favorite-repo row */
 .dash-rrow {
   display: grid;
-  grid-template-columns: 180px 230px minmax(0, 1fr) 56px auto;
+  grid-template-columns: 140px 210px minmax(0, 1fr) 56px auto;
   gap: 16px;
   align-items: center;
   padding: 7px 20px 7px 52px;
