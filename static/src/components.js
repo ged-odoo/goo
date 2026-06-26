@@ -474,6 +474,13 @@ class DashboardScreen extends Component {
                         <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </span>
                     </t>
+                    <!-- one mergebot badge per target, aggregating its PRs' mergebot
+                         states (the most-blocking is shown). A link to the first PR's
+                         mergebot page; the per-repo breakdown opens in a popover on hover. -->
+                    <t t-set="mb" t-value="this.mbBadge(tgt)"/>
+                    <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
+                      <span class="dash-ci-dot"/><t t-out="mb.label"/>
+                    </a>
                   </div>
                   <div class="dash-tgt-actions">
                     <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)"><t t-out="this.checkIcon"/>Apply</button>
@@ -495,11 +502,13 @@ class DashboardScreen extends Component {
                       <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
                     </div>
                     <t t-if="row.present">
-                      <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                      <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                      <div class="dash-trow-pr">
+                      <!-- commit title + PR link share one cell: the title fills the
+                           space (truncating), the PR number aligns at the end; with no
+                           PR the title gets the full width -->
+                      <div class="dash-trow-cm">
+                        <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                        <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
                         <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                        <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
                       </div>
                       <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                     </t>
@@ -763,6 +772,41 @@ class DashboardScreen extends Component {
   // ask the popover to close (it lingers briefly so the mouse can move into it)
   hideCiMenu() {
     appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
+  }
+
+  // aggregate mergebot badge for a target: one entry per present PR row that has a
+  // scraped state. Links to the first PR's mergebot page; the badge label/color is
+  // the most-blocking state (so a single blocked PR surfaces), and `rows` drives
+  // the per-repo hover popover. Returns null when no row has a state yet.
+  mbBadge(tgt) {
+    const rows = [];
+    for (const row of this.rows(tgt)) {
+      const state = this.mbState(row);
+      if (!state) continue;
+      rows.push({
+        repo: row.repo,
+        state,
+        detail: this.mbDetail(row),
+        cls: this.mbClass(row),
+        url: this.code.mergebotUrl(row.github, row.pr.number),
+      });
+    }
+    if (!rows.length) return null;
+    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+    const worst = rows.reduce((a, b) => (RANK[a.cls] <= RANK[b.cls] ? a : b));
+    return { cls: worst.cls, label: worst.state, url: rows[0].url, rows };
+  }
+
+  // open the mergebot per-repo breakdown popover on hover (no-op with no rows)
+  showMbMenu(ev, rows) {
+    if (!rows || !rows.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("mb-menu", { detail: { rect, rows } }));
+  }
+
+  // ask the mergebot popover to close (it lingers briefly, like the CI one)
+  hideMbMenu() {
+    appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
   }
 
 
@@ -3895,6 +3939,78 @@ class CiMenu extends Component {
   }
 }
 
+// ─────────────────────────── Mergebot breakdown popover ──────────────────────
+
+// The per-repo mergebot status of a target's PRs (one row per repo), each linking
+// to its mergebot page; a blocked row also shows its unmet requirements. Opened
+// via the appBus "mb-menu" event with an anchor rect + the rows list;
+// fixed-positioned (like CiMenu) so it escapes overflow-clipped containers.
+class MbMenu extends Component {
+  static template = xml`
+    <div class="dash-menu mb-menu" t-att-class="{hidden: !this.open()}"
+         t-on-mouseenter="() => this.cancelClose()" t-on-mouseleave="() => this.scheduleClose()">
+      <a t-foreach="this.rows()" t-as="r" t-key="r_index" class="ci-menu-item mb-menu-item" t-att-class="r.cls"
+         t-att-href="r.url || undefined" t-att-target="r.url ? '_blank' : undefined">
+        <span class="ci-menu-dot"/>
+        <span class="ci-menu-ctx" t-out="r.repo"/>
+        <span class="ci-menu-state" t-out="this.label(r)"/>
+      </a>
+    </div>`;
+
+  open = signal(false);
+  rows = signal([]);
+  _el = null;
+  _closeTimer = null;
+
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".mb-menu");
+      // opened on badge hover; lingers briefly on leave so the mouse can cross the
+      // gap into the popover (to use its per-repo mergebot links)
+      appBus.addEventListener("mb-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener("mb-menu-hide", () => this.scheduleClose());
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.close();
+      });
+    });
+  }
+
+  cancelClose() {
+    if (this._closeTimer) {
+      clearTimeout(this._closeTimer);
+      this._closeTimer = null;
+    }
+  }
+
+  scheduleClose() {
+    this.cancelClose();
+    this._closeTimer = setTimeout(() => this.open.set(false), 180);
+  }
+
+  close() {
+    this.cancelClose();
+    this.open.set(false);
+  }
+
+  async openMenu({ rect, rows }) {
+    this.cancelClose(); // moving onto another badge cancels the pending close
+    this.rows.set(rows);
+    this.open.set(true);
+    await Promise.resolve(); // let the list render so offsetWidth/Height are real
+    const w = this._el.offsetWidth;
+    const h = this._el.offsetHeight;
+    let top = rect.bottom + 4;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
+    this._el.style.top = `${top}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+  }
+
+  // "blocked · Review, CI" — the state word, plus the unmet requirements when present
+  label(r) {
+    return r.detail ? `${r.state} · ${r.detail}` : r.state;
+  }
+}
+
 // ─────────────────────────── Remote branch dialog ────────────────────────────
 // Search for a branch on GitHub across all configured repos, select one, then
 // hand back { branch, repos } to the caller to create a local tracking branch.
@@ -4501,6 +4617,7 @@ export class App extends Component {
     ConfigScreen,
     ActionMenu,
     CiMenu,
+    MbMenu,
     DirtyMenu,
     EventLog,
     TerminalPanel,
@@ -4515,6 +4632,7 @@ export class App extends Component {
       </div>
       <ActionMenu/>
       <CiMenu/>
+      <MbMenu/>
       <DirtyMenu/>
       <EventLog/>
       <TerminalPanel/>

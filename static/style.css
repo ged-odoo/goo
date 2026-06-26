@@ -938,9 +938,6 @@ section.hidden {
   align-items: center;
   padding: 7px 20px 7px 52px;
 }
-.dash-rrow:hover {
-  background: var(--l-hover);
-}
 .dash-rrow-name {
   display: flex;
   align-items: center;
@@ -1222,7 +1219,7 @@ section.hidden {
 .dash-tgt-body {
   padding: 4px 10px 8px;
   display: grid;
-  grid-template-columns: minmax(72px, 1fr) minmax(0, 2.2fr) auto auto;
+  grid-template-columns: minmax(72px, 1fr) minmax(0, 2.5fr) auto;
   column-gap: 12px;
 }
 .dash-trow {
@@ -1233,25 +1230,25 @@ section.hidden {
   padding: 5px 8px;
   border-radius: 8px;
 }
-.dash-trow:hover {
-  background: var(--l-hover);
-}
 .dash-trow-repo {
   min-width: 0;
 }
+/* commit-title + PR cell: title flexes to fill (pushing the PR to the end), PR
+   number stays put; with no PR the title gets the whole cell */
+.dash-trow-cm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
 .dash-trow-commit {
+  flex: 1 1 auto;
   min-width: 0;
   font-size: 12.5px;
   color: var(--l-text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.dash-trow-pr {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
 }
 .dash-trow-when {
   font-family: var(--mono);
@@ -1361,9 +1358,11 @@ a.dash-ci:hover {
   opacity: 0.5;
 }
 .dash-pr-num {
+  flex: none;
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--l-accent);
+  white-space: nowrap;
 }
 .dash-pr-num:hover {
   text-decoration: underline;
@@ -1399,6 +1398,28 @@ a.dash-ci:hover {
   background: var(--l-red-bg);
 }
 .dash-pr-state.other {
+  color: var(--l-text-dim);
+  background: var(--l-panel);
+}
+/* the aggregate mergebot badge in a target-card header: the .dash-ci pill shape
+   (incl. the dot, which inherits currentColor) tinted by mergebot category */
+.dash-mb.merged {
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+}
+.dash-mb.ready {
+  color: var(--l-green);
+  background: var(--l-green-bg);
+}
+.dash-mb.progress {
+  color: var(--l-amber);
+  background: var(--l-amber-bg);
+}
+.dash-mb.blocked {
+  color: var(--l-red);
+  background: var(--l-red-bg);
+}
+.dash-mb.other {
   color: var(--l-text-dim);
   background: var(--l-panel);
 }
@@ -2548,8 +2569,10 @@ a.dash-ci:hover {
   display: none;
 }
 
-/* CI breakdown popover (CiMenu): per-check status list, one row per CI context */
-.ci-menu {
+/* CI breakdown popover (CiMenu): per-check status list, one row per CI context.
+   The mergebot popover (MbMenu) reuses the same box + .ci-menu-item rows */
+.ci-menu,
+.mb-menu {
   position: fixed;
   top: 0;
   left: 0;
@@ -2557,7 +2580,8 @@ a.dash-ci:hover {
   min-width: 210px;
   max-width: 360px;
 }
-.ci-menu.hidden {
+.ci-menu.hidden,
+.mb-menu.hidden {
   display: none;
 }
 .ci-menu-item {
@@ -2589,6 +2613,22 @@ a.dash-ci:hover {
 }
 .ci-menu-item.pending .ci-menu-dot {
   background: var(--l-amber);
+}
+/* mergebot popover rows are tinted by mergebot category */
+.mb-menu-item.blocked .ci-menu-dot {
+  background: var(--l-red);
+}
+.mb-menu-item.ready .ci-menu-dot {
+  background: var(--l-green);
+}
+.mb-menu-item.progress .ci-menu-dot {
+  background: var(--l-amber);
+}
+.mb-menu-item.merged .ci-menu-dot {
+  background: var(--l-accent);
+}
+.mb-menu-item.blocked .ci-menu-state {
+  color: var(--l-red);
 }
 .ci-menu-ctx {
   flex: 1;
