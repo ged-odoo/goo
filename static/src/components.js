@@ -4570,9 +4570,9 @@ class EventLog extends Component {
       </div>
       <div class="event-log-body" t-ref="this.body">
         <div t-if="!this.log.entries().length" class="event-log-empty">No events yet.</div>
-        <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row" t-att-class="{error: e.level === 'error'}">
+        <div t-foreach="this.rows" t-as="e" t-key="e.id" class="event-log-row" t-att-class="{error: e.level === 'error' or e.status === 'error'}">
           <span class="event-log-time" t-att-title="e.full" t-out="e.time"/>
-          <span class="event-log-text" t-out="e.text"/>
+          <span class="event-log-text"><t t-out="e.text"/><span t-if="e.status" class="ev-status" t-att-class="'ev-' + e.status" t-att-title="e.statusTitle"/></span>
           <a t-if="e.anchor" class="event-log-jump" t-on-click="() => this.jump(e.anchor)" title="jump to this line in the test log">[jump]</a>
         </div>
       </div>
@@ -4643,6 +4643,7 @@ class EventLog extends Component {
 
   // chronological: oldest first, newest appended at the end
   get rows() {
+    const STATUS_TITLE = { pending: "in progress…", done: "done", error: "failed" };
     return this.log.entries().map((e) => {
       const d = new Date(e.at);
       return {
@@ -4652,6 +4653,8 @@ class EventLog extends Component {
         text: e.text,
         anchor: e.anchor || "",
         level: e.level || "",
+        status: e.status || "", // "" | pending | done | error (timed events)
+        statusTitle: STATUS_TITLE[e.status] || "",
       };
     });
   }

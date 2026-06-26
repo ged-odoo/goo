@@ -23,7 +23,9 @@ class FakeIO:
 
     TAG = "[goo]"
 
-    def __init__(self, *, run_result=None, runs=None, http=None, dirs=None, files=None, fs_fail=None):
+    def __init__(
+        self, *, run_result=None, runs=None, http=None, dirs=None, files=None, fs_fail=None
+    ):
         self._run_result = run_result if run_result is not None else completed()
         self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
@@ -381,7 +383,10 @@ class DatabaseServiceTest(unittest.TestCase):
         ok, err = svc.clone("alpha", "alpha-copy")
         self.assertTrue(ok, err)
         self.assertTrue(
-            any(c[:3] == ["createdb", "-T", "alpha"] and c[-1] == "alpha-copy" for c in svc.io.run_calls)
+            any(
+                c[:3] == ["createdb", "-T", "alpha"] and c[-1] == "alpha-copy"
+                for c in svc.io.run_calls
+            )
         )
         svc.databases()  # cache invalidated → list query runs again
         self.assertEqual(sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls), 2)
@@ -496,6 +501,31 @@ class GitServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("pathspec", err)
 
+    def test_checkout_notifies_timed_event(self):
+        notes = []
+        svc = services.GitService(
+            FakeIO(), notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, _ = svc.checkout("/repo", "master-x", repo="community")
+        self.assertTrue(ok)
+        self.assertEqual(
+            notes,
+            [
+                ("checking out master-x (community)", "start"),
+                ("checking out master-x (community)", "done"),
+            ],
+        )
+
+    def test_checkout_notifies_error(self):
+        notes = []
+        io = FakeIO(run_result=completed(returncode=1, stderr="pathspec did not match"))
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, _ = svc.checkout("/repo", "nope", repo="community")
+        self.assertFalse(ok)
+        self.assertEqual(notes[-1], ("checking out nope (community)", "error"))
+
     def test_delete_branch_no_dev_remote_skips_remote(self):
         # local delete ok; no odoo-dev remote → remote delete skipped (no error)
         io = FakeIO(
@@ -541,10 +571,59 @@ class GitServiceTest(unittest.TestCase):
     def test_fetch_rebase_notifies_phases(self):
         notes = []
         io = FakeIO(runs={"master@{upstream}": completed(stdout="origin/master\n")})
-        svc = services.GitService(io, notify=notes.append)
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
         ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
         self.assertTrue(ok)
-        self.assertEqual(notes, ["fetching master (community)", "rebasing community onto master"])
+        # both phases are timed events: each emits a "start" then a "done" (same text)
+        self.assertEqual(
+            notes,
+            [
+                ("fetching master (community)", "start"),
+                ("fetching master (community)", "done"),
+                ("rebasing community onto master", "start"),
+                ("rebasing community onto master", "done"),
+            ],
+        )
+
+    def test_fetch_rebase_notifies_error_on_conflict(self):
+        notes = []
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(stdout="origin/master\n"),
+                "rebase": completed(returncode=1, stderr="CONFLICT (content)\n"),
+            }
+        )
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
+        self.assertFalse(ok)
+        # the timed event still resolves — to "error" — so the spinner never hangs
+        self.assertEqual(notes[-1], ("rebasing community onto master", "error"))
+
+    def test_fetch_rebase_notifies_error_on_fetch_failure(self):
+        notes = []
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(stdout="origin/master\n"),
+                "fetch": completed(returncode=1, stderr="could not read from remote\n"),
+            }
+        )
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
+        self.assertFalse(ok)
+        # a failed fetch resolves its own timed event and never starts the rebase
+        self.assertEqual(
+            notes,
+            [
+                ("fetching master (community)", "start"),
+                ("fetching master (community)", "error"),
+            ],
+        )
 
 
 class GitHubSearchBranchesTest(unittest.TestCase):

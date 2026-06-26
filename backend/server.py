@@ -75,14 +75,24 @@ class EventBus:
         for q in subscribers:
             q.put(("status", status))
 
-    def publish_event(self, text, level=""):
+    def publish_event(self, text, level="", event_id="", status=""):
         """A business event: logged to the goo server stdout and pushed to the
-        browser event log via an SSE 'event' message (level "error" tints it)."""
+        browser event log via an SSE 'event' message (level "error" tints it).
+
+        A long-running event can be tracked across its lifetime by passing a
+        stable `event_id` plus a `status` of "start" then "done"/"error": the
+        browser shows an animated "..." next to the line while it runs and
+        appends "ok" (or "failed") when it finishes. Omit both for a plain
+        one-off line (the default)."""
         print(f"{TAG} {time.strftime('%H:%M:%S')} • {text}", flush=True)
+        payload = {"text": text, "level": level}
+        if event_id:
+            payload["id"] = event_id
+            payload["status"] = status
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
-            q.put(("event", {"text": text, "level": level}))
+            q.put(("event", payload))
 
     def publish_goo_update(self, status):
         """Push the recomputed goo-update status to the browser (SSE 'goo_update')
@@ -931,7 +941,9 @@ class Handler(BaseHTTPRequestHandler):
             name = (body or {}).get("name")
             start_point = (body or {}).get("start_point")
             if err or not repo_path or not name or not start_point:
-                return self._send_json(400, {"ok": False, "error": "missing path, name or start point"})
+                return self._send_json(
+                    400, {"ok": False, "error": "missing path, name or start point"}
+                )
             ok, error = GIT.create_branch(repo_path, name, start_point)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/open-editor":
@@ -961,10 +973,11 @@ class Handler(BaseHTTPRequestHandler):
             repos = (body or {}).get("repos")
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
+
             # check out each repo in parallel — independent working trees, so a
             # multi-repo target switches in one checkout's time, not the sum
             def co(r):
-                ok, error = GIT.checkout(r.get("path"), r.get("branch"))
+                ok, error = GIT.checkout(r.get("path"), r.get("branch"), r.get("repo", ""))
                 return {"branch": r.get("branch"), "ok": ok, "error": error}
 
             if repos:
@@ -1241,8 +1254,9 @@ class Handler(BaseHTTPRequestHandler):
                         if msg.get("type") == "resize":
                             rows = max(1, int(msg.get("rows", 24)))
                             cols = max(1, int(msg.get("cols", 80)))
-                            fcntl.ioctl(fd, termios.TIOCSWINSZ,
-                                        struct.pack("HHHH", rows, cols, 0, 0))
+                            fcntl.ioctl(
+                                fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
+                            )
                     except (json.JSONDecodeError, OSError, ValueError):
                         pass
                 elif opcode == 2:  # binary: raw terminal input bytes
@@ -1324,8 +1338,9 @@ class Handler(BaseHTTPRequestHandler):
                         if msg.get("type") == "resize":
                             rows = max(1, int(msg.get("rows", 24)))
                             cols = max(1, int(msg.get("cols", 80)))
-                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
-                                        struct.pack("HHHH", rows, cols, 0, 0))
+                            fcntl.ioctl(
+                                master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
+                            )
                     except (json.JSONDecodeError, OSError, ValueError):
                         pass
                 elif opcode == 2:  # binary: raw terminal input bytes
@@ -1396,7 +1411,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": "missing test_tags"})
         if LAST_CONFIG is None:
             return self._send_json(
-                409, {"ok": False, "error": "no target yet — open the goo UI (with a target configured) once"}
+                409,
+                {
+                    "ok": False,
+                    "error": "no target yet — open the goo UI (with a target configured) once",
+                },
             )
         cfg = dict(LAST_CONFIG)
         cfg["start"] = {**(LAST_CONFIG.get("start") or {}), "test_tags": tags}

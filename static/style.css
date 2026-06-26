@@ -3483,6 +3483,42 @@ a.dash-ci:hover {
   color: var(--l-text);
   word-break: break-word;
 }
+/* timed-event indicator, inline right after the text: an animated "..." while the
+   event runs, with "ok" (done) / "failed" (error) appended when it finishes */
+.ev-status {
+  margin-left: 4px;
+  font-family: var(--mono);
+}
+.ev-status::before {
+  content: "...";
+  color: var(--l-text-dim);
+}
+.ev-pending::before {
+  animation: ev-ellipsis 1.4s linear infinite;
+}
+@keyframes ev-ellipsis {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75%,
+  100% {
+    content: "...";
+  }
+}
+.ev-done::after {
+  content: " ok";
+  color: var(--green);
+}
+.ev-error::after {
+  content: " failed";
+  color: var(--red);
+}
 .event-log-jump {
   flex: none;
   font-family: var(--mono);

@@ -13,6 +13,7 @@ import re
 import subprocess
 import threading
 import urllib.parse
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -846,16 +847,26 @@ class GitService:
         with ThreadPoolExecutor(max_workers=min(8, len(valid))) as pool:
             return list(pool.map(one, valid))
 
-    def checkout(self, path, branch):
-        """Checkout a local branch in a repo. Returns (ok, error)."""
+    def checkout(self, path, branch, repo=""):
+        """Checkout a local branch in a repo. Returns (ok, error). Announced as a
+        timed event via notify so the browser shows a live "..." that resolves to
+        "ok"/"failed"."""
         if not path or not branch:
             return False, "missing path or branch"
+        p = os.path.expanduser(path)
+        label = repo or os.path.basename(p)
+        eid = uuid.uuid4().hex
+        checking = f"checking out {branch} ({label})"
+        self.notify(checking, event_id=eid, status="start")
         try:
-            r = self.io.run(["git", "-C", os.path.expanduser(path), "checkout", branch], timeout=60)
+            r = self.io.run(["git", "-C", p, "checkout", branch], timeout=60)
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(checking, event_id=eid, status="error")
             return False, str(e)
         if r.returncode != 0:
+            self.notify(checking, event_id=eid, status="error")
             return False, r.stderr.strip().split("\n")[0] or "git checkout failed"
+        self.notify(checking, event_id=eid, status="done")
         return True, None
 
     def create_branch(self, path, name, start_point):
@@ -991,18 +1002,33 @@ class GitService:
             return False, f"no remote points at {github}"
         p = os.path.expanduser(path)
         label = repo or os.path.basename(p)
+        # both phases are slow — track each as a timed event so the browser shows a
+        # live "..." that resolves to "ok" (or "failed")
+        fid = uuid.uuid4().hex
+        fetching = f"fetching {base} ({label})"
+        self.notify(fetching, event_id=fid, status="start")
         try:
-            self.notify(f"fetching {base} ({label})")
             f = self.io.run(["git", "-C", p, "fetch", remote, base], timeout=180)
-            if f.returncode != 0:
-                return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
-            self.notify(f"rebasing {label} onto {base}")
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(fetching, event_id=fid, status="error")
+            return False, str(e)
+        if f.returncode != 0:
+            self.notify(fetching, event_id=fid, status="error")
+            return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
+        self.notify(fetching, event_id=fid, status="done")
+        eid = uuid.uuid4().hex
+        rebasing = f"rebasing {label} onto {base}"
+        self.notify(rebasing, event_id=eid, status="start")
+        try:
             r = self.io.run(["git", "-C", p, "rebase", "FETCH_HEAD"], timeout=120)
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(rebasing, event_id=eid, status="error")
             return False, str(e)
         if r.returncode != 0:
+            self.notify(rebasing, event_id=eid, status="error")
             msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[0]
             return False, msg or "git rebase failed"
+        self.notify(rebasing, event_id=eid, status="done")
         return True, None
 
     def dev_remote(self, path):

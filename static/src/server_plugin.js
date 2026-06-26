@@ -22,6 +22,7 @@ export class ServerPlugin extends Plugin {
   lineListeners = new Set(); // tests/addons mirror lines from here
   gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
   lastConfig = null; // last server start config (to resume after a one-shot run)
+  _startEid = null; // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), persisted + reactive
   activeTarget = signal(this.config.read(LAST_TARGET_KEY) || "");
 
@@ -57,12 +58,22 @@ export class ServerPlugin extends Plugin {
     const es = new EventSource("/api/events");
     es.onopen = () => this.output.clear(); // server replays its buffer on connect
     es.onerror = () => this.status.set({ ...this.status(), state: "disconnected" });
-    es.addEventListener("status", (e) => this.status.set(JSON.parse(e.data)));
+    es.addEventListener("status", (e) => {
+      const prev = this.status();
+      const s = JSON.parse(e.data);
+      this.status.set(s);
+      this._resolveStartEvent(prev, s);
+    });
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
-    // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log
+    // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log.
+    // A timed event carries an `id` + `status`: "start" opens a row with an animated
+    // "...", "done"/"error" resolves that same row to "ok"/"failed".
     es.addEventListener("event", (e) => {
       const d = JSON.parse(e.data);
-      this.eventLog.add(d.text, "", d.level || "");
+      if (d.status === "start") this.eventLog.start(d.id, d.text, d.level || "");
+      else if (d.status === "done" || d.status === "error")
+        this.eventLog.finish(d.id, d.status, d.text, d.level || "");
+      else this.eventLog.add(d.text, "", d.level || "");
     });
     // the hourly goo-update check pushes its recomputed status here so the navbar
     // badge updates live (UpdatePlugin listens via onGooUpdate)
@@ -120,6 +131,9 @@ export class ServerPlugin extends Plugin {
     try {
       await postJSON(path, body);
     } catch (e) {
+      // the start never got off the ground → fail its pending timed event now
+      // (the status resolver won't, since the server never reaches "starting")
+      this._failStart();
       // surface the failure everywhere — server log (record), event log (badge +
       // history) and a modal — so it can't go unnoticed from another screen
       this.log(`[goo] ${label} failed: ${e.message}`);
@@ -131,6 +145,37 @@ export class ServerPlugin extends Plugin {
         okLabel: "OK",
         cancelLabel: null,
       });
+    }
+  }
+
+  // The "starting server" line is a timed event: it shows an animated "..." right
+  // away (logged before the branch-confirm load, so there's no delay) and resolves
+  // to "ok" once the server reports "running" (the green dot) — or "failed" if it
+  // never gets there. A new start supersedes any still-pending one.
+  _beginStart(text) {
+    if (this._startEid) this.eventLog.drop(this._startEid);
+    this._startEid = this.eventLog.begin(text);
+  }
+
+  _cancelStart() {
+    if (this._startEid) this.eventLog.drop(this._startEid);
+    this._startEid = null;
+  }
+
+  _failStart() {
+    if (this._startEid) this.eventLog.finish(this._startEid, "error");
+    this._startEid = null;
+  }
+
+  // drive the pending start event off the live status: "ok" when it enters
+  // "running", "failed" if the process exits before getting there
+  _resolveStartEvent(prev, s) {
+    if (!this._startEid) return;
+    if (s.state === "running" && prev.state !== "running") {
+      this.eventLog.finish(this._startEid, "done");
+      this._startEid = null;
+    } else if (s.state === "stopped" && s.exited_unexpectedly) {
+      this._failStart();
     }
   }
 
@@ -165,20 +210,20 @@ export class ServerPlugin extends Plugin {
   async start(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
-    if (!(await this._confirmBranches(targetId))) return;
+    this._beginStart(`starting server (target: ${this._targetName(cfg.target)})`);
+    if (!(await this._confirmBranches(targetId))) return this._cancelStart();
     this.lastConfig = cfg;
     this.setLastTarget(cfg.target);
-    this.eventLog.add(`starting server (target: ${this._targetName(cfg.target)})`);
     await this._run("/api/start", cfg, "start");
   }
 
   async restart(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return;
-    if (!(await this._confirmBranches(targetId))) return;
+    this._beginStart(`restarting server (target: ${this._targetName(cfg.target)})`);
+    if (!(await this._confirmBranches(targetId))) return this._cancelStart();
     this.lastConfig = cfg;
     this.setLastTarget(cfg.target);
-    this.eventLog.add(`restarting server (target: ${this._targetName(cfg.target)})`);
     await this._run("/api/restart", cfg, "restart");
   }
 
@@ -187,7 +232,7 @@ export class ServerPlugin extends Plugin {
   async resume() {
     const cfg = this.lastConfig || this.buildStartConfig(this.lastTarget());
     if (cfg) {
-      this.eventLog.add(`restarting server (target: ${this._targetName(cfg.target)})`);
+      this._beginStart(`restarting server (target: ${this._targetName(cfg.target)})`);
       await this._run("/api/start", cfg, "resume");
     }
   }
