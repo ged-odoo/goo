@@ -424,10 +424,7 @@ class DashboardScreen extends Component {
                     </span>
                   </t>
                 </div>
-                <span class="dash-rrow-commit">
-                  <a t-if="r.pushed and r.github and r.sha" class="branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(r.github, r.current, r.sha)" t-att-title="r.subject" t-out="r.subject || '—'"/>
-                  <span t-else="" t-att-title="r.subject" t-out="r.subject || '—'"/>
-                </span>
+                <span class="dash-rrow-commit commit-open" t-att-class="{disabled: !r.path}" t-att-title="r.subject" t-on-click="() => this.openCommits(r)" t-out="r.subject || '—'"/>
                 <span class="dash-rrow-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
                 <div class="dash-kebab-wrap">
                   <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
@@ -507,8 +504,7 @@ class DashboardScreen extends Component {
                            space (truncating), the PR number aligns at the end; with no
                            PR the title gets the full width -->
                       <div class="dash-trow-cm">
-                        <a t-if="row.remote and row.github and row.sha" class="dash-trow-commit branch-link" target="_blank" t-att-href="this.code.remoteCommitUrl(row.github, row.branch, row.sha)" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
-                        <span t-else="" class="dash-trow-commit" t-att-title="this.commitTip(row)" t-out="row.subject || '—'"/>
+                        <span class="dash-trow-commit commit-open" t-att-class="{disabled: !row.path}" t-att-title="this.commitTip(row)" t-on-click="() => this.openRowCommits(row)" t-out="row.subject || '—'"/>
                         <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
                       </div>
                       <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
@@ -887,8 +883,6 @@ class DashboardScreen extends Component {
           current,
           dirty: !!b.dirty,
           subject: b.head_subject || "",
-          sha: b.head_sha || "",
-          pushed: !!b.head_pushed, // HEAD is on a remote -> the commit is linkable
           remote: !!b.head_remote, // the current branch has a remote-tracking ref
           date: b.head_date || "",
           ahead: b.ahead || 0, // commits ahead of the base (target) branch
@@ -1005,12 +999,12 @@ class DashboardScreen extends Component {
       return {
         repo,
         branch,
+        path: groups.pathByRepo[repo] || "",
         github: groups.githubByRepo[repo] || "",
         present: !!b,
         remote: !!b && b.remote,
         date: b ? b.date : "",
         subject: b ? b.subject || "" : "",
-        sha: b ? b.sha || "" : "",
         pr: groups.prIndex[`${repo}:${branch}`] || null,
       };
     });
@@ -1096,6 +1090,16 @@ class DashboardScreen extends Component {
       path: r.path,
       ref: r.current || "",
       label: `${r.id} · ${r.current || "?"}`,
+    });
+  }
+
+  // show the last commits for a target row's repo:branch (the commit title in a card)
+  openRowCommits(row) {
+    if (!row.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: row.path,
+      ref: row.branch || "",
+      label: `${row.repo} · ${row.branch || "?"}`,
     });
   }
 

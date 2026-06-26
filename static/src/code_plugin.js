@@ -241,13 +241,6 @@ export class CodePlugin extends Plugin {
     return this.forkBranchUrl(github, branch);
   }
 
-  // a commit URL on the repo that hosts the branch (canonical for base branches,
-  // the odoo-dev fork for work branches) — mirrors remoteBranchUrl
-  remoteCommitUrl(github, branch, sha) {
-    const owner = BASE_BRANCH_RE.test(branch) ? github : `odoo-dev/${github.split("/")[1]}`;
-    return `https://github.com/${owner}/commit/${sha}`;
-  }
-
   bundleUrl(branch) {
     return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`;
   }
