@@ -738,13 +738,16 @@ class GitService:
 
     def branches(self, repos):
         """For each repo {id, path}: the checked-out branch and all local branches
-        with their last-commit date, plus dirty / pushed / ahead-behind state."""
-        out = []
-        for repo in repos:
+        with their last-commit date, plus dirty / pushed / ahead-behind state. Each
+        repo's git reads (~7 subprocesses) are independent, so repos are read in
+        parallel — keeping a multi-repo target's refresh snappy."""
+        valid = [r for r in repos if r.get("id") and r.get("path")]
+        if not valid:
+            return []
+
+        def one(repo):
             rid = repo.get("id")
             path = os.path.expanduser(repo.get("path", ""))
-            if not rid or not path:
-                continue
             entry = {
                 "id": rid,
                 "current": None,
@@ -763,8 +766,7 @@ class GitService:
                 r = self.io.run(["git", "-C", path, "branch", "--show-current"], timeout=10)
                 if r.returncode != 0:
                     entry["error"] = r.stderr.strip().split("\n")[0] or "not a git repository"
-                    out.append(entry)
-                    continue
+                    return entry
                 entry["current"] = r.stdout.strip() or "(detached)"
                 # uncommitted changes in the working tree (only the current branch)
                 st = self.io.run(["git", "-C", path, "status", "--porcelain"], timeout=10)
@@ -839,8 +841,10 @@ class GitService:
                         )
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                 entry["error"] = str(e)
-            out.append(entry)
-        return out
+            return entry
+
+        with ThreadPoolExecutor(max_workers=min(8, len(valid))) as pool:
+            return list(pool.map(one, valid))
 
     def checkout(self, path, branch):
         """Checkout a local branch in a repo. Returns (ok, error)."""

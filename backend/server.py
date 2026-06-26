@@ -29,6 +29,7 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import effects, services
@@ -958,10 +959,17 @@ class Handler(BaseHTTPRequestHandler):
             repos = (body or {}).get("repos")
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            results = []
-            for r in repos:
+            # check out each repo in parallel — independent working trees, so a
+            # multi-repo target switches in one checkout's time, not the sum
+            def co(r):
                 ok, error = GIT.checkout(r.get("path"), r.get("branch"))
-                results.append({"branch": r.get("branch"), "ok": ok, "error": error})
+                return {"branch": r.get("branch"), "ok": ok, "error": error}
+
+            if repos:
+                with ThreadPoolExecutor(max_workers=min(8, len(repos))) as pool:
+                    results = list(pool.map(co, repos))
+            else:
+                results = []
             self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/code/rebase":
             body, err = self._read_json()
