@@ -151,6 +151,30 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // re-read branch state for just the given repo ids (a Set) and MERGE it into the
+  // current view, leaving every other repo's still-valid data in place. For ops that
+  // only touch a subset of repos — a target's checkout, a (per-repo or "all") rebase
+  // — so we don't re-scan every clone. Like loadBranches it leaves PR/runbot/mergebot
+  // untouched: a local checkout/rebase changes the working tree, not the PRs.
+  async refreshBranches(repoIds) {
+    const repos = this.reposWithGithub().filter((r) => repoIds.has(r.id));
+    if (!repos.length) return;
+    try {
+      const b = await postJSON("/api/code/branches", { repos });
+      const byId = new Map(b.repos.map((r) => [r.id, r]));
+      const existing = this.branchRepos();
+      const merged = existing.map((r) => byId.get(r.id) || r);
+      for (const r of b.repos) if (!existing.some((e) => e.id === r.id)) merged.push(r);
+      this.branchRepos.set(merged);
+      // keep the instant-paint cache in step, so a reload right after doesn't flash
+      // the pre-checkout branch for the repos we just refreshed
+      const cache = this._cache();
+      if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos: merged }));
+    } catch (e) {
+      this.error.set(e.message);
+    }
+  }
+
   _groups() {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
@@ -257,11 +281,11 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  // checkout the given {path, branch} in each repo, then reload branch state.
-  // A non-forced load (false): a checkout only changes the local working tree, so
-  // we just re-read branches — PRs (keyed by head branch), runbot (by branch) and
-  // mergebot (by PR) are unaffected, so we keep them from the cache instead of a
-  // needless GitHub re-query + re-scrape (the dashboard lazily fills any new ones).
+  // checkout the given {repo, path, branch} in each repo, then re-read branch state
+  // for just those repos. A checkout only changes their local working tree, so we
+  // refresh only them (merging into the view) and leave every other repo alone —
+  // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
+  // unaffected, so we keep those from the cache (the dashboard lazily fills any new).
   async checkout(repos) {
     this.busy.set(true);
     try {
@@ -269,7 +293,8 @@ export class CodePlugin extends Plugin {
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
         alert("Checkout failed:\n" + failed.map((r) => `${r.branch}: ${r.error}`).join("\n"));
-      await this.load(false);
+      const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
+      await (ids.size ? this.refreshBranches(ids) : this.load(false));
     } catch (e) {
       alert(`Checkout failed: ${e.message}`);
     } finally {
@@ -277,8 +302,11 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  // fetch each repo's base branch from its canonical repo and rebase onto it,
-  // then reload branch state
+  // fetch each repo's base branch from its canonical repo and rebase onto it, then
+  // re-read branch state for just those repos. A rebase changes only their local
+  // commits (head sha, ahead/behind, pushed-state), so we refresh only them; the PR
+  // list / runbot / mergebot reflect the pushed branch, which a local rebase hasn't
+  // touched, so we leave those as-is rather than re-querying everything.
   async rebase(repos) {
     this.busy.set(true);
     // the backend logs each repo's fetch then rebase phase as it happens (via SSE
@@ -291,7 +319,8 @@ export class CodePlugin extends Plugin {
           this.eventLog.add(`fetch & rebase failed: ${f.repo} — ${f.error}`, "", "error");
         alert("Fetch & rebase failed:\n" + failed.map((r) => `${r.repo}: ${r.error}`).join("\n"));
       }
-      await this.load(true);
+      const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
+      await (ids.size ? this.refreshBranches(ids) : this.load(true));
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
       alert(`Fetch & rebase failed: ${e.message}`);

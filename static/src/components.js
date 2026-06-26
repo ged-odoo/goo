@@ -2535,7 +2535,7 @@ class BranchesScreen extends Component {
   checkout(row) {
     if (this.checkoutBlocked(row)) return;
     this.code.eventLog.add(`checking out ${row.branch} (${row.repo})`);
-    this.code.checkout([{ path: row.path, branch: row.branch }]);
+    this.code.checkout([{ repo: row.repo, path: row.path, branch: row.branch }]);
   }
 
   pushBranch(row) {
