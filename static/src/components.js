@@ -1016,9 +1016,12 @@ class DashboardScreen extends Component {
     const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
     this.eventLog.add(`activating target ${tgt.name}`);
     for (const r of switched) this.eventLog.add(`checking out ${r.branch} (${r.repo})`);
+    // stop the server and switch branches concurrently: the checkout only swaps
+    // working-tree files, which the running Odoo (already-loaded code in memory)
+    // doesn't care about, so the two are independent
     const s = this.server.status().state;
-    if (s === "running" || s === "starting") await this.server.stop();
-    await this.code.checkout(repos);
+    const stopping = s === "running" || s === "starting" ? this.server.stop() : null;
+    await Promise.all([stopping, this.code.checkout(repos)]);
     this.server.setLastTarget(tgt.id);
   }
 
@@ -1826,9 +1829,12 @@ class TargetsScreen extends Component {
     const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
     this.eventLog.add(`activating target ${tgt.name}`);
     for (const r of switched) this.eventLog.add(`checking out ${r.branch} (${r.repo})`);
+    // stop the server and switch branches concurrently: the checkout only swaps
+    // working-tree files, which the running Odoo (already-loaded code in memory)
+    // doesn't care about, so the two are independent
     const s = this.server.status().state;
-    if (s === "running" || s === "starting") await this.server.stop();
-    await this.code.checkout(repos);
+    const stopping = s === "running" || s === "starting" ? this.server.stop() : null;
+    await Promise.all([stopping, this.code.checkout(repos)]);
     this.server.setLastTarget(tgt.id);
   }
 

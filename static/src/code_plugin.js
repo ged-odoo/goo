@@ -240,7 +240,11 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  // checkout the given {path, branch} in each repo, then reload branch state
+  // checkout the given {path, branch} in each repo, then reload branch state.
+  // A non-forced load (false): a checkout only changes the local working tree, so
+  // we just re-read branches — PRs (keyed by head branch), runbot (by branch) and
+  // mergebot (by PR) are unaffected, so we keep them from the cache instead of a
+  // needless GitHub re-query + re-scrape (the dashboard lazily fills any new ones).
   async checkout(repos) {
     this.busy.set(true);
     try {
@@ -248,7 +252,7 @@ export class CodePlugin extends Plugin {
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
         alert("Checkout failed:\n" + failed.map((r) => `${r.branch}: ${r.error}`).join("\n"));
-      await this.load(true);
+      await this.load(false);
     } catch (e) {
       alert(`Checkout failed: ${e.message}`);
     } finally {
