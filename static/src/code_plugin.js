@@ -136,6 +136,21 @@ export class CodePlugin extends Plugin {
     if (b) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b }));
   }
 
+  // fetch just the local branch/checkout state (no PRs, runbot or mergebot),
+  // optionally scoped to a set of repo ids. For a screen that needs checkout/dirty
+  // state on demand but never shows PRs — the Targets kebab. Leaves the PR/runbot/
+  // mergebot signals untouched (unlike load(), which also refetches those).
+  async loadBranches(branchRepoIds = null) {
+    const repos = this.reposWithGithub();
+    const req = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
+    try {
+      const b = await postJSON("/api/code/branches", { repos: req });
+      this.branchRepos.set(b.repos);
+    } catch (e) {
+      this.error.set(e.message);
+    }
+  }
+
   _groups() {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));

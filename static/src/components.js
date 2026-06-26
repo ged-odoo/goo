@@ -1810,9 +1810,23 @@ class TargetsScreen extends Component {
   dragId = signal(""); // id of the target currently being dragged ("" = none)
   dragOverId = signal(""); // id of the row the drag is hovering over
 
-  setup() {
-    this.code.load(); // need each repo's branches/checkout state for Activate
-    this.db.load(); // need the database list to know whether a target's db exists
+  // This screen does no git/network on mount — the table is just config, and the
+  // active-row highlight is browser-side (see isActive). Branch / PR / db state is
+  // pulled lazily, scoped to the repos of the target(s) involved, when a kebab or
+  // batch action actually needs it (see openRowMenu, _loadForDelete).
+
+  // the deduped set of repo ids used by the given targets — to scope the lazy reads
+  _repoIdsFor(targets) {
+    const ids = new Set();
+    for (const t of targets) for (const c of t.config || []) ids.add(c.repo);
+    return ids;
+  }
+
+  // branches + open PRs + the db list for the given targets' repos: what the delete
+  // dialog needs to offer "also delete branches / close PRs / drop db"
+  async _loadForDelete(targets) {
+    const ids = this._repoIdsFor(targets);
+    await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
   }
 
   // repo id -> { current branch, dirty, branches map } — for the activate checks
@@ -1828,19 +1842,15 @@ class TargetsScreen extends Component {
     return map;
   }
 
-  // every repo in the target's config is checked out on the target's branch
-  _checkedOut(tgt) {
-    const repos = this.repoMap;
-    const cfg = tgt.config || [];
-    return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
-  }
-
-  // the active target: the explicit one (set on Activate / Start), only while its
-  // branches are still checked out — the id check disambiguates overlapping targets
+  // the active target: the explicit one (set on Activate / Start). A browser-side
+  // fact — the running server's code + database belong to the last-activated target
+  // regardless of what's currently checked out — so it needs no git read, which is
+  // what lets this screen skip the per-repo branch scan on a passive visit. The id
+  // check disambiguates overlapping targets (e.g. master vs master(e)).
   isActive(tgt) {
     const s = this.server.status();
     const id = s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
-    return tgt.id === id && this._checkedOut(tgt);
+    return tgt.id === id;
   }
 
   _targetDirty(tgt) {
@@ -1976,6 +1986,7 @@ class TargetsScreen extends Component {
   async deleteSelected() {
     const targets = this._selectedTargets;
     if (!targets.length) return;
+    await this._loadForDelete(targets); // branches + PRs + db for the cleanup options
     const repos = this.repoMap;
     const groups = this.code.groups();
 
@@ -2070,8 +2081,11 @@ class TargetsScreen extends Component {
   }
 
   // regroup the per-target actions into the floating kebab menu (shared ActionMenu)
-  openRowMenu(ev, tgt) {
-    const rect = ev.currentTarget.getBoundingClientRect();
+  async openRowMenu(ev, tgt) {
+    const rect = ev.currentTarget.getBoundingClientRect(); // capture before the await
+    // Apply's enabled state + its "dirty / missing branch" tooltip need this target's
+    // checkout state — read it now, scoped to just this target's repos
+    await this.code.loadBranches(this._repoIdsFor([tgt]));
     const active = this.isActive(tgt);
     const actions = [
       { label: "Edit", onClick: () => this.startEdit(tgt) },
@@ -2173,7 +2187,8 @@ class TargetsScreen extends Component {
     }
   }
 
-  deleteTarget(tgt) {
+  async deleteTarget(tgt) {
+    await this._loadForDelete([tgt]); // branches + PRs + db for the cleanup options
     return deleteTargetDialog(tgt, {
       config: this.config,
       code: this.code,
