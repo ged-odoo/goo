@@ -6,7 +6,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+const { Plugin, plugin, signal, useEffect } = owl;
 
 export class DatabasePlugin extends Plugin {
   static sequence = 3;
@@ -19,6 +19,23 @@ export class DatabasePlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   dropping = signal("");
+  _wasRunning = false; // last-seen server-running state, to detect the start edge
+
+  setup() {
+    // refresh the list whenever the server reaches "running": odoo creates its
+    // database on launch, so a start/restart may have added one. Without this the
+    // list only updates on a visit to the Databases screen (or its 60s cache TTL),
+    // leaving stale views elsewhere — e.g. the dashboard's "Drop database" item.
+    useEffect(() => this._onStatus(this.server.status()));
+  }
+
+  // reload (bypassing the cache) on the rising edge into "running" — the freshly
+  // created db may not be in the cached list yet
+  _onStatus(status) {
+    const running = status.state === "running";
+    if (running && !this._wasRunning) this.load(true);
+    this._wasRunning = running;
+  }
 
   get activeDb() {
     return this.server.status().db || null;
