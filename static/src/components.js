@@ -386,7 +386,7 @@ class DashboardScreen extends Component {
           <h1>Dashboard</h1>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.code.load(true, this._dashRepoIds())"><t t-out="this.refreshIcon"/>Refresh</button>
+            <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
@@ -648,7 +648,7 @@ class DashboardScreen extends Component {
   }
 
   setup() {
-    this.code.load(false, this._dashRepoIds());
+    this._dashLoad(false);
     this.db.load(); // the delete dialog needs the database list to offer "drop db"
     // close the kebab menu on any outside click
     const closeMenu = () => this.menuId() && this.menuId.set("");
@@ -688,6 +688,14 @@ class DashboardScreen extends Component {
     for (const c of current?.config || []) ids.add(c.repo);
     for (const tgt of this.targets) for (const c of tgt.config || []) ids.add(c.repo);
     return ids;
+  }
+
+  // the dashboard shows only this subset of repos, so narrow both the PR and the
+  // branch fetch to it (same ids for both) — no point reading branches/PRs for repos
+  // that appear nowhere on this screen. Other tabs call code.load() unnarrowed.
+  _dashLoad(force) {
+    const ids = this._dashRepoIds();
+    this.code.load(force, ids, ids);
   }
 
   // the unique {github, number} of every PR shown on the dashboard (for mergebot)

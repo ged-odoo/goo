@@ -95,10 +95,11 @@ export class CodePlugin extends Plugin {
   // Branches come from local git (fast, volatile) and PRs/runbot/mergebot are now
   // cached server-side, so we simply request everything and let the backend decide
   // freshness. `force` (the manual Refresh) passes refresh:true to bypass the cache.
-  // `prRepoIds` (a Set) narrows the PR fetch to those repo ids — the dashboard only
-  // shows PRs for its favorite/target repos, so there's no point fetching the rest
-  // (those gh calls hit GitHub). null = every repo with a github (Branches/PRs tabs).
-  async load(force = false, prRepoIds = null) {
+  // `prRepoIds` / `branchRepoIds` (Sets) narrow the PR / branch fetches to those repo
+  // ids — the dashboard only shows a subset (its favorite/target repos), so there's
+  // no point reading the rest: PR fetches hit GitHub, and each branch read is ~8 git
+  // subprocesses. null = every repo (the Branches/PRs/Targets tabs, which show all).
+  async load(force = false, prRepoIds = null, branchRepoIds = null) {
     this.loading.set(true);
     this.error.set("");
     this._refreshExternal = force;
@@ -108,7 +109,8 @@ export class CodePlugin extends Plugin {
       this.runbot.set({});
     }
     const repos = this.reposWithGithub();
-    const branchesP = postJSON("/api/code/branches", { repos })
+    const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
+    const branchesP = postJSON("/api/code/branches", { repos: branchReq })
       .then((b) => {
         this.branchRepos.set(b.repos);
         return b.repos;
