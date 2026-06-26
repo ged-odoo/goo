@@ -167,6 +167,7 @@ def open_in_editor(editor, path):
     if not os.path.isdir(path):
         return False, f"not a directory: {path}"
     cmd = f"{editor} {shlex.quote(path)}"
+    effects.trace("run", cmd)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -589,6 +590,7 @@ class OdooManager:
             with self._raw_lock:
                 self._raw_buf.clear()
 
+            effects.trace("run", cmd)
             master_fd, slave_fd = pty.openpty()
             self.process = subprocess.Popen(
                 cmd,
@@ -1280,6 +1282,7 @@ class Handler(BaseHTTPRequestHandler):
             os.setsid()
             fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)  # pty becomes controlling tty
 
+        effects.trace("run", f"/bin/bash -i (cwd: {cwd})")
         proc = subprocess.Popen(
             ["/bin/bash", "-i"],
             cwd=cwd,
@@ -1411,6 +1414,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(f"{TAG} running tests (tags: {tags})\n".encode())
         self.wfile.flush()
+        effects.trace("run", cmd)
         proc = subprocess.Popen(
             cmd,
             shell=True,
@@ -1495,7 +1499,19 @@ def main():
         metavar="TAGS",
         help="run a test with these --test-tags on the running goo server and stream the log",
     )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="log every external operation goo runs to the goo terminal: each "
+        "subprocess (git, psql, dropdb, gh, odoo-bin, the shell terminal, …) and "
+        "each filesystem read/write/move/copy. Network requests are always logged. "
+        "Verbose — handy for seeing exactly what goo does under the hood.",
+    )
     args = parser.parse_args()
+
+    # turn on tracing before any work (incl. the one-shot --test-tags run) happens
+    if args.trace:
+        effects.set_trace(True)
 
     if args.test_tags:
         return run_cli_test(args.test_tags)

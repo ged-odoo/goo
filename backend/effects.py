@@ -15,6 +15,23 @@ TAG = "[goo]"
 
 _subprocess_run = subprocess.run  # raw reference, so the rename to run() doesn't recurse
 
+_trace_on = False  # `goo --trace`: log every external op to the goo log (stdout only)
+
+
+def set_trace(enabled):
+    """Turn verbose tracing on/off (see trace()). Called from main() for `--trace`."""
+    global _trace_on
+    _trace_on = enabled
+
+
+def trace(kind, detail):
+    """When tracing is on, log one external operation (subprocess / filesystem) to
+    the goo log. Stdout only — deliberately not pushed to the browser. Network GETs
+    are already announced unconditionally by log_request(), so they aren't repeated
+    here; this fills in the ops that are otherwise silent on success."""
+    if _trace_on:
+        print(f"{TAG} {time.strftime('%H:%M:%S')} trace {kind}: {detail}", flush=True)
+
 
 def log(message):
     """Write a line to the goo log (stdout)."""
@@ -35,9 +52,10 @@ def run(cmd, *, quiet=False, **kwargs):
     if "capture_output" not in kwargs and "stdout" not in kwargs and "stderr" not in kwargs:
         kwargs["capture_output"] = True
     kwargs.setdefault("text", True)
+    shown = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
+    trace("run", shown)
     result = _subprocess_run(cmd, **kwargs)
     if result.returncode and not quiet:
-        shown = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
         detail = (result.stderr or result.stdout or "").strip()
         print(f"$ {shown}", flush=True)
         if detail:
@@ -61,11 +79,13 @@ def http_get(url, *, timeout=10):
 
 
 def is_dir(path):
+    trace("isdir", path)
     return os.path.isdir(os.path.expanduser(path))
 
 
 def list_dir(path):
     """Sorted directory entries, or [] if it can't be read."""
+    trace("list", path)
     try:
         return sorted(os.listdir(os.path.expanduser(path)))
     except OSError:
@@ -74,6 +94,7 @@ def list_dir(path):
 
 def read_text(path):
     """A file's contents as text, or None if it can't be read."""
+    trace("read", path)
     try:
         with open(os.path.expanduser(path), encoding="utf-8") as f:
             return f.read()
@@ -84,6 +105,7 @@ def read_text(path):
 def read_json_file(path):
     """Read a JSON data file. Returns (data, error); a missing file is not an error
     — it returns (None, None) so the caller can create it on first use."""
+    trace("read", path)
     p = os.path.expanduser(path)
     if not os.path.exists(p):
         return None, None
@@ -96,6 +118,7 @@ def read_json_file(path):
 
 def write_json_file(path, data):
     """Write data as pretty JSON, creating parent dirs. Returns (ok, error)."""
+    trace("write", path)
     p = os.path.expanduser(path)
     try:
         parent = os.path.dirname(p)
@@ -110,6 +133,7 @@ def write_json_file(path, data):
 
 def remove_tree(path):
     """Recursively delete a directory. Returns (ok, error); a missing path is ok."""
+    trace("rmtree", path)
     p = os.path.expanduser(path)
     try:
         if os.path.exists(p):
@@ -121,6 +145,7 @@ def remove_tree(path):
 
 def move_path(src, dst):
     """Move/rename a path (src → dst). Returns (ok, error)."""
+    trace("move", f"{src} → {dst}")
     try:
         shutil.move(os.path.expanduser(src), os.path.expanduser(dst))
         return True, None
@@ -130,6 +155,7 @@ def move_path(src, dst):
 
 def copy_tree(src, dst):
     """Recursively copy a directory (src → dst). Returns (ok, error)."""
+    trace("copy", f"{src} → {dst}")
     try:
         shutil.copytree(os.path.expanduser(src), os.path.expanduser(dst))
         return True, None
