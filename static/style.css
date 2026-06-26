@@ -1104,37 +1104,14 @@ section.hidden {
   flex: 0 1 auto;
   min-width: 40px;
 }
-.dash-activate {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  margin-left: auto;
-  white-space: nowrap;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--l-text-mid);
-  background: var(--l-card);
-  border: 1px solid var(--l-line);
-  border-radius: 7px;
-  padding: 5px 10px;
-  transition: 0.13s;
+/* an inactive, applyable target name acts as the "Apply" affordance: click it to
+   switch to that target (the old Apply button) */
+.dash-name.clickable {
+  cursor: pointer;
 }
-.dash-activate svg {
-  width: 12px;
-  height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.4;
-}
-.dash-activate:hover:not(:disabled) {
-  color: var(--l-text);
-  border-color: var(--l-text-faint);
-}
-.dash-activate:disabled {
-  color: var(--l-text-faint);
-  opacity: 0.6;
-  cursor: default;
+.dash-name.clickable:hover {
+  color: var(--l-accent);
+  text-decoration: underline;
 }
 /* Start (active target, server stopped) — green. Shared with the Server tab's
    Start button; gated on :not(:disabled) so a disabled Start uses the plain look */

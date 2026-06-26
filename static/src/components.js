@@ -453,7 +453,7 @@ class DashboardScreen extends Component {
                 <div class="dash-tgt-head">
                   <div class="dash-tgt-title">
                     <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
-                    <span class="dash-name" t-out="tgt.name"/>
+                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.activate(tgt)" t-out="tgt.name"/>
                     <!-- one runbot/CI badge per target (the build is per bundle, the same
                          across the target's repos): a link to the runbot bundle that, when
                          there's a per-check CI breakdown, opens the breakdown popover on
@@ -480,7 +480,6 @@ class DashboardScreen extends Component {
                     </a>
                   </div>
                   <div class="dash-tgt-actions">
-                    <button t-if="!this.isActive(tgt)" class="dash-activate" t-att-disabled="!this.canActivate(tgt)" t-att-title="this.activateTitle(tgt)" t-on-click="() => this.activate(tgt)"><t t-out="this.checkIcon"/>Apply</button>
                     <div class="dash-kebab-wrap">
                       <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
                       <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
@@ -533,7 +532,6 @@ class DashboardScreen extends Component {
   branchIcon = m(ICONS.branches);
   addonsIcon = m(ICONS.addons); // "Repositories" section header
   kebabIcon = m(ICONS.kebab);
-  checkIcon = m(ICONS.check); // Apply button
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
   historyIcon = m(ICONS.history);
@@ -1043,6 +1041,14 @@ class DashboardScreen extends Component {
     if (this._targetDirty(tgt)) return "commit or stash changes first — the working tree is dirty";
     if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
     return "stop the server, switch to this target and check out its branches";
+  }
+
+  // tooltip for the clickable target name — clicking an inactive, applyable target
+  // applies it (replaces the old "Apply" button); otherwise say why it can't be
+  nameTitle(tgt) {
+    if (this.isActive(tgt)) return "this target is active";
+    if (this.canActivate(tgt)) return "click to apply — " + this.activateTitle(tgt);
+    return this.activateTitle(tgt);
   }
 
   // stop the server, switch to this target, check out its branches
