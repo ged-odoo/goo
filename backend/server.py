@@ -997,12 +997,21 @@ class Handler(BaseHTTPRequestHandler):
             repos = (body or {}).get("repos")
             if err or not isinstance(repos, list):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            results = []
-            for r in repos:
+
+            # fetch + rebase each repo in parallel — independent working trees, so the
+            # slow network fetches overlap instead of running back-to-back (each phase
+            # reports under its own event id, so the progress log stays unambiguous)
+            def fr(r):
                 ok, error = GIT.fetch_rebase(
                     r.get("path"), r.get("base"), r.get("github"), r.get("repo")
                 )
-                results.append({"repo": r.get("repo"), "ok": ok, "error": error})
+                return {"repo": r.get("repo"), "ok": ok, "error": error}
+
+            if repos:
+                with ThreadPoolExecutor(max_workers=min(8, len(repos))) as pool:
+                    results = list(pool.map(fr, repos))
+            else:
+                results = []
             self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
