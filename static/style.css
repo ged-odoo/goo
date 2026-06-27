@@ -2833,6 +2833,19 @@ a.dash-ci:hover {
 .assets-copy:hover {
   color: var(--l-accent);
 }
+/* js / css include toggles in the Assets control panel */
+.assets-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--l-text-mid);
+  cursor: pointer;
+  user-select: none;
+}
+.assets-chk input {
+  cursor: pointer;
+}
 .addon-btn {
   flex: none;
   font-size: 12px;

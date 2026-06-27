@@ -3266,11 +3266,18 @@ class TestsScreen extends Component {
 // Inspect a database's asset bundles: pick a db, list its /web/assets/* attachments
 // (ir_attachment in the db/filestore), and force a fresh pregeneration of them.
 class AssetsScreen extends Component {
+  static components = { SearchBox };
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top">
+        <div class="panel-top has-filters">
           <h1>Assets</h1>
+          <div class="panel-filters">
+            <SearchBox value="this.search"/>
+            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
+            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
+            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
+          </div>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
             <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
@@ -3322,6 +3329,10 @@ class AssetsScreen extends Component {
   copiedId = signal(null); // id of the row whose url was just copied (transient label)
   sortKey = signal("size"); // "name" | "size"
   sortDir = signal("desc"); // "asc" | "desc" — default: largest bundle first
+  search = signal("");
+  showJs = signal(true); // include .js bundles
+  showCss = signal(true); // include .css bundles
+  showOther = signal(true); // include non-js/non-css assets (fonts, source maps, xml…)
 
   setup() {
     this.db.load(); // populate the database selector
@@ -3342,16 +3353,36 @@ class AssetsScreen extends Component {
   }
 
   get count() {
-    const n = this.assets.bundles().length;
+    const n = this.rows().length;
     return `${n} bundle${n === 1 ? "" : "s"}`;
   }
 
+  // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)
+  // and everything that isn't plain js/css (fonts, xml, …) count as "other".
+  kind(b) {
+    if (/\.map$/i.test(b.name)) return "other";
+    if (/\.css$/i.test(b.name)) return "css";
+    if (/\.js$/i.test(b.name)) return "js";
+    return "other";
+  }
+
+  // search- and kind-filtered bundles, sorted by the active column
   rows() {
+    const q = this.search().trim().toLowerCase();
+    const showJs = this.showJs();
+    const showCss = this.showCss();
+    const showOther = this.showOther();
     const dir = this.sortDir() === "asc" ? 1 : -1;
     const bySize = this.sortKey() === "size";
     return this.assets
       .bundles()
-      .slice()
+      .filter((b) => {
+        const k = this.kind(b);
+        if (k === "js" && !showJs) return false;
+        if (k === "css" && !showCss) return false;
+        if (k === "other" && !showOther) return false;
+        return !q || b.name.toLowerCase().includes(q) || b.url.toLowerCase().includes(q);
+      })
       .sort((a, b) =>
         bySize ? dir * ((a.size || 0) - (b.size || 0)) : dir * a.name.localeCompare(b.name),
       );
