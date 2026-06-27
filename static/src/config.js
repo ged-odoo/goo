@@ -94,6 +94,7 @@ export const SECTIONS = [
   "prs",
   "reviews",
   "tests",
+  "assets",
   "addons",
   "databases",
   "targets",

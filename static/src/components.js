@@ -53,6 +53,7 @@ const ICONS = {
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
+  assets: `<svg viewBox="0 0 24 24"><polygon points="12 2 22 7 12 12 2 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
   kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
   chevron: `<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`,
@@ -72,6 +73,7 @@ const NAV = [
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
+  { id: "assets", label: "Assets", icon: ICONS.assets },
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "config", label: "Configuration", icon: ICONS.config },
@@ -3258,6 +3260,24 @@ class TestsScreen extends Component {
   }
 }
 
+// ─────────────────────────── Assets screen ───────────────────────────
+
+// Inspect the contents of an Odoo assets bundle. Shell for now — just the
+// control panel; the bundle picker and the per-file breakdown come next.
+class AssetsScreen extends Component {
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top">
+          <h1>Assets</h1>
+        </div>
+      </div>
+      <div class="content">
+        <div class="dim">Pick an assets bundle to analyze its contents.</div>
+      </div>
+    </section>`;
+}
+
 // ─────────────────────────── Addons screen ───────────────────────────
 
 class AddonsScreen extends Component {
@@ -4838,6 +4858,7 @@ const SCREENS = {
   reviews: PrsScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
+  assets: AssetsScreen,
   addons: AddonsScreen,
   config: ConfigScreen,
 };
@@ -4853,6 +4874,7 @@ export class App extends Component {
     PrsScreen,
     TestsScreen,
     DatabasesScreen,
+    AssetsScreen,
     AddonsScreen,
     ConfigScreen,
     ActionMenu,
