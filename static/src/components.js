@@ -64,7 +64,6 @@ const ICONS = {
   journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
   terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
-  review: `<svg viewBox="0 0 24 24"><path d="M21 11.5a8 8 0 0 1-8.5 8 8.5 8.5 0 0 1-3.8-.9L3 20l1.4-4.7A8 8 0 0 1 12.5 3.5a8 8 0 0 1 8.5 8z"/><polyline points="8.5 11.5 11 14 15.5 9.5"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -73,7 +72,6 @@ const NAV = [
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
-  { id: "reviews", label: "Reviews", icon: ICONS.review },
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "config", label: "Configuration", icon: ICONS.config },
@@ -2768,7 +2766,11 @@ class BranchesScreen extends Component {
 
 // ─────────────────────────── PRs screen ───────────────────────────
 
-// Flat list of every PR across repos (gh pr list --author @me), newest first.
+// One PR tracker with a role toggle: "Mine" (gh pr list --author @me, via
+// CodePlugin) and "Reviewing" (PRs I commented on but didn't author, via
+// ReviewPlugin). Both fold into one normalized row shape and render the same
+// grouped-by-branch table (mergebot column, star favorites). Mine adds the
+// Close-PR kebab + batch close; Reviewing is read-only.
 class PrsScreen extends Component {
   static components = { SearchBox };
   static template = xml`
@@ -2777,55 +2779,72 @@ class PrsScreen extends Component {
         <div class="panel-top has-filters">
           <h1>PRs</h1>
           <div class="panel-filters">
+            <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
+            <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
             <SearchBox value="this.search"/>
             <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
               <option value="">All repositories</option>
-              <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+              <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
             </select>
-            <button class="pbtn" t-att-class="{active: this.openOnly()}" t-on-click="() => this.openOnly.set(!this.openOnly())">Open</button>
+            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
+              <option value="">All</option>
+              <option value="unmerged">All (except merged)</option>
+              <option value="merged">Merged</option>
+              <option value="error">Error</option>
+              <option value="blocked">Blocked</option>
+            </select>
           </div>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
-          <button t-if="this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
+          <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
+          <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
           <span class="row-count" t-out="this.count"/>
         </div>
       </div>
       <div class="content br-fill">
-        <div t-att-class="{busy: this.code.busy()}">
+        <div t-att-class="{busy: this.busyNow}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>
-          <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.rows().length" class="dim br-empty">No pull requests.</div>
+          <div t-if="this.loadError" class="dim br-empty" t-out="'Failed to load: ' + this.loadError"/>
+          <div t-elif="!this.groups().length" class="dim br-empty" t-out="this.emptyMsg"/>
           <div t-else="" class="br-card">
             <!-- full-width card = scroll container (scrollbar on the right); the
-                 wrapper sizes the table to its natural width, like the Branches list -->
+                 wrapper sizes the table to its natural width, like the Branches list.
+                 One tbody per branch: the branch name spans its PRs (rowspan). -->
             <div class="brg-table">
-            <table class="br-table brg-flat">
+            <table class="br-table brg-flat rev-table">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th><th>PR</th><th>Title</th><th>Repository</th><th>Branch</th><th>State</th><th>Last update</th><th/></tr>
+                <tr>
+                  <th t-if="this.mode() === 'mine'"><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th>
+                  <th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th>Last update</th>
+                  <th t-if="this.mode() === 'mine'"/>
+                </tr>
               </thead>
-              <tbody>
-                <tr t-foreach="this.rows()" t-as="row" t-key="row.repo + ':' + row.number" t-att-class="{'row-sel': this.selected().has(row.repo + ':' + row.number)}">
-                  <td>
-                    <input t-if="row.state === 'OPEN' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.repo + ':' + row.number)" t-on-change="() => this.toggleSelect(row.repo + ':' + row.number)" title="select this PR for batch actions"/>
+              <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
+                <tr t-foreach="g.prs" t-as="row" t-key="row.github + ':' + row.number" t-att-class="{'row-sel': this.mode() === 'mine' and this.selected().has(row.github + ':' + row.number)}">
+                  <td t-if="this.mode() === 'mine'">
+                    <input t-if="row.state === 'open' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.github + ':' + row.number)" t-on-change="() => this.toggleSelect(row.github + ':' + row.number)" title="select this PR for batch actions"/>
+                  </td>
+                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
+                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button><t t-out="g.branch || '—'"/>
                   </td>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
                   <td class="br-title" t-att-class="{ 'select-toggle': this.selectable(row) }"
                       t-att-title="this.selectable(row) ? (row.title || '') + ' — click to select' : row.title"
                       t-on-click="() => this.selectRow(row)" t-out="row.title || '—'"/>
-                  <td class="dim" t-out="row.repo"/>
-                  <td>
-                    <a t-if="row.github" class="branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="'open ' + row.branch + ' on GitHub'" t-out="row.branch"/>
-                    <span t-else="" t-out="row.branch"/>
-                  </td>
+                  <td class="dim" t-out="row.repoLabel"/>
                   <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
-                  <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
                   <td>
+                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
+                    <span t-else="" class="dim">—</span>
+                  </td>
+                  <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
+                  <td t-if="this.mode() === 'mine'">
                     <div class="br-act">
-                      <button t-if="row.state === 'OPEN' and row.github" class="dash-kebab" title="PR actions"
+                      <button t-if="row.state === 'open' and row.github" class="dash-kebab" title="PR actions"
                               t-on-click.stop="(ev) => this.openRowMenu(ev, row)"><t t-out="this.kebabIcon"/></button>
                     </div>
                   </td>
@@ -2839,19 +2858,68 @@ class PrsScreen extends Component {
     </section>`;
 
   code = plugin(CodePlugin);
+  review = plugin(ReviewPlugin);
+  config = plugin(ConfigPlugin);
   dialogs = plugin(DialogPlugin);
+  router = plugin(RouterPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
-  openOnly = signal(true); // show only open PRs by default
+  // "mine" = PRs I authored (CodePlugin); "reviewing" = PRs I commented on but
+  // didn't author (ReviewPlugin). Seed from the route so a #reviews bookmark opens
+  // on Reviewing with no flash of Mine.
+  mode = signal(this.router.section() === "reviews" ? "reviewing" : "mine");
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
-  selected = signal(new Set()); // "repo:number" of PRs ticked for batch close
+  statusFilter = signal("unmerged"); // mergebot status; "" = all, "unmerged" = still in flight
+  selected = signal(new Set()); // "github:number" of PRs ticked for batch close (Mine only)
+  _reviewLoaded = false; // lazy-load guard for the Reviewing segment
 
   setup() {
-    this.code.load();
+    this.code.load(); // Mine data (also fed to the Dashboard); the common default
+    if (this.mode() === "reviewing") {
+      this._reviewLoaded = true;
+      this.review.load();
+    }
+    // Back-compat: #prs and #reviews map to this same (never-remounted) component,
+    // so an old #reviews bookmark hit while it's already mounted must flip the
+    // segment by hand. A plain hashchange listener does it — NOT a reactive
+    // useEffect, which (Owl's useEffect tracks signal reads, with no deps array)
+    // would also re-fire on mode() changes and revert the manual toggle.
+    const onHash = () => this.setMode(location.hash.slice(1) === "reviews" ? "reviewing" : "mine");
+    onMounted(() => window.addEventListener("hashchange", onHash));
+    onWillUnmount(() => window.removeEventListener("hashchange", onHash));
+    // mergebot for the active segment, routed through ReviewPlugin (its dedup +
+    // persistent merged/no-mergebot caches make repeat renders cheap)
+    useEffect(() => {
+      if (this.rows().length) this.review.loadMergebot(this._mbPrs());
+    });
   }
 
-  // per-PR actions in the floating kebab menu (shared ActionMenu)
+  // flip segment; clear the Mine-only selection and lazy-load Reviewing once
+  setMode(m) {
+    if (this.mode() === m) return;
+    this.mode.set(m);
+    this.selected.set(new Set());
+    if (m === "reviewing" && !this._reviewLoaded) {
+      this._reviewLoaded = true;
+      this.review.load();
+    }
+  }
+
+  // the listed PRs in mergebot's {github, number} shape (github === the slug)
+  _mbPrs() {
+    return this.rows().map((r) => ({ github: r.github, number: r.number }));
+  }
+
+  // Refresh: reload the active segment, then re-probe mergebot (merged PRs stay
+  // terminal; unsupported repos get re-checked so a false positive can recover)
+  async refresh() {
+    if (this.mode() === "mine") await this.code.load(true);
+    else await this.review.load(true);
+    this.review.loadMergebot(this._mbPrs(), { refresh: true });
+  }
+
+  // per-PR actions in the floating kebab menu (shared ActionMenu) — Mine only
   openRowMenu(ev, row) {
     const rect = ev.currentTarget.getBoundingClientRect();
     const actions = [
@@ -2864,47 +2932,45 @@ class PrsScreen extends Component {
     appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
   }
 
-  // tick/untick a PR (by "repo:number") for batch actions
+  // tick/untick a PR (by "github:number") for batch actions
   toggleSelect(key) {
     const sel = new Set(this.selected());
     sel.has(key) ? sel.delete(key) : sel.add(key);
     this.selected.set(sel);
   }
 
-  // a PR can be selected (and batch-closed) only while open and on GitHub
+  // a PR can be selected (and batch-closed) only in Mine mode, while open and on GitHub
   selectable(row) {
-    return row.state === "OPEN" && !!row.github;
+    return this.mode() === "mine" && row.state === "open" && !!row.github;
   }
 
   // clicking a PR's title toggles its selection, mirroring the row checkbox
   selectRow(row) {
-    if (this.selectable(row)) this.toggleSelect(`${row.repo}:${row.number}`);
+    if (this.selectable(row)) this.toggleSelect(`${row.github}:${row.number}`);
   }
 
   get _selectablePrs() {
-    return this.rows().filter((r) => r.state === "OPEN" && r.github);
+    return this.rows().filter((r) => this.selectable(r));
   }
 
   get allSelected() {
     const sel = this.selected();
     const selectable = this._selectablePrs;
-    return selectable.length > 0 && selectable.every((r) => sel.has(`${r.repo}:${r.number}`));
+    return selectable.length > 0 && selectable.every((r) => sel.has(`${r.github}:${r.number}`));
   }
 
   toggleSelectAll() {
     this.selected.set(
       this.allSelected
         ? new Set()
-        : new Set(this._selectablePrs.map((r) => `${r.repo}:${r.number}`)),
+        : new Set(this._selectablePrs.map((r) => `${r.github}:${r.number}`)),
     );
   }
 
   // selected, still-visible, closeable PRs
   get _selectedPrs() {
     const sel = this.selected();
-    return this.rows().filter(
-      (r) => sel.has(`${r.repo}:${r.number}`) && r.state === "OPEN" && r.github,
-    );
+    return this.rows().filter((r) => sel.has(`${r.github}:${r.number}`) && this.selectable(r));
   }
 
   get selectedCount() {
@@ -2927,167 +2993,158 @@ class PrsScreen extends Component {
   }
 
   get stamp() {
-    if (this.code.loading()) return "refreshing…";
-    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+    const [loading, at] =
+      this.mode() === "mine"
+        ? [this.code.loading(), this.code.at()]
+        : [this.review.loading(), this.review.at()];
+    if (loading) return "refreshing…";
+    return at ? `updated ${timeAgo(new Date(at).toISOString())}` : "";
   }
 
+  get busyNow() {
+    return this.mode() === "mine" ? this.code.busy() : this.review.loading();
+  }
+
+  // per-repo load errors (Mine only; Reviewing has a single top-level error)
   get errors() {
-    return this.code.prRepos().filter((r) => r.error);
+    return this.mode() === "mine" ? this.code.prRepos().filter((r) => r.error) : [];
   }
 
-  // repositories present in the loaded data (for the filter dropdown)
-  get repos() {
-    return this.code.prRepos().map((r) => r.id);
+  get loadError() {
+    return this.mode() === "mine" ? this.code.error() : this.review.error();
+  }
+
+  get emptyMsg() {
+    return this.mode() === "mine"
+      ? "No pull requests."
+      : "No PRs commented on in the last 14 days.";
+  }
+
+  // repository labels present in the active segment (for the filter dropdown)
+  get repoOptions() {
+    return [...new Set(this.rows().map((r) => r.repoLabel))].sort();
   }
 
   get count() {
-    const n = this.rows().length;
+    const n = this.groups().reduce((sum, g) => sum + g.prs.length, 0);
     return `${n} PR${n === 1 ? "" : "s"}`;
   }
 
-  // every PR across repos, newest first (open-only unless the filter is off)
+  // friendly short id for a repo's github slug (e.g. "odoo/enterprise" -> "enterprise"),
+  // falling back to the slug for repos not in config
+  get _slugToId() {
+    return Object.fromEntries(
+      (this.config.config.repos || []).filter((r) => r.github).map((r) => [r.github, r.id]),
+    );
+  }
+
+  labelFor(github) {
+    return this._slugToId[github] || github;
+  }
+
+  // PRs of the active segment, normalized to one row shape and filtered by search +
+  // repository. The two sources differ (state case, draft/branch/repo field names),
+  // so both fold into { number, title, url, github (slug), repoLabel, branch,
+  // state (lowercase), draft, updatedAt }; every downstream helper reads these.
   rows() {
-    const openOnly = this.openOnly();
-    const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
-    const list = [];
-    for (const repo of this.code.prRepos()) {
-      if (repo.error) continue;
-      if (repoFilter && repo.id !== repoFilter) continue;
-      for (const pr of repo.prs) {
-        if (openOnly && pr.state !== "OPEN") continue;
-        if (
-          q &&
-          !`${pr.title} ${pr.headRefName} #${pr.number} ${repo.id}`.toLowerCase().includes(q)
-        )
-          continue;
-        list.push({
-          number: pr.number,
-          title: pr.title || "",
-          url: pr.url,
-          repo: repo.id,
-          github: repo.github,
-          branch: pr.headRefName,
-          state: pr.state,
-          isDraft: pr.isDraft,
-          updatedAt: pr.updatedAt,
-        });
+    const repoFilter = this.repoFilter();
+    let list;
+    if (this.mode() === "mine") {
+      list = [];
+      for (const repo of this.code.prRepos()) {
+        if (repo.error) continue;
+        for (const pr of repo.prs) {
+          list.push({
+            number: pr.number,
+            title: pr.title || "",
+            url: pr.url,
+            github: repo.github,
+            repoLabel: repo.id,
+            branch: pr.headRefName,
+            state: (pr.state || "").toLowerCase(),
+            draft: !!pr.isDraft,
+            updatedAt: pr.updatedAt,
+          });
+        }
       }
+    } else {
+      list = this.review.prs().map((pr) => ({
+        number: pr.number,
+        title: pr.title || "",
+        url: pr.url,
+        github: pr.repo,
+        repoLabel: this.labelFor(pr.repo),
+        branch: pr.branch,
+        state: pr.state,
+        draft: !!pr.draft,
+        updatedAt: pr.updatedAt,
+      }));
     }
-    return list.sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
-  }
-
-  cell(date) {
-    return timeAgo(date);
-  }
-
-  prState(p) {
-    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
-    return st.toLowerCase();
-  }
-}
-
-// ─────────────────────────── Review screen ───────────────────────────
-
-// PRs I commented on in the last 14 days — one global GitHub search
-// (commenter:@me), across every repo, newest first. Read-only list.
-class ReviewScreen extends Component {
-  static components = { SearchBox };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Reviews</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.search"/>
-            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
-              <option value="">All</option>
-              <option value="unmerged">All (except merged)</option>
-              <option value="merged">Merged</option>
-              <option value="error">Error</option>
-              <option value="blocked">Blocked</option>
-            </select>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <span class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
-          <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
-      <div class="content br-fill">
-        <div t-att-class="{busy: this.review.loading()}">
-          <div t-if="this.review.error()" class="dim br-empty" t-out="'Failed to load: ' + this.review.error()"/>
-          <div t-elif="!this.groups().length" class="dim br-empty">No PRs commented on in the last 14 days.</div>
-          <div t-else="" class="br-card">
-            <div class="brg-table">
-            <!-- one tbody per branch: the branch name spans its PRs (rowspan), and
-                 PRs of the same branch read as one block (no rule between them) -->
-            <table class="br-table brg-flat rev-table">
-              <thead>
-                <tr><th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th>Last update</th></tr>
-              </thead>
-              <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
-                <tr t-foreach="g.prs" t-as="row" t-key="row.repo + ':' + row.number">
-                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
-                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button><t t-out="g.branch || '—'"/>
-                  </td>
-                  <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
-                  <td class="br-title" t-att-title="row.title" t-out="row.title || '—'"/>
-                  <td class="dim" t-out="row.repo"/>
-                  <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
-                  <td>
-                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
-                    <span t-else="" class="dim">—</span>
-                  </td>
-                  <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
-                </tr>
-              </tbody>
-            </table>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>`;
-
-  review = plugin(ReviewPlugin);
-  config = plugin(ConfigPlugin);
-  refreshIcon = m(ICONS.refresh);
-  search = signal("");
-  statusFilter = signal("unmerged"); // default; "" = all, "unmerged" = all but fully-merged, else a state
-
-  setup() {
-    this.review.load();
-    // load mergebot status for every listed PR (dedup + storage skips make repeat
-    // renders cheap; the plugin only requests the unknown, non-merged, supported ones)
-    useEffect(() => {
-      const prs = this.review.prs();
-      if (prs.length) this.review.loadMergebot(this._mbPrs());
+    return list.filter((r) => {
+      if (repoFilter && r.repoLabel !== repoFilter) return false;
+      if (q && !`${r.title} ${r.repoLabel} ${r.branch} #${r.number}`.toLowerCase().includes(q))
+        return false;
+      return true;
     });
   }
 
-  // the listed PRs in mergebot's {github, number} shape (repo === the github slug)
-  _mbPrs() {
-    return this.review.prs().map((pr) => ({ github: pr.repo, number: pr.number }));
+  // normalized rows grouped by branch name. Within a group, PRs follow the config
+  // repository order (e.g. odoo/odoo before odoo/enterprise); repos not in config
+  // sort last. The same branch often has a PR in odoo and one in enterprise —
+  // grouping keeps that work together. Groups are ordered by their most recent PR,
+  // with starred branches first. The mergebot-status filter is group-level: a group
+  // is kept whole when ANY of its PRs matches.
+  groups() {
+    const byBranch = new Map();
+    for (const r of this.rows()) {
+      const key = r.branch || "—";
+      (byBranch.get(key) || byBranch.set(key, []).get(key)).push(r);
+    }
+    const ts = (r) => Date.parse(r.updatedAt) || 0;
+    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
+    const rank = (r) => {
+      const i = repoOrder.indexOf(r.github);
+      return i === -1 ? repoOrder.length : i; // unknown repos sort last
+    };
+    const status = this.statusFilter();
+    return [...byBranch.entries()]
+      .map(([branch, prs]) => ({
+        branch,
+        prs: prs
+          .slice()
+          .sort((a, b) => rank(a) - rank(b) || a.github.localeCompare(b.github) || ts(b) - ts(a)),
+        updated: Math.max(...prs.map(ts)),
+        fav: this.review.isFavorite(branch),
+      }))
+      .filter((g) => {
+        if (!status) return true;
+        if (status === "unmerged") return g.prs.some((pr) => !this._isMerged(pr));
+        return g.prs.some((pr) => this.mbState(pr) === status);
+      })
+      .sort((a, b) => b.fav - a.fav || b.updated - a.updated);
   }
 
-  // Refresh: reload the PR list, then re-probe mergebot (merged PRs stay terminal;
-  // unsupported repos get re-checked so a false positive can recover)
-  async refresh() {
-    await this.review.load(true);
-    this.review.loadMergebot(this._mbPrs(), { refresh: true });
+  // "done" for the default filter: mergebot-merged, or a terminal GitHub state
+  // (merged/closed) — so "unmerged" hides finished work in both segments, the way
+  // the old Mine "Open" toggle did
+  _isMerged(row) {
+    return this.mbState(row) === "merged" || row.state === "merged" || row.state === "closed";
+  }
+
+  // favorite (star) a whole branch group — keyed by branch name (see ReviewPlugin);
+  // starred groups sort first. Shared across both segments (one branch = one star).
+  toggleFav(g) {
+    this.review.toggleFavorite(g.branch);
   }
 
   mbState(row) {
-    return this.review.mergebot()[`${row.repo}#${row.number}`] || "";
+    return this.review.mergebot()[`${row.github}#${row.number}`] || "";
   }
 
   // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
   mbDetail(row) {
-    return this.review.mbDetails()[`${row.repo}#${row.number}`] || "";
+    return this.review.mbDetails()[`${row.github}#${row.number}`] || "";
   }
 
   mbClass(row) {
@@ -3100,64 +3157,7 @@ class ReviewScreen extends Component {
   }
 
   mergebotUrl(row) {
-    return `${MERGEBOT}/${row.repo}/pull/${row.number}`;
-  }
-
-  get stamp() {
-    if (this.review.loading()) return "refreshing…";
-    return this.review.at() ? `updated ${timeAgo(new Date(this.review.at()).toISOString())}` : "";
-  }
-
-  get count() {
-    const n = this.groups().reduce((sum, g) => sum + g.prs.length, 0);
-    return `${n} pull request${n === 1 ? "" : "s"}`;
-  }
-
-  // PRs (search-filtered) grouped by branch name. Within a group, PRs follow the
-  // repository order from config (e.g. odoo/odoo before odoo/enterprise); repos not
-  // in config sort last. Groups themselves are ordered by their most recent PR. The
-  // same branch often has a PR in odoo and one in enterprise — grouping keeps that
-  // work together. The mergebot-status filter is group-level: a group is kept whole
-  // (all its PRs shown) when ANY of its PRs has the selected state. Starred branch
-  // groups sort first (then by recency).
-  groups() {
-    const q = this.search().trim().toLowerCase();
-    const byBranch = new Map();
-    for (const pr of this.review.prs()) {
-      if (q && !`${pr.title} ${pr.repo} ${pr.branch} #${pr.number}`.toLowerCase().includes(q)) {
-        continue;
-      }
-      const key = pr.branch || "—";
-      (byBranch.get(key) || byBranch.set(key, []).get(key)).push(pr);
-    }
-    const ts = (pr) => Date.parse(pr.updatedAt) || 0;
-    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
-    const rank = (pr) => {
-      const i = repoOrder.indexOf(pr.repo);
-      return i === -1 ? repoOrder.length : i; // unknown repos sort last
-    };
-    const status = this.statusFilter();
-    return [...byBranch.entries()]
-      .map(([branch, prs]) => ({
-        branch,
-        prs: prs
-          .slice()
-          .sort((a, b) => rank(a) - rank(b) || a.repo.localeCompare(b.repo) || ts(b) - ts(a)),
-        updated: Math.max(...prs.map(ts)),
-        fav: this.review.isFavorite(branch),
-      }))
-      .filter((g) => {
-        if (!status) return true;
-        if (status === "unmerged") return g.prs.some((pr) => this.mbState(pr) !== "merged");
-        return g.prs.some((pr) => this.mbState(pr) === status);
-      })
-      .sort((a, b) => b.fav - a.fav || b.updated - a.updated);
-  }
-
-  // favorite (star) a whole branch group — keyed by branch name (see ReviewPlugin);
-  // starred groups sort first
-  toggleFav(g) {
-    this.review.toggleFavorite(g.branch);
+    return `${MERGEBOT}/${row.github}/pull/${row.number}`;
   }
 
   cell(date) {
@@ -4833,7 +4833,9 @@ const SCREENS = {
   targets: TargetsScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
-  reviews: ReviewScreen,
+  // back-compat: old #reviews bookmarks render the merged PRs screen, which opens
+  // on its Reviewing segment (PrsScreen seeds its mode from the route)
+  reviews: PrsScreen,
   tests: TestsScreen,
   databases: DatabasesScreen,
   addons: AddonsScreen,
@@ -4849,7 +4851,6 @@ export class App extends Component {
     TargetsScreen,
     BranchesScreen,
     PrsScreen,
-    ReviewScreen,
     TestsScreen,
     DatabasesScreen,
     AddonsScreen,
