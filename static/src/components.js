@@ -55,6 +55,7 @@ const ICONS = {
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
   kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
+  chevron: `<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`,
   check: `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`,
   push: `<svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
@@ -408,7 +409,7 @@ class DashboardScreen extends Component {
               <span>Repos</span>
             </div>
             <div class="dash-repos-chips">
-              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)">
+              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
                 <span class="dash-chip-name" t-out="r.id"/>
                 <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
                 <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
@@ -416,7 +417,7 @@ class DashboardScreen extends Component {
                 <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
                 <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
                 <div class="dash-kebab-wrap">
-                  <button class="dash-kebab dash-chip-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
+                  <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
                   <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
                     <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
                     <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
@@ -529,6 +530,7 @@ class DashboardScreen extends Component {
   addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
   codeIcon = m(ICONS.code); // "Edit" (open all repos in the editor)
   kebabIcon = m(ICONS.kebab);
+  chevronIcon = m(ICONS.chevron); // the repo chip's dropdown caret
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
   historyIcon = m(ICONS.history);
