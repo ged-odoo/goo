@@ -95,12 +95,26 @@ class RunbotServiceTest(unittest.TestCase):
     def test_bundle_pass_and_running(self):
         html = (
             '<link rel="shortcut icon" href="/web/static/icon_ok.png">'
-            '<div class="batch_tile"><a class="btn btn-info">building</a></div>'
+            '<div class="batch_tile"><div class="card bg-info-subtle">'
+            '<i class="fa fa-spin"></i>building</div></div>'
             '<div class="batch_tile">older</div>'
         )
         svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
         self.assertEqual(
             svc.statuses(["master"]), {"master": {"result": "success", "running": True}}
+        )
+
+    def test_bundle_pass_not_running_with_connect_links(self):
+        # every finished slot has an `fa-sign-in btn-info` connect link — a bare
+        # btn-info must NOT be read as "still running"
+        html = (
+            '<link rel="shortcut icon" href="/web/static/icon_ok.png">'
+            '<div class="batch_tile"><div class="card bg-success-subtle">'
+            '<a class="fa fa-sign-in btn btn-info" href="/runbot/run/1"></a></div></div>'
+        )
+        svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
+        self.assertEqual(
+            svc.statuses(["master"]), {"master": {"result": "success", "running": False}}
         )
 
     def test_bundle_fail_not_running(self):

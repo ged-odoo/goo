@@ -299,7 +299,11 @@ class RunbotService:
         """`result` ("success"/"failure"/"") comes from the bundle page favicon
         (icon_ok/icon_ko/icon_killed …) — runbot's own overall verdict, which
         already reflects a failure even mid-run. `running` is true when the latest
-        batch still has a build in progress (runbot colours it btn-info / fa-spin).
+        batch still has a build in progress: runbot tints the batch card
+        `bg-info-subtle` (vs `bg-success-subtle`/`bg-danger-subtle` once done) and
+        spins the building slot's icon (`fa-spin`). NB: a bare `btn-info` is *not*
+        a running signal — every finished slot carries an `fa-sign-in btn-info`
+        "connect to live build" link, so it's always present.
         Falls back to the badge's last-finished result if the page can't be read."""
         html, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}")
         if not html:
@@ -310,7 +314,7 @@ class RunbotService:
         result = "failure" if state in ("ko", "killed") else "success" if state == "ok" else ""
         parts = html.split('class="batch_tile', 1)
         latest = parts[1].split('class="batch_tile', 1)[0] if len(parts) > 1 else ""
-        running = "btn-info" in latest or "fa-spin" in latest
+        running = "bg-info-subtle" in latest or "fa-spin" in latest
         return {"result": result, "running": running}
 
     def _badge(self, branch):
