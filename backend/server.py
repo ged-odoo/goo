@@ -987,6 +987,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": str(e)})
             ok, error = ASSETS.generate(cmd, db)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/assets/breakdown":
+            body, err = self._read_json()
+            db = (body or {}).get("db")
+            bundle = (body or {}).get("bundle")
+            if err or not isinstance(db, str) or not db or not isinstance(bundle, str) or not bundle:
+                return self._send_json(400, {"ok": False, "error": "missing db or bundle"})
+            try:
+                cmd = build_shell_cmd(body, db)
+            except ValueError as e:
+                return self._send_json(400, {"ok": False, "error": str(e)})
+            data, error = ASSETS.breakdown(cmd, bundle)
+            if data is None:
+                return self._send_json(400, {"ok": False, "error": error})
+            self._send_json(200, {"ok": True, "bundle": bundle, **data})
         elif path == "/api/code/branches/delete":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")

@@ -2846,6 +2846,90 @@ a.dash-ci:hover {
 .assets-chk input {
   cursor: pointer;
 }
+/* clickable bundle name → opens the per-file analysis view */
+.assets-name {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--l-text);
+  background: transparent;
+  cursor: pointer;
+  transition: 0.12s;
+}
+.assets-name:hover {
+  color: var(--l-accent);
+}
+/* bundle analysis view: a toolbar + a scrollable size tree/list */
+.assets-analysis {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.assets-analysis-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--l-line);
+}
+.assets-analysis-title {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--l-text);
+}
+.assets-analysis-views {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.assets-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+.bnode-row,
+.bflat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 16px;
+}
+.bflat-row {
+  padding-left: 24px;
+}
+.bnode-row {
+  cursor: pointer;
+}
+.bnode-row:hover {
+  background: var(--l-panel);
+}
+.bnode-row.leaf {
+  cursor: default;
+}
+.bnode-caret {
+  width: 12px;
+  flex: none;
+  color: var(--l-text-faint);
+  font-size: 10px;
+}
+.bnode-name {
+  font-family: var(--mono);
+  color: var(--l-text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bnode-size {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  color: var(--l-text);
+  font-variant-numeric: tabular-nums;
+}
 .addon-btn {
   flex: none;
   font-size: 12px;

@@ -3263,10 +3263,44 @@ class TestsScreen extends Component {
 
 // ─────────────────────────── Assets screen ───────────────────────────
 
+// One node of the bundle-analysis tree: a path segment (folder) or a leaf file,
+// with its aggregated minified size. Recursive — expands to its children, which
+// are sorted largest-first by the screen. Top-level (depth 0) nodes open by default.
+class BundleNode extends Component {
+  static template = xml`
+    <div class="bnode">
+      <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
+        <span class="bnode-caret" t-out="this.props.node.children.length ? (this.open() ? '▾' : '▸') : ''"/>
+        <span class="bnode-name" t-out="this.props.node.name"/>
+        <span class="bnode-size" t-out="this.fmt(this.props.node.size)"/>
+      </div>
+      <t t-if="this.open()">
+        <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
+      </t>
+    </div>`;
+
+  props = props({ node: t.any(), depth: t.any() });
+  open = signal(false);
+
+  setup() {
+    if (this.props.depth === 0) this.open.set(true);
+  }
+
+  toggle() {
+    if (this.props.node.children.length) this.open.set(!this.open());
+  }
+
+  fmt(n) {
+    return formatBytes(n);
+  }
+}
+BundleNode.components = { BundleNode };
+
 // Inspect a database's asset bundles: pick a db, list its /web/assets/* attachments
-// (ir_attachment in the db/filestore), and force a fresh pregeneration of them.
+// (ir_attachment in the db/filestore), force a fresh pregeneration, and analyze one
+// bundle's per-file size breakdown (click a bundle name).
 class AssetsScreen extends Component {
-  static components = { SearchBox };
+  static components = { SearchBox, BundleNode };
   static template = xml`
     <section>
       <div class="panel">
@@ -3293,6 +3327,35 @@ class AssetsScreen extends Component {
         </div>
       </div>
       <div class="content br-fill">
+        <t t-if="this.assets.bundleData()">
+          <div class="assets-analysis">
+            <div class="assets-analysis-bar">
+              <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
+              <span class="assets-analysis-title" t-out="this.assets.bundleData().name"/>
+              <span class="meta" t-out="this.analysisTotal"/>
+              <div class="assets-analysis-views">
+                <SearchBox value="this.treeSearch"/>
+                <button class="pbtn" t-att-class="{active: this.view() === 'tree'}" t-on-click="() => this.view.set('tree')">Aggregate</button>
+                <button class="pbtn" t-att-class="{active: this.view() === 'flat'}" t-on-click="() => this.view.set('flat')">Flat</button>
+              </div>
+            </div>
+            <div class="assets-tree">
+              <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing… (running the odoo shell — this can take a few seconds)</div>
+              <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
+              <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
+              <t t-elif="this.view() === 'tree'">
+                <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
+              </t>
+              <t t-else="">
+                <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
+                  <span class="bnode-name" t-out="f.path"/>
+                  <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
+                </div>
+              </t>
+            </div>
+          </div>
+        </t>
+        <t t-else="">
         <div t-att-class="{busy: this.assets.busy()}">
           <div t-if="!this.assets.selectedDb()" class="dim br-empty">Select a database to list its asset bundles.</div>
           <div t-elif="this.assets.error()" class="dim br-empty" t-out="'Failed to load: ' + this.assets.error()"/>
@@ -3310,7 +3373,7 @@ class AssetsScreen extends Component {
                 <tbody>
                   <tr t-foreach="this.rows()" t-as="b" t-key="b.id">
                     <td class="addon-name">
-                      <span t-out="b.name"/>
+                      <button class="assets-name" t-att-title="'analyze ' + this.bundleBase(b.name)" t-on-click="() => this.analyze(b)" t-out="b.name"/>
                       <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
                     </td>
                     <td t-out="this.fmtSize(b.size)"/>
@@ -3320,12 +3383,15 @@ class AssetsScreen extends Component {
             </div>
           </div>
         </div>
+        </t>
       </div>
     </section>`;
 
   assets = plugin(AssetsPlugin);
   db = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
+  view = signal("tree"); // analysis view: "tree" (aggregate) | "flat"
+  treeSearch = signal(""); // filter files within the analysis
   copiedId = signal(null); // id of the row whose url was just copied (transient label)
   sortKey = signal("size"); // "name" | "size"
   sortDir = signal("desc"); // "asc" | "desc" — default: largest bundle first
@@ -3355,6 +3421,73 @@ class AssetsScreen extends Component {
   get count() {
     const n = this.rows().length;
     return `${n} bundle${n === 1 ? "" : "s"}`;
+  }
+
+  // the bundle base name an attachment belongs to, e.g. "web.assets_web.min.js" or
+  // "web.assets_web.css.map" -> "web.assets_web"
+  bundleBase(name) {
+    return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
+  }
+
+  // analyze the bundle this row belongs to (its per-file size breakdown)
+  analyze(b) {
+    this.assets.analyze(this.bundleBase(b.name));
+  }
+
+  // total minified size across the analyzed bundle's js + css + xml
+  get analysisTotal() {
+    const d = this.assets.bundleData();
+    if (!d) return "";
+    const all = [...(d.js || []), ...(d.css || []), ...(d.xml || [])];
+    return `${formatBytes(all.reduce((s, [, n]) => s + n, 0))} minified`;
+  }
+
+  // the analyzed bundle's files as a flat list ({path, bytes}), search-filtered,
+  // largest first
+  get flat() {
+    const d = this.assets.bundleData();
+    if (!d) return [];
+    const q = this.treeSearch().trim().toLowerCase();
+    return [...(d.js || []), ...(d.css || []), ...(d.xml || [])]
+      .map(([path, bytes]) => ({ path, bytes }))
+      .filter((f) => !q || f.path.toLowerCase().includes(q))
+      .sort((a, b) => b.bytes - a.bytes);
+  }
+
+  // the analyzed bundle aggregated into a tree: top level is js/css/xml, then each
+  // path segment, sizes summed up the tree; children sorted largest first
+  get tree() {
+    const d = this.assets.bundleData();
+    if (!d) return [];
+    const q = this.treeSearch().trim().toLowerCase();
+    const top = [];
+    for (const [label, files] of [
+      ["js", d.js],
+      ["css", d.css],
+      ["xml", d.xml],
+    ]) {
+      const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
+      if (!matched.length) continue;
+      const root = { name: label, size: 0, children: {} };
+      for (const [path, bytes] of matched) {
+        root.size += bytes;
+        let node = root;
+        for (const part of path.split("/").filter(Boolean)) {
+          node.children[part] = node.children[part] || { name: part, size: 0, children: {} };
+          node = node.children[part];
+          node.size += bytes;
+        }
+      }
+      top.push(root);
+    }
+    const finalize = (n) => ({
+      name: n.name,
+      size: n.size,
+      children: Object.values(n.children)
+        .map(finalize)
+        .sort((a, b) => b.size - a.size),
+    });
+    return top.map(finalize).sort((a, b) => b.size - a.size);
   }
 
   // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)

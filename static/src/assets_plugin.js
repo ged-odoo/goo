@@ -27,6 +27,10 @@ export class AssetsPlugin extends Plugin {
   loading = signal(false);
   generating = signal(false);
   error = signal("");
+  // analysis of one bundle: { name, js:[[path,bytes]], css, xml } | null
+  bundleData = signal(null);
+  analyzing = signal(false);
+  analyzeError = signal("");
 
   // disable actions while a load or a generation is in flight
   busy() {
@@ -96,5 +100,28 @@ export class AssetsPlugin extends Plugin {
     } finally {
       this.generating.set(false);
     }
+  }
+
+  // analyze a bundle's contents: ask the backend (odoo shell) for the per-file
+  // minified-size breakdown of its js/css/xml, and open the analysis view
+  async analyze(bundle) {
+    const db = this.selectedDb();
+    if (!db || !bundle) return;
+    this.analyzing.set(true);
+    this.analyzeError.set("");
+    this.bundleData.set({ name: bundle, js: [], css: [], xml: [] }); // marks "open" while loading
+    try {
+      const data = await postJSON("/api/assets/breakdown", { ...this.config.config, db, bundle });
+      this.bundleData.set({ name: bundle, js: data.js, css: data.css, xml: data.xml });
+    } catch (e) {
+      this.analyzeError.set(e.message);
+    } finally {
+      this.analyzing.set(false);
+    }
+  }
+
+  closeAnalysis() {
+    this.bundleData.set(null);
+    this.analyzeError.set("");
   }
 }

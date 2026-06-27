@@ -1284,3 +1284,43 @@ class AssetsService:
             return False, (tail[-1] if tail else "asset generation failed")
         self.cache.invalidate(db)
         return True, None
+
+    def breakdown(self, cmd, bundle, timeout=300):
+        """Per-file minified-size breakdown of a bundle, extracted by running the
+        odoo shell: for each js/css/xml file in the bundle, its url and the byte
+        length of its minified content. Returns (data, error) where data is
+        {js: [[url, bytes], …], css: […], xml: […]} (None on failure)."""
+        if not re.match(r"^[A-Za-z0-9_.-]+$", bundle or ""):
+            return None, "invalid bundle name"
+        # bundle is validated above, so {bundle!r} is safe to inline. The sentinel
+        # isolates our JSON from any odoo log noise on stdout.
+        script = (
+            "import json\n"
+            f"b = env['ir.qweb']._get_asset_bundle({bundle!r}, css=True, js=True)\n"
+            "def items(assets):\n"
+            "    out = []\n"
+            "    for a in assets:\n"
+            "        try:\n"
+            "            out.append([a.url or '<inline>', len(a.minify().encode('utf8'))])\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    return out\n"
+            "print('@@ASSETS@@' + json.dumps({'js': items(b.javascripts),"
+            " 'css': items(b.stylesheets), 'xml': items(b.templates or [])}))\n"
+        )
+        try:
+            r = self.io.run(
+                cmd, shell=True, executable="/bin/bash", input=script, timeout=timeout
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+        for line in (r.stdout or "").splitlines():
+            if line.startswith("@@ASSETS@@"):
+                try:
+                    return json.loads(line[len("@@ASSETS@@") :]), None
+                except ValueError:
+                    return None, "could not parse analysis output"
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()
+            return None, (tail[-1] if tail else "asset analysis failed")
+        return None, "no analysis output (is the bundle name correct?)"

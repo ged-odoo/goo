@@ -745,6 +745,28 @@ class AssetsServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(error, "boom: no module")
 
+    def test_breakdown_parses_sentinel_json(self):
+        payload = {"js": [["/web/static/a.js", 100]], "css": [["/web/static/b.css", 50]], "xml": []}
+        out = "odoo log noise\n@@ASSETS@@" + json.dumps(payload) + "\n"
+        svc = services.AssetsService(FakeIO(run_result=completed(stdout=out)), TTLCache(ttl=0))
+        data, err = svc.breakdown("odoo-bin shell -d master", "web.assets_web")
+        self.assertIsNone(err)
+        self.assertEqual(data, payload)
+
+    def test_breakdown_rejects_bad_bundle_name(self):
+        io = FakeIO(run_result=completed(stdout="@@ASSETS@@{}"))
+        data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown("cmd", "bad name!")
+        self.assertIsNone(data)
+        self.assertEqual(io.run_calls, [])  # never reaches the shell
+
+    def test_breakdown_error_when_no_output(self):
+        svc = services.AssetsService(
+            FakeIO(run_result=completed(returncode=1, stderr="boom\n")), TTLCache(ttl=0)
+        )
+        data, err = svc.breakdown("cmd", "web.assets_web")
+        self.assertIsNone(data)
+        self.assertEqual(err, "boom")
+
 
 if __name__ == "__main__":
     unittest.main()
