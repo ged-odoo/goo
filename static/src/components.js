@@ -399,35 +399,24 @@ class DashboardScreen extends Component {
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
 
           <div class="dash-layout">
-          <!-- favorite repositories (flat list, fetch &amp; rebase per repo) -->
-          <section t-if="this.favRepos.length" class="dash-sec">
-            <div class="dash-sec-head">
-              <span class="dash-sec-icon"><t t-out="this.addonsIcon"/></span>
-              <span class="dash-sec-title">Repositories</span>
-              <span class="dash-sec-count" t-out="this.favRepos.length"/>
-              <button class="dash-rebase dash-sec-action" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
-              </button>
+          <!-- repositories sync strip: the repo list collapses to one row of chips,
+               each carrying its sync health (up to date / N behind) — the one thing
+               the target cards never show. Per-repo actions live in the chip's menu. -->
+          <div t-if="this.favRepos.length" class="dash-repos">
+            <div class="dash-repos-label">
+              <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
+              <span>Repos</span>
             </div>
-            <div class="dash-sec-rows">
-              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-rrow">
-                <div class="dash-rrow-name"><t t-out="this.branchIcon"/><span t-out="r.id"/></div>
-                <div class="dash-rrow-branch">
-                  <t t-if="r.error"><span class="git-state missing dash-bname" t-out="r.error"/></t>
-                  <t t-else="">
-                    <a t-if="r.remote and r.github and r.current" class="branch-link dash-bname" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.current)" t-att-title="'open ' + r.current + ' on GitHub'" t-out="r.current"/>
-                    <span t-else="" class="dash-bname" t-out="r.current || '—'"/>
-                    <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
-                    <span t-if="r.ahead || r.behind" class="dash-diff" t-att-title="'vs ' + r.base + ': ' + r.ahead + ' ahead, ' + r.behind + ' behind'">
-                      <span t-if="r.ahead" class="ahead">↑<t t-out="r.ahead"/></span>
-                      <span t-if="r.behind" class="behind">↓<t t-out="r.behind"/></span>
-                    </span>
-                  </t>
-                </div>
-                <span class="dash-rrow-commit commit-open" t-att-class="{disabled: !r.path}" t-att-title="r.subject" t-on-click="() => this.openCommits(r)" t-out="r.subject || '—'"/>
-                <span class="dash-rrow-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
+            <div class="dash-repos-chips">
+              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)">
+                <span class="dash-chip-name" t-out="r.id"/>
+                <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
+                <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
+                <span class="dash-chip-div"/>
+                <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
+                <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
                 <div class="dash-kebab-wrap">
-                  <button class="dash-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
+                  <button class="dash-kebab dash-chip-kebab" t-att-class="{open: this.menuId() === 'repo:' + r.id}" title="repository actions" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
                     <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
                     <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
@@ -442,7 +431,10 @@ class DashboardScreen extends Component {
                 </div>
               </div>
             </div>
-          </section>
+            <button class="dash-rebase dash-repos-all" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+              <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
+            </button>
+          </div>
 
           <!-- build targets — a responsive grid, one self-contained card per target -->
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
@@ -529,8 +521,7 @@ class DashboardScreen extends Component {
   dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
-  branchIcon = m(ICONS.branches);
-  addonsIcon = m(ICONS.addons); // "Repositories" section header
+  addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
   kebabIcon = m(ICONS.kebab);
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
@@ -894,6 +885,31 @@ class DashboardScreen extends Component {
           canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
         };
       });
+  }
+
+  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
+  // base) is the headline; missing/unreadable repos read as an error, and a repo we
+  // have no branch data for yet stays neutral rather than claiming "up to date".
+  chipClass(r) {
+    if (r.error) return "chip-err";
+    if (!r.current) return "chip-unknown";
+    return r.behind ? "chip-behind" : "chip-ok";
+  }
+
+  syncText(r) {
+    if (r.error) return "error";
+    if (!r.current) return "—";
+    return r.behind ? `${r.behind} behind` : "up to date";
+  }
+
+  syncTitle(r) {
+    if (r.error) return r.error;
+    if (!r.current) return "branch state not loaded yet";
+    if (r.behind) {
+      const ahead = r.ahead ? ` · ${r.ahead} ahead` : "";
+      return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
+    }
+    return `up to date with ${r.base}`;
   }
 
   // fetch+rebase a single repo's current branch onto its canonical base branch

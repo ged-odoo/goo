@@ -883,120 +883,146 @@ section.hidden {
   gap: 16px;
   max-width: 1080px;
 }
-/* a list card: section header + indented rows joined by a vertical guide line */
-.dash-sec {
+/* repositories sync strip: the repo list collapses to a single row of chips, each
+   carrying its repo name, branch and sync health (up to date / N behind) */
+.dash-repos {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   background: var(--l-card);
   border: 1px solid var(--l-line);
-  border-radius: 14px;
+  border-radius: 12px;
   box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04);
-  /* no overflow:hidden — the kebab dropdowns must be able to escape the card */
+  padding: 9px 12px 9px 14px;
+  /* no overflow:hidden — the per-chip action menus must escape the card */
 }
-.dash-sec-head {
+.dash-repos-label {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 38px;
-  padding: 4px 20px;
-  background: var(--l-panel);
-  border-bottom: 1px solid var(--l-line);
-  border-radius: 13px 13px 0 0; /* match the card's rounded top corners */
-}
-.dash-sec-icon svg {
-  width: 15px;
-  height: 15px;
-  display: block;
-  fill: none;
-  stroke: var(--l-text-dim);
-  stroke-width: 2;
-}
-.dash-sec-title {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--l-text-mid);
-}
-.dash-sec-count {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--l-text-faint);
-  background: var(--l-panel-line);
-  padding: 1px 9px;
-  border-radius: 20px;
-}
-.dash-sec-action {
-  margin-left: auto;
-}
-.dash-sec-rows {
-  padding: 4px 0 6px;
-}
-/* favorite-repo row */
-.dash-rrow {
-  display: grid;
-  grid-template-columns: 140px 210px minmax(0, 1fr) 56px auto;
-  gap: 16px;
-  align-items: center;
-  padding: 7px 20px 7px 52px;
-}
-.dash-rrow-name {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--l-text);
-}
-.dash-rrow-name svg {
-  width: 13px;
-  height: 13px;
+  gap: 8px;
   flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+}
+.dash-repos-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
   fill: none;
   stroke: var(--l-text-faint);
   stroke-width: 2;
 }
-.dash-rrow-branch {
+.dash-repos-chips {
   display: flex;
   align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
   min-width: 0;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--l-text-mid);
+  flex-wrap: wrap;
 }
-/* only the branch name truncates — the dirty badge + ahead/behind diff stay visible */
-.dash-rrow-branch .dash-bname {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dash-rrow-branch .dash-diff {
+.dash-repos-all {
   flex: none;
 }
-.dash-rrow-commit {
-  font-size: 13px;
-  color: var(--l-text-dim);
+/* one repo = a chip: name · branch | health [Rebase] [⋯] */
+.dash-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
   white-space: nowrap;
+  background: var(--l-panel);
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  padding: 4px 5px 4px 10px;
+}
+.dash-chip.chip-behind {
+  background: var(--l-amber-bg);
+  border-color: var(--l-amber-bg);
+}
+.dash-chip.chip-err {
+  background: var(--l-red-bg);
+  border-color: var(--l-red-bg);
+}
+.dash-chip-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--l-text);
+}
+.dash-chip-branch {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--l-text-faint);
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dash-rrow-when {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--l-text-faint);
+.dash-chip-div {
+  width: 1px;
+  height: 12px;
+  flex: none;
+  background: var(--l-line);
 }
-/* commits ahead/behind the base (target) branch */
-.dash-diff {
-  margin-left: 7px;
+.dash-chip-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
-}
-.dash-diff .ahead {
   color: var(--l-green);
 }
-.dash-diff .behind {
+.dash-chip-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--l-green);
+}
+.dash-chip.chip-behind .dash-chip-sync,
+.dash-chip.chip-err .dash-chip-sync {
   color: var(--l-amber);
-  margin-left: 5px;
+}
+.dash-chip.chip-behind .dash-chip-dot {
+  background: var(--l-amber);
+}
+.dash-chip.chip-err .dash-chip-sync {
+  color: var(--l-red);
+}
+.dash-chip.chip-err .dash-chip-dot {
+  background: var(--l-red);
+}
+.dash-chip.chip-unknown .dash-chip-sync {
+  color: var(--l-text-faint);
+}
+.dash-chip.chip-unknown .dash-chip-dot {
+  background: var(--l-text-faint);
+}
+.dash-chip-rebase {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--l-amber);
+  background: var(--l-amber-bg);
+  border-radius: 6px;
+  padding: 4px 9px;
+  transition: 0.12s;
+}
+.dash-chip-rebase:hover {
+  filter: brightness(0.96);
+}
+/* the chip's action kebab — compact, revealed on hover to keep the strip clean
+   (stays put once its menu is open, even as the pointer leaves the chip) */
+.dash-chip-kebab {
+  width: 22px;
+  height: 22px;
+}
+.dash-chip-kebab svg {
+  width: 15px;
+  height: 15px;
+}
+.dash-chip:not(:hover) .dash-chip-kebab:not(.open) {
+  opacity: 0;
 }
 .dash-rebase {
   display: inline-flex;
