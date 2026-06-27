@@ -262,13 +262,25 @@ export class CodePlugin extends Plugin {
     return res.commits;
   }
 
+  // surface a failure in the app's error dialog (scrollable, styled) rather than a
+  // native alert() — git errors like "already checked out at <worktree>" can be long
+  _errorDialog(title, message) {
+    this.dialogs.open({
+      title,
+      message,
+      cls: "dialog-error",
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  }
+
   async _mutate(label, fn, reload = true) {
     this.busy.set(true);
     try {
       await fn();
       if (reload) await this.load(true);
     } catch (e) {
-      alert(`${label} failed: ${e.message}`);
+      this._errorDialog(`${label} failed`, e.message);
     } finally {
       this.busy.set(false);
     }
@@ -285,11 +297,14 @@ export class CodePlugin extends Plugin {
       const res = await postJSON("/api/code/checkout", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
-        alert("Checkout failed:\n" + failed.map((r) => `${r.branch}: ${r.error}`).join("\n"));
+        this._errorDialog(
+          "Checkout failed",
+          failed.map((r) => `${r.branch}: ${r.error}`).join("\n"),
+        );
       const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
       await (ids.size ? this.refreshBranches(ids) : this.load(false));
     } catch (e) {
-      alert(`Checkout failed: ${e.message}`);
+      this._errorDialog("Checkout failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -310,13 +325,16 @@ export class CodePlugin extends Plugin {
       if (failed.length) {
         for (const f of failed)
           this.eventLog.add(`fetch & rebase failed: ${f.repo} — ${f.error}`, "", "error");
-        alert("Fetch & rebase failed:\n" + failed.map((r) => `${r.repo}: ${r.error}`).join("\n"));
+        this._errorDialog(
+          "Fetch & rebase failed",
+          failed.map((r) => `${r.repo}: ${r.error}`).join("\n"),
+        );
       }
       const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
       await (ids.size ? this.refreshBranches(ids) : this.load(true));
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
-      alert(`Fetch & rebase failed: ${e.message}`);
+      this._errorDialog("Fetch & rebase failed", e.message);
     } finally {
       this.busy.set(false);
     }
