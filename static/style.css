@@ -2820,6 +2820,19 @@ a.dash-ci:hover {
   font-weight: 600;
   color: var(--l-text);
 }
+/* the per-bundle "copy url" action sitting beside the bundle name */
+.assets-copy {
+  margin-left: 10px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--l-text-faint);
+  background: transparent;
+  transition: 0.12s;
+}
+.assets-copy:hover {
+  color: var(--l-accent);
+}
 .addon-btn {
   flex: none;
   font-size: 12px;

@@ -3295,14 +3295,18 @@ class AssetsScreen extends Component {
             <div class="brg-table">
               <table class="br-table brg-flat">
                 <thead>
-                  <tr><th>Bundle</th><th>URL</th><th>Size</th><th>Created</th></tr>
+                  <tr>
+                    <th class="br-sort" t-on-click="() => this.sort('name')">Bundle<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
+                    <th class="br-sort" t-on-click="() => this.sort('size')">Size<span class="br-arrow" t-out="this.sortArrow('size')"/></th>
+                  </tr>
                 </thead>
                 <tbody>
                   <tr t-foreach="this.rows()" t-as="b" t-key="b.id">
-                    <td class="addon-name" t-out="b.name"/>
-                    <td class="dim"><div class="br-ellip" t-att-title="b.url" t-out="b.url"/></td>
+                    <td class="addon-name">
+                      <span t-out="b.name"/>
+                      <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
+                    </td>
                     <td t-out="this.fmtSize(b.size)"/>
-                    <td class="dim" t-att-title="b.created" t-out="b.created ? this.cell(b.created) : '—'"/>
                   </tr>
                 </tbody>
               </table>
@@ -3315,6 +3319,9 @@ class AssetsScreen extends Component {
   assets = plugin(AssetsPlugin);
   db = plugin(DatabasePlugin);
   refreshIcon = m(ICONS.refresh);
+  copiedId = signal(null); // id of the row whose url was just copied (transient label)
+  sortKey = signal("size"); // "name" | "size"
+  sortDir = signal("desc"); // "asc" | "desc" — default: largest bundle first
 
   setup() {
     this.db.load(); // populate the database selector
@@ -3340,11 +3347,41 @@ class AssetsScreen extends Component {
   }
 
   rows() {
-    return this.assets.bundles();
+    const dir = this.sortDir() === "asc" ? 1 : -1;
+    const bySize = this.sortKey() === "size";
+    return this.assets
+      .bundles()
+      .slice()
+      .sort((a, b) =>
+        bySize ? dir * ((a.size || 0) - (b.size || 0)) : dir * a.name.localeCompare(b.name),
+      );
   }
 
-  cell(date) {
-    return timeAgo(date);
+  // toggle direction when re-clicking the active column, else switch column with a
+  // sensible default (names ascending A→Z, sizes descending largest-first)
+  sort(key) {
+    if (this.sortKey() === key) {
+      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
+    } else {
+      this.sortKey.set(key);
+      this.sortDir.set(key === "size" ? "desc" : "asc");
+    }
+  }
+
+  // " ▲" / " ▼" for the active sort column, else ""
+  sortArrow(key) {
+    if (this.sortKey() !== key) return "";
+    return this.sortDir() === "asc" ? " ▲" : " ▼";
+  }
+
+  // copy a bundle's /web/assets/… path to the clipboard, flipping its link to
+  // "copied" for a moment
+  copyUrl(b) {
+    navigator.clipboard?.writeText(b.url);
+    this.copiedId.set(b.id);
+    setTimeout(() => {
+      if (this.copiedId() === b.id) this.copiedId.set(null);
+    }, 1400);
   }
 
   fmtSize(n) {
