@@ -2404,14 +2404,13 @@ a.dash-ci:hover {
 .brg-group:first-of-type {
   border-top: none;
 }
-/* name column — header label + the per-group cell (recessed, right-bordered) */
+/* name column — header label + the per-group cell (right-bordered) */
 .brg-name-head,
 .brg-name {
   display: flex;
   align-items: center;
   gap: 11px;
   padding: 12px 20px;
-  background: var(--l-bg);
   border-right: 1px solid var(--l-line);
 }
 .brg-name-head {
