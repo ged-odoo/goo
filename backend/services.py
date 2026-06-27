@@ -1201,3 +1201,86 @@ class AddonsService:
                 except (ValueError, TypeError):
                     return None
         return None
+
+
+# ─────────────────────────── Assets (asset bundles) ─────────────────────────
+
+
+class AssetsService:
+    """Asset-bundle attachments in a target db — the ir_attachment rows whose url
+    is under /web/assets/... (one per bundle/extension/version). Read via psql,
+    cached per-db with a short TTL. `generate` forces a pregeneration by piping a
+    call into `odoo-bin shell` (the command is assembled in the server layer, which
+    owns the odoo-bin invocation)."""
+
+    # the shell rolls its cursor back unless we commit, so the script commits itself
+    PREGEN_SCRIPT = "env['ir.qweb']._pregenerate_assets_bundles()\nenv.cr.commit()\n"
+
+    def __init__(self, io, cache):
+        self.io = io
+        self.cache = cache
+
+    def bundles(self, db, refresh=False):
+        """[{id, name, url, size, created}] for a db's asset bundles, ordered by
+        name. Empty if the db is unreadable or holds no odoo. refresh bypasses the
+        cache."""
+        if not _valid_db_name(db):
+            return []
+        if refresh:
+            self.cache.invalidate(db)
+        return self.cache.get(db, lambda: self._bundles(db))
+
+    def _bundles(self, db):
+        try:
+            r = self.io.run(
+                [
+                    "psql",
+                    "-d",
+                    db,
+                    "-tAc",
+                    "SELECT id, name, url, COALESCE(file_size, 0), create_date"
+                    " FROM ir_attachment WHERE url LIKE '/web/assets/%' ORDER BY name",
+                ],
+                timeout=10,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return []
+        if r.returncode != 0:
+            return []
+        rows = []
+        for line in r.stdout.splitlines():
+            parts = line.split("|", 4)
+            if len(parts) < 5:
+                continue
+            aid, name, url, size, created = parts
+            rows.append(
+                {
+                    "id": int(aid) if aid.isdigit() else aid,
+                    "name": name,
+                    "url": url,
+                    "size": int(size) if size.isdigit() else 0,
+                    "created": created or "",
+                }
+            )
+        return rows
+
+    def generate(self, cmd, db, timeout=900):
+        """Run a prepared `odoo-bin shell` command, piping the pregeneration call to
+        its stdin. Returns (ok, error); on success the cached bundle list for db is
+        dropped so the next read reflects the new attachments."""
+        try:
+            r = self.io.run(
+                cmd,
+                shell=True,
+                executable="/bin/bash",
+                input=self.PREGEN_SCRIPT,
+                timeout=timeout,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()
+            return False, (tail[-1] if tail else "asset generation failed")
+        self.cache.invalidate(db)
+        return True, None

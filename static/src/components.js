@@ -13,6 +13,7 @@ import { DatabasePlugin } from "./database_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { AddonsPlugin } from "./addons_plugin.js";
+import { AssetsPlugin } from "./assets_plugin.js";
 import { ReviewPlugin } from "./review_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
@@ -3262,20 +3263,93 @@ class TestsScreen extends Component {
 
 // ─────────────────────────── Assets screen ───────────────────────────
 
-// Inspect the contents of an Odoo assets bundle. Shell for now — just the
-// control panel; the bundle picker and the per-file breakdown come next.
+// Inspect a database's asset bundles: pick a db, list its /web/assets/* attachments
+// (ir_attachment in the db/filestore), and force a fresh pregeneration of them.
 class AssetsScreen extends Component {
   static template = xml`
     <section>
       <div class="panel">
         <div class="panel-top">
           <h1>Assets</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <select t-att-value="this.assets.selectedDb()" t-on-change="ev => this.assets.selectDb(ev.target.value)" title="database to inspect">
+            <option value="">Select a database…</option>
+            <option t-foreach="this.dbOptions" t-as="d" t-key="d" t-att-value="d" t-out="d"/>
+          </select>
+          <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.generate()">Generate asset bundles</button>
+          <span t-if="this.assets.selectedDb()" class="row-count" t-out="this.count"/>
         </div>
       </div>
-      <div class="content">
-        <div class="dim">Pick an assets bundle to analyze its contents.</div>
+      <div class="content br-fill">
+        <div t-att-class="{busy: this.assets.busy()}">
+          <div t-if="!this.assets.selectedDb()" class="dim br-empty">Select a database to list its asset bundles.</div>
+          <div t-elif="this.assets.error()" class="dim br-empty" t-out="'Failed to load: ' + this.assets.error()"/>
+          <div t-elif="this.assets.loading() and !this.rows().length" class="dim br-empty">Loading…</div>
+          <div t-elif="!this.rows().length" class="dim br-empty">No asset bundles in this database.</div>
+          <div t-else="" class="br-card">
+            <div class="brg-table">
+              <table class="br-table brg-flat">
+                <thead>
+                  <tr><th>Bundle</th><th>URL</th><th>Size</th><th>Created</th></tr>
+                </thead>
+                <tbody>
+                  <tr t-foreach="this.rows()" t-as="b" t-key="b.id">
+                    <td class="addon-name" t-out="b.name"/>
+                    <td class="dim"><div class="br-ellip" t-att-title="b.url" t-out="b.url"/></td>
+                    <td t-out="this.fmtSize(b.size)"/>
+                    <td class="dim" t-att-title="b.created" t-out="b.created ? this.cell(b.created) : '—'"/>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </section>`;
+
+  assets = plugin(AssetsPlugin);
+  db = plugin(DatabasePlugin);
+  refreshIcon = m(ICONS.refresh);
+
+  setup() {
+    this.db.load(); // populate the database selector
+    if (!this.assets.selectedDb()) {
+      const d = this.assets.defaultDb();
+      if (d) this.assets.selectDb(d);
+    }
+  }
+
+  get dbOptions() {
+    return this.db.databases().map((d) => d.name);
+  }
+
+  get stamp() {
+    if (this.assets.generating()) return "generating…";
+    if (this.assets.loading()) return "loading…";
+    return this.assets.at() ? `updated ${timeAgo(new Date(this.assets.at()).toISOString())}` : "";
+  }
+
+  get count() {
+    const n = this.assets.bundles().length;
+    return `${n} bundle${n === 1 ? "" : "s"}`;
+  }
+
+  rows() {
+    return this.assets.bundles();
+  }
+
+  cell(date) {
+    return timeAgo(date);
+  }
+
+  fmtSize(n) {
+    return formatBytes(n || 0);
+  }
 }
 
 // ─────────────────────────── Addons screen ───────────────────────────

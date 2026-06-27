@@ -687,5 +687,64 @@ class AddonsServiceTest(unittest.TestCase):
         self.assertEqual(services.AddonsService(io).modules([{"id": "x", "path": "/r"}]), [])
 
 
+class AssetsServiceTest(unittest.TestCase):
+    def test_bundles_parsed(self):
+        out = (
+            "560|web.assets_backend.min.js|/web/assets/13058d4/web.assets_backend.min.js|123456|2024-01-15 10:00:00\n"
+            "561|web.assets_frontend.min.css|/web/assets/8c4eafb/web.assets_frontend.min.css|7890|2024-01-16 11:00:00\n"
+        )
+        svc = services.AssetsService(FakeIO(runs={"ir_attachment": completed(stdout=out)}), TTLCache(ttl=0))
+        self.assertEqual(
+            svc.bundles("master"),
+            [
+                {
+                    "id": 560,
+                    "name": "web.assets_backend.min.js",
+                    "url": "/web/assets/13058d4/web.assets_backend.min.js",
+                    "size": 123456,
+                    "created": "2024-01-15 10:00:00",
+                },
+                {
+                    "id": 561,
+                    "name": "web.assets_frontend.min.css",
+                    "url": "/web/assets/8c4eafb/web.assets_frontend.min.css",
+                    "size": 7890,
+                    "created": "2024-01-16 11:00:00",
+                },
+            ],
+        )
+
+    def test_bundles_rejects_bad_db_name_without_psql(self):
+        io = FakeIO(runs={"ir_attachment": completed(stdout="x")})
+        svc = services.AssetsService(io, TTLCache(ttl=0))
+        self.assertEqual(svc.bundles("bad name!"), [])
+        self.assertEqual(io.run_calls, [])  # never reaches psql
+
+    def test_bundles_empty_on_unreadable_db(self):
+        svc = services.AssetsService(
+            FakeIO(runs={"ir_attachment": completed(returncode=2)}), TTLCache(ttl=0)
+        )
+        self.assertEqual(svc.bundles("master"), [])
+
+    def test_generate_commits_and_invalidates(self):
+        io = FakeIO(run_result=completed(returncode=0))
+        cache = TTLCache(ttl=600)
+        svc = services.AssetsService(io, cache)
+        ok, error = svc.generate("odoo-bin shell -d master", "master")
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        # the pregeneration call + an explicit commit are piped to the shell's stdin
+        self.assertIn("_pregenerate_assets_bundles", svc.PREGEN_SCRIPT)
+        self.assertIn("env.cr.commit()", svc.PREGEN_SCRIPT)
+
+    def test_generate_reports_failure(self):
+        svc = services.AssetsService(
+            FakeIO(run_result=completed(returncode=1, stderr="boom: no module\n")), TTLCache(ttl=0)
+        )
+        ok, error = svc.generate("odoo-bin shell -d master", "master")
+        self.assertFalse(ok)
+        self.assertEqual(error, "boom: no module")
+
+
 if __name__ == "__main__":
     unittest.main()

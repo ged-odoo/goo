@@ -464,6 +464,46 @@ def build_odoo_cmd(config):
     return cmd, db, is_new
 
 
+def build_shell_cmd(config, db):
+    """Build an `odoo-bin shell -d <db>` command (Python read from its stdin) for a
+    one-off task like pregenerating assets. Mirrors build_odoo_cmd's venv prefix and
+    addons-path, but spans ALL configured repos (not just start.repos) so whatever
+    is installed in <db> can load. Raises ValueError on invalid config/db name."""
+    if not services._valid_db_name(db):
+        raise ValueError("invalid database name")
+    repo_map = {
+        r["id"]: {**r, "path": os.path.expanduser(r["path"])}
+        for r in config.get("repos", [])
+        if isinstance(r, dict) and "id" in r and "path" in r
+    }
+    community = repo_map.get("community")
+    if not community:
+        raise ValueError("no 'community' repo defined in repos")
+    community_path = community["path"]
+    addons_parts = [
+        "addons" if rid == "community" else os.path.relpath(repo["path"], community_path)
+        for rid, repo in repo_map.items()
+    ]
+    addons_parts.append(ADDONS_DIR)  # goo's own addons
+    addons_path = ",".join(addons_parts)
+
+    db_user = config.get("db_user", "odoo")
+    db_password = config.get("db_password", "odoo")
+    venv_activate = config.get("venv_activate", "")
+    start_cmd = config.get("start_cmd") or f"cd {community_path} && ./odoo-bin"
+
+    parts = []
+    if venv_activate:
+        parts.append(venv_activate)
+    parts.append(start_cmd)
+    cmd = " && ".join(parts)
+    cmd += (
+        f" shell -d {db} --no-http --no-database-list"
+        f" -r {db_user} -w {db_password} --addons-path {addons_path} --log-level=warn"
+    )
+    return cmd
+
+
 # =============================================================================
 # WebSocket helpers (no external deps — only stdlib hashlib/base64/struct)
 # =============================================================================
@@ -777,6 +817,7 @@ DATABASE = services.DatabaseService(effects, TTLCache(60))
 # routes the fetch/rebase progress phases to the browser event log
 GIT = services.GitService(effects, notify=BUS.publish_event)
 ADDONS = services.AddonsService(effects)
+ASSETS = services.AssetsService(effects, TTLCache(30))
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -928,6 +969,24 @@ class Handler(BaseHTTPRequestHandler):
             for m in mods:
                 m["state"] = state.get(m["name"])
             self._send_json(200, {"ok": True, "modules": mods, "db": db})
+        elif path == "/api/assets":
+            body, err = self._read_json()
+            db = (body or {}).get("db")
+            if err or not isinstance(db, str) or not db:
+                return self._send_json(400, {"ok": False, "error": "missing db"})
+            bundles = ASSETS.bundles(db, refresh=bool((body or {}).get("refresh")))
+            self._send_json(200, {"ok": True, "db": db, "bundles": bundles})
+        elif path == "/api/assets/generate":
+            body, err = self._read_json()
+            db = (body or {}).get("db")
+            if err or not isinstance(db, str) or not db:
+                return self._send_json(400, {"ok": False, "error": "missing db"})
+            try:
+                cmd = build_shell_cmd(body, db)
+            except ValueError as e:
+                return self._send_json(400, {"ok": False, "error": str(e)})
+            ok, error = ASSETS.generate(cmd, db)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/branches/delete":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")
