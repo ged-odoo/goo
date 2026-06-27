@@ -325,7 +325,11 @@ class DirtyBadge extends Component {
   props = props({ path: t.string(), repo: t.string() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(new CustomEvent("dirty-menu", { detail: { rect, path: this.props.path, repo: this.props.repo } }));
+    appBus.dispatchEvent(
+      new CustomEvent("dirty-menu", {
+        detail: { rect, path: this.props.path, repo: this.props.repo },
+      }),
+    );
   }
 }
 
@@ -575,8 +579,14 @@ class DashboardScreen extends Component {
     const groups = this.code.groups();
     const repoMap = this.repoMap;
     return (tgt.config || [])
-      .filter(({ repo, branch }) => !BASE_BRANCH_RE.test(branch) && repoMap[repo]?.branches.has(branch))
-      .map(({ repo, branch }) => ({ branch, path: groups.pathByRepo[repo], github: groups.githubByRepo[repo] }))
+      .filter(
+        ({ repo, branch }) => !BASE_BRANCH_RE.test(branch) && repoMap[repo]?.branches.has(branch),
+      )
+      .map(({ repo, branch }) => ({
+        branch,
+        path: groups.pathByRepo[repo],
+        github: groups.githubByRepo[repo],
+      }))
       .filter((x) => x.path && x.github);
   }
 
@@ -620,8 +630,7 @@ class DashboardScreen extends Component {
   async menuDropDb(tgt) {
     this.menuId.set("");
     if (!this.targetDbExists(tgt)) return;
-    const stopping =
-      this.db.activeDb === tgt.db && this.server.status().state !== "stopped";
+    const stopping = this.db.activeDb === tgt.db && this.server.status().state !== "stopped";
     const res = await this.dialogs.open({
       title: `Drop "${tgt.db}"?`,
       message: stopping
@@ -848,7 +857,6 @@ class DashboardScreen extends Component {
     appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
   }
 
-
   get stamp() {
     if (this.code.loading()) return "refreshing…";
     return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
@@ -978,7 +986,8 @@ class DashboardScreen extends Component {
 
   rebaseAllTitle() {
     const n = this.rebasableRepos.length;
-    if (!n) return "nothing to rebase — repositories are dirty, missing, or have no canonical remote";
+    if (!n)
+      return "nothing to rebase — repositories are dirty, missing, or have no canonical remote";
     return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
   }
 
@@ -1513,14 +1522,21 @@ class DatabasesScreen extends Component {
     if (!res) return;
     const error = await this.db.drop(d.name);
     if (error)
-      await this.dialogs.open({ title: "Drop failed", message: error, okLabel: "OK", cancelLabel: null });
+      await this.dialogs.open({
+        title: "Drop failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null,
+      });
   }
 
   // valid db name: letters/digits then letters/digits/._- (mirrors the backend)
   _badName(name) {
     if (!name) return "a name is required";
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return "use letters, digits, . _ - (not starting with -)";
-    if (this.db.databases().some((x) => x.name === name)) return `a database named "${name}" already exists`;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
+      return "use letters, digits, . _ - (not starting with -)";
+    if (this.db.databases().some((x) => x.name === name))
+      return `a database named "${name}" already exists`;
     return "";
   }
 
@@ -1534,7 +1550,13 @@ class DatabasesScreen extends Component {
         ? "This database is in use by the running server. goo will stop the server to clone it, then restart it."
         : "",
       fields: [
-        { key: "target", type: "text", label: "New database name", value: `${d.name}-copy`, placeholder: "new database name" },
+        {
+          key: "target",
+          type: "text",
+          label: "New database name",
+          value: `${d.name}-copy`,
+          placeholder: "new database name",
+        },
       ],
       okLabel: "Clone",
       validate: (v) => this._badName((v.target || "").trim()),
@@ -1544,14 +1566,27 @@ class DatabasesScreen extends Component {
     // active db (the clone needs exclusive access), then resumes it
     const error = await this.db.cloneStoppingServer(d.name, res.target.trim());
     if (error)
-      await this.dialogs.open({ title: "Clone failed", message: error, okLabel: "OK", cancelLabel: null });
+      await this.dialogs.open({
+        title: "Clone failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null,
+      });
   }
 
   // ask for a new name, then rename; report any failure in a dialog
   async renameDb(d) {
     const res = await this.dialogs.open({
       title: `Rename "${d.name}"`,
-      fields: [{ key: "name", type: "text", label: "New name", value: d.name, placeholder: "new database name" }],
+      fields: [
+        {
+          key: "name",
+          type: "text",
+          label: "New name",
+          value: d.name,
+          placeholder: "new database name",
+        },
+      ],
       okLabel: "Rename",
       validate: (v) => {
         const t = (v.name || "").trim();
@@ -1562,7 +1597,12 @@ class DatabasesScreen extends Component {
     if (!res) return;
     const error = await this.db.rename(d.name, res.name.trim());
     if (error)
-      await this.dialogs.open({ title: "Rename failed", message: error, okLabel: "OK", cancelLabel: null });
+      await this.dialogs.open({
+        title: "Rename failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null,
+      });
   }
 }
 
@@ -1589,7 +1629,13 @@ async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, r
     },
     fields: [
       { key: "name", type: "text", label: "Name", value: branch, placeholder: "target name" },
-      { key: "config", type: "text", label: "Config", value: configStr, placeholder: "community:branch,enterprise:branch" },
+      {
+        key: "config",
+        type: "text",
+        label: "Config",
+        value: configStr,
+        placeholder: "community:branch,enterprise:branch",
+      },
       { key: "db", type: "text", label: "Database", value: branch, placeholder: "database name" },
       { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
@@ -1667,7 +1713,12 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
           };
         },
       },
-      { key: "config", type: "text", label: "Config", placeholder: "community:master,enterprise:master" },
+      {
+        key: "config",
+        type: "text",
+        label: "Config",
+        placeholder: "community:master,enterprise:master",
+      },
       { key: "db", type: "text", label: "Database", placeholder: "database name" },
       {
         key: "cloneDb",
@@ -1729,10 +1780,18 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   const branches = (tgt.config || [])
     .map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) }))
     .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
-    .map((x) => ({ repo: x.repo, branch: x.branch, path: groups.pathByRepo[x.repo], remote: !!x.b.remote }));
+    .map((x) => ({
+      repo: x.repo,
+      branch: x.branch,
+      path: groups.pathByRepo[x.repo],
+      remote: !!x.b.remote,
+    }));
   // open PRs for the target's branches
   const prs = (tgt.config || [])
-    .map(({ repo, branch }) => ({ pr: groups.prIndex[`${repo}:${branch}`], github: groups.githubByRepo[repo] }))
+    .map(({ repo, branch }) => ({
+      pr: groups.prIndex[`${repo}:${branch}`],
+      github: groups.githubByRepo[repo],
+    }))
     .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
     .map((x) => ({ github: x.github, number: x.pr.number }));
 
@@ -1761,7 +1820,12 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   // only offer to drop the db if it actually exists (a never-run target has none)
   const dbExists = tgt.db && db.databases().some((d) => d.name === tgt.db);
   if (dbExists)
-    fields.push({ key: "dropDb", type: "checkbox", label: `Drop database "${tgt.db}"`, value: false });
+    fields.push({
+      key: "dropDb",
+      type: "checkbox",
+      label: `Drop database "${tgt.db}"`,
+      value: false,
+    });
 
   const res = await dialogs.open({
     title: `Delete "${tgt.name}"?`,
@@ -1901,7 +1965,8 @@ class TargetsScreen extends Component {
   // check disambiguates overlapping targets (e.g. master vs master(e)).
   isActive(tgt) {
     const s = this.server.status();
-    const id = s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    const id =
+      s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
     return tgt.id === id;
   }
 
@@ -2047,20 +2112,30 @@ class TargetsScreen extends Component {
       (tgt.config || [])
         .map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) }))
         .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
-        .map((x) => ({ repo: x.repo, branch: x.branch, path: groups.pathByRepo[x.repo], remote: !!x.b.remote })),
+        .map((x) => ({
+          repo: x.repo,
+          branch: x.branch,
+          path: groups.pathByRepo[x.repo],
+          remote: !!x.b.remote,
+        })),
     );
 
     // aggregate open PRs across all selected targets
     const allPrs = targets.flatMap((tgt) =>
       (tgt.config || [])
-        .map(({ repo, branch }) => ({ pr: groups.prIndex[`${repo}:${branch}`], github: groups.githubByRepo[repo] }))
+        .map(({ repo, branch }) => ({
+          pr: groups.prIndex[`${repo}:${branch}`],
+          github: groups.githubByRepo[repo],
+        }))
         .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
         .map((x) => ({ github: x.github, number: x.pr.number })),
     );
 
     // aggregate existing databases across all selected targets
     const existingDbs = this.db.databases().map((d) => d.name);
-    const allDbs = [...new Set(targets.map((t) => t.db).filter((db) => db && existingDbs.includes(db)))];
+    const allDbs = [
+      ...new Set(targets.map((t) => t.db).filter((db) => db && existingDbs.includes(db))),
+    ];
 
     const n = targets.length;
     const fields = [];
@@ -2072,7 +2147,12 @@ class TargetsScreen extends Component {
         value: false,
       });
     if (allBranches.some((b) => b.remote))
-      fields.push({ key: "delRemote", type: "checkbox", label: "…also on the remote (odoo-dev)", value: false });
+      fields.push({
+        key: "delRemote",
+        type: "checkbox",
+        label: "…also on the remote (odoo-dev)",
+        value: false,
+      });
     if (allPrs.length)
       fields.push({
         key: "closePrs",
@@ -2100,11 +2180,18 @@ class TargetsScreen extends Component {
     if (res.closePrs) for (const p of allPrs) await this.code.closePrNoConfirm(p.github, p.number);
     if (res.delBranches)
       for (const b of allBranches)
-        await this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
+        await this.code.deleteBranchNoConfirm(
+          b.branch,
+          b.repo,
+          b.path,
+          !!res.delRemote && b.remote,
+        );
     if (res.dropDbs) for (const db of allDbs) await this.db.drop(db);
 
     const deletedIds = new Set(targets.map((t) => t.id));
-    this.config.updateConfig({ targets: this.config.config.targets.filter((t) => !deletedIds.has(t.id)) });
+    this.config.updateConfig({
+      targets: this.config.config.targets.filter((t) => !deletedIds.has(t.id)),
+    });
     this.selected.set(new Set());
   }
 
@@ -2209,7 +2296,13 @@ class TargetsScreen extends Component {
     const res = await this.dialogs.open({
       title: `Duplicate "${tgt.name}"`,
       fields: [
-        { key: "branch", type: "text", label: "Branch name", value: first, placeholder: "branch (applied to all repos)" },
+        {
+          key: "branch",
+          type: "text",
+          label: "Branch name",
+          value: first,
+          placeholder: "branch (applied to all repos)",
+        },
         { key: "create", type: "checkbox", label: "Create branches", value: true },
       ],
     });
@@ -2411,9 +2504,7 @@ class BranchesScreen extends Component {
   }
 
   toggleSelectAll() {
-    this.selected.set(
-      this.allSelected ? new Set() : new Set(this.groups().map((g) => g.name)),
-    );
+    this.selected.set(this.allSelected ? new Set() : new Set(this.groups().map((g) => g.name)));
   }
 
   // selected branch groups that are still visible (a filter may hide some)
@@ -2438,8 +2529,7 @@ class BranchesScreen extends Component {
     const skipped = total - rows.length;
     const prs = rows.filter((r) => r.pr && r.pr.state === "OPEN" && r.github);
     const remoteRows = rows.filter((r) => r.remote && !r.base);
-    const what =
-      groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
+    const what = groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
     const fields = [];
     if (remoteRows.length)
       fields.push({
@@ -2467,7 +2557,12 @@ class BranchesScreen extends Component {
     if (!res) return;
     if (res.closePrs) for (const r of prs) await this.code.closePrNoConfirm(r.github, r.pr.number);
     for (const r of rows)
-      await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, !!res.delRemote && r.remote && !r.base);
+      await this.code.deleteBranchNoConfirm(
+        r.branch,
+        r.repo,
+        r.path,
+        !!res.delRemote && r.remote && !r.base,
+      );
     this.selected.set(new Set());
   }
 
@@ -2483,10 +2578,26 @@ class BranchesScreen extends Component {
     );
     const fields = [];
     if (canRemote)
-      fields.push({ key: "delRemote", type: "checkbox", label: "Also delete it on the remote (odoo-dev)", value: false });
-    if (hasPr) fields.push({ key: "closePr", type: "checkbox", label: `Close PR #${r.pr.number}`, value: true });
+      fields.push({
+        key: "delRemote",
+        type: "checkbox",
+        label: "Also delete it on the remote (odoo-dev)",
+        value: false,
+      });
+    if (hasPr)
+      fields.push({
+        key: "closePr",
+        type: "checkbox",
+        label: `Close PR #${r.pr.number}`,
+        value: true,
+      });
     for (const t of targets)
-      fields.push({ key: `tgt:${t.id}`, type: "checkbox", label: `Delete target "${t.name}"`, value: false });
+      fields.push({
+        key: `tgt:${t.id}`,
+        type: "checkbox",
+        label: `Delete target "${t.name}"`,
+        value: false,
+      });
 
     const res = await this.dialogs.open({
       title: `Delete "${r.branch}"?`,
@@ -2503,7 +2614,9 @@ class BranchesScreen extends Component {
     if (drop.length) {
       const ids = new Set(drop.map((t) => t.id));
       for (const t of drop) this.code.eventLog.add(`deleting target ${t.name}`);
-      this.config.updateConfig({ targets: this.config.config.targets.filter((t) => !ids.has(t.id)) });
+      this.config.updateConfig({
+        targets: this.config.config.targets.filter((t) => !ids.has(t.id)),
+      });
     }
   }
 
@@ -2552,7 +2665,11 @@ class BranchesScreen extends Component {
     if (!r.base && r.remote && r.github && !r.pr)
       actions.push({ label: "Open PR", onClick: () => this.openPr(r) });
     if (r.pr && r.github && r.pr.state === "OPEN")
-      actions.push({ label: "Close PR", danger: true, onClick: () => this.code.closePr(r.github, r.pr.number) });
+      actions.push({
+        label: "Close PR",
+        danger: true,
+        onClick: () => this.code.closePr(r.github, r.pr.number),
+      });
     const coBlocked = this.checkoutBlocked(r);
     actions.push({
       label: "Checkout",

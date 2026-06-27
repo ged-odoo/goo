@@ -1964,7 +1964,9 @@ a.dash-ci:hover {
   padding: 1px 5px;
   cursor: pointer;
   vertical-align: middle;
-  transition: background 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
 }
 .dirty-badge:hover {
   background: color-mix(in oklch, var(--l-amber) 22%, transparent);

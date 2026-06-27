@@ -169,7 +169,8 @@ export class CodePlugin extends Plugin {
       // keep the instant-paint cache in step, so a reload right after doesn't flash
       // the pre-checkout branch for the repos we just refreshed
       const cache = this._cache();
-      if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos: merged }));
+      if (cache)
+        localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos: merged }));
     } catch (e) {
       this.error.set(e.message);
     }
@@ -459,7 +460,13 @@ export class CodePlugin extends Plugin {
       await this.load(true);
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
-      this.dialogs.open({ title: "WIP commit failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+      this.dialogs.open({
+        title: "WIP commit failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
     } finally {
       this.busy.set(false);
     }
@@ -468,7 +475,8 @@ export class CodePlugin extends Plugin {
   async discard(path, repo) {
     const ok = await this.dialogs.open({
       title: `Discard changes in ${repo}?`,
-      message: "This permanently removes all uncommitted changes, including untracked files. This cannot be undone.",
+      message:
+        "This permanently removes all uncommitted changes, including untracked files. This cannot be undone.",
       okLabel: "Discard changes",
     });
     if (!ok) return;
@@ -479,7 +487,13 @@ export class CodePlugin extends Plugin {
       await this.load(true);
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
-      this.dialogs.open({ title: "Discard changes failed", message: e.message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+      this.dialogs.open({
+        title: "Discard changes failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
     } finally {
       this.busy.set(false);
     }

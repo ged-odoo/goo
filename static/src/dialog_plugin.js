@@ -143,7 +143,8 @@ export class Dialog extends Component {
 
   setup() {
     const vals = {};
-    for (const f of this.spec.fields || []) vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
+    for (const f of this.spec.fields || [])
+      vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
     this.values.set(vals);
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
