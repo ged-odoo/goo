@@ -410,13 +410,19 @@ export class CodePlugin extends Plugin {
   // plugin itself via the DialogPlugin, no component involvement needed.
   // open a repo's working directory in the configured editor (default "code");
   // no git mutation, so no busy/reload — just fire the launch and log it
-  async openEditor(path, repo) {
+  openEditor(path, repo) {
+    return this.openEditorPaths([path], repo);
+  }
+
+  // open one or more repo folders in the configured editor — passing several dirs
+  // opens them in a single window (`code repo1 repo2`). `label` names them in logs.
+  async openEditorPaths(paths, label) {
     const editor = (this.config.config.editor || "code").trim();
-    this.eventLog.add(`opening ${repo} in ${editor}`);
+    this.eventLog.add(`opening ${label} in ${editor}`);
     try {
-      await postJSON("/api/open-editor", { editor, path });
+      await postJSON("/api/open-editor", { editor, paths });
     } catch (e) {
-      this.eventLog.add(`open with editor failed (${repo}): ${e.message}`, "", "error");
+      this.eventLog.add(`open with editor failed (${label}): ${e.message}`, "", "error");
       this.dialogs.open({
         title: "Could not open the editor",
         message: e.message,

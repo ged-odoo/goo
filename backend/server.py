@@ -160,23 +160,29 @@ def kill_port(port):
         pass
 
 
-def open_in_editor(editor, path):
-    """Launch the configured editor (e.g. `code`) on a repo directory, detached so
-    it outlives goo and isn't part of its process group. The editor string may
-    carry flags (`code --reuse-window`), so it's run through bash with the path
-    quoted. Returns (ok, error).
+def open_in_editor(editor, paths):
+    """Launch the configured editor (e.g. `code`) on one or more repo directories,
+    detached so it outlives goo and isn't part of its process group. The editor
+    string may carry flags (`code --reuse-window`), so it's run through bash with
+    each path quoted; passing several dirs (`code repo1 repo2`) opens them in one
+    window. `paths` may be a single string or a list. Returns (ok, error).
 
     A missing/failing editor command exits quickly with a non-zero code — we wait
     briefly to catch that and return its stderr (so the UI shows why it failed,
     e.g. `code: command not found`). A GUI editor that keeps running past the
     grace period is taken as a successful launch."""
     editor = (editor or "").strip()
-    path = os.path.expanduser(path or "")
+    if isinstance(paths, str):
+        paths = [paths]
+    dirs = [os.path.expanduser(p) for p in (paths or []) if p]
     if not editor:
         return False, "no editor configured"
-    if not os.path.isdir(path):
-        return False, f"not a directory: {path}"
-    cmd = f"{editor} {shlex.quote(path)}"
+    if not dirs:
+        return False, "no path"
+    for path in dirs:
+        if not os.path.isdir(path):
+            return False, f"not a directory: {path}"
+    cmd = f"{editor} {' '.join(shlex.quote(p) for p in dirs)}"
     effects.trace("run", cmd)
     try:
         proc = subprocess.Popen(
@@ -948,10 +954,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/open-editor":
             body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            if err or not repo_path:
+            paths = (body or {}).get("paths") or (body or {}).get("path")
+            if err or not paths:
                 return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = open_in_editor((body or {}).get("editor"), repo_path)
+            ok, error = open_in_editor((body or {}).get("editor"), paths)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/goo/update":
             global GOO_UPDATE

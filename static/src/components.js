@@ -431,9 +431,14 @@ class DashboardScreen extends Component {
                 </div>
               </div>
             </div>
-            <button class="dash-rebase dash-repos-all" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-              <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
-            </button>
+            <div class="dash-repos-actions">
+              <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
+                <t t-out="this.codeIcon"/>Edit
+              </button>
+              <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
+              </button>
+            </div>
           </div>
 
           <!-- build targets — a responsive grid, one self-contained card per target -->
@@ -522,6 +527,7 @@ class DashboardScreen extends Component {
   eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
+  codeIcon = m(ICONS.code); // "Edit" (open all repos in the editor)
   kebabIcon = m(ICONS.kebab);
   pushIcon = m(ICONS.push);
   terminalIcon = m(ICONS.terminal);
@@ -983,6 +989,24 @@ class DashboardScreen extends Component {
       path: r.path,
     }));
     if (repos.length) await this.code.rebase(repos);
+  }
+
+  // local checkout folders of every shown repo, for "Edit" (open them all at once)
+  get editorPaths() {
+    return this.favRepos.map((r) => r.path).filter(Boolean);
+  }
+
+  editAllTitle() {
+    const n = this.editorPaths.length;
+    if (!n) return "no local repository folders to open";
+    const editor = (this.config.config.editor || "code").trim();
+    return `open ${n} repositor${n === 1 ? "y" : "ies"} in ${editor}`;
+  }
+
+  // open every shown repo's folder in the configured editor, all in one window
+  openAllEditors() {
+    const paths = this.editorPaths;
+    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
   }
 
   // favorite targets only, in the order defined in the Targets tab
