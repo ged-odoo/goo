@@ -461,7 +461,7 @@ export class CodePlugin extends Plugin {
   // failure and the error is surfaced in a (scrollable) dialog — opened by the
   // plugin itself via the DialogPlugin, no component involvement needed.
   // open a repo's working directory in the configured editor (default "code");
-  // no git mutation, so no busy/reload — just fire the launch and log it
+  // no git mutation, so no busy/reload — just fire the launch (only failures log)
   openEditor(path, repo) {
     return this.openEditorPaths([path], repo);
   }
@@ -470,7 +470,6 @@ export class CodePlugin extends Plugin {
   // opens them in a single window (`code repo1 repo2`). `label` names them in logs.
   async openEditorPaths(paths, label) {
     const editor = (this.config.config.editor || "code").trim();
-    this.eventLog.add(`opening ${label} in ${editor}`);
     try {
       await postJSON("/api/open-editor", { editor, paths });
     } catch (e) {
