@@ -1012,17 +1012,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "remote_error": remote_error})
             else:
                 self._send_json(400, {"ok": False, "error": error})
-        elif path == "/api/code/branch/create":
+        elif path == "/api/code/branches/create":
             body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            name = (body or {}).get("name")
-            start_point = (body or {}).get("start_point")
-            if err or not repo_path or not name or not start_point:
-                return self._send_json(
-                    400, {"ok": False, "error": "missing path, name or start point"}
-                )
-            ok, error = GIT.create_branch(repo_path, name, start_point)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+            branches = (body or {}).get("branches")
+            if err or not isinstance(branches, list):
+                return self._send_json(400, {"ok": False, "error": "missing branches list"})
+
+            # create each branch in parallel — independent working trees, so a
+            # multi-repo target's branches are created in one create's time, not the sum
+            def mk(b):
+                ok, error = GIT.create_branch(b.get("path"), b.get("name"), b.get("start_point"))
+                return {"name": b.get("name"), "ok": ok, "error": error}
+
+            if branches:
+                with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
+                    results = list(pool.map(mk, branches))
+            else:
+                results = []
+            self._send_json(200, {"ok": True, "results": results})
         elif path == "/api/open-editor":
             body, err = self._read_json()
             paths = (body or {}).get("paths") or (body or {}).get("path")

@@ -1749,10 +1749,13 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
     const tpl = existingTargets.find((t) => t.id === res.template);
     const baseBranchByRepo = Object.fromEntries((tpl?.config || []).map((c) => [c.repo, c.branch]));
     const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
-    for (const c of target.config) {
-      const path = pathByRepo[c.repo];
-      if (path) await code.createBranch(path, c.branch, baseBranchByRepo[c.repo]);
-    }
+    await code.createBranches(
+      target.config.map((c) => ({
+        path: pathByRepo[c.repo],
+        name: c.branch,
+        startPoint: baseBranchByRepo[c.repo],
+      })),
+    );
   }
   // clone the chosen source database into the target's database name (skip when it
   // would clone onto itself — the destination already exists in that case). When the
@@ -2326,10 +2329,13 @@ class TargetsScreen extends Component {
     this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
     if (res.create) {
       const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-      for (const c of tgt.config || []) {
-        const path = pathByRepo[c.repo];
-        if (path) await this.code.createBranch(path, b, c.branch); // start from the base
-      }
+      await this.code.createBranches(
+        (tgt.config || []).map((c) => ({
+          path: pathByRepo[c.repo],
+          name: b,
+          startPoint: c.branch, // start from the base
+        })),
+      );
     }
   }
 

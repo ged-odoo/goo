@@ -385,13 +385,42 @@ export class CodePlugin extends Plugin {
     );
   }
 
-  // create a new branch at <startPoint> without checking it out, then reload
+  // create one or more branches in parallel (each at its own start point) without
+  // checking any out, then re-read branch state for just the affected repos. Creating
+  // a local branch never touches PRs/runbot/mergebot, so we skip that whole refresh
+  // (the slow part) and never run the per-branch creates back-to-back.
+  // specs: [{ path, name, startPoint }]
+  async createBranches(specs) {
+    const repoByPath = new Map(this.config.config.repos.map((r) => [r.path, r]));
+    const branches = (specs || [])
+      .filter((s) => s.path && s.name && repoByPath.has(s.path))
+      .map((s) => ({ path: s.path, name: s.name, start_point: s.startPoint }));
+    if (!branches.length) return;
+    this.busy.set(true);
+    try {
+      for (const b of branches) {
+        const repo = repoByPath.get(b.path);
+        this.eventLog.add(`creating branch ${b.name}${repo ? ` (${repo.id})` : ""}`);
+      }
+      const res = await postJSON("/api/code/branches/create", { branches });
+      const failed = (res.results || []).filter((r) => !r.ok);
+      if (failed.length)
+        this._errorDialog(
+          "Create branch failed",
+          failed.map((r) => `${r.name}: ${r.error}`).join("\n"),
+        );
+      const ids = new Set(branches.map((b) => repoByPath.get(b.path).id));
+      await this.refreshBranches(ids);
+    } catch (e) {
+      this._errorDialog("Create branch failed", e.message);
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // create a single branch at <startPoint> without checking it out
   createBranch(path, name, startPoint) {
-    const repo = this.config.config.repos.find((r) => r.path === path);
-    return this._mutate("Create branch", async () => {
-      this.eventLog.add(`creating branch ${name}${repo ? ` (${repo.id})` : ""}`);
-      await postJSON("/api/code/branch/create", { path, name, start_point: startPoint });
-    });
+    return this.createBranches([{ path, name, startPoint }]);
   }
 
   // optimistically mark a PR closed in the view, no reload (which would re-fetch
