@@ -637,11 +637,11 @@ class OdooManager:
                 else "server"
             )
             self.started_at = time.time()
-            self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
             if is_new:
                 self.bus.publish_log(
                     f"{TAG} database '{db}' not initialized, applying on_create_args"
                 )
+            self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
 
             with self._raw_lock:
                 self._raw_buf.clear()
