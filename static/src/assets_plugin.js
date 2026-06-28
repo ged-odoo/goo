@@ -111,7 +111,8 @@ export class AssetsPlugin extends Plugin {
     this.analyzeError.set("");
     this.bundleData.set({ name: bundle, js: [], css: [], xml: [] }); // marks "open" while loading
     try {
-      const data = await postJSON("/api/assets/breakdown", { db, bundle });
+      const filestore = this.config.config.filestore || "";
+      const data = await postJSON("/api/assets/breakdown", { db, bundle, filestore });
       this.bundleData.set({ name: bundle, js: data.js, css: data.css, xml: data.xml });
     } catch (e) {
       this.analyzeError.set(e.message);

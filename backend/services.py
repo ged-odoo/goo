@@ -1291,14 +1291,16 @@ class AssetsService:
     _MARKER = re.compile(r"/\* (/\S+?) \*/")
     _TPL = re.compile(r'register(?:Template|TemplateExtension)\("([^"]+)"')
     _TPL_SPLIT = re.compile(r"/\*{6,}")
-    DATA_DIR = os.path.expanduser("~/.local/share/Odoo")  # odoo's default data_dir
+    # fallback when the client sends no filestore root (the config always has one)
+    DEFAULT_FILESTORE = os.path.expanduser("~/.local/share/Odoo/filestore")
 
-    def breakdown(self, db, bundle, data_dir=None):
+    def breakdown(self, db, bundle, filestore=None):
         """Per-file minified-size breakdown of a bundle, read straight from its
         stored attachments — the actual shipped bytes, so it's version-correct and
-        needs no odoo process. Slices the bundle on the per-file "/* /path */"
-        markers and the XML-templates banner. Returns (data, error); data is
-        {js: [[path, bytes], …], css: […], xml: [[template, bytes], …]}, None on
+        needs no odoo process. `filestore` is the configured filestore root (a db's
+        files live in <filestore>/<db>/<store_fname>). Slices the bundle on the
+        per-file "/* /path */" markers and the XML-templates banner. Returns
+        (data, error); data is {js: [[path, bytes], …], css: […], xml: […]}, None on
         failure (e.g. the bundle was never generated to disk)."""
         if not _valid_db_name(db):
             return None, "invalid database name"
@@ -1307,9 +1309,9 @@ class AssetsService:
         rows = self._bundle_files(db, bundle)
         if rows is None:
             return None, "could not read the database"
-        data_dir = data_dir or self.DATA_DIR
-        js_text = self._asset_text(db, data_dir, rows.get("min.js"))
-        css_text = self._asset_text(db, data_dir, rows.get("min.css"))
+        filestore = filestore or self.DEFAULT_FILESTORE
+        js_text = self._asset_text(db, filestore, rows.get("min.js"))
+        css_text = self._asset_text(db, filestore, rows.get("min.css"))
         if js_text is None and css_text is None:
             return None, 'bundle not generated yet — run "Generate asset bundles" first'
         parts = self._TPL_SPLIT.split(js_text or "", maxsplit=1)
@@ -1351,15 +1353,17 @@ class AssetsService:
                     out[ext] = (store_fname, datas)
         return out
 
-    def _asset_text(self, db, data_dir, row):
-        """One stored attachment's text — from its filestore file, else its inline
-        db_datas. None when absent/unreadable."""
+    def _asset_text(self, db, filestore, row):
+        """One stored attachment's text — from its filestore file
+        (<filestore>/<db>/<store_fname>), else its inline db_datas. None when
+        absent/unreadable."""
         if not row:
             return None
         store_fname, datas = row
         if store_fname:
+            path = os.path.join(os.path.expanduser(filestore), db, store_fname)
             try:
-                return self.io.read_text(os.path.join(data_dir, "filestore", db, store_fname))
+                return self.io.read_text(path)
             except ValueError:  # incl. UnicodeDecodeError on a non-utf8 file
                 return None
         if datas:

@@ -754,12 +754,12 @@ class AssetsServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={"ir_attachment": completed(stdout=psql)},
             files={
-                "/dd/filestore/db1/ab/abc": js,
-                "/dd/filestore/db1/cd/cde": css,
+                "/fs/db1/ab/abc": js,  # <filestore>/<db>/<store_fname>
+                "/fs/db1/cd/cde": css,
             },
         )
         data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown(
-            "db1", "web.assets_x", data_dir="/dd"
+            "db1", "web.assets_x", filestore="/fs"
         )
         self.assertIsNone(err)
         self.assertEqual(data["js"], [["/a/b.js", 4], ["/c/d.js", 2]])

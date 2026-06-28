@@ -993,9 +993,9 @@ class Handler(BaseHTTPRequestHandler):
             bundle = (body or {}).get("bundle")
             if err or not isinstance(db, str) or not db or not isinstance(bundle, str) or not bundle:
                 return self._send_json(400, {"ok": False, "error": "missing db or bundle"})
-            # read straight from the stored bundle attachment — no odoo process; an
-            # optional data_dir overrides odoo's default filestore location
-            data, error = ASSETS.breakdown(db, bundle, (body or {}).get("data_dir"))
+            # read straight from the stored bundle attachment — no odoo process; the
+            # configured filestore root locates <filestore>/<db>/<store_fname>
+            data, error = ASSETS.breakdown(db, bundle, _filestore(body))
             if data is None:
                 return self._send_json(400, {"ok": False, "error": error})
             self._send_json(200, {"ok": True, "bundle": bundle, **data})
