@@ -93,9 +93,10 @@ class DialogContainer extends Component {
 
 // A form/message modal. Spec: { title, message?, okLabel?, cancelLabel?, cls?,
 // validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox"|
-// "select", label, value, placeholder?, options?, onChange? }] }. A non-empty
-// validate() keeps the dialog open and shows the message. cancelLabel: null
-// hides the Discard button (e.g. for a plain message/alert). Closes itself by
+// "select", label, value, placeholder?, options?, onChange? }] }. validate() runs
+// live: a non-empty result disables the OK button (and, once the user has edited a
+// field, shows the message), so an invalid form can't be submitted. cancelLabel:
+// null hides the Discard button (e.g. for a plain message/alert). Closes itself by
 // calling the `done(result)` prop injected by openComponent().
 
 export class Dialog extends Component {
@@ -126,8 +127,8 @@ export class Dialog extends Component {
           </div>
         </div>
         <div class="dialog-foot">
-          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
-          <button class="pbtn primary" t-on-click="() => this.ok()" t-out="this.spec.okLabel || 'OK'"/>
+          <span t-if="this.touched() and this.liveError" class="form-error" t-out="this.liveError"/>
+          <button class="pbtn primary" t-att-disabled="!!this.liveError" t-on-click="() => this.ok()" t-out="this.spec.okLabel || 'OK'"/>
           <button t-if="this.spec.cancelLabel !== null" class="pbtn" t-on-click="() => this.done(null)" t-out="this.spec.cancelLabel || 'Discard'"/>
         </div>
       </div>
@@ -135,10 +136,17 @@ export class Dialog extends Component {
 
   props = props({ spec: t.any(), done: t.function() });
   values = signal({});
-  error = signal(""); // validation error from spec.validate()
+  touched = signal(false); // has the user edited a field? (gates the inline error)
 
   get spec() {
     return this.props.spec;
+  }
+
+  // the current form's validation error ("" when valid). Reactive on `values`, so
+  // it both disables the primary button and (once edited) shows the message —
+  // an invalid form (e.g. a duplicate target name) can't be submitted at all.
+  get liveError() {
+    return this.spec.validate ? this.spec.validate(this.values()) : "";
   }
 
   setup() {
@@ -174,7 +182,7 @@ export class Dialog extends Component {
       if (updates) values = { ...values, ...updates };
     }
     this.values.set(values);
-    if (this.error()) this.error.set("");
+    this.touched.set(true);
   }
 
   onKey(ev) {
@@ -182,12 +190,9 @@ export class Dialog extends Component {
   }
 
   ok() {
-    const values = { ...this.values() };
-    const validate = this.spec.validate;
-    if (validate) {
-      const err = validate(values);
-      if (err) return this.error.set(err); // keep the dialog open, show why
-    }
-    this.done(values);
+    // Enter can still reach here while invalid (the button is disabled, not the
+    // keystroke) — guard, and reveal the message if it was hidden.
+    if (this.liveError) return this.touched.set(true);
+    this.done({ ...this.values() });
   }
 }
