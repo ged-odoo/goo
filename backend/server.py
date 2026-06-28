@@ -993,11 +993,9 @@ class Handler(BaseHTTPRequestHandler):
             bundle = (body or {}).get("bundle")
             if err or not isinstance(db, str) or not db or not isinstance(bundle, str) or not bundle:
                 return self._send_json(400, {"ok": False, "error": "missing db or bundle"})
-            try:
-                cmd = build_shell_cmd(body, db)
-            except ValueError as e:
-                return self._send_json(400, {"ok": False, "error": str(e)})
-            data, error = ASSETS.breakdown(cmd, bundle)
+            # read straight from the stored bundle attachment — no odoo process; an
+            # optional data_dir overrides odoo's default filestore location
+            data, error = ASSETS.breakdown(db, bundle, (body or {}).get("data_dir"))
             if data is None:
                 return self._send_json(400, {"ok": False, "error": error})
             self._send_json(200, {"ok": True, "bundle": bundle, **data})

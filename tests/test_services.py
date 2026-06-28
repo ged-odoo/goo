@@ -745,27 +745,40 @@ class AssetsServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(error, "boom: no module")
 
-    def test_breakdown_parses_sentinel_json(self):
-        payload = {"js": [["/web/static/a.js", 100]], "css": [["/web/static/b.css", 50]], "xml": []}
-        out = "odoo log noise\n@@ASSETS@@" + json.dumps(payload) + "\n"
-        svc = services.AssetsService(FakeIO(run_result=completed(stdout=out)), TTLCache(ttl=0))
-        data, err = svc.breakdown("odoo-bin shell -d master", "web.assets_web")
+    def test_breakdown_from_filestore(self):
+        # psql maps the bundle's attachments to filestore files; the files carry the
+        # "/* /path */" markers + a stars banner before the templates section
+        psql = "web.assets_x.min.js|ab/abc|\nweb.assets_x.min.css|cd/cde|\n"
+        js = '/* /a/b.js */AAAA/* /c/d.js */BB/******Templates******/registerTemplate("web.Foo")XYZ'
+        css = "/* /e/f.scss */CCCCC"
+        io = FakeIO(
+            runs={"ir_attachment": completed(stdout=psql)},
+            files={
+                "/dd/filestore/db1/ab/abc": js,
+                "/dd/filestore/db1/cd/cde": css,
+            },
+        )
+        data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown(
+            "db1", "web.assets_x", data_dir="/dd"
+        )
         self.assertIsNone(err)
-        self.assertEqual(data, payload)
+        self.assertEqual(data["js"], [["/a/b.js", 4], ["/c/d.js", 2]])
+        self.assertEqual(data["css"], [["/e/f.scss", 5]])
+        self.assertEqual(data["xml"], [["web/Foo", 4]])  # ")XYZ", dotted name -> path
 
     def test_breakdown_rejects_bad_bundle_name(self):
-        io = FakeIO(run_result=completed(stdout="@@ASSETS@@{}"))
-        data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown("cmd", "bad name!")
+        io = FakeIO(run_result=completed(stdout=""))
+        data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown("db1", "bad name!")
         self.assertIsNone(data)
-        self.assertEqual(io.run_calls, [])  # never reaches the shell
+        self.assertEqual(io.run_calls, [])  # never reaches psql
 
-    def test_breakdown_error_when_no_output(self):
-        svc = services.AssetsService(
-            FakeIO(run_result=completed(returncode=1, stderr="boom\n")), TTLCache(ttl=0)
-        )
-        data, err = svc.breakdown("cmd", "web.assets_web")
+    def test_breakdown_when_not_generated(self):
+        # the attachment exists but has neither a filestore file nor inline datas
+        psql = "web.assets_x.min.js||\n"
+        io = FakeIO(runs={"ir_attachment": completed(stdout=psql)})
+        data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown("db1", "web.assets_x")
         self.assertIsNone(data)
-        self.assertEqual(err, "boom")
+        self.assertIn("Generate asset bundles", err)
 
 
 if __name__ == "__main__":

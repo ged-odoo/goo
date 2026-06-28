@@ -3340,7 +3340,7 @@ class AssetsScreen extends Component {
               </div>
             </div>
             <div class="assets-tree">
-              <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing… (running the odoo shell — this can take a few seconds)</div>
+              <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing…</div>
               <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
               <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
               <t t-elif="this.view() === 'tree'">

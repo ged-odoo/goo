@@ -102,8 +102,8 @@ export class AssetsPlugin extends Plugin {
     }
   }
 
-  // analyze a bundle's contents: ask the backend (odoo shell) for the per-file
-  // minified-size breakdown of its js/css/xml, and open the analysis view
+  // analyze a bundle's contents: ask the backend for the per-file minified-size
+  // breakdown of its js/css/xml (read from the stored bundle), and open the view
   async analyze(bundle) {
     const db = this.selectedDb();
     if (!db || !bundle) return;
@@ -111,7 +111,7 @@ export class AssetsPlugin extends Plugin {
     this.analyzeError.set("");
     this.bundleData.set({ name: bundle, js: [], css: [], xml: [] }); // marks "open" while loading
     try {
-      const data = await postJSON("/api/assets/breakdown", { ...this.config.config, db, bundle });
+      const data = await postJSON("/api/assets/breakdown", { db, bundle });
       this.bundleData.set({ name: bundle, js: data.js, css: data.css, xml: data.xml });
     } catch (e) {
       this.analyzeError.set(e.message);

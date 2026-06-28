@@ -7,6 +7,7 @@ server-side; the HTTP handlers in goo.py just delegate here.
 """
 
 import ast
+import base64
 import json
 import os
 import re
@@ -1285,42 +1286,105 @@ class AssetsService:
         self.cache.invalidate(db)
         return True, None
 
-    def breakdown(self, cmd, bundle, timeout=300):
-        """Per-file minified-size breakdown of a bundle, extracted by running the
-        odoo shell: for each js/css/xml file in the bundle, its url and the byte
-        length of its minified content. Returns (data, error) where data is
-        {js: [[url, bytes], …], css: […], xml: […]} (None on failure)."""
+    # the per-file separators odoo writes into a bundle: "/* /web/.../foo.js */"
+    # before each file, and a stars banner before the XML templates section.
+    _MARKER = re.compile(r"/\* (/\S+?) \*/")
+    _TPL = re.compile(r'register(?:Template|TemplateExtension)\("([^"]+)"')
+    _TPL_SPLIT = re.compile(r"/\*{6,}")
+    DATA_DIR = os.path.expanduser("~/.local/share/Odoo")  # odoo's default data_dir
+
+    def breakdown(self, db, bundle, data_dir=None):
+        """Per-file minified-size breakdown of a bundle, read straight from its
+        stored attachments — the actual shipped bytes, so it's version-correct and
+        needs no odoo process. Slices the bundle on the per-file "/* /path */"
+        markers and the XML-templates banner. Returns (data, error); data is
+        {js: [[path, bytes], …], css: […], xml: [[template, bytes], …]}, None on
+        failure (e.g. the bundle was never generated to disk)."""
+        if not _valid_db_name(db):
+            return None, "invalid database name"
         if not re.match(r"^[A-Za-z0-9_.-]+$", bundle or ""):
             return None, "invalid bundle name"
-        # bundle is validated above, so {bundle!r} is safe to inline. The sentinel
-        # isolates our JSON from any odoo log noise on stdout.
-        script = (
-            "import json\n"
-            f"b = env['ir.qweb']._get_asset_bundle({bundle!r}, css=True, js=True)\n"
-            "def items(assets):\n"
-            "    out = []\n"
-            "    for a in assets:\n"
-            "        try:\n"
-            "            out.append([a.url or '<inline>', len(a.minify().encode('utf8'))])\n"
-            "        except Exception:\n"
-            "            pass\n"
-            "    return out\n"
-            "print('@@ASSETS@@' + json.dumps({'js': items(b.javascripts),"
-            " 'css': items(b.stylesheets), 'xml': items(b.templates or [])}))\n"
-        )
+        rows = self._bundle_files(db, bundle)
+        if rows is None:
+            return None, "could not read the database"
+        data_dir = data_dir or self.DATA_DIR
+        js_text = self._asset_text(db, data_dir, rows.get("min.js"))
+        css_text = self._asset_text(db, data_dir, rows.get("min.css"))
+        if js_text is None and css_text is None:
+            return None, 'bundle not generated yet — run "Generate asset bundles" first'
+        parts = self._TPL_SPLIT.split(js_text or "", maxsplit=1)
+        js = self._split_markers(parts[0])
+        xml = self._templates(parts[1] if len(parts) > 1 else "")
+        css = self._split_markers(css_text or "")
+        return {"js": js, "css": css, "xml": xml}, None
+
+    def _bundle_files(self, db, bundle):
+        """{"min.js"|"min.css": (store_fname, db_datas_b64)} for a bundle's stored
+        attachments, or None if the db can't be read. bundle is pre-validated."""
+        names = f"'{bundle}.min.js', '{bundle}.min.css'"
         try:
             r = self.io.run(
-                cmd, shell=True, executable="/bin/bash", input=script, timeout=timeout
+                [
+                    "psql",
+                    "-d",
+                    db,
+                    "-tAc",
+                    "SELECT name, COALESCE(store_fname, ''),"
+                    " COALESCE(encode(db_datas, 'base64'), '') FROM ir_attachment"
+                    f" WHERE url LIKE '/web/assets/%' AND name IN ({names})",
+                ],
+                timeout=15,
+                quiet=True,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return None, str(e)
-        for line in (r.stdout or "").splitlines():
-            if line.startswith("@@ASSETS@@"):
-                try:
-                    return json.loads(line[len("@@ASSETS@@") :]), None
-                except ValueError:
-                    return None, "could not parse analysis output"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
         if r.returncode != 0:
-            tail = (r.stderr or r.stdout or "").strip().splitlines()
-            return None, (tail[-1] if tail else "asset analysis failed")
-        return None, "no analysis output (is the bundle name correct?)"
+            return None
+        out = {}
+        for line in r.stdout.splitlines():
+            cols = line.split("|", 2)
+            if len(cols) < 3:
+                continue
+            name, store_fname, datas = cols
+            for ext in ("min.js", "min.css"):
+                if name.endswith("." + ext):
+                    out[ext] = (store_fname, datas)
+        return out
+
+    def _asset_text(self, db, data_dir, row):
+        """One stored attachment's text — from its filestore file, else its inline
+        db_datas. None when absent/unreadable."""
+        if not row:
+            return None
+        store_fname, datas = row
+        if store_fname:
+            try:
+                return self.io.read_text(os.path.join(data_dir, "filestore", db, store_fname))
+            except ValueError:  # incl. UnicodeDecodeError on a non-utf8 file
+                return None
+        if datas:
+            try:
+                return base64.b64decode(datas).decode("utf-8", "replace")
+            except ValueError:  # incl. binascii.Error
+                return None
+        return None
+
+    def _split_markers(self, text):
+        """[[path, bytes], …] by slicing text on the "/* /path */" file markers; each
+        file's size is the byte length of its chunk up to the next marker."""
+        marks = list(self._MARKER.finditer(text))
+        out = []
+        for i, m in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+            out.append([m.group(1), len(text[m.end() : end].encode("utf-8"))])
+        return out
+
+    def _templates(self, text):
+        """[[template, bytes], …] from a bundle's XML section (registerTemplate
+        calls). Dotted names become slash paths so they nest by addon in the tree."""
+        marks = list(self._TPL.finditer(text))
+        out = []
+        for i, m in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+            out.append([m.group(1).replace(".", "/"), len(text[m.end() : end].encode("utf-8"))])
+        return out
