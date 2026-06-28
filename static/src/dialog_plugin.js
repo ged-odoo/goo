@@ -93,7 +93,10 @@ class DialogContainer extends Component {
 
 // A form/message modal. Spec: { title, message?, okLabel?, cancelLabel?, cls?,
 // validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox"|
-// "select", label, value, placeholder?, options?, onChange? }] }. validate() runs
+// "select"|"check-select", label, value, placeholder?, options?, onChange?,
+// default? }] }. A "check-select" is a checkbox with an inline select that shows
+// only when ticked; its value is "" (off) or the chosen option, seeded from
+// default(values) on tick. validate() runs
 // live: a non-empty result disables the OK button (and, once the user has edited a
 // field, shows the message), so an invalid form can't be submitted. cancelLabel:
 // null hides the Discard button (e.g. for a plain message/alert). Closes itself by
@@ -120,6 +123,17 @@ export class Dialog extends Component {
                 </t>
               </select>
             </t>
+            <div t-elif="f.type === 'check-select'" class="dialog-check-select">
+              <label class="edit-check">
+                <input type="checkbox" t-att-checked="!!this.values()[f.key]" t-on-change="(ev) => this.toggleCheckSelect(f, ev.target.checked)"/>
+                <t t-out="f.label"/>
+              </label>
+              <select t-if="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.value)">
+                <t t-foreach="f.options || []" t-as="opt" t-key="opt.value">
+                  <option t-att-value="opt.value" t-att-selected="this.values()[f.key] === opt.value" t-out="opt.label"/>
+                </t>
+              </select>
+            </div>
             <t t-else="">
               <label t-out="f.label"/>
               <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
@@ -183,6 +197,15 @@ export class Dialog extends Component {
     }
     this.values.set(values);
     this.touched.set(true);
+  }
+
+  // a "check-select" field's value is "" (unchecked) or the selected option. Ticking
+  // it on seeds a sensible choice — field.default(values), else the first option — so
+  // the revealed select isn't empty; unticking clears it back to "".
+  toggleCheckSelect(field, checked) {
+    if (!checked) return this.setVal(field.key, "");
+    const seed = typeof field.default === "function" ? field.default(this.values()) : field.default;
+    this.setVal(field.key, seed || field.options?.[0]?.value || "");
   }
 
   onKey(ev) {

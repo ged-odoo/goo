@@ -1699,8 +1699,6 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
             db: tpl.db || "",
             args: tpl.on_create_args || "",
             fav: !!tpl.favorite,
-            // clone from the template's own database when it exists on disk
-            cloneDb: tpl.db && dbNames.has(tpl.db) ? tpl.db : "",
           };
         },
       },
@@ -1725,15 +1723,22 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
         placeholder: "community:master,enterprise:master",
       },
       { key: "db", type: "text", label: "Database", placeholder: "database name" },
+      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
       {
+        // off by default; tick it to clone an existing db into the target's db. The
+        // revealed select is seeded with the template's db (when it's on disk), else
+        // the first database — see Dialog.toggleCheckSelect.
         key: "cloneDb",
-        type: "select",
+        type: "check-select",
         label: "Clone db",
-        placeholder: "— none —",
         options: dbOptions,
         value: "",
+        default: (v) => {
+          const tpl = existingTargets.find((t) => t.id === v.template);
+          if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
+          return dbOptions[0]?.value || "";
+        },
       },
-      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
       { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
     ],

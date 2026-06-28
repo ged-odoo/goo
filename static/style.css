@@ -3263,6 +3263,15 @@ a.dash-ci:hover {
   font-size: 13px;
   color: var(--l-text);
 }
+/* a checkbox with an inline select revealed beside it (e.g. "Clone db") */
+.dialog-check-select {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dialog-check-select select {
+  flex: 1;
+}
 .dialog-foot {
   display: flex;
   align-items: center;
