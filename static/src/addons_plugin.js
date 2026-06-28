@@ -5,6 +5,7 @@
 import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
+import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
@@ -17,6 +18,7 @@ export class AddonsPlugin extends Plugin {
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
+  dialogs = plugin(DialogPlugin);
   output = new LogBuffer();
   modules = signal([]);
   loadedDb = signal("");
@@ -143,7 +145,12 @@ export class AddonsPlugin extends Plugin {
   async run(op, name) {
     const db = this.targetDb();
     if (!db) return;
-    if (!confirm(`${op === "upgrade" ? "Upgrade" : "Install"} "${name}" on ${db}?`)) return;
+    const verb = op === "upgrade" ? "Upgrade" : "Install";
+    const ok = await this.dialogs.open({
+      title: `${verb} "${name}" on ${db}?`,
+      okLabel: verb,
+    });
+    if (!ok) return;
     // if a real server is up, it will be stopped for the one-shot run — resume it after
     const s = this.server.status();
     this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";

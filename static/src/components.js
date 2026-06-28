@@ -4282,12 +4282,14 @@ class ConfigScreen extends Component {
   }
 
   async resetAll() {
-    if (
-      !confirm(
-        "Reset the complete config to its initial state?\n\nThis erases all your customizations (settings, repos, targets, links, favorites, last target, history) and cannot be undone.",
-      )
-    )
-      return;
+    const ok = await this.dialogs.open({
+      title: "Reset the complete config to its initial state?",
+      message:
+        "This erases all your customizations (settings, repos, targets, links, favorites, last target, history) and cannot be undone.",
+      okLabel: "Reset everything",
+      cls: "dialog-error",
+    });
+    if (!ok) return;
     await this.config.resetConfig();
     location.reload();
   }

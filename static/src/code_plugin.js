@@ -348,10 +348,14 @@ export class CodePlugin extends Plugin {
     if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
   }
 
-  deleteBranch(branch, repo, path, deleteRemote = false) {
+  async deleteBranch(branch, repo, path, deleteRemote = false) {
     const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
-    if (!confirm(`Force-delete branch "${branch}" in ${repo} ${scope}? This cannot be undone.`))
-      return;
+    const ok = await this.dialogs.open({
+      title: `Force-delete branch "${branch}" in ${repo}?`,
+      message: `This deletes the branch ${scope}. This cannot be undone.`,
+      okLabel: "Delete branch",
+    });
+    if (!ok) return;
     return this.deleteBranchNoConfirm(branch, repo, path, deleteRemote);
   }
 
@@ -431,8 +435,12 @@ export class CodePlugin extends Plugin {
     this.prRepos.set(prRepos);
   }
 
-  closePr(github, number) {
-    if (!confirm(`Close PR #${number} in ${github}?`)) return;
+  async closePr(github, number) {
+    const ok = await this.dialogs.open({
+      title: `Close PR #${number} in ${github}?`,
+      okLabel: "Close PR",
+    });
+    if (!ok) return;
     return this.closePrNoConfirm(github, number);
   }
 
