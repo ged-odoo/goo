@@ -75,6 +75,32 @@ def http_get(url, *, timeout=10):
         return "", str(e)
 
 
+class _NoRedirect(urllib.request.HTTPErrorProcessor):
+    """Opener processor that returns 3xx responses as-is instead of following them."""
+
+    def http_response(self, request, response):
+        return response
+
+    https_response = http_response
+
+
+def http_get_nofollow(url, *, timeout=10):
+    """GET a URL WITHOUT following redirects → (status, location, text, error).
+    Lets a caller tell a redirect's flavour apart — e.g. runbot redirects a bundle
+    *name* to its canonical URL with a 302, but a wrong slug (a trailing number that
+    happens to be some other bundle's id) gets Odoo's 301 canonical redirect to that
+    unrelated bundle. On any network error returns (0, "", "", "<reason>")."""
+    log_request(f"GET {url}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=timeout) as resp:
+            location = resp.headers.get("Location", "") or ""
+            return resp.status, location, resp.read().decode("utf-8", errors="replace"), None
+    except Exception as e:
+        return 0, "", "", str(e)
+
+
 # ─────────────────────────── filesystem ───────────────────────────
 
 

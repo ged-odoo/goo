@@ -297,26 +297,42 @@ class RunbotService:
             return dict(zip(branches, states, strict=False))
 
     def _status(self, branch):
-        """`result` ("success"/"failure"/"") comes from the bundle page favicon
-        (icon_ok/icon_ko/icon_killed …) — runbot's own overall verdict, which
-        already reflects a failure even mid-run. `running` is true when the latest
-        batch still has a build in progress: runbot tints the batch card
-        `bg-info-subtle` (vs `bg-success-subtle`/`bg-danger-subtle` once done) and
-        spins the building slot's icon (`fa-spin`). NB: a bare `btn-info` is *not*
-        a running signal — every finished slot carries an `fa-sign-in btn-info`
-        "connect to live build" link, so it's always present.
-        Falls back to the badge's last-finished result if the page can't be read."""
-        html, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}")
-        if not html:
+        """{result, running, url} for a branch's runbot bundle.
+
+        `/runbot/bundle/<name>` resolves the *name* and 302-redirects to the bundle's
+        canonical URL. But when no bundle has that name, runbot/Odoo instead treats a
+        trailing "-<n>" as a record id and 301-redirects to whatever bundle has id n —
+        a *different* branch (e.g. a fresh, never-pushed `master-test-33` resolves to
+        bundle 33, `master-decimal-rounding-fix-jar`). We must not report that foreign
+        bundle's status, so we don't follow redirects ourselves: a 302 is a real name
+        match (follow it), a 301 means "no such bundle" (the trailing number was read
+        as an id), and 404 is plainly absent.
+
+        `result` ("success"/"failure"/"") comes from the bundle page favicon
+        (icon_ok/icon_ko/icon_killed …). `running` is true when the latest batch still
+        has a build in progress: runbot tints the batch card `bg-info-subtle` (vs
+        `bg-success-subtle`/`bg-danger-subtle` once done) and spins the building slot's
+        icon (`fa-spin`). NB: a bare `btn-info` is *not* a running signal — every
+        finished slot carries an `fa-sign-in btn-info` "connect to live build" link.
+        `url` is the canonical bundle page (""=no bundle); the UI links to it."""
+        url = f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}"
+        status, location, html, _ = self.io.http_get_nofollow(url)
+        if status == 302:  # name match → the canonical bundle page
+            url = urllib.parse.urljoin(RUNBOT_BASE, location)
+            html, _ = self.io.http_get(url)
+        elif status != 200:  # 301 (id-misresolve to a foreign bundle), 404, or error
+            return {"result": "", "running": False, "url": ""}
+        if not html:  # canonical page unreadable → fall back to the name-keyed badge
             s = self._badge(branch)
-            return {"result": s if s in ("success", "failure") else "", "running": s == "pending"}
+            r = s if s in ("success", "failure") else ""
+            return {"result": r, "running": s == "pending", "url": url}
         m = re.search(r'rel="[^"]*icon"[^>]*href="[^"]*?icon_([a-z]+)\.', html)
         state = m.group(1) if m else ""
         result = "failure" if state in ("ko", "killed") else "success" if state == "ok" else ""
         parts = html.split('class="batch_tile', 1)
         latest = parts[1].split('class="batch_tile', 1)[0] if len(parts) > 1 else ""
         running = "bg-info-subtle" in latest or "fa-spin" in latest
-        return {"result": result, "running": running}
+        return {"result": result, "running": running, "url": url}
 
     def _badge(self, branch):
         """Parse the runbot badge SVG: "success" / "failure" / "pending" / ""."""

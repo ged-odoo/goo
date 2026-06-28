@@ -803,10 +803,14 @@ class DashboardScreen extends Component {
     return badge;
   }
 
-  // the runbot bundle URL for a target ("" when it has no bundle branch)
+  // the runbot bundle URL for a target's bundle branch. The backend resolves the
+  // branch *name* to its canonical bundle URL (and only when a bundle actually
+  // exists — a never-pushed branch has none), so link to that rather than building
+  // /runbot/bundle/<branch>, which runbot would mis-resolve to a foreign bundle when
+  // the branch ends in a number. "" until the runbot status loads / when no bundle.
   runbotUrl(tgt) {
     const branch = this.bundleBranch(tgt);
-    return branch ? this.code.bundleUrl(branch) : "";
+    return (branch && this.code.runbot()[branch]?.url) || "";
   }
 
   // open the CI breakdown popover (full per-check status) anchored to the badge on

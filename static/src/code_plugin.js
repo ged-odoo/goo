@@ -1,7 +1,7 @@
 // Branches & PRs across repos: grouped view model and the per-branch actions
 // (delete, close PR, push).
 
-import { DEFAULT_CONFIG, BASE_BRANCH_RE, RUNBOT, MERGEBOT } from "./config.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
@@ -240,10 +240,6 @@ export class CodePlugin extends Plugin {
       return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
     }
     return this.forkBranchUrl(github, branch);
-  }
-
-  bundleUrl(branch) {
-    return `${RUNBOT}/runbot/bundle/${encodeURIComponent(branch)}`;
   }
 
   // mergebot page for a PR, e.g. https://mergebot.odoo.com/odoo/odoo/pull/269532

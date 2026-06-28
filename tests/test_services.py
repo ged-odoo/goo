@@ -24,11 +24,21 @@ class FakeIO:
     TAG = "[goo]"
 
     def __init__(
-        self, *, run_result=None, runs=None, http=None, dirs=None, files=None, fs_fail=None
+        self,
+        *,
+        run_result=None,
+        runs=None,
+        http=None,
+        http_nofollow=None,
+        dirs=None,
+        files=None,
+        fs_fail=None,
     ):
         self._run_result = run_result if run_result is not None else completed()
         self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
+        # {url_substring: (status, location, text)} for http_get_nofollow
+        self._http_nofollow = http_nofollow or {}
         self._dirs = dirs or {}  # {dir path: [entry names]}
         self._files = files or {}  # {file path: text content}
         self.fs_fail = fs_fail  # path substring whose filesystem op should fail
@@ -57,6 +67,13 @@ class FakeIO:
             if needle in url:
                 return resp
         return "", "not stubbed"
+
+    def http_get_nofollow(self, url, **kwargs):
+        self.http_calls.append(url)
+        for needle, resp in self._http_nofollow.items():
+            if needle in url:
+                return (*resp, None)
+        return 0, "", "", "not stubbed"
 
     def is_dir(self, path):
         return path in self._dirs
@@ -93,15 +110,27 @@ class FakeIO:
 
 class RunbotServiceTest(unittest.TestCase):
     def test_bundle_pass_and_running(self):
+        # a real branch: name match → 302 to the canonical page, which we then read
         html = (
             '<link rel="shortcut icon" href="/web/static/icon_ok.png">'
             '<div class="batch_tile"><div class="card bg-info-subtle">'
             '<i class="fa fa-spin"></i>building</div></div>'
             '<div class="batch_tile">older</div>'
         )
-        svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
+        io = FakeIO(
+            http_nofollow={"bundle/master": (302, "/runbot/bundle/master-1", "")},
+            http={"bundle/master-1": (html, None)},
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=0))
         self.assertEqual(
-            svc.statuses(["master"]), {"master": {"result": "success", "running": True}}
+            svc.statuses(["master"]),
+            {
+                "master": {
+                    "result": "success",
+                    "running": True,
+                    "url": "https://runbot.odoo.com/runbot/bundle/master-1",
+                }
+            },
         )
 
     def test_bundle_pass_not_running_with_connect_links(self):
@@ -112,25 +141,84 @@ class RunbotServiceTest(unittest.TestCase):
             '<div class="batch_tile"><div class="card bg-success-subtle">'
             '<a class="fa fa-sign-in btn btn-info" href="/runbot/run/1"></a></div></div>'
         )
-        svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
+        io = FakeIO(
+            http_nofollow={"bundle/master": (302, "/runbot/bundle/master-1", "")},
+            http={"bundle/master-1": (html, None)},
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=0))
         self.assertEqual(
-            svc.statuses(["master"]), {"master": {"result": "success", "running": False}}
+            svc.statuses(["master"]),
+            {
+                "master": {
+                    "result": "success",
+                    "running": False,
+                    "url": "https://runbot.odoo.com/runbot/bundle/master-1",
+                }
+            },
         )
 
     def test_bundle_fail_not_running(self):
+        # a canonical URL hit directly (200) is parsed straight from the body
         html = '<link rel="icon" href="x/icon_ko.png"><div class="batch_tile">done</div>'
-        svc = services.RunbotService(FakeIO(http={"bundle": (html, None)}), TTLCache(ttl=0))
-        self.assertEqual(svc.statuses(["b"]), {"b": {"result": "failure", "running": False}})
+        io = FakeIO(http_nofollow={"bundle/b": (200, "", html)})
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        self.assertEqual(
+            svc.statuses(["b"]),
+            {
+                "b": {
+                    "result": "failure",
+                    "running": False,
+                    "url": services.RUNBOT_BASE + "/runbot/bundle/b",
+                }
+            },
+        )
 
-    def test_badge_fallback_when_bundle_unreachable(self):
+    def test_slug_misresolve_301_is_not_reported(self):
+        # a never-pushed `master-test-33` has no bundle of that name, so runbot reads
+        # the trailing 33 as a bundle id and 301-redirects to an unrelated bundle —
+        # which we must NOT report (the bug: it showed that foreign bundle's "ko").
         io = FakeIO(
-            http={
-                "bundle": ("", "boom"),
-                "badge": ("<svg><text>x</text><text>success</text></svg>", None),
+            http_nofollow={
+                "bundle/master-test-33": (
+                    301,
+                    "/runbot/bundle/master-decimal-rounding-fix-jar-33",
+                    "",
+                )
             }
         )
         svc = services.RunbotService(io, TTLCache(ttl=0))
-        self.assertEqual(svc.statuses(["b"]), {"b": {"result": "success", "running": False}})
+        self.assertEqual(
+            svc.statuses(["master-test-33"]),
+            {"master-test-33": {"result": "", "running": False, "url": ""}},
+        )
+
+    def test_bundle_absent_404(self):
+        io = FakeIO(http_nofollow={"bundle/gone": (404, "", "")})
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        self.assertEqual(
+            svc.statuses(["gone"]), {"gone": {"result": "", "running": False, "url": ""}}
+        )
+
+    def test_badge_fallback_when_bundle_unreachable(self):
+        # name match (302), but the canonical page can't be read → name-keyed badge
+        io = FakeIO(
+            http_nofollow={"bundle/b": (302, "/runbot/bundle/b-9", "")},
+            http={
+                "bundle/b-9": ("", "boom"),
+                "badge": ("<svg><text>x</text><text>success</text></svg>", None),
+            },
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        self.assertEqual(
+            svc.statuses(["b"]),
+            {
+                "b": {
+                    "result": "success",
+                    "running": False,
+                    "url": services.RUNBOT_BASE + "/runbot/bundle/b-9",
+                }
+            },
+        )
 
 
 class MergebotServiceTest(unittest.TestCase):
@@ -693,7 +781,9 @@ class AssetsServiceTest(unittest.TestCase):
             "560|web.assets_backend.min.js|/web/assets/13058d4/web.assets_backend.min.js|123456|2024-01-15 10:00:00\n"
             "561|web.assets_frontend.min.css|/web/assets/8c4eafb/web.assets_frontend.min.css|7890|2024-01-16 11:00:00\n"
         )
-        svc = services.AssetsService(FakeIO(runs={"ir_attachment": completed(stdout=out)}), TTLCache(ttl=0))
+        svc = services.AssetsService(
+            FakeIO(runs={"ir_attachment": completed(stdout=out)}), TTLCache(ttl=0)
+        )
         self.assertEqual(
             svc.bundles("master"),
             [
