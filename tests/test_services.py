@@ -571,9 +571,16 @@ class GitServiceTest(unittest.TestCase):
                 "log -1": completed(stdout="abc123\n[FIX] thing\n2024-06-20T10:00:00\n"),
                 "--not --remotes --count": completed(stdout="0\n"),  # pushed
                 "--left-right --count": completed(stdout="2\t3\n"),  # behind 2, ahead 3
-                "for-each-ref refs/remotes": completed(stdout="master-owl-update\nmaster\n"),
+                # dev/master-owl-update is at the local sha (synced); a stale
+                # dev/master-test points elsewhere (present remotely but NOT synced)
+                "for-each-ref refs/remotes": completed(
+                    stdout="master-owl-update\tabc123\nmaster\tdef456\nmaster-test\told999\n"
+                ),
                 "for-each-ref refs/heads": completed(
-                    stdout="master-owl-update\t2024-06-20T10:00:00\t[FIX] thing\tabc123\n"
+                    stdout=(
+                        "master-owl-update\t2024-06-20T10:00:00\t[FIX] thing\tabc123\n"
+                        "master-test\t2024-06-19T10:00:00\t[NEW] x\tnew111\n"
+                    )
                 ),
                 "master@{upstream}": completed(stdout="origin/master\n"),
             }
@@ -585,8 +592,12 @@ class GitServiceTest(unittest.TestCase):
         self.assertTrue(entry["head_pushed"])
         self.assertEqual((entry["behind"], entry["ahead"]), (2, 3))
         self.assertTrue(entry["head_remote"])  # current branch has a remote ref
-        self.assertEqual(entry["branches"][0]["name"], "master-owl-update")
-        self.assertTrue(entry["branches"][0]["remote"])
+        branches = {b["name"]: b for b in entry["branches"]}
+        self.assertTrue(branches["master-owl-update"]["remote"])
+        self.assertTrue(branches["master-owl-update"]["synced"])  # local tip == dev ref
+        # a stale same-named remote ref: present, but not what's checked out locally
+        self.assertTrue(branches["master-test"]["remote"])
+        self.assertFalse(branches["master-test"]["synced"])
 
     def test_branches_reports_not_a_repo(self):
         io = FakeIO(

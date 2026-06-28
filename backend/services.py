@@ -823,7 +823,11 @@ class GitService:
                 if ad.returncode == 0 and len(ad.stdout.split()) == 2:
                     behind, ahead = ad.stdout.split()
                     entry["behind"], entry["ahead"] = int(behind), int(ahead)
-                # branch names with a remote-tracking ref (pushed from this clone)
+                # remote-tracking refs: the branch names (pushed from this clone at
+                # some point) and the sha each ref points at. The sha lets a branch
+                # tell whether its local tip is actually what's on the remote — a
+                # stale same-named ref (e.g. an ancient dev/<branch> whose name got
+                # reused for fresh, unpushed local work) is present but NOT in sync.
                 rr = self.io.run(
                     [
                         "git",
@@ -831,11 +835,20 @@ class GitService:
                         path,
                         "for-each-ref",
                         "refs/remotes",
-                        "--format=%(refname:lstrip=3)",
+                        "--format=%(refname:lstrip=3)%09%(objectname)",
                     ],
                     timeout=10,
                 )
-                remote_branches = set(rr.stdout.split())
+                remote_branches = set()
+                remote_shas = {}  # branch name -> {sha, …} across remotes
+                for line in rr.stdout.splitlines():
+                    parts = line.split("\t")
+                    nm = parts[0]
+                    if not nm:
+                        continue
+                    remote_branches.add(nm)
+                    if len(parts) > 1:
+                        remote_shas.setdefault(nm, set()).add(parts[1])
                 entry["head_remote"] = entry["current"] in remote_branches
                 r = self.io.run(
                     [
@@ -852,13 +865,17 @@ class GitService:
                     parts = line.split("\t")
                     name = parts[0]
                     if name:
+                        sha = parts[3] if len(parts) > 3 else ""
                         entry["branches"].append(
                             {
                                 "name": name,
                                 "date": parts[1] if len(parts) > 1 else "",
                                 "subject": parts[2] if len(parts) > 2 else "",
-                                "sha": parts[3] if len(parts) > 3 else "",
+                                "sha": sha,
                                 "remote": name in remote_branches,
+                                # local tip == a same-named remote ref (truly pushed
+                                # and current, not just a stale ref of the same name)
+                                "synced": bool(sha) and sha in remote_shas.get(name, ()),
                             }
                         )
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:

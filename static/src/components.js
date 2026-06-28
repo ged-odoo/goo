@@ -666,14 +666,20 @@ class DashboardScreen extends Component {
     });
   }
 
-  // branches that still need the scraped runbot fallback: shown on the dashboard
-  // and NOT already covered by a PR's GitHub CI rollup (those come for free with
-  // the PR list, so there's no point scraping the bundle page for them)
+  // branches that still need the scraped runbot fallback: shown on the dashboard,
+  // backed by a real bundle of ours, and NOT already covered by a PR's GitHub CI
+  // rollup (that comes free with the PR list, so there's no point scraping). A
+  // feature branch only has a bundle once its local tip is actually pushed (`synced`)
+  // — otherwise runbot name-matches an unrelated, often ancient bundle that merely
+  // shares the name (e.g. a fresh local `master-test` vs a 1.5y-old `master-test`
+  // bundle from a long-gone same-named ref). Base branches (master, 19.0, saas-x.y)
+  // always have a canonical bundle, synced or not.
   _runbotBranches() {
     const seen = new Set();
     for (const tgt of this.targets)
       for (const row of this.rows(tgt)) {
         if (!row.present) continue;
+        if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
         const ci = row.pr && row.pr.ci;
         if (ci && ci.checks && ci.checks.length) continue; // covered by the GitHub API
         seen.add(row.branch);
@@ -1057,6 +1063,7 @@ class DashboardScreen extends Component {
         github: groups.githubByRepo[repo] || "",
         present: !!b,
         remote: !!b && b.remote,
+        synced: !!b && b.synced, // local tip is exactly what's on the remote ref
         date: b ? b.date : "",
         subject: b ? b.subject || "" : "",
         pr: groups.prIndex[`${repo}:${branch}`] || null,
