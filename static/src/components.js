@@ -703,6 +703,7 @@ class DashboardScreen extends Component {
     for (const tgt of this.targets)
       for (const row of this.rows(tgt)) {
         if (!row.present) continue;
+        if (this.code.isExternalRepo(row.github)) continue; // not on runbot — would 404
         if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
         const ci = row.pr && row.pr.ci;
         if (ci && ci.checks && ci.checks.length) continue; // covered by the GitHub API
@@ -737,7 +738,7 @@ class DashboardScreen extends Component {
     const prs = [];
     for (const tgt of this.targets) {
       for (const row of this.rows(tgt)) {
-        if (!row.pr || !row.github) continue;
+        if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
         const key = `${row.github}#${row.pr.number}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -3006,7 +3007,7 @@ class PrsScreen extends Component {
   // so this is most of them. Skipping them avoids hundreds of pointless requests.
   _mbPrs() {
     return this.rows()
-      .filter((r) => r.state === "open")
+      .filter((r) => r.state === "open" && !this.code.isExternalRepo(r.github))
       .map((r) => ({ github: r.github, number: r.number }));
   }
 
@@ -5379,6 +5380,14 @@ const SPECS = {
         optional: true,
       },
       { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
+      {
+        key: "external",
+        name: "external",
+        type: "checkbox",
+        optional: true,
+        title:
+          "a repo outside the odoo CI ecosystem (e.g. odoo/owl) — skip its mergebot/runbot lookups",
+      },
       {
         key: "favorite",
         name: "favorite",

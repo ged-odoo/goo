@@ -55,6 +55,7 @@ const GED_CONFIG = {
       path: "/home/odoo/work/owl",
       github: "odoo/owl",
       autoreload: false,
+      external: true, // not on mergebot/runbot — skip those scrapes
       favorite: false,
     },
   ],

@@ -81,6 +81,13 @@ export class CodePlugin extends Plugin {
     }));
   }
 
+  // a repo added for convenience but outside the odoo CI ecosystem (e.g. odoo/owl):
+  // flagged `external` in config, so we skip its mergebot + runbot scrapes (they'd
+  // only 404 — those services don't index it). Keyed by the github slug PRs carry.
+  isExternalRepo(github) {
+    return !!github && !!this.config.config.repos.find((r) => r.github === github)?.external;
+  }
+
   // last-known branches, kept only for an instant first paint on reload (PRs are
   // now server-cached and always fetched fresh, so they're no longer stored here)
   _cache() {
