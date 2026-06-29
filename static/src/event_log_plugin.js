@@ -13,6 +13,7 @@ export class EventLogPlugin extends Plugin {
 
   entries = signal([]); // [{ id, at, text }]
   open = signal(false); // overlay panel visibility
+  lastReadId = signal(0); // highest entry id seen the last time the panel was open
   _seq = 0;
 
   // `anchor` (optional) is a DOM id of a log row the UI can scroll to. It is kept
@@ -78,6 +79,18 @@ export class EventLogPlugin extends Plugin {
 
   toggle() {
     this.open.set(!this.open());
+    this.markRead(); // opening or closing, everything up to now has been seen
+  }
+
+  // mark every current entry as read (clears the unread badge)
+  markRead() {
+    this.lastReadId.set(this._seq);
+  }
+
+  // events that arrived since the panel was last open (0 while it's open)
+  unread() {
+    if (this.open()) return 0;
+    return this.entries().filter((e) => e.id > this.lastReadId()).length;
   }
 
   clear() {

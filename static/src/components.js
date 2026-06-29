@@ -128,14 +128,28 @@ class Topbar extends Component {
             </div>
           </div>
         </t>
+        <button class="nav-events" t-att-class="{active: this.eventLog.open()}" t-on-click="() => this.eventLog.toggle()" t-att-title="this.eventsTip">
+          <t t-out="this.journalIcon"/>
+          <span t-if="this.eventLog.unread()" class="nav-events-badge" t-out="this.eventLog.unread()"/>
+        </button>
       </div>
     </header>`;
 
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
   update = plugin(UpdatePlugin);
+  eventLog = plugin(EventLogPlugin);
+  journalIcon = m(ICONS.journal);
 
   version = `v${VERSION}`;
+
+  // event-log toggle tooltip, surfacing the unread count when there is one
+  get eventsTip() {
+    const n = this.eventLog.unread();
+    return n
+      ? `${n} new event${n === 1 ? "" : "s"} — toggle the event log`
+      : "toggle the event log";
+  }
 
   // user-configurable navbar links (/odoo + /web/tests included — they go through
   // the autologin addon and only resolve while the server is up). An entry with a
@@ -218,17 +232,10 @@ class Sidebar extends Component {
         <t t-out="this.icon(item.icon)"/>
         <t t-out="item.label"/>
       </button>
-      <button class="nav-item nav-foot" t-att-class="{active: this.eventLog.open()}"
-              t-on-click="() => this.eventLog.toggle()" title="toggle the event log">
-        <t t-out="this.journalIcon"/>
-        <span>Events<t t-if="!this.eventLog.open() and this.eventLog.entries().length"> (<t t-out="this.eventLog.entries().length"/>)</t></span>
-      </button>
     </nav>`;
 
   router = plugin(RouterPlugin);
-  eventLog = plugin(EventLogPlugin);
   config = plugin(ConfigPlugin);
-  journalIcon = m(ICONS.journal);
 
   // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
   // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from

@@ -407,6 +407,52 @@ a {
   background: var(--accent-soft);
 }
 
+/* event-log toggle: an icon button at the right end of the navbar, with an
+   unread-count badge */
+.nav-events {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  color: #fff;
+  border: 1px solid var(--chrome-line);
+  background: var(--chrome-inset);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: 0.13s;
+}
+.nav-events svg {
+  display: block;
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+}
+.nav-events:hover,
+.nav-events.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.nav-events-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--red);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
 /* ───────────────── BODY / SIDEBAR (dark) ───────────────── */
 
 .body {
@@ -422,10 +468,6 @@ a {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-/* the event-log toggle sits pinned at the bottom of the sidebar */
-.nav-foot {
-  margin-top: auto;
 }
 .nav-item {
   display: flex;
