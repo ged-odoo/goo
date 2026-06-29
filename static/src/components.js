@@ -551,7 +551,14 @@ class DashboardScreen extends Component {
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs, this.db);
+    return startCreateTarget(
+      this.config,
+      this.eventLog,
+      this.code,
+      this.dialogs,
+      this.db,
+      this.server,
+    );
   }
 
   toggleMenu(id) {
@@ -1676,7 +1683,23 @@ async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, r
   config.updateConfig({ targets: [...config.config.targets, target] });
 }
 
-async function startCreateTarget(config, eventLog, code, dialogs, db) {
+// Switch the working tree to a target's branches and make it the active target:
+// stop the server if it's up and checkout concurrently (the checkout only swaps
+// working-tree files, which the already-loaded Odoo doesn't care about), then
+// record it as the last-used target. Used by the create dialog's "activate it".
+async function activateTarget(server, code, eventLog, target) {
+  const pathByRepo = code.groups().pathByRepo;
+  const repos = (target.config || [])
+    .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
+    .filter((r) => r.path);
+  eventLog.add(`activating target ${target.name}`);
+  const s = server.status().state;
+  const stopping = s === "running" || s === "starting" ? server.stop() : null;
+  await Promise.all([stopping, code.checkout(repos)]);
+  server.setLastTarget(target.id);
+}
+
+async function startCreateTarget(config, eventLog, code, dialogs, db, server) {
   const existingTargets = config.config.targets;
   await db.load(); // populate the "Clone db" select with the existing databases
   const dbNames = new Set(db.databases().map((d) => d.name));
@@ -1758,6 +1781,7 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
       },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
       { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
+      { key: "activate", type: "checkbox", label: "Activate it", value: true },
     ],
   });
   if (!res) return;
@@ -1782,6 +1806,12 @@ async function startCreateTarget(config, eventLog, code, dialogs, db) {
         startPoint: baseBranchByRepo[c.repo],
       })),
     );
+  }
+  // apply the target right away (checkout its branches + make it current). Done
+  // before the db clone so a clone of the active db sees the server already
+  // stopped (no needless stop/resume cycle).
+  if (res.activate && server) {
+    await activateTarget(server, code, eventLog, target);
   }
   // clone the chosen source database into the target's database name (skip when it
   // would clone onto itself — the destination already exists in that case). When the
@@ -2227,7 +2257,14 @@ class TargetsScreen extends Component {
 
   // create a new target through a dialog form (validated before it closes)
   startCreate() {
-    return startCreateTarget(this.config, this.eventLog, this.code, this.dialogs, this.db);
+    return startCreateTarget(
+      this.config,
+      this.eventLog,
+      this.code,
+      this.dialogs,
+      this.db,
+      this.server,
+    );
   }
 
   // search for a remote branch across all repos, fetch it locally, then open
