@@ -690,7 +690,11 @@ class OdooManager:
                 self._terminate(process)
             except Exception as e:
                 self.bus.publish_log(f"{TAG} error while stopping: {e}")
-            kill_port(ODOO_PORT)
+            # _terminate already SIGKILLed odoo's whole process group, so the port
+            # is normally free now — only fall back to the (subprocess) lsof kill
+            # when something is *still* holding it (a stray orphan / external server)
+            if port_busy(ODOO_PORT):
+                kill_port(ODOO_PORT)
             if reader:
                 reader.join(timeout=2)
             with self.lock:
@@ -991,7 +995,13 @@ class Handler(BaseHTTPRequestHandler):
             body, err = self._read_json()
             db = (body or {}).get("db")
             bundle = (body or {}).get("bundle")
-            if err or not isinstance(db, str) or not db or not isinstance(bundle, str) or not bundle:
+            if (
+                err
+                or not isinstance(db, str)
+                or not db
+                or not isinstance(bundle, str)
+                or not bundle
+            ):
                 return self._send_json(400, {"ok": False, "error": "missing db or bundle"})
             # read straight from the stored bundle attachment — no odoo process; the
             # configured filestore root locates <filestore>/<db>/<store_fname>
