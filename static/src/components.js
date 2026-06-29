@@ -1918,11 +1918,16 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   if (!res) return;
 
   eventLog.add(`deleting target ${tgt.name}`);
-  if (res.closePrs) for (const p of prs) await code.closePrNoConfirm(p.github, p.number);
+  // these are independent network/git ops (close PRs, delete branches per repo,
+  // drop the db) — fire them concurrently rather than one slow await after another.
+  // Each helper handles its own errors and never rejects, so Promise.all is safe.
+  const ops = [];
+  if (res.closePrs) for (const p of prs) ops.push(code.closePrNoConfirm(p.github, p.number));
   if (res.delBranches)
     for (const b of branches)
-      await code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote);
-  if (res.dropDb && tgt.db) await db.drop(tgt.db);
+      ops.push(code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote));
+  if (res.dropDb && tgt.db) ops.push(db.drop(tgt.db));
+  await Promise.all(ops);
   config.updateConfig({ targets: config.config.targets.filter((t) => t.id !== tgt.id) });
 }
 
@@ -2259,16 +2264,18 @@ class TargetsScreen extends Component {
     if (!res) return;
 
     for (const t of targets) this.eventLog.add(`deleting target ${t.name}`);
-    if (res.closePrs) for (const p of allPrs) await this.code.closePrNoConfirm(p.github, p.number);
+    // independent ops across all selected targets — run them concurrently (each
+    // helper swallows its own errors, so Promise.all never rejects here)
+    const ops = [];
+    if (res.closePrs)
+      for (const p of allPrs) ops.push(this.code.closePrNoConfirm(p.github, p.number));
     if (res.delBranches)
       for (const b of allBranches)
-        await this.code.deleteBranchNoConfirm(
-          b.branch,
-          b.repo,
-          b.path,
-          !!res.delRemote && b.remote,
+        ops.push(
+          this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote),
         );
-    if (res.dropDbs) for (const db of allDbs) await this.db.drop(db);
+    if (res.dropDbs) for (const db of allDbs) ops.push(this.db.drop(db));
+    await Promise.all(ops);
 
     const deletedIds = new Set(targets.map((t) => t.id));
     this.config.updateConfig({
