@@ -1883,21 +1883,21 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
       key: "delBranches",
       type: "checkbox",
       label: `Also delete ${branches.length === 1 ? "its branch" : `its ${branches.length} branches`}`,
-      value: false,
+      value: true,
     });
   if (branches.some((b) => b.remote))
     fields.push({
       key: "delRemote",
       type: "checkbox",
       label: "…also on the remote (odoo-dev)",
-      value: false,
+      value: true,
     });
   if (prs.length)
     fields.push({
       key: "closePrs",
       type: "checkbox",
       label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
-      value: false,
+      value: true,
     });
   // only offer to drop the db if it actually exists (a never-run target has none)
   const dbExists = tgt.db && db.databases().some((d) => d.name === tgt.db);
@@ -1906,7 +1906,7 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
       key: "dropDb",
       type: "checkbox",
       label: `Drop database "${tgt.db}"`,
-      value: false,
+      value: true,
     });
 
   const res = await dialogs.open({
@@ -2231,28 +2231,28 @@ class TargetsScreen extends Component {
         key: "delBranches",
         type: "checkbox",
         label: `Also delete ${allBranches.length === 1 ? "their branch" : `their ${allBranches.length} branches`}`,
-        value: false,
+        value: true,
       });
     if (allBranches.some((b) => b.remote))
       fields.push({
         key: "delRemote",
         type: "checkbox",
         label: "…also on the remote (odoo-dev)",
-        value: false,
+        value: true,
       });
     if (allPrs.length)
       fields.push({
         key: "closePrs",
         type: "checkbox",
         label: `Close ${allPrs.length === 1 ? "their open pull request" : `their ${allPrs.length} open pull requests`}`,
-        value: false,
+        value: true,
       });
     if (allDbs.length)
       fields.push({
         key: "dropDbs",
         type: "checkbox",
         label: `Drop ${allDbs.length === 1 ? `database "${allDbs[0]}"` : `their ${allDbs.length} databases`}`,
-        value: false,
+        value: true,
       });
 
     const res = await this.dialogs.open({
