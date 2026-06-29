@@ -3000,9 +3000,14 @@ class PrsScreen extends Component {
     }
   }
 
-  // the listed PRs in mergebot's {github, number} shape (github === the slug)
+  // the open PRs in mergebot's {github, number} shape (github === the slug).
+  // mergebot only tracks the in-flight merge, so terminal PRs (GitHub merged or
+  // closed) never need a scrape — and the authored list is fetched --state all,
+  // so this is most of them. Skipping them avoids hundreds of pointless requests.
   _mbPrs() {
-    return this.rows().map((r) => ({ github: r.github, number: r.number }));
+    return this.rows()
+      .filter((r) => r.state === "open")
+      .map((r) => ({ github: r.github, number: r.number }));
   }
 
   // Refresh: reload the active segment, then re-probe mergebot (merged PRs stay
@@ -3213,7 +3218,11 @@ class PrsScreen extends Component {
       }))
       .filter((g) => {
         if (!status) return true;
+        // "merged" is the complement of "unmerged"; both read GitHub's terminal
+        // state (no mergebot needed). "error"/"blocked" are mergebot states that
+        // only exist on still-open PRs, which we do scrape.
         if (status === "unmerged") return g.prs.some((pr) => !this._isMerged(pr));
+        if (status === "merged") return g.prs.some((pr) => this._isMerged(pr));
         return g.prs.some((pr) => this.mbState(pr) === status);
       })
       .sort((a, b) => b.fav - a.fav || b.updated - a.updated);
