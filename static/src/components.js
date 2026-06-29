@@ -323,6 +323,7 @@ class SearchBox extends Component {
 class DirtyBadge extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
+
   props = props({ path: t.string(), repo: t.string() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
@@ -1159,6 +1160,7 @@ class DashboardScreen extends Component {
       path: r.path,
       ref: r.current || "",
       label: `${r.id} · ${r.current || "?"}`,
+      github: r.github || "",
     });
   }
 
@@ -1169,6 +1171,7 @@ class DashboardScreen extends Component {
       path: row.path,
       ref: row.branch || "",
       label: `${row.repo} · ${row.branch || "?"}`,
+      github: row.github || "",
     });
   }
 
@@ -2745,6 +2748,7 @@ class BranchesScreen extends Component {
       path: row.path,
       ref: row.branch,
       label: `${row.repo} · ${row.branch}`,
+      github: row.github || "",
     });
   }
 
@@ -4973,7 +4977,8 @@ class CommitsDialog extends Component {
             </div>
             <div t-if="this.isExpanded(c.sha)" class="commit-detail">
               <div class="commit-detail-meta">
-                <span class="commit-detail-hash" t-out="c.sha"/>
+                <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
+                <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
                 <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
               </div>
               <pre class="commit-body" t-out="this.message(c)"/>
@@ -4984,8 +4989,16 @@ class CommitsDialog extends Component {
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  props = props({ done: t.function(), path: t.string(), label: t.string(), ref: t.string() });
+  props = props({
+    done: t.function(),
+    path: t.string(),
+    label: t.string(),
+    ref: t.string(),
+    github: t.string().optional(),
+  });
+
   code = plugin(CodePlugin);
+  externalIcon = m(ICONS.external);
   commits = signal([]);
   loading = signal(true);
   error = signal("");
@@ -5034,6 +5047,11 @@ class CommitsDialog extends Component {
   // full commit message (subject + body) shown when a row is expanded
   message(c) {
     return c.body ? `${c.subject}\n\n${c.body}` : c.subject;
+  }
+
+  // the commit on GitHub (only linked when the repo has a github slug)
+  commitUrl(c) {
+    return `https://github.com/${this.props.github}/commit/${c.sha}`;
   }
 
   done(result) {

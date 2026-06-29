@@ -3498,13 +3498,33 @@ a.dash-ci:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+a.commit-detail-hash {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-decoration: none;
+}
+a.commit-detail-hash:hover {
+  text-decoration: underline;
+}
+a.commit-detail-hash svg {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
 .commit-detail-date {
   color: var(--l-text-dim);
   white-space: nowrap;
 }
 .commit-body {
-  margin: 0;
-  padding: 4px 16px 10px;
+  margin: 8px 16px 12px;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid var(--l-line-soft);
+  border-radius: 6px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--mono);
