@@ -102,7 +102,7 @@ const GED_CONFIG = {
     { label: "/odoo", href: "http://localhost:8069/dev/autologin?to=%2Fodoo%3Fdebug%3Dassets" },
     {
       label: "/web/tests",
-      href: "http://localhost:8069/dev/autologin?to=%2Fweb%2Ftests%3Fdebug%3Dassets%26timeout%3D500000%26manual%3Dtrue",
+      href: "http://localhost:8069/dev/autologin?to=%2Fweb%2Ftests%3Fdebug%3Dassets%26timeout%3D500000%26manual%3Dtrue%26preset%3Ddesktop",
     },
     { label: "🦉 docs", href: "https://odoo.github.io/owl/documentation/v3/owl/" },
     { label: "🦉 playground", href: "https://odoo.github.io/owl/playground/" },

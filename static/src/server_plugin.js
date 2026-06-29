@@ -17,6 +17,9 @@ export class ServerPlugin extends Plugin {
   code = plugin(CodePlugin);
   dialogs = plugin(DialogPlugin);
   status = signal({ state: "stopped" }); // whole status object, replaced wholesale
+  // optimistic in-flight action, for immediate button feedback in the gap between
+  // a click and the first real status event: "start" | "stop" | "restart" | ""
+  pending = signal("");
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
   lineListeners = new Set(); // tests/addons mirror lines from here
@@ -62,6 +65,7 @@ export class ServerPlugin extends Plugin {
       const prev = this.status();
       const s = JSON.parse(e.data);
       this.status.set(s);
+      this.pending.set(""); // the real state is in — drop the optimistic override
       this._resolveStartEvent(prev, s);
     });
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
@@ -103,8 +107,28 @@ export class ServerPlugin extends Plugin {
     };
   }
 
+  // fetch the live status once, synchronously, before the first render — the SSE
+  // delivers it too, but only after connecting, which leaves a "stopped" flash
+  // (Start → Stop) on a reload of an already-running server. Await this in the
+  // app's onWillStart. Best-effort: on failure the SSE still fills it in shortly.
+  async loadStatus() {
+    try {
+      const res = await fetch("/api/status");
+      if (res.ok) this.status.set(await res.json());
+    } catch {
+      // ignore — the SSE status event will arrive once connected
+    }
+  }
+
   lastTarget() {
     return this.activeTarget();
+  }
+
+  // the state the UI should reflect: an optimistic "start" click reads as
+  // "starting" before the backend confirms, so the navbar dot and the favicon
+  // flip the instant the button is pressed (and stay in lockstep with each other)
+  displayState() {
+    return this.pending() === "start" ? "starting" : this.status().state;
   }
 
   _targetName(id) {
@@ -160,11 +184,13 @@ export class ServerPlugin extends Plugin {
   _cancelStart() {
     if (this._startEid) this.eventLog.drop(this._startEid);
     this._startEid = null;
+    this.pending.set("");
   }
 
   _failStart() {
     if (this._startEid) this.eventLog.finish(this._startEid, "error");
     this._startEid = null;
+    this.pending.set("");
   }
 
   // drive the pending start event off the live status: "ok" when it enters
@@ -210,6 +236,7 @@ export class ServerPlugin extends Plugin {
   async start(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
+    this.pending.set("start"); // immediate feedback, before the confirm/POST awaits
     this._beginStart(`starting server (target: ${this._targetName(cfg.target)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
     this.lastConfig = cfg;
@@ -220,6 +247,7 @@ export class ServerPlugin extends Plugin {
   async restart(targetId, otherArgs) {
     const cfg = this.buildStartConfig(targetId, otherArgs);
     if (!cfg) return;
+    this.pending.set("restart"); // immediate feedback, before the confirm/POST awaits
     this._beginStart(`restarting server (target: ${this._targetName(cfg.target)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
     this.lastConfig = cfg;
@@ -238,6 +266,7 @@ export class ServerPlugin extends Plugin {
   }
 
   async stop() {
+    this.pending.set("stop"); // immediate feedback, before the POST round-trip
     this.eventLog.add("stopping server");
     await this._run("/api/stop", undefined, "stop");
   }

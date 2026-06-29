@@ -489,7 +489,9 @@ export class CodePlugin extends Plugin {
     try {
       this.eventLog.add(`WIP commit (${repo})`);
       await postJSON("/api/code/wip-commit", { path });
-      await this.load(true);
+      // a WIP commit is local-only (not pushed) — refresh this repo's branch state
+      // (dirty flag, ahead count, synced state) and leave PRs/runbot/mergebot as-is
+      await this.refreshBranches(new Set([repo]));
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
       this.dialogs.open({
@@ -516,7 +518,9 @@ export class CodePlugin extends Plugin {
     try {
       this.eventLog.add(`discarding changes (${repo})`);
       await postJSON("/api/code/discard", { path });
-      await this.load(true);
+      // discard only touches the working tree — refresh this repo's local branch
+      // state (clears its dirty flag) and leave PRs/runbot/mergebot as-is
+      await this.refreshBranches(new Set([repo]));
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
       this.dialogs.open({

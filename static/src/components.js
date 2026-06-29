@@ -28,6 +28,7 @@ const {
   markup,
   onMounted,
   onPatched,
+  onWillStart,
   onWillUnmount,
   useEffect,
   EventBus,
@@ -193,7 +194,8 @@ class Topbar extends Component {
   }
 
   get stateClass() {
-    const s = this.server.status().state;
+    // displayState() is orange the moment Start is clicked, held through "starting"
+    const s = this.server.displayState();
     return s === "running" ? "live" : s === "starting" ? "starting" : "idle";
   }
 
@@ -203,12 +205,19 @@ class Topbar extends Component {
       : "last target — server stopped";
   }
 
-  // the Start/Stop control on the right of the badge, driven by the server state
+  // the Start/Stop control on the right of the badge. "Starting…" spans the whole
+  // launch — from the optimistic click (pending) through the backend's "starting"
+  // phase — flipping to "Stop" only once the server reports running. An optimistic
+  // `pending` likewise drives the stopping side before the first status lands.
   get toggle() {
+    const pending = this.server.pending();
     const s = this.server.status().state;
-    if (s === "running" || s === "starting")
+    if (pending === "start" || s === "starting")
+      return { label: "Starting…", cls: "start", disabled: true, title: "starting the server…" };
+    if (pending === "stop" || pending === "restart" || s === "stopping")
+      return { label: "Stopping…", cls: "stop", disabled: true, title: "stopping the server…" };
+    if (s === "running")
       return { label: "Stop", cls: "stop", disabled: false, title: "stop the server" };
-    if (s === "stopping") return { label: "Stop", cls: "stop", disabled: true, title: "stopping…" };
     if (s === "disconnected")
       return { label: "Start", cls: "start", disabled: true, title: "server unreachable" };
     return { label: "Start", cls: "start", disabled: false, title: "start the active target" };
@@ -1216,9 +1225,9 @@ class ServerScreen extends Component {
           <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
         </div>
         <div class="panel-actions">
-          <button class="pbtn primary dash-start" t-att-disabled="!this.stopped" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/>Start</button>
-          <button class="pbtn stop" t-att-disabled="!this.canStop" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-          <button class="pbtn" t-att-disabled="!this.active" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
+          <button class="pbtn primary dash-start" t-att-disabled="!this.stopped or this.busy" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/><t t-out="this.startLabel"/></button>
+          <button class="pbtn stop" t-att-disabled="!this.canStop or this.busy" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
+          <button class="pbtn" t-att-disabled="!this.active or this.busy" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
           <button class="pbtn pbtn-icon" t-att-class="{active: this.term.open()}" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
           <span t-if="this.transient" class="run-state" t-out="this.transient"/>
           <div t-if="this.showLogs" class="log-controls">
@@ -1295,6 +1304,18 @@ class ServerScreen extends Component {
 
   get stopped() {
     return this.status().state === "stopped";
+  }
+
+  // an optimistic start/stop/restart is in flight (between the click and the
+  // first real status event) — disable the controls so it can't be double-fired
+  get busy() {
+    return !!this.server.pending();
+  }
+
+  get startLabel() {
+    return this.server.pending() === "start" || this.status().state === "starting"
+      ? "Starting…"
+      : "Start";
   }
 
   get disconnected() {
@@ -5272,8 +5293,14 @@ export class App extends Component {
   // the active screen's component class (a class, not an instance)
   currentScreen = computed(() => SCREENS[this.router.section()] || DashboardScreen);
   setup() {
+    // load the real server state before the first render, so a reload of a running
+    // server shows "Stop" straight away instead of flashing "Start" → "Stop"
+    onWillStart(() => this.server.loadStatus());
     useEffect(() => {
-      const state = this.server.status().state;
+      // displayState() (not the raw status) so the favicon flips in lockstep with
+      // the navbar dot — amber the instant Start is clicked, before the backend
+      // confirms — rather than lagging until the first status event
+      const state = this.server.displayState();
       const el = document.getElementById("favicon");
       // green up, amber starting, red disconnected, black (default) when stopped
       const icon =
