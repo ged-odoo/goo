@@ -3631,7 +3631,7 @@ class AssetsScreen extends Component {
           <div class="assets-analysis">
             <div class="assets-analysis-bar">
               <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
-              <span class="assets-analysis-title" t-out="this.assets.bundleData().name"/>
+              <span class="assets-analysis-title" t-out="this.assets.bundleData().name + '.min'"/>
               <span class="meta" t-out="this.analysisTotal"/>
               <div class="assets-analysis-views">
                 <SearchBox value="this.treeSearch"/>
@@ -3673,7 +3673,7 @@ class AssetsScreen extends Component {
                 <tbody>
                   <tr t-foreach="this.rows()" t-as="b" t-key="b.id">
                     <td class="addon-name">
-                      <button class="assets-name" t-att-title="'analyze ' + this.bundleBase(b.name)" t-on-click="() => this.analyze(b)" t-out="b.name"/>
+                      <button class="assets-name" t-att-title="'analyze ' + this.bundleBase(b.name) + '.min bundle'" t-on-click="() => this.analyze(b)" t-out="b.name"/>
                       <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
                     </td>
                     <td t-out="this.fmtSize(b.size)"/>
