@@ -495,7 +495,7 @@ class DashboardScreen extends Component {
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
                       </a>
-                      <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="'runbot: ' + ci.title">
+                      <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
                         <span class="dash-ci-dot"/><t t-out="ci.label"/>
                         <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
                       </span>
@@ -867,14 +867,19 @@ class DashboardScreen extends Component {
     return badge;
   }
 
-  // the runbot bundle URL for a target's bundle branch. The backend resolves the
-  // branch *name* to its canonical bundle URL (and only when a bundle actually
-  // exists — a never-pushed branch has none), so link to that rather than building
+  // the runbot URL for a target's bundle badge. The backend resolves the branch
+  // *name* to its canonical bundle URL (and only when a bundle actually exists — a
+  // never-pushed branch has none), so link to that rather than building
   // /runbot/bundle/<branch>, which runbot would mis-resolve to a foreign bundle when
-  // the branch ends in a number. "" until the runbot status loads / when no bundle.
+  // the branch ends in a number. When the branch has a PR, its runbot scrape is
+  // skipped (the GitHub CI rollup already covers it), so fall back to the ci/runbot
+  // check's URL from that rollup. "" only when neither source has a runbot link yet.
   runbotUrl(tgt) {
     const branch = this.bundleBranch(tgt);
-    return (branch && this.code.runbot()[branch]?.url) || "";
+    const scraped = branch && this.code.runbot()[branch]?.url;
+    if (scraped) return scraped;
+    const checks = this.bundleRow(tgt)?.pr?.ci?.checks || [];
+    return checks.find((c) => c.context === "ci/runbot")?.url || "";
   }
 
   // open the CI breakdown popover (full per-check status) anchored to the badge on
