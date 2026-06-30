@@ -935,6 +935,9 @@ section.hidden {
   background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 13px;
+  box-shadow:
+    0 1px 2px oklch(0.27 0.012 264 / 0.04),
+    0 4px 14px oklch(0.27 0.012 264 / 0.05);
   /* no overflow:hidden — the per-chip action menus must escape this strip */
 }
 .dash-repos-label {
@@ -1511,6 +1514,9 @@ a.dash-ci:hover {
   border: 1px solid var(--l-line);
   border-radius: 13px;
   overflow: hidden;
+  box-shadow:
+    0 1px 2px oklch(0.27 0.012 264 / 0.04),
+    0 4px 14px oklch(0.27 0.012 264 / 0.05);
 }
 .dash-star-row {
   display: flex;
