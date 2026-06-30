@@ -42,6 +42,15 @@ const {
 const appBus = new EventBus();
 const m = (s) => markup(s);
 
+// map a mergebot state string to its color category (the badge's CSS class)
+function mbCategory(s) {
+  if (s === "merged") return "merged";
+  if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
+  if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
+  if (["blocked", "error"].includes(s)) return "blocked";
+  return "other";
+}
+
 const ICONS = {
   refresh: `<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.6 4"/><polyline points="20 4 20 11 13 11"/></svg>`,
   clear: `<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>`,
@@ -537,6 +546,28 @@ class DashboardScreen extends Component {
               </div>
             </div>
           </section>
+
+          <!-- starred PRs — the PRs whose branch you starred in the PRs tab (Mine +
+               Reviewing), one per line, so the PRs you're tracking sit below your
+               targets. Hidden until something is starred. -->
+          <section t-if="this.starredPrs().length" class="dash-stars-sec">
+            <div class="dash-stars-head">
+              <h2 class="dash-stars-title">Starred PRs</h2>
+            </div>
+            <div class="dash-stars">
+              <div t-foreach="this.starredPrs()" t-as="pr" t-key="pr.github + ':' + pr.number" class="dash-star-row">
+                <button class="dash-star-fav" title="unstar — removes this branch from Starred PRs" t-on-click="() => this.toggleStar(pr)">★</button>
+                <a class="dash-pr-num" target="_blank" t-att-href="pr.url" t-att-title="'open #' + pr.number + ' on GitHub'" t-out="'#' + pr.number"/>
+                <span class="dash-star-branch" t-att-title="pr.branch" t-out="pr.branch || '—'"/>
+                <span class="dash-star-repo" t-out="pr.repoLabel"/>
+                <span class="dash-star-title" t-att-title="pr.title" t-out="pr.title || '—'"/>
+                <span class="pr-state" t-att-class="this.prState(pr)" t-out="this.prState(pr)"/>
+                <a t-if="this.prMb(pr)" class="dash-pr-state" t-att-class="this.prMbClass(pr)" target="_blank" t-att-href="this.code.mergebotUrl(pr.github, pr.number)" t-att-title="'mergebot: ' + this.prMb(pr) + (this.prMbDetail(pr) ? ' — missing: ' + this.prMbDetail(pr) : '')" t-out="this.prMb(pr)"/>
+                <span t-else="" class="dash-star-nomb">—</span>
+                <span class="dash-star-when" t-att-title="pr.updatedAt" t-out="pr.updatedAt ? this.cell(pr.updatedAt) : '—'"/>
+              </div>
+            </div>
+          </section>
           </div><!-- /.dash-layout -->
         </div>
       </div>
@@ -548,6 +579,7 @@ class DashboardScreen extends Component {
   db = plugin(DatabasePlugin);
   dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
+  review = plugin(ReviewPlugin); // starred branch groups + their reviewed PRs
   refreshIcon = m(ICONS.refresh);
   addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
   codeIcon = m(ICONS.code); // "Edit" (open all repos in the editor)
@@ -677,16 +709,22 @@ class DashboardScreen extends Component {
   setup() {
     this._dashLoad(false);
     this.db.load(); // the delete dialog needs the database list to offer "drop db"
+    // reviewed PRs back the starred-PRs section (favorites are mostly review
+    // targets); only fetch them when the user has actually starred something
+    if (this.review.favorites().length) this.review.load();
     // close the kebab menu on any outside click
     const closeMenu = () => this.menuId() && this.menuId.set("");
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
-    // fetch runbot + mergebot status only for what the target cards actually show
+    // fetch runbot + mergebot status only for what the target cards + starred PRs
+    // actually show (loadMergebot dedups, so the two PR lists can overlap freely)
     useEffect(() => {
       const branches = this._runbotBranches();
       if (branches.length) this.code.loadRunbot(branches);
       const prs = this._prs();
       if (prs.length) this.code.loadMergebot(prs);
+      const starred = this._starredMbPrs();
+      if (starred.length) this.code.loadMergebot(starred);
     });
   }
 
@@ -762,12 +800,7 @@ class DashboardScreen extends Component {
 
   // color category for a mergebot state
   mbClass(row) {
-    const s = this.mbState(row);
-    if (s === "merged") return "merged";
-    if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
-    if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
-    if (["blocked", "error"].includes(s)) return "blocked";
-    return "other";
+    return mbCategory(this.mbState(row));
   }
 
   // the runbot bundle branch for a target: a bundle is per branch name and a
@@ -1203,6 +1236,119 @@ class DashboardScreen extends Component {
   openPr(r) {
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
     window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
+  }
+
+  // ── starred PRs ──────────────────────────────────────────────────────────
+  // The branch groups the user starred in the PRs tab, surfaced below the target
+  // cards. Favorites are keyed by branch name (shared across Mine/Reviewing), so
+  // we gather every PR on a starred branch from both the authored list (code) and
+  // the reviewed list (review), dedupe by repo#number, group by branch and sort
+  // each branch's PRs in config repo order — the same shape the PRs tab renders.
+
+  // friendly repo id for a github slug ("odoo/enterprise" -> "enterprise"),
+  // falling back to the slug for repos not in config
+  get _slugToId() {
+    return Object.fromEntries(
+      (this.config.config.repos || []).filter((r) => r.github).map((r) => [r.github, r.id]),
+    );
+  }
+
+  starredGroups() {
+    const favs = new Set(this.review.favorites());
+    if (!favs.size) return [];
+    const slugToId = this._slugToId;
+    const seen = new Set();
+    const byBranch = new Map();
+    const add = (pr) => {
+      if (!pr.branch || !favs.has(pr.branch)) return;
+      const key = `${pr.github}#${pr.number}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      (byBranch.get(pr.branch) || byBranch.set(pr.branch, []).get(pr.branch)).push(pr);
+    };
+    // authored (Mine) — on the dashboard code PRs are narrowed to target/favorite
+    // repos, but a starred branch you authored almost always lives in one of those
+    for (const repo of this.code.prRepos()) {
+      if (repo.error) continue;
+      for (const pr of repo.prs)
+        add({
+          number: pr.number,
+          title: pr.title || "",
+          url: pr.url,
+          github: repo.github,
+          repoLabel: repo.id,
+          branch: pr.headRefName,
+          state: (pr.state || "").toLowerCase(),
+          draft: !!pr.isDraft,
+          updatedAt: pr.updatedAt,
+        });
+    }
+    // reviewed (Reviewing) — fetched unnarrowed, so this covers review targets
+    for (const pr of this.review.prs())
+      add({
+        number: pr.number,
+        title: pr.title || "",
+        url: pr.url,
+        github: pr.repo,
+        repoLabel: slugToId[pr.repo] || pr.repo,
+        branch: pr.branch,
+        state: pr.state,
+        draft: !!pr.draft,
+        updatedAt: pr.updatedAt,
+      });
+    const ts = (r) => Date.parse(r.updatedAt) || 0;
+    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
+    const rank = (r) => {
+      const i = repoOrder.indexOf(r.github);
+      return i === -1 ? repoOrder.length : i; // unknown repos sort last
+    };
+    return [...byBranch.entries()]
+      .map(([branch, prs]) => ({
+        branch,
+        prs: prs
+          .slice()
+          .sort((a, b) => rank(a) - rank(b) || a.github.localeCompare(b.github) || ts(b) - ts(a)),
+        updated: Math.max(...prs.map(ts)),
+      }))
+      .sort((a, b) => b.updated - a.updated);
+  }
+
+  // the starred PRs as one flat list (each carries its own branch) — branches are
+  // sorted most-recently-updated first, with a branch's PRs kept adjacent
+  starredPrs() {
+    return this.starredGroups().flatMap((g) => g.prs);
+  }
+
+  // unstar from a row — favorites are by branch (see ReviewPlugin), so this drops
+  // every PR on that branch from the list (the section hides once none are left)
+  toggleStar(pr) {
+    this.review.toggleFavorite(pr.branch);
+  }
+
+  // open, non-external starred PRs in mergebot's {github, number} shape (terminal
+  // and external PRs never get a useful scrape — same filter the target cards use)
+  _starredMbPrs() {
+    return this.starredPrs()
+      .filter((pr) => pr.state === "open" && !this.code.isExternalRepo(pr.github))
+      .map((pr) => ({ github: pr.github, number: pr.number }));
+  }
+
+  // mergebot helpers for the starred rows — same code.mergebot() store the target
+  // cards read (we load these PRs' state alongside), keyed by the PR's own slug/number
+  prMb(pr) {
+    return this.code.mergebot()[`${pr.github}#${pr.number}`] || "";
+  }
+
+  prMbDetail(pr) {
+    return this.code.mbDetails()[`${pr.github}#${pr.number}`] || "";
+  }
+
+  prMbClass(pr) {
+    return mbCategory(this.prMb(pr));
+  }
+
+  prState(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 
   cell(date) {
@@ -3259,12 +3405,7 @@ class PrsScreen extends Component {
   }
 
   mbClass(row) {
-    const s = this.mbState(row);
-    if (s === "merged") return "merged";
-    if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
-    if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
-    if (["blocked", "error"].includes(s)) return "blocked";
-    return "other";
+    return mbCategory(this.mbState(row));
   }
 
   mergebotUrl(row) {
