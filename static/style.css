@@ -1528,9 +1528,6 @@ a.dash-ci:hover {
 .dash-star-row:first-child {
   border-top: none;
 }
-.dash-star-row:hover {
-  background: var(--l-hover);
-}
 /* the leading star — always lit (every row here is starred); hover dims it to
    signal the click unstars (drops the branch from the list) */
 .dash-star-fav {
