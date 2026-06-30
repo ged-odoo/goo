@@ -5340,6 +5340,7 @@ class EventLog extends Component {
         <span class="event-log-title">Event log</span>
         <div class="event-log-tools">
           <label class="toggle" t-att-class="{on: this.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+          <label class="toggle" t-att-class="{on: this.config.config.auto_open_event_log}" t-on-click="() => this.toggleAutoOpen()" title="open this log automatically when a new event arrives"><span class="switch"/>Auto-open</label>
           <button class="tool-btn" t-on-click="() => this.log.clear()"><t t-out="this.clearIcon"/>Clear</button>
           <button class="event-log-x" t-on-click="() => this.log.toggle()" title="close">✕</button>
         </div>
@@ -5395,6 +5396,12 @@ class EventLog extends Component {
 
   toggleAuto() {
     this.autoScroll.set(!this.autoScroll());
+  }
+
+  // toggle the persisted "open the log when a new event arrives" setting — the same
+  // config flag the Settings checkbox controls
+  toggleAutoOpen() {
+    this.config.updateConfig({ auto_open_event_log: !this.config.config.auto_open_event_log });
   }
 
   // open the Tests tab and scroll its console to the anchored line. The console
