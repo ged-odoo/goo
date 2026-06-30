@@ -932,6 +932,9 @@ section.hidden {
   align-items: center;
   gap: 14px;
   padding: 9px 12px 9px 14px;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 13px;
   /* no overflow:hidden — the per-chip action menus must escape this strip */
 }
 .dash-repos-label {
