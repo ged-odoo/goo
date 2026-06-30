@@ -552,8 +552,11 @@ export class CodePlugin extends Plugin {
         const verb = force ? "force-pushing" : "pushing";
         this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
         await postJSON("/api/code/branch/push", { path, branch, force });
+        // a push only flips this repo's remote-tracking/synced state — refresh just
+        // that branch row, not every repo's PRs/runbot/mergebot
+        if (reload && repo) await this.refreshBranches(new Set([repo.id]));
       },
-      reload,
+      false, // never the _mutate full reload — refreshBranches above is enough
     );
   }
 }
