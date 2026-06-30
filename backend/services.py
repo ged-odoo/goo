@@ -122,7 +122,7 @@ class GitHubService:
                     "--limit",
                     "200",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,updatedAt,statusCheckRollup",
+                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ],
                 timeout=30,
             )

@@ -564,7 +564,7 @@ class DashboardScreen extends Component {
                 <span class="pr-state" t-att-class="this.prState(pr)" t-out="this.prState(pr)"/>
                 <a t-if="this.prMb(pr)" class="dash-pr-state" t-att-class="this.prMbClass(pr)" target="_blank" t-att-href="this.code.mergebotUrl(pr.github, pr.number)" t-att-title="'mergebot: ' + this.prMb(pr) + (this.prMbDetail(pr) ? ' — missing: ' + this.prMbDetail(pr) : '')" t-out="this.prMb(pr)"/>
                 <span t-else="" class="dash-star-nomb">—</span>
-                <span class="dash-star-when" t-att-title="pr.updatedAt" t-out="pr.updatedAt ? this.cell(pr.updatedAt) : '—'"/>
+                <span class="dash-star-when" t-att-title="this.prDate(pr)" t-out="this.prDate(pr) ? this.cell(this.prDate(pr)) : '—'"/>
               </div>
             </div>
           </section>
@@ -1280,6 +1280,7 @@ class DashboardScreen extends Component {
           branch: pr.headRefName,
           state: (pr.state || "").toLowerCase(),
           draft: !!pr.isDraft,
+          createdAt: pr.createdAt, // your own PRs show created, not updatedAt
           updatedAt: pr.updatedAt,
         });
     }
@@ -1296,7 +1297,7 @@ class DashboardScreen extends Component {
         draft: !!pr.draft,
         updatedAt: pr.updatedAt,
       });
-    const ts = (r) => Date.parse(r.updatedAt) || 0;
+    const ts = (r) => Date.parse(this.prDate(r)) || 0; // sort by the date shown
     const repoOrder = (this.config.config.repos || []).map((r) => r.github);
     const rank = (r) => {
       const i = repoOrder.indexOf(r.github);
@@ -1349,6 +1350,12 @@ class DashboardScreen extends Component {
 
   prState(pr) {
     return pr.draft && pr.state === "open" ? "draft" : pr.state;
+  }
+
+  // the date shown for a starred row: your own PRs show when they were opened
+  // (createdAt); reviewed PRs show updatedAt (no createdAt on those)
+  prDate(pr) {
+    return pr.createdAt || pr.updatedAt;
   }
 
   cell(date) {
@@ -3067,7 +3074,7 @@ class PrsScreen extends Component {
               <thead>
                 <tr>
                   <th t-if="this.mode() === 'mine'"><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th>
-                  <th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th>Last update</th>
+                  <th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th t-out="this.dateLabel"/>
                   <th t-if="this.mode() === 'mine'"/>
                 </tr>
               </thead>
@@ -3077,7 +3084,8 @@ class PrsScreen extends Component {
                     <input t-if="row.state === 'open' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.github + ':' + row.number)" t-on-change="() => this.toggleSelect(row.github + ':' + row.number)" title="select this PR for batch actions"/>
                   </td>
                   <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
-                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button><t t-out="g.branch || '—'"/>
+                    <span class="br-branch-name" t-att-class="{ 'select-toggle': this.groupSelectable(g) }" t-on-click="() => this.selectGroup(g)" t-out="g.branch || '—'"/>
+                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button>
                   </td>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
                   <td class="br-title" t-att-class="{ 'select-toggle': this.selectable(row) }"
@@ -3089,7 +3097,7 @@ class PrsScreen extends Component {
                     <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
                     <span t-else="" class="dim">—</span>
                   </td>
-                  <td t-att-title="row.updatedAt" t-out="row.updatedAt ? this.cell(row.updatedAt) : '—'"/>
+                  <td t-att-title="this.prDate(row)" t-out="this.prDate(row) ? this.cell(this.prDate(row)) : '—'"/>
                   <td t-if="this.mode() === 'mine'">
                     <div class="br-act">
                       <button t-if="row.state === 'open' and row.github" class="dash-kebab" title="PR actions"
@@ -3202,6 +3210,28 @@ class PrsScreen extends Component {
     if (this.selectable(row)) this.toggleSelect(`${row.github}:${row.number}`);
   }
 
+  // a branch group's selectable PRs (Mine, open, on GitHub)
+  _groupSelectable(g) {
+    return g.prs.filter((r) => this.selectable(r));
+  }
+
+  // whether clicking the branch name can select anything (drives the clickable cue)
+  groupSelectable(g) {
+    return this._groupSelectable(g).length > 0;
+  }
+
+  // clicking the branch name toggles selection of all its selectable PRs (a branch
+  // often pairs an odoo + enterprise PR): select them all when any is unselected,
+  // else clear them
+  selectGroup(g) {
+    const keys = this._groupSelectable(g).map((r) => `${r.github}:${r.number}`);
+    if (!keys.length) return;
+    const sel = new Set(this.selected());
+    const allSel = keys.every((k) => sel.has(k));
+    for (const k of keys) allSel ? sel.delete(k) : sel.add(k);
+    this.selected.set(sel);
+  }
+
   get _selectablePrs() {
     return this.rows().filter((r) => this.selectable(r));
   }
@@ -3299,6 +3329,8 @@ class PrsScreen extends Component {
   // repository. The two sources differ (state case, draft/branch/repo field names),
   // so both fold into { number, title, url, github (slug), repoLabel, branch,
   // state (lowercase), draft, updatedAt }; every downstream helper reads these.
+  // Mine rows also carry createdAt — the date column shows it for your own PRs
+  // (their updatedAt is noisy: it bumps on any comment/label long after the work).
   rows() {
     const q = this.search().trim().toLowerCase();
     const repoFilter = this.repoFilter();
@@ -3317,6 +3349,7 @@ class PrsScreen extends Component {
             branch: pr.headRefName,
             state: (pr.state || "").toLowerCase(),
             draft: !!pr.isDraft,
+            createdAt: pr.createdAt,
             updatedAt: pr.updatedAt,
           });
         }
@@ -3354,7 +3387,7 @@ class PrsScreen extends Component {
       const key = r.branch || "—";
       (byBranch.get(key) || byBranch.set(key, []).get(key)).push(r);
     }
-    const ts = (r) => Date.parse(r.updatedAt) || 0;
+    const ts = (r) => Date.parse(this.prDate(r)) || 0; // sort by the same date shown
     const repoOrder = (this.config.config.repos || []).map((r) => r.github);
     const rank = (r) => {
       const i = repoOrder.indexOf(r.github);
@@ -3414,6 +3447,17 @@ class PrsScreen extends Component {
 
   cell(date) {
     return timeAgo(date);
+  }
+
+  // the date shown in the last column: your own PRs show when they were opened
+  // (createdAt); reviewed PRs show GitHub's updatedAt (no createdAt on those rows)
+  prDate(row) {
+    return row.createdAt || row.updatedAt;
+  }
+
+  // header for that column, matching prDate's source per segment
+  get dateLabel() {
+    return this.mode() === "mine" ? "Created" : "Last update";
   }
 
   prState(row) {
