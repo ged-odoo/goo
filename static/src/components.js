@@ -3271,7 +3271,9 @@ class PrsScreen extends Component {
       fields: [],
     });
     if (!res) return;
-    for (const r of prs) await this.code.closePrNoConfirm(r.github, r.number);
+    // independent network ops — fire them concurrently rather than one slow await
+    // after another (closePrNoConfirm handles its own errors, so this never rejects)
+    await Promise.all(prs.map((r) => this.code.closePrNoConfirm(r.github, r.number)));
     this.selected.set(new Set());
   }
 
