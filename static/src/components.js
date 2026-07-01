@@ -20,6 +20,7 @@ import { TerminalPlugin } from "./terminal_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 import { WorktreePlugin } from "./worktree_plugin.js";
+import { ClaudePlugin } from "./claude_plugin.js";
 import { timeAgo, tintCmd, formatBytes } from "./utils.js";
 
 const {
@@ -1574,13 +1575,102 @@ class ServerScreen extends Component {
   }
 }
 
+// ─────────────────────────── Claude chat (worktree) ───────────────────────────
+
+// The chat pane inside a worktree's detail: a running conversation with a headless
+// Claude launched in that worktree's checkout. Type a task, hit Send; assistant text
+// and tool activity stream in as bubbles. State lives in ClaudePlugin (keyed by
+// target), so it survives pane/tab switches; the transcript re-primes on mount.
+class ClaudeChat extends Component {
+  static template = xml`
+    <div class="cchat">
+      <div class="cchat-msgs" t-ref="this.scroll">
+        <div t-if="!this.items.length" class="cchat-hint dim">
+          Send a task to Claude. It runs in this worktree's checkout with full autonomy —
+          it can edit files and run commands here without touching your main tree.
+        </div>
+        <t t-foreach="this.items" t-as="m" t-key="m_index">
+          <div t-if="m.role === 'user'" class="cmsg cmsg-user"><div class="cmsg-body" t-out="m.text"/></div>
+          <div t-elif="m.role === 'assistant'" class="cmsg cmsg-asst"><div class="cmsg-body" t-out="m.text"/></div>
+          <div t-elif="m.role === 'tool'" class="cmsg-tool">
+            <span class="cmsg-tool-name" t-out="m.tool"/>
+            <span t-if="m.text" class="cmsg-tool-text" t-out="m.text"/>
+          </div>
+          <div t-elif="m.role === 'error'" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.text"/></div>
+        </t>
+        <div t-if="this.running" class="cchat-working"><span class="spin"/>Claude is working…</div>
+      </div>
+      <div class="cchat-input">
+        <div class="cchat-toolbar">
+          <span class="cchat-model-label dim">Model</span>
+          <select class="cchat-model" t-on-change="(ev) => this.claude.setModel(ev.target.value)">
+            <option t-foreach="this.claude.models" t-as="opt" t-key="opt.value"
+                    t-att-value="opt.value" t-att-selected="opt.value === this.claude.model()" t-out="opt.label"/>
+          </select>
+        </div>
+        <div class="cchat-row">
+          <textarea t-ref="this.ta" class="cchat-ta" rows="2"
+                    placeholder="Describe a task —  Enter to send, Shift+Enter for a newline"
+                    t-att-disabled="this.running" t-on-keydown="(ev) => this.onKey(ev)"/>
+          <button t-if="!this.running" class="pbtn primary cchat-send" t-on-click="() => this.send()">Send</button>
+          <button t-else="" class="pbtn stop cchat-send" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
+        </div>
+      </div>
+    </div>`;
+
+  props = props({ target: t.any() });
+  claude = plugin(ClaudePlugin);
+  scroll = signal.ref(HTMLElement);
+  ta = signal.ref(HTMLElement);
+
+  setup() {
+    onMounted(() => this.claude.prime(this.props.target.id));
+    // follow the tail as items stream in (reads items() so the effect re-runs on change)
+    useEffect(
+      () => {
+        const el = this.scroll();
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+      () => [this.items.length, this.running],
+    );
+  }
+
+  get items() {
+    return this.claude.items(this.props.target.id);
+  }
+
+  get running() {
+    return this.claude.running(this.props.target.id);
+  }
+
+  onKey(ev) {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      this.send();
+    }
+  }
+
+  send() {
+    const el = this.ta();
+    const text = el ? el.value : "";
+    if (!text.trim() || this.running) return;
+    this.claude.send(this.props.target, text);
+    if (el) el.value = "";
+  }
+
+  stop() {
+    this.claude.stop(this.props.target);
+  }
+}
+
 // ─────────────────────────── Worktrees screen ───────────────────────────
 
 // A worktree is a first-class target backed by a git worktree checkout, running
 // its own odoo server. Left: the list of worktree targets; right: the selected
-// one's detail — start/stop/restart, /odoo + /web/tests, and its live server log.
+// one's detail — start/stop/restart, /odoo + /web/tests, its live server log, and a
+// Claude chat that runs tasks in the worktree.
 class WorktreeScreen extends Component {
-  static components = { LogConsole };
+  static components = { LogConsole, ClaudeChat };
   static template = xml`
     <section>
       <div class="panel">
@@ -1630,8 +1720,17 @@ class WorktreeScreen extends Component {
               <span class="wt-sp"/>
               <button class="pbtn danger" t-att-disabled="this.wt.running(this.sel)" title="remove the worktree" t-on-click="() => this.wt.remove(this.sel)">Remove</button>
             </div>
-            <div class="wt-log">
-              <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
+            <div class="wt-panes">
+              <div class="wt-tabs">
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')">Server log</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')">Claude</button>
+              </div>
+              <div class="wt-pane" t-if="this.pane() === 'log'">
+                <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
+              </div>
+              <div class="wt-pane" t-else="">
+                <ClaudeChat t-key="this.sel.id" target="this.sel"/>
+              </div>
             </div>
           </t>
           <div t-else="" class="wt-detail-empty dim">Select a worktree on the left, or create one.</div>
@@ -1645,6 +1744,7 @@ class WorktreeScreen extends Component {
   dialogs = plugin(DialogPlugin);
   externalIcon = m(ICONS.external);
   codeIcon = m(ICONS.code); // "Edit" (open the worktree's repos in the editor)
+  pane = signal("log"); // which detail pane is shown: "log" | "claude"
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog

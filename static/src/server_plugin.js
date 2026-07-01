@@ -26,6 +26,7 @@ export class ServerPlugin extends Plugin {
   gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
   worktreeListeners = new Set(); // WorktreePlugin updates per-worktree state from here
   worktreeLogListeners = new Set(); // WorktreePlugin streams per-worktree logs from here
+  claudeListeners = new Set(); // ClaudePlugin appends per-worktree chat items from here
   lastConfig = null; // last server start config (to resume after a one-shot run)
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), persisted + reactive
@@ -62,6 +63,11 @@ export class ServerPlugin extends Plugin {
   onWorktreeLog(cb) {
     this.worktreeLogListeners.add(cb);
     return () => this.worktreeLogListeners.delete(cb);
+  }
+
+  onClaude(cb) {
+    this.claudeListeners.add(cb);
+    return () => this.claudeListeners.delete(cb);
   }
 
   log(line) {
@@ -106,6 +112,11 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("worktree_log", (e) => {
       const d = JSON.parse(e.data);
       for (const cb of this.worktreeLogListeners) cb(d);
+    });
+    // per-worktree Claude chat items (assistant text / tool activity / result) → ClaudePlugin
+    es.addEventListener("claude", (e) => {
+      const d = JSON.parse(e.data);
+      for (const cb of this.claudeListeners) cb(d);
     });
   }
 

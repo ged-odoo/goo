@@ -4171,9 +4171,182 @@ a.commit-detail-hash svg {
   flex: 1;
 }
 
-/* the server log fills the rest of the detail column */
-.wt-log {
+/* the log / Claude panes fill the rest of the detail column */
+.wt-panes {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
+}
+.wt-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.wt-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  background: var(--l-card);
+  color: var(--l-text-mid);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.wt-tab:hover {
+  border-color: var(--l-accent-line);
+}
+.wt-tab.on {
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+  border-color: var(--l-accent-line);
+}
+.wt-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ── Claude chat ── */
+.cchat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--l-line);
+  border-radius: 12px;
+  background: var(--l-panel);
+  overflow: hidden;
+}
+.cchat-msgs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cchat-hint {
+  padding: 8px 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.cmsg {
+  max-width: 82%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cmsg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cmsg-user {
+  align-self: flex-end;
+  background: var(--l-accent-soft);
+  border: 1px solid var(--l-accent-line);
+  color: var(--l-text);
+}
+.cmsg-asst {
+  align-self: flex-start;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  color: var(--l-text);
+}
+.cmsg-error {
+  align-self: flex-start;
+  background: var(--l-red-bg, rgba(220, 60, 60, 0.1));
+  border: 1px solid var(--l-red);
+  color: var(--l-red);
+}
+/* one compact line per tool call: a mono pill + its detail */
+.cmsg-tool {
+  align-self: flex-start;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--l-text-dim);
+  padding-left: 2px;
+}
+.cmsg-tool-name {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  color: var(--l-text-mid);
+  font-weight: 600;
+}
+.cmsg-tool-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cchat-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--l-text-dim);
+  padding: 2px;
+}
+.cchat-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--l-line);
+  background: var(--l-card);
+}
+.cchat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.cchat-model-label {
+  font-size: 11px;
+}
+.cchat-model {
+  padding: 3px 8px;
+  border: 1px solid var(--l-line);
+  border-radius: 7px;
+  background: var(--l-panel);
+  color: var(--l-text-mid);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cchat-model:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
+.cchat-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.cchat-ta {
+  flex: 1;
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  background: var(--l-panel);
+  color: var(--l-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.cchat-ta:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
+.cchat-send {
+  flex: none;
 }

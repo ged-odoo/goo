@@ -15,6 +15,7 @@ import { ReviewPlugin } from "./review_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 import { WorktreePlugin } from "./worktree_plugin.js";
+import { ClaudePlugin } from "./claude_plugin.js";
 
 const PLUGINS = [
   ConfigPlugin,
@@ -31,6 +32,7 @@ const PLUGINS = [
   DialogPlugin,
   UpdatePlugin,
   WorktreePlugin,
+  ClaudePlugin,
 ];
 
 async function boot() {

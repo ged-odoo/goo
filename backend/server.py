@@ -122,6 +122,17 @@ class EventBus:
         for q in subscribers:
             q.put(("worktree_log", {"target": target, "line": line}))
 
+    def publish_claude(self, payload):
+        """Stream one Claude chat item for a worktree to the browser (SSE 'claude').
+        payload is {target, role, ...}: role 'assistant'/'tool'/'result'/'error' as a
+        headless `claude -p` run produces text, tool activity and its final result.
+        Per-target history lives in ClaudeManager and is primed via /api/worktree/
+        claude/history — this only pushes the live increments."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("claude", payload))
+
     def subscribe(self):
         """Register a client queue. Returns (queue, log backlog) atomically so
         no line is lost between the backlog replay and the live stream."""
@@ -367,6 +378,7 @@ def restart_goo():
     reloads its existing tab)."""
     MANAGER.shutdown()
     WORKTREES.shutdown()
+    CLAUDE.shutdown()
     args = [a for a in sys.argv[1:] if a != "--open"]
     os.execv(sys.executable, [sys.executable, os.path.join(GOO_DIR, "goo.py"), *args])
 
@@ -1014,9 +1026,241 @@ class WorktreeManager:
             self.stop(t)
 
 
+def _summarize_tool(name, inp):
+    """A short human label for a Claude tool call, shown as one activity line in the
+    chat (e.g. Edit -> the file's basename, Bash -> the command). Empty when the tool
+    has no useful one-liner — the frontend then shows just the tool name."""
+    inp = inp or {}
+    if name in ("Edit", "Write", "Read", "MultiEdit"):
+        return os.path.basename(inp.get("file_path", "")) or inp.get("file_path", "")
+    if name == "NotebookEdit":
+        return os.path.basename(inp.get("notebook_path", ""))
+    if name == "Bash":
+        return " ".join((inp.get("command") or "").split())[:120]
+    if name in ("Grep", "Glob"):
+        return inp.get("pattern", "")
+    if name == "Task":
+        return inp.get("description", "")
+    if name == "WebFetch":
+        return inp.get("url", "")
+    return ""
+
+
+class ClaudeManager:
+    """One headless Claude conversation per worktree target. A message spawns
+    `claude -p <prompt> --output-format stream-json` with the worktree checkout as
+    cwd, streaming its assistant text + tool activity to the browser (SSE 'claude')
+    and keeping a per-target transcript so a reload can re-prime the chat. The
+    session id from the first turn is stashed and passed as --resume on the next, so
+    each target is a continuing conversation. One run per target at a time.
+
+    Full autonomy by design: --permission-mode bypassPermissions, so Claude edits
+    files and runs commands unattended — the worktree is a throwaway checkout on its
+    own branch, so a task never touches the user's main tree.
+    """
+
+    HISTORY_MAX = 400  # chat items kept per target so a reload re-primes the transcript
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.lock = threading.Lock()
+        self.convos = {}  # target_id -> entry dict
+
+    def _entry(self, target):
+        e = self.convos.get(target)
+        if e is None:
+            e = {"state": "idle", "session": None, "process": None, "history": []}
+            self.convos[target] = e
+        return e
+
+    def _emit(self, target, item):
+        """Record one chat item in the target's transcript and push it to the browser.
+        `item` is a {role, ...} dict (assistant/tool/result/error); user prompts are
+        stored (for re-prime) but not re-pushed — the sending client shows them
+        optimistically."""
+        with self.lock:
+            e = self._entry(target)
+            e["history"].append(item)
+            del e["history"][: -self.HISTORY_MAX]
+        if item.get("role") != "user":
+            self.bus.publish_claude({"target": target, **item})
+
+    def send(self, target, prompt, cwd, add_dirs=None, model=None):
+        """Spawn a Claude turn for <target> in <cwd> (its worktree checkout), resuming
+        the target's session when one exists. `model` (a CLI alias/name, e.g. "sonnet"
+        or "opus[1m]") overrides the CLI's default when set. Returns (ok, detail)."""
+        if not target or not (prompt or "").strip():
+            return False, "missing target or prompt"
+        if not effects.is_dir(cwd):
+            return False, f"worktree checkout not found: {cwd}"
+        with self.lock:
+            e = self._entry(target)
+            if e["state"] == "running":
+                return False, "already_running"
+            session = e["session"]
+        cmd = [
+            "claude",
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
+        if model:
+            cmd += ["--model", model]
+        if session:
+            cmd += ["--resume", session]
+        for d in add_dirs or []:
+            if d:
+                cmd += ["--add-dir", d]
+        self._emit(target, {"role": "user", "text": prompt})
+        self.bus.publish_log(f"{TAG} claude ({target}) in {cwd}: {' '.join(cmd)}")
+        effects.trace("run", " ".join(cmd))
+        try:
+            process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid,
+            )
+        except (FileNotFoundError, OSError) as ex:
+            # `claude` not on PATH is the usual cause
+            self._emit(target, {"role": "error", "text": f"could not launch claude: {ex}"})
+            self._emit(target, {"role": "result", "ok": False})
+            return False, str(ex)
+        with self.lock:
+            e = self._entry(target)
+            e["state"] = "running"
+            e["process"] = process
+        # feed the prompt on stdin (avoids any arg-length / escaping limit) then close
+        try:
+            process.stdin.write(prompt)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        threading.Thread(target=self._reader, args=(target, process), daemon=True).start()
+        return True, {"state": "running"}
+
+    def _reader(self, target, process):
+        """Drain the stream-json output: forward each assistant text / tool call as a
+        chat item, capture the session id, and finalize on the result line (or on an
+        unexpected exit, surfacing whatever non-JSON output we saw as the error)."""
+        stray = []
+        got_result = False
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                stray.append(line)
+                continue
+            sid = obj.get("session_id")
+            if sid:
+                with self.lock:
+                    self._entry(target)["session"] = sid
+            if self._handle(target, obj):
+                got_result = True
+        ret = process.wait()
+        with self.lock:
+            e = self.convos.get(target)
+            # stop() or a newer turn now owns the entry (its process handle differs) —
+            # don't clobber its state or emit a spurious error for an interrupted turn
+            if not e or e["process"] is not process:
+                return
+            e["state"] = "idle"
+            e["process"] = None
+        if not got_result:
+            detail = "\n".join(stray[-12:]).strip() or f"claude exited (code {ret}) with no result"
+            self._emit(target, {"role": "error", "text": detail})
+            self._emit(target, {"role": "result", "ok": False})
+
+    def _handle(self, target, obj):
+        """Turn one stream-json event into chat items. Returns True on the final
+        result event (which ends the turn)."""
+        t = obj.get("type")
+        if t == "assistant":
+            for block in obj.get("message", {}).get("content", []):
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    self._emit(target, {"role": "assistant", "text": block["text"].strip()})
+                elif block.get("type") == "tool_use":
+                    name = block.get("name", "")
+                    self._emit(
+                        target,
+                        {
+                            "role": "tool",
+                            "tool": name,
+                            "text": _summarize_tool(name, block.get("input")),
+                        },
+                    )
+        elif t == "result":
+            # the turn is over at the result — flip to idle now (not only once stdout
+            # hits EOF a moment later) so a reload in between doesn't prime a stuck run.
+            # Safe without a process guard: state is still "running" here, so no newer
+            # turn can have started yet (send() refuses while running).
+            with self.lock:
+                e = self.convos.get(target)
+                if e:
+                    e["state"] = "idle"
+            ok = not obj.get("is_error")
+            item = {"role": "result", "ok": ok, "cost": obj.get("total_cost_usd")}
+            if not ok:
+                item["error"] = obj.get("result") or obj.get("error") or "claude reported an error"
+            self._emit(target, item)
+            return True
+        return False
+
+    def stop(self, target):
+        """Interrupt a running Claude turn (idempotent)."""
+        with self.lock:
+            e = self.convos.get(target)
+            process = e["process"] if e and e["state"] == "running" else None
+        if process is not None:
+            self.bus.publish_log(f"{TAG} stopping claude ({target})...")
+            try:
+                terminate_process(process)
+            except Exception as ex:
+                self.bus.publish_log(f"{TAG} error stopping claude ({target}): {ex}")
+        with self.lock:
+            e = self.convos.get(target)
+            if e:
+                e["state"] = "idle"
+                e["process"] = None
+        self.bus.publish_claude({"target": target, "role": "result", "ok": True})
+        return True, "stopped"
+
+    def history_for(self, target):
+        """The transcript + live state for one target, to re-prime the chat on load."""
+        with self.lock:
+            e = self.convos.get(target)
+            if not e:
+                return {"items": [], "state": "idle"}
+            return {"items": list(e["history"]), "state": e["state"]}
+
+    def forget(self, target):
+        """Drop a target's conversation (its worktree was removed)."""
+        self.stop(target)
+        with self.lock:
+            self.convos.pop(target, None)
+
+    def shutdown(self):
+        """Stop every running turn (goo exit / restart)."""
+        with self.lock:
+            targets = [t for t, e in self.convos.items() if e["state"] == "running"]
+        for t in targets:
+            self.stop(t)
+
+
 BUS = EventBus()
 MANAGER = OdooManager(BUS)
 WORKTREES = WorktreeManager(BUS)
+CLAUDE = ClaudeManager(BUS)
 # services layer over the IO seam (effects): external state fetched + parsed +
 # cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min, databases 1 min.
 # A `refresh` flag on the read endpoints bypasses the cache (the UI's manual Refresh).
@@ -1364,6 +1608,9 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             if dir_path:
                 effects.remove_tree(dir_path)  # sweep the now-empty parent folder
+            target = (body or {}).get("target")
+            if target:
+                CLAUDE.forget(target)  # its checkout is gone; drop the chat + any run
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
         elif path == "/api/worktree/list":
             body, err = self._read_json()
@@ -1377,6 +1624,34 @@ class Handler(BaseHTTPRequestHandler):
             if err or not target:
                 return self._send_json(400, {"ok": False, "error": "missing target"})
             self._send_json(200, {"ok": True, "lines": WORKTREES.logs_for(target)})
+        elif path == "/api/worktree/claude":
+            body, err = self._read_json()
+            target = (body or {}).get("target")
+            prompt = (body or {}).get("prompt")
+            cwd = (body or {}).get("cwd")
+            add_dirs = (body or {}).get("addDirs") or []
+            model = (body or {}).get("model")
+            if err or not target or not prompt or not cwd:
+                return self._send_json(400, {"ok": False, "error": "missing target, prompt or cwd"})
+            ok, detail = CLAUDE.send(target, prompt, cwd, add_dirs, model=model)
+            if ok:
+                self._send_json(200, {"ok": True, "state": detail["state"]})
+            else:
+                code = 409 if detail == "already_running" else 400
+                self._send_json(code, {"ok": False, "error": detail})
+        elif path == "/api/worktree/claude/stop":
+            body, err = self._read_json()
+            target = (body or {}).get("target")
+            if err or not target:
+                return self._send_json(400, {"ok": False, "error": "missing target"})
+            ok, detail = CLAUDE.stop(target)
+            self._send_json(200, {"ok": ok, "error": None if ok else detail})
+        elif path == "/api/worktree/claude/history":
+            body, err = self._read_json()
+            target = (body or {}).get("target")
+            if err or not target:
+                return self._send_json(400, {"ok": False, "error": "missing target"})
+            self._send_json(200, {"ok": True, **CLAUDE.history_for(target)})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
             name = (body or {}).get("name")
@@ -1928,6 +2203,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
     atexit.register(MANAGER.shutdown)
     atexit.register(WORKTREES.shutdown)
+    atexit.register(CLAUDE.shutdown)
     # check whether goo's checkout is behind origin/master — at startup, then hourly
     threading.Thread(target=goo_update_loop, daemon=True).start()
     try:
@@ -1937,6 +2213,7 @@ def main():
     finally:
         MANAGER.shutdown()
         WORKTREES.shutdown()
+        CLAUDE.shutdown()
     return 0
 
 
