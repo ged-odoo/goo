@@ -1327,11 +1327,14 @@ class AssetsService:
     # fallback when the client sends no filestore root (the config always has one)
     DEFAULT_FILESTORE = os.path.expanduser("~/.local/share/Odoo/filestore")
 
-    def breakdown(self, db, bundle, filestore=None):
+    def breakdown(self, db, bundle, filestore=None, kind=None):
         """Per-file minified-size breakdown of a bundle, read straight from its
         stored attachments — the actual shipped bytes, so it's version-correct and
         needs no odoo process. `filestore` is the configured filestore root (a db's
-        files live in <filestore>/<db>/<store_fname>). Slices the bundle on the
+        files live in <filestore>/<db>/<store_fname>). `kind` scopes the read to one
+        asset: "js" → the .min.js (its code + XML templates), "css" → the .min.css;
+        None reads both. Scoping matches the size shown for the attachment the caller
+        clicked (a .min.js row is JS-only, not JS+CSS). Slices the bundle on the
         per-file "/* /path */" markers and the XML-templates banner. Returns
         (data, error); data is {js: [[path, bytes], …], css: […], xml: […]}, None on
         failure (e.g. the bundle was never generated to disk)."""
@@ -1343,8 +1346,10 @@ class AssetsService:
         if rows is None:
             return None, "could not read the database"
         filestore = filestore or self.DEFAULT_FILESTORE
-        js_text = self._asset_text(db, filestore, rows.get("min.js"))
-        css_text = self._asset_text(db, filestore, rows.get("min.css"))
+        want_js = kind in (None, "js")
+        want_css = kind in (None, "css")
+        js_text = self._asset_text(db, filestore, rows.get("min.js")) if want_js else None
+        css_text = self._asset_text(db, filestore, rows.get("min.css")) if want_css else None
         if js_text is None and css_text is None:
             return None, 'bundle not generated yet — run "Generate asset bundles" first'
         parts = self._TPL_SPLIT.split(js_text or "", maxsplit=1)

@@ -3631,7 +3631,7 @@ class AssetsScreen extends Component {
           <div class="assets-analysis">
             <div class="assets-analysis-bar">
               <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
-              <span class="assets-analysis-title" t-out="this.assets.bundleData().name + '.min'"/>
+              <span class="assets-analysis-title" t-out="this.analysisTitle"/>
               <span class="meta" t-out="this.analysisTotal"/>
               <div class="assets-analysis-views">
                 <SearchBox value="this.treeSearch"/>
@@ -3731,9 +3731,20 @@ class AssetsScreen extends Component {
     return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
   }
 
-  // analyze the bundle this row belongs to (its per-file size breakdown)
+  // analyze the bundle this row belongs to (its per-file size breakdown), scoped to
+  // the clicked attachment's kind so the total matches its row size: any .css/.css.map
+  // → css, everything else (.min.js, .js.map, …) → js.
   analyze(b) {
-    this.assets.analyze(this.bundleBase(b.name));
+    const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
+    this.assets.analyze(this.bundleBase(b.name), kind);
+  }
+
+  // the analyzed attachment's name, e.g. "web.assets_web.min.js" — the .min asset the
+  // breakdown was scoped to, so it reads as the row that was clicked
+  get analysisTitle() {
+    const d = this.assets.bundleData();
+    if (!d) return "";
+    return `${d.name}.min.${d.kind === "css" ? "css" : "js"}`;
   }
 
   // total minified size across the analyzed bundle's js + css + xml

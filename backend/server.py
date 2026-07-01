@@ -1004,8 +1004,12 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 return self._send_json(400, {"ok": False, "error": "missing db or bundle"})
             # read straight from the stored bundle attachment — no odoo process; the
-            # configured filestore root locates <filestore>/<db>/<store_fname>
-            data, error = ASSETS.breakdown(db, bundle, _filestore(body))
+            # configured filestore root locates <filestore>/<db>/<store_fname>. kind
+            # scopes to the clicked asset ("js"/"css"); anything else reads both.
+            kind = (body or {}).get("kind")
+            if kind not in ("js", "css"):
+                kind = None
+            data, error = ASSETS.breakdown(db, bundle, _filestore(body), kind)
             if data is None:
                 return self._send_json(400, {"ok": False, "error": error})
             self._send_json(200, {"ok": True, "bundle": bundle, **data})

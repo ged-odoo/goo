@@ -867,6 +867,28 @@ class AssetsServiceTest(unittest.TestCase):
         self.assertEqual(data["css"], [["/e/f.scss", 5]])
         self.assertEqual(data["xml"], [["web/Foo", 4]])  # ")XYZ", dotted name -> path
 
+    def test_breakdown_scoped_to_kind(self):
+        # kind scopes the read to one asset so the total matches the clicked row:
+        # "js" reads only the .min.js (code + templates), "css" only the .min.css
+        psql = "web.assets_x.min.js|ab/abc|\nweb.assets_x.min.css|cd/cde|\n"
+        js = '/* /a/b.js */AAAA/******Templates******/registerTemplate("web.Foo")XYZ'
+        css = "/* /e/f.scss */CCCCC"
+        files = {"/fs/db1/ab/abc": js, "/fs/db1/cd/cde": css}
+        svc = lambda: services.AssetsService(  # noqa: E731
+            FakeIO(runs={"ir_attachment": completed(stdout=psql)}, files=dict(files)),
+            TTLCache(ttl=0),
+        )
+        js_data, err = svc().breakdown("db1", "web.assets_x", filestore="/fs", kind="js")
+        self.assertIsNone(err)
+        self.assertEqual(js_data["js"], [["/a/b.js", 4]])
+        self.assertEqual(js_data["xml"], [["web/Foo", 4]])
+        self.assertEqual(js_data["css"], [])  # css not read
+        css_data, err = svc().breakdown("db1", "web.assets_x", filestore="/fs", kind="css")
+        self.assertIsNone(err)
+        self.assertEqual(css_data["css"], [["/e/f.scss", 5]])
+        self.assertEqual(css_data["js"], [])  # js not read
+        self.assertEqual(css_data["xml"], [])
+
     def test_breakdown_rejects_bad_bundle_name(self):
         io = FakeIO(run_result=completed(stdout=""))
         data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown("db1", "bad name!")

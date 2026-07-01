@@ -103,17 +103,19 @@ export class AssetsPlugin extends Plugin {
   }
 
   // analyze a bundle's contents: ask the backend for the per-file minified-size
-  // breakdown of its js/css/xml (read from the stored bundle), and open the view
-  async analyze(bundle) {
+  // breakdown (read from the stored bundle), and open the view. kind scopes it to the
+  // clicked asset — "js" → the .min.js (code + XML templates), "css" → the .min.css —
+  // so the total matches that attachment's row size instead of summing js+css.
+  async analyze(bundle, kind = "js") {
     const db = this.selectedDb();
     if (!db || !bundle) return;
     this.analyzing.set(true);
     this.analyzeError.set("");
-    this.bundleData.set({ name: bundle, js: [], css: [], xml: [] }); // marks "open" while loading
+    this.bundleData.set({ name: bundle, kind, js: [], css: [], xml: [] }); // marks "open" while loading
     try {
       const filestore = this.config.config.filestore || "";
-      const data = await postJSON("/api/assets/breakdown", { db, bundle, filestore });
-      this.bundleData.set({ name: bundle, js: data.js, css: data.css, xml: data.xml });
+      const data = await postJSON("/api/assets/breakdown", { db, bundle, filestore, kind });
+      this.bundleData.set({ name: bundle, kind, js: data.js, css: data.css, xml: data.xml });
     } catch (e) {
       this.analyzeError.set(e.message);
     } finally {
