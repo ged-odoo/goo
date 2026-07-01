@@ -339,6 +339,13 @@ export class WorktreePlugin extends Plugin {
     if (this.selectedId() === tgt.id) this.selectedId.set("");
   }
 
+  // open the worktree's repo folders in the configured editor (all in one window);
+  // works whether or not the server is running — it's just the checkout on disk
+  openEditor(tgt) {
+    const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
+    if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
+  }
+
   // ── autologin URLs against the worktree server's port ("" when not running) ──
   odooUrl(tgt) {
     const port = this.port(tgt);

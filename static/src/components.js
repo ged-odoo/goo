@@ -1618,6 +1618,7 @@ class WorktreeScreen extends Component {
               <button class="pbtn stop" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.stopServer(this.sel)"><span class="ic square"/>Stop</button>
               <button class="pbtn" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.restartServer(this.sel)"><span class="restart"/>Restart</button>
               <span class="wt-sp"/>
+              <button class="pbtn" title="open the worktree's repos in the editor" t-on-click="() => this.wt.openEditor(this.sel)"><t t-out="this.codeIcon"/>Edit</button>
               <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.wt.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.wt.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-sp"/>
@@ -1637,6 +1638,7 @@ class WorktreeScreen extends Component {
   db = plugin(DatabasePlugin);
   dialogs = plugin(DialogPlugin);
   externalIcon = m(ICONS.external);
+  codeIcon = m(ICONS.code); // "Edit" (open the worktree's repos in the editor)
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
