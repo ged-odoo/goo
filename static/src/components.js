@@ -3745,12 +3745,18 @@ class AssetsScreen extends Component {
   }
 
   // the analyzed bundle's files as a flat list ({path, bytes}), search-filtered,
-  // largest first
+  // largest first. Same path can occur more than once (e.g. a template and its
+  // registerTemplateExtension share their base template's name) — merge those into
+  // one row (sizes summed), matching how the tree view aggregates by path already.
   get flat() {
     const d = this.assets.bundleData();
     if (!d) return [];
     const q = this.treeSearch().trim().toLowerCase();
-    return [...(d.js || []), ...(d.css || []), ...(d.xml || [])]
+    const byPath = new Map();
+    for (const [path, bytes] of [...(d.js || []), ...(d.css || []), ...(d.xml || [])]) {
+      byPath.set(path, (byPath.get(path) || 0) + bytes);
+    }
+    return [...byPath.entries()]
       .map(([path, bytes]) => ({ path, bytes }))
       .filter((f) => !q || f.path.toLowerCase().includes(q))
       .sort((a, b) => b.bytes - a.bytes);
