@@ -3643,15 +3643,17 @@ class AssetsScreen extends Component {
               <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing…</div>
               <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
               <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
-              <t t-elif="this.view() === 'tree'">
-                <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
-              </t>
-              <t t-else="">
-                <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
-                  <span class="bnode-name" t-out="f.path"/>
-                  <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
-                </div>
-              </t>
+              <div t-else="" class="assets-tree-inner">
+                <t t-if="this.view() === 'tree'">
+                  <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
+                </t>
+                <t t-else="">
+                  <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
+                    <span class="bnode-name" t-out="f.path"/>
+                    <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
+                  </div>
+                </t>
+              </div>
             </div>
           </div>
         </t>

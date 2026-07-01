@@ -3037,6 +3037,12 @@ a.dash-ci:hover {
   padding: 6px 0;
   font-size: 12.5px;
 }
+/* rows size to their longest name + size, not the full panel width (scrollbar
+   stays on .assets-tree, matching the .brg-table pattern) */
+.assets-tree-inner {
+  width: fit-content;
+  max-width: 100%;
+}
 .bnode-row,
 .bflat-row {
   display: flex;
