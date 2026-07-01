@@ -7,7 +7,11 @@ export const VERSION = "1.1.0";
 export const DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
   venv_activate: "", // optional; when set, prefixed before the start command (source … && odoo-bin)
-  start_cmd: "cd /home/odoo/work/community && ./odoo-bin",
+  // path to the odoo-bin executable; goo cd's into the community checkout and runs
+  // it. Empty = use <community-path>/odoo-bin. Worktree servers always run their own.
+  server_path: "/home/odoo/work/community/odoo-bin",
+  // where per-target git worktrees are created: <worktree_dir>/<slug>/<repo>
+  worktree_dir: "/home/odoo/work-trees",
   db_user: "odoo",
   db_password: "odoo",
   // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
@@ -90,6 +94,7 @@ export const DEFAULT_CONFIG = {
 export const SECTIONS = [
   "dashboard",
   "server",
+  "worktree",
   "branches",
   "prs",
   "reviews",

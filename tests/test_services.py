@@ -639,6 +639,86 @@ class GitServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(notes[-1], ("checking out nope (community)", "error"))
 
+    def test_worktree_add_new_branch(self):
+        notes = []
+        io = FakeIO()
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, err = svc.worktree_add(
+            "/repo/community",
+            "/wt/demo/community",
+            "wt-demo",
+            repo="community",
+            new_branch=True,
+            start_point="master",
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        # ran `git worktree add -b <branch> <wp> <start_point>`
+        cmd = " ".join(io.run_calls[-1])
+        self.assertIn("worktree add -b wt-demo /wt/demo/community master", cmd)
+        self.assertEqual(
+            notes,
+            [
+                ("creating worktree wt-demo (community)", "start"),
+                ("creating worktree wt-demo (community)", "done"),
+            ],
+        )
+
+    def test_worktree_add_existing_branch(self):
+        io = FakeIO()
+        ok, _ = services.GitService(io).worktree_add(
+            "/repo/community", "/wt/demo/community", "19.0", repo="community"
+        )
+        self.assertTrue(ok)
+        cmd = " ".join(io.run_calls[-1])
+        self.assertIn("worktree add /wt/demo/community 19.0", cmd)
+        self.assertNotIn(" -b ", cmd)
+
+    def test_worktree_add_requires_start_point_for_new_branch(self):
+        ok, err = services.GitService(FakeIO()).worktree_add(
+            "/repo/community", "/wt/demo/community", "wt-demo", new_branch=True
+        )
+        self.assertFalse(ok)
+        self.assertIn("start point", err)
+
+    def test_worktree_add_error_notifies(self):
+        notes = []
+        io = FakeIO(run_result=completed(returncode=128, stderr="fatal: already checked out"))
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, err = svc.worktree_add(
+            "/repo/community",
+            "/wt/demo/community",
+            "wt-demo",
+            repo="community",
+            new_branch=True,
+            start_point="master",
+        )
+        self.assertFalse(ok)
+        self.assertIn("already checked out", err)
+        self.assertEqual(notes[-1], ("creating worktree wt-demo (community)", "error"))
+
+    def test_worktree_remove(self):
+        notes = []
+        io = FakeIO()
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, _ = svc.worktree_remove("/repo/community", "/wt/demo/community", repo="community")
+        self.assertTrue(ok)
+        cmd = " ".join(io.run_calls[-1])
+        self.assertIn("worktree remove --force /wt/demo/community", cmd)
+        self.assertEqual(notes[-1], ("removing worktree (community)", "done"))
+
+    def test_worktree_remove_error(self):
+        io = FakeIO(run_result=completed(returncode=1, stderr="fatal: not a working tree"))
+        ok, err = services.GitService(io).worktree_remove("/repo/community", "/wt/demo/community")
+        self.assertFalse(ok)
+        self.assertIn("not a working tree", err)
+
     def test_delete_branch_no_dev_remote_skips_remote(self):
         # local delete ok; no odoo-dev remote → remote delete skipped (no error)
         io = FakeIO(

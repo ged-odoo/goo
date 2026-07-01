@@ -103,6 +103,25 @@ class EventBus:
         for q in subscribers:
             q.put(("goo_update", status))
 
+    def publish_worktree(self, payload):
+        """Push a per-target worktree-server status change to the browser (SSE
+        'worktree') so the Worktree screen updates live as a server moves through
+        starting -> running -> stopped."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("worktree", payload))
+
+    def publish_worktree_log(self, target, line):
+        """Stream one worktree server's log line to the browser (SSE 'worktree_log',
+        {target, line}). Unlike publish_log this does NOT touch the shared backlog
+        ring buffer — worktree scrollback is kept per-server in WorktreeManager and
+        primed on selection via /api/worktree/logs."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("worktree_log", {"target": target, "line": line}))
+
     def subscribe(self):
         """Register a client queue. Returns (queue, log backlog) atomically so
         no line is lost between the backlog replay and the live stream."""
@@ -158,6 +177,28 @@ def kill_port(port):
                     pass
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+
+
+def terminate_process(process):
+    """Signal-escalate a process group until it exits: graceful SIGTERM, then a
+    second SIGTERM (odoo needs a second signal to force shutdown when graceful
+    hangs), then SIGKILL as a last resort. Safe on an already-gone process."""
+    if process is None:
+        return
+    try:
+        pgid = os.getpgid(process.pid)
+    except (ProcessLookupError, OSError):
+        return
+    for sig, wait in ((signal.SIGTERM, 4), (signal.SIGTERM, 3), (signal.SIGKILL, 3)):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, OSError):
+            return  # already gone
+        try:
+            process.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def open_in_editor(editor, paths):
@@ -325,6 +366,7 @@ def restart_goo():
     rebinds the port. `--open` is dropped so no extra browser tab opens (the client
     reloads its existing tab)."""
     MANAGER.shutdown()
+    WORKTREES.shutdown()
     args = [a for a in sys.argv[1:] if a != "--open"]
     os.execv(sys.executable, [sys.executable, os.path.join(GOO_DIR, "goo.py"), *args])
 
@@ -406,13 +448,16 @@ def build_odoo_cmd(config):
     db_user = config.get("db_user", "odoo")
     db_password = config.get("db_password", "odoo")
     venv_activate = config.get("venv_activate", "")
-    # the configurable launch prefix (cwd + odoo-bin); goo appends the dynamic args
-    start_cmd = config.get("start_cmd") or f"cd {community_path} && ./odoo-bin"
+    # the odoo-bin executable; goo cd's into the community checkout and appends the
+    # dynamic args. Defaults to that checkout's own odoo-bin, so a worktree start
+    # config — which passes the worktree's community path — automatically runs the
+    # worktree's odoo-bin without any extra wiring.
+    server_path = config.get("server_path") or os.path.join(community_path, "odoo-bin")
 
     parts = []
     if venv_activate:
         parts.append(venv_activate)
-    parts.append(start_cmd)
+    parts.append(f"cd {community_path} && {server_path}")
     cmd = " && ".join(parts)
     cmd += (
         f" -r {db_user} -w {db_password} -d {db} "
@@ -490,12 +535,12 @@ def build_shell_cmd(config, db):
     db_user = config.get("db_user", "odoo")
     db_password = config.get("db_password", "odoo")
     venv_activate = config.get("venv_activate", "")
-    start_cmd = config.get("start_cmd") or f"cd {community_path} && ./odoo-bin"
+    server_path = config.get("server_path") or os.path.join(community_path, "odoo-bin")
 
     parts = []
     if venv_activate:
         parts.append(venv_activate)
-    parts.append(start_cmd)
+    parts.append(f"cd {community_path} && {server_path}")
     cmd = " && ".join(parts)
     cmd += (
         f" shell -d {db} --no-http --no-database-list"
@@ -714,25 +759,9 @@ class OdooManager:
         return True, "stopped"
 
     def _terminate(self, process):
-        """Signal-escalate the odoo process group until it exits: graceful
-        SIGTERM, then a second SIGTERM (odoo needs a second signal to force the
-        shutdown when graceful hangs), then SIGKILL as a last resort."""
-        if process is None:
-            return
-        try:
-            pgid = os.getpgid(process.pid)
-        except (ProcessLookupError, OSError):
-            return
-        for sig, wait in ((signal.SIGTERM, 4), (signal.SIGTERM, 3), (signal.SIGKILL, 3)):
-            try:
-                os.killpg(pgid, sig)
-            except (ProcessLookupError, OSError):
-                return  # already gone
-            try:
-                process.wait(timeout=wait)
-                return
-            except subprocess.TimeoutExpired:
-                continue
+        """Signal-escalate the odoo process group until it exits (see the module
+        terminate_process)."""
+        terminate_process(process)
 
     def restart(self, config):
         ok, detail = self.stop()
@@ -808,8 +837,186 @@ class OdooManager:
             self.bus.publish_status(self.status())
 
 
+class WorktreeManager:
+    """Owns the per-target worktree odoo servers — one process per target, each on
+    its own port, all running concurrently with the main OdooManager and with each
+    other (so several branches can run at once). Keyed by target id. Lighter than
+    OdooManager: no PTY/terminal — just readiness detection, per-server log
+    streaming (SSE 'worktree_log' + a bounded tail), and a clean stop. State per
+    entry: starting -> running -> stopping -> stopped.
+    """
+
+    LOG_TAIL = 500  # lines kept per server so a freshly-selected worktree has scrollback
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.lock = threading.Lock()
+        self.servers = {}  # target_id -> entry dict
+
+    def _public(self, target, entry):
+        """The SSE/JSON-safe view of one server entry."""
+        return {
+            "target": target,
+            "state": entry["state"],
+            "port": entry["port"],
+            "db": entry["db"],
+        }
+
+    def start(self, target, config):
+        """Launch a worktree odoo server for <target> on its own free port. Returns
+        (ok, detail): detail is {"port": N} on success, else an error string. The
+        config must already carry the worktree's repo paths + server_path."""
+        if not target:
+            return False, "missing target"
+        try:
+            cmd, db, _is_new = build_odoo_cmd(config)
+        except ValueError as e:
+            return False, f"invalid_config: {e}"
+        # two odoo processes on one db corrupt it — refuse if the db is already held
+        # by the main server or another worktree server (read main status outside our
+        # lock to avoid holding it during a db query)
+        main = MANAGER.status()
+        with self.lock:
+            existing = self.servers.get(target)
+            if existing and existing["state"] in ("starting", "running"):
+                return False, "already_running"
+            if main.get("state") in ("starting", "running") and main.get("db") == db:
+                return False, f"database '{db}' is in use by the main server"
+            for t, e in self.servers.items():
+                if t != target and e["state"] in ("starting", "running") and e["db"] == db:
+                    return False, f"database '{db}' is in use by another worktree server"
+            # run on free ports so the main server (default ports) is undisturbed
+            port, gport = free_port(), free_port()
+            wcmd = f"{cmd} --http-port {port} --gevent-port {gport}"
+            self.bus.publish_log(f"{TAG} starting worktree odoo ({target}): {wcmd}")
+            effects.trace("run", wcmd)
+            process = subprocess.Popen(
+                wcmd,
+                shell=True,
+                executable="/bin/bash",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid,
+            )
+            entry = {
+                "state": "starting",
+                "port": port,
+                "gport": gport,
+                "db": db,
+                "process": process,
+                "started_at": time.time(),
+                "exited_unexpectedly": False,
+                "returncode": None,
+                "log": collections.deque(maxlen=self.LOG_TAIL),
+            }
+            self.servers[target] = entry
+            threading.Thread(target=self._reader, args=(target, process), daemon=True).start()
+        self.bus.publish_worktree(self._public(target, entry))
+        return True, {"port": port}
+
+    def _reader(self, target, process):
+        """Drain the worktree server's output: stream every line to the browser and
+        the per-server tail, flip to running on the ready marker, detect exit."""
+        for line in process.stdout:
+            line = line.rstrip("\r\n")
+            with self.lock:
+                entry = self.servers.get(target)
+                current = bool(entry and entry["process"] is process)
+                if current:
+                    entry["log"].append(line)
+                ready = current and READY_MARKER in line and entry["state"] == "starting"
+                if ready:
+                    entry["state"] = "running"
+                    snap = self._public(target, entry)
+            if current:
+                self.bus.publish_worktree_log(target, line)
+            if ready:
+                self.bus.publish_worktree(snap)
+        ret = process.wait()
+        with self.lock:
+            entry = self.servers.get(target)
+            # stop() owns intentional exits; a stale reader (post-restart) must not
+            # clobber a freshly-started entry
+            if not entry or entry["process"] is not process or entry["state"] == "stopping":
+                return
+            entry["state"] = "stopped"
+            entry["exited_unexpectedly"] = True
+            entry["returncode"] = ret
+            entry["process"] = None  # keep the entry so the screen shows "stopped"
+            snap = self._public(target, entry)
+        self.bus.publish_event(
+            f"worktree server ({target}) exited unexpectedly (code {ret})", level="error"
+        )
+        self.bus.publish_worktree(snap)
+
+    def stop(self, target):
+        """Stop a worktree server. Idempotent; always frees its port."""
+        with self.lock:
+            entry = self.servers.get(target)
+            if not entry:
+                return True, "stopped"
+            port = entry["port"]
+            if entry["state"] in ("starting", "running"):
+                entry["state"] = "stopping"
+                process = entry["process"]
+            else:
+                process = None
+        if process is not None:
+            self.bus.publish_log(f"{TAG} stopping worktree odoo ({target})...")
+            try:
+                terminate_process(process)
+            except Exception as e:
+                self.bus.publish_log(f"{TAG} error stopping worktree ({target}): {e}")
+        if port:
+            kill_port(port)
+        with self.lock:
+            entry = self.servers.get(target)
+            if entry:
+                entry["state"] = "stopped"
+                entry["process"] = None
+                snap = self._public(target, entry)
+            else:
+                snap = {"target": target, "state": "stopped", "port": None, "db": None}
+        self.bus.publish_worktree(snap)
+        return True, "stopped"
+
+    def logs_for(self, target):
+        """The buffered log tail (list of lines) for one worktree server, or []."""
+        with self.lock:
+            entry = self.servers.get(target)
+            return list(entry["log"]) if entry else []
+
+    def status_for(self, targets):
+        """targets: [{"id", "dirPath"}]. Returns {id: {exists, state, port}}, merging
+        on-disk worktree existence with the live server state."""
+        with self.lock:
+            servers = {t: self._public(t, e) for t, e in self.servers.items()}
+        out = {}
+        for t in targets:
+            tid = t.get("id")
+            if not tid:
+                continue
+            s = servers.get(tid)
+            out[tid] = {
+                "exists": effects.is_dir(t.get("dirPath", "")),
+                "state": s["state"] if s else "stopped",
+                "port": s["port"] if s else None,
+            }
+        return out
+
+    def shutdown(self):
+        """Stop every worktree server (goo exit / restart)."""
+        with self.lock:
+            targets = list(self.servers.keys())
+        for t in targets:
+            self.stop(t)
+
+
 BUS = EventBus()
 MANAGER = OdooManager(BUS)
+WORKTREES = WorktreeManager(BUS)
 # services layer over the IO seam (effects): external state fetched + parsed +
 # cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min, databases 1 min.
 # A `refresh` flag on the read endpoints bypasses the cache (the UI's manual Refresh).
@@ -1105,6 +1312,71 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 results = []
             self._send_json(200, {"ok": True, "results": results})
+        elif path == "/api/worktree/create":
+            # add a git worktree per repo (the frontend computes every path); git
+            # creates the parent <worktree_dir>/<target>/ folder on the first add
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            if err or not isinstance(repos, list) or not repos:
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            results = []
+            for r in repos:
+                ok, error = GIT.worktree_add(
+                    r.get("mainPath"),
+                    r.get("worktreePath"),
+                    r.get("newBranch") or r.get("branch"),
+                    r.get("repo", ""),
+                    new_branch=bool(r.get("newBranch")),
+                    start_point=r.get("startPoint"),
+                )
+                results.append({"repo": r.get("repo"), "ok": ok, "error": error})
+            self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
+        elif path == "/api/worktree/start":
+            body, err = self._read_json()
+            target = (body or {}).get("target")
+            config = (body or {}).get("config")
+            if err or not target or not isinstance(config, dict):
+                return self._send_json(400, {"ok": False, "error": "missing target or config"})
+            ok, detail = WORKTREES.start(target, config)
+            if ok:
+                self._send_json(200, {"ok": True, "port": detail["port"]})
+            else:
+                code = 400 if str(detail).startswith("invalid_config") else 409
+                self._send_json(code, {"ok": False, "error": detail})
+        elif path == "/api/worktree/stop":
+            body, err = self._read_json()
+            target = (body or {}).get("target")
+            if err or not target:
+                return self._send_json(400, {"ok": False, "error": "missing target"})
+            ok, detail = WORKTREES.stop(target)
+            self._send_json(200 if ok else 409, {"ok": ok, "error": None if ok else detail})
+        elif path == "/api/worktree/remove":
+            body, err = self._read_json()
+            repos = (body or {}).get("repos")
+            dir_path = (body or {}).get("dirPath")
+            if err or not isinstance(repos, list):
+                return self._send_json(400, {"ok": False, "error": "missing repos list"})
+            results = []
+            for r in repos:
+                ok, error = GIT.worktree_remove(
+                    r.get("mainPath"), r.get("worktreePath"), r.get("repo", "")
+                )
+                results.append({"repo": r.get("repo"), "ok": ok, "error": error})
+            if dir_path:
+                effects.remove_tree(dir_path)  # sweep the now-empty parent folder
+            self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
+        elif path == "/api/worktree/list":
+            body, err = self._read_json()
+            targets = (body or {}).get("targets")
+            if err or not isinstance(targets, list):
+                return self._send_json(400, {"ok": False, "error": "missing targets list"})
+            self._send_json(200, {"ok": True, "worktrees": WORKTREES.status_for(targets)})
+        elif path == "/api/worktree/logs":
+            body, err = self._read_json()
+            target = (body or {}).get("target")
+            if err or not target:
+                return self._send_json(400, {"ok": False, "error": "missing target"})
+            self._send_json(200, {"ok": True, "lines": WORKTREES.logs_for(target)})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
             name = (body or {}).get("name")
@@ -1655,6 +1927,7 @@ def main():
 
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
     atexit.register(MANAGER.shutdown)
+    atexit.register(WORKTREES.shutdown)
     # check whether goo's checkout is behind origin/master — at startup, then hourly
     threading.Thread(target=goo_update_loop, daemon=True).start()
     try:
@@ -1663,6 +1936,7 @@ def main():
         print(f"\n{TAG} shutting down...")
     finally:
         MANAGER.shutdown()
+        WORKTREES.shutdown()
     return 0
 
 

@@ -24,6 +24,8 @@ export class ServerPlugin extends Plugin {
   output = new LogBuffer(); // the persistent server-log element
   lineListeners = new Set(); // tests/addons mirror lines from here
   gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
+  worktreeListeners = new Set(); // WorktreePlugin updates per-worktree state from here
+  worktreeLogListeners = new Set(); // WorktreePlugin streams per-worktree logs from here
   lastConfig = null; // last server start config (to resume after a one-shot run)
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), persisted + reactive
@@ -50,6 +52,16 @@ export class ServerPlugin extends Plugin {
   onGooUpdate(cb) {
     this.gooUpdateListeners.add(cb);
     return () => this.gooUpdateListeners.delete(cb);
+  }
+
+  onWorktree(cb) {
+    this.worktreeListeners.add(cb);
+    return () => this.worktreeListeners.delete(cb);
+  }
+
+  onWorktreeLog(cb) {
+    this.worktreeLogListeners.add(cb);
+    return () => this.worktreeLogListeners.delete(cb);
   }
 
   log(line) {
@@ -84,6 +96,16 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("goo_update", (e) => {
       const d = JSON.parse(e.data);
       for (const cb of this.gooUpdateListeners) cb(d);
+    });
+    // per-worktree server status (starting/running/stopped) → WorktreePlugin
+    es.addEventListener("worktree", (e) => {
+      const d = JSON.parse(e.data);
+      for (const cb of this.worktreeListeners) cb(d);
+    });
+    // per-worktree server log lines → WorktreePlugin's per-target LogBuffer
+    es.addEventListener("worktree_log", (e) => {
+      const d = JSON.parse(e.data);
+      for (const cb of this.worktreeLogListeners) cb(d);
     });
   }
 

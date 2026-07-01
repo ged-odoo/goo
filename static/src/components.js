@@ -19,6 +19,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
+import { WorktreePlugin } from "./worktree_plugin.js";
 import { timeAgo, tintCmd, formatBytes } from "./utils.js";
 
 const {
@@ -76,11 +77,13 @@ const ICONS = {
   journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
   terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
+  worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "server", label: "Server", icon: ICONS.server },
+  { id: "worktree", label: "Worktrees", icon: ICONS.worktree, optIn: true },
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
@@ -262,10 +265,14 @@ class Sidebar extends Component {
   get nav() {
     const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
     const configured = this.config.config.tabs;
-    if (!configured || !configured.length) return NAV;
-    const hidden = new Set(configured.filter((t) => t.visible === false).map((t) => t.id));
+    // config wins; an unconfigured tab defaults to visible, EXCEPT opt-in tabs (e.g.
+    // Worktrees) which stay hidden until enabled in the Tabs editor. Config is always shown.
+    const cfg = Object.fromEntries((configured || []).map((t) => [t.id, t]));
+    const shown = (id) =>
+      id === "config" || (cfg[id] ? cfg[id].visible !== false : !meta[id].optIn);
+    if (!configured || !configured.length) return NAV.filter((n) => shown(n.id));
     const out = mergedTabIds(configured)
-      .filter((id) => id === "config" || !hidden.has(id))
+      .filter((id) => shown(id))
       .map((id) => meta[id]);
     if (!out.some((n) => n.id === "config")) out.push(meta.config);
     return out;
@@ -507,6 +514,7 @@ class DashboardScreen extends Component {
                     <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                       <span class="dash-ci-dot"/><t t-out="mb.label"/>
                     </a>
+                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Worktree screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
                   </div>
                   <div class="dash-tgt-actions">
                     <div class="dash-kebab-wrap">
@@ -580,6 +588,8 @@ class DashboardScreen extends Component {
   dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
   review = plugin(ReviewPlugin); // starred branch groups + their reviewed PRs
+  worktree = plugin(WorktreePlugin); // "wt" badge on worktree targets
+  router = plugin(RouterPlugin);
   refreshIcon = m(ICONS.refresh);
   addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
   codeIcon = m(ICONS.code); // "Edit" (open all repos in the editor)
@@ -590,6 +600,11 @@ class DashboardScreen extends Component {
   historyIcon = m(ICONS.history);
   prIcon = m(ICONS.pr);
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
+
+  openWorktree(tgt) {
+    this.worktree.select(tgt.id);
+    this.router.go("worktree");
+  }
 
   startCreate() {
     return startCreateTarget(
@@ -1550,6 +1565,175 @@ class ServerScreen extends Component {
     navigator.clipboard?.writeText(this.command());
     this.copyLbl.set("Copied");
     setTimeout(() => this.copyLbl.set("Copy"), 1400);
+  }
+}
+
+// ─────────────────────────── Worktrees screen ───────────────────────────
+
+// A worktree is a first-class target backed by a git worktree checkout, running
+// its own odoo server. Left: the list of worktree targets; right: the selected
+// one's detail — start/stop/restart, /odoo + /web/tests, and its live server log.
+class WorktreeScreen extends Component {
+  static components = { LogConsole };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top">
+          <h1>Worktrees</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button class="pbtn primary" t-on-click="() => this.create()">Create Worktree</button>
+          <span class="dash-subtitle">Run a branch in its own checkout, database and server — alongside the main one.</span>
+        </div>
+      </div>
+      <div class="content wt-content">
+        <div class="wt-list">
+          <div t-if="!this.list.length" class="wt-empty dim">No worktrees yet. Create one to get started.</div>
+          <button t-foreach="this.list" t-as="tgt" t-key="tgt.id" class="wt-item"
+                  t-att-class="{selected: tgt.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(tgt.id)">
+            <span class="wt-dot" t-att-class="this.dotClass(tgt)"/>
+            <span class="wt-item-main">
+              <span class="wt-item-name" t-out="tgt.name"/>
+              <span class="wt-item-sub"><t t-out="this.branchOf(tgt)"/> · <t t-out="tgt.db"/></span>
+            </span>
+            <span t-if="this.wt.port(tgt)" class="wt-item-port" t-out="':' + this.wt.port(tgt)"/>
+          </button>
+        </div>
+        <div class="wt-detail" t-if="this.list.length">
+          <t t-if="this.sel">
+            <div class="wt-detail-head">
+              <h2 t-out="this.sel.name"/>
+              <div class="wt-meta">
+                <span>branch <b t-out="this.branchOf(this.sel)"/></span>
+                <span>db <b t-out="this.sel.db"/></span>
+                <span t-if="this.wt.port(this.sel)">port <b t-out="this.wt.port(this.sel)"/></span>
+                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.wt.serverState(this.sel)"/>
+              </div>
+            </div>
+            <div class="wt-detail-actions">
+              <button class="pbtn primary" t-att-disabled="this.wt.running(this.sel)" t-on-click="() => this.wt.startServer(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+              <button class="pbtn stop" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.stopServer(this.sel)"><span class="ic square"/>Stop</button>
+              <button class="pbtn" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.restartServer(this.sel)"><span class="restart"/>Restart</button>
+              <span class="wt-sp"/>
+              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.wt.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.wt.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <span class="wt-sp"/>
+              <button class="pbtn danger" t-att-disabled="this.wt.running(this.sel)" title="remove the worktree" t-on-click="() => this.wt.remove(this.sel)">Remove</button>
+            </div>
+            <div class="wt-log">
+              <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
+            </div>
+          </t>
+          <div t-else="" class="wt-detail-empty dim">Select a worktree on the left, or create one.</div>
+        </div>
+      </div>
+    </section>`;
+
+  wt = plugin(WorktreePlugin);
+  config = plugin(ConfigPlugin);
+  db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
+  externalIcon = m(ICONS.external);
+
+  setup() {
+    this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+  }
+
+  get list() {
+    return this.wt.worktreeTargets();
+  }
+
+  get sel() {
+    return this.wt.selected();
+  }
+
+  get isRunning() {
+    return !!this.sel && this.wt.serverState(this.sel) === "running";
+  }
+
+  get startLabel() {
+    return this.sel && this.wt.serverState(this.sel) === "starting" ? "Starting…" : "Start";
+  }
+
+  branchOf(tgt) {
+    return (tgt.config && tgt.config[0] && tgt.config[0].branch) || "";
+  }
+
+  dotClass(tgt) {
+    return "wt-dot-" + this.wt.serverState(tgt);
+  }
+
+  open(url) {
+    if (url) window.open(url, "_blank", "noopener");
+  }
+
+  async create() {
+    const bases = (this.config.config.targets || []).filter((t) => !this.wt.isWorktree(t));
+    if (!bases.length)
+      return this.dialogs.open({
+        title: "Create worktree",
+        message: "Define a normal target first — a worktree forks its branch from one.",
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
+    await this.db.load(); // ensure the db list is present for the clone option
+    const sanitize = (s) =>
+      (s || "")
+        .trim()
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const dbNames = this.db.databases().map((d) => d.name);
+    const res = await this.dialogs.open({
+      title: "Create worktree",
+      okLabel: "Create",
+      fields: [
+        {
+          key: "base",
+          type: "select",
+          label: "Base target",
+          value: bases[0].id,
+          placeholder: "— pick a target —",
+          options: bases.map((t) => ({ value: t.id, label: t.name })),
+        },
+        {
+          key: "branch",
+          type: "text",
+          label: "New branch",
+          placeholder: "e.g. my-feature",
+          onChange: (v) => ({ db: sanitize(v) }),
+        },
+        { key: "name", type: "text", label: "Display name (optional)" },
+        { key: "db", type: "text", label: "Database" },
+        {
+          key: "clone",
+          type: "select",
+          label: "Data",
+          value: "",
+          placeholder: "(fresh install)",
+          options: dbNames.map((n) => ({ value: n, label: "clone " + n })),
+        },
+      ],
+      validate: (v) => {
+        if (!v.base) return "pick a base target";
+        if (!sanitize(v.branch)) return "enter a branch name";
+        if (!sanitize(v.db)) return "enter a database name";
+        if (v.clone && dbNames.includes(sanitize(v.db)))
+          return `database "${sanitize(v.db)}" already exists — pick a new name to clone into`;
+        return "";
+      },
+    });
+    if (!res) return;
+    await this.wt.createWorktree({
+      baseTargetId: res.base,
+      name: (res.name || res.branch).trim(),
+      branch: sanitize(res.branch),
+      dbName: sanitize(res.db),
+      cloneSource: res.clone || "",
+    });
   }
 }
 
@@ -2608,6 +2792,7 @@ class TargetsScreen extends Component {
 
 class BranchesScreen extends Component {
   static components = { SearchBox, DirtyBadge };
+  worktree = plugin(WorktreePlugin); // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
       <div class="panel">
@@ -2657,6 +2842,7 @@ class BranchesScreen extends Component {
               <div class="brg-name">
                 <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
                 <span class="br-branch select-toggle" t-on-click="() => this.toggleSelect(g.name)" t-out="g.name"/>
+                <span t-if="this.worktree.isWorktreeBranch(g.name)" class="wt-badge" title="has a worktree">wt</span>
               </div>
               <div class="brg-rows">
                 <div t-foreach="g.repos" t-as="r" t-key="r.repo" class="brg-cols brg-row" t-att-class="{active: r.active}">
@@ -3033,6 +3219,7 @@ class BranchesScreen extends Component {
 // Close-PR kebab + batch close; Reviewing is read-only.
 class PrsScreen extends Component {
   static components = { SearchBox };
+  worktree = plugin(WorktreePlugin); // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
       <div class="panel">
@@ -3090,6 +3277,7 @@ class PrsScreen extends Component {
                   </td>
                   <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
                     <span class="br-branch-name" t-att-class="{ 'select-toggle': this.groupSelectable(g) }" t-on-click="() => this.selectGroup(g)" t-out="g.branch || '—'"/>
+                  <span t-if="this.worktree.isWorktreeBranch(g.branch)" class="wt-badge" title="has a worktree">wt</span>
                     <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button>
                   </td>
                   <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
@@ -4138,11 +4326,12 @@ class TabsEditor extends Component {
   get rows() {
     const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
     const configured = this.config.config.tabs || [];
-    const hidden = new Set(configured.filter((t) => t.visible === false).map((t) => t.id));
+    const cfg = Object.fromEntries(configured.map((t) => [t.id, t]));
+    // unconfigured tabs default visible, except opt-in ones (Worktrees) which start off
     return mergedTabIds(configured).map((id) => ({
       id,
       label: meta[id].label,
-      visible: id === "config" || !hidden.has(id),
+      visible: id === "config" ? true : cfg[id] ? cfg[id].visible !== false : !meta[id].optIn,
     }));
   }
 
@@ -4436,7 +4625,8 @@ class LinksEditor extends Component {
 // scalar config fields editable in the Config tab's Settings block
 const SETTINGS_FIELDS = [
   { key: "venv_activate", name: "venv activate (optional)" },
-  { key: "start_cmd", name: "start server command" },
+  { key: "server_path", name: "odoo-bin path" },
+  { key: "worktree_dir", name: "worktree dir" },
   { key: "db_user", name: "database user" },
   { key: "db_password", name: "database password" },
   { key: "filestore", name: "filestore path" },
@@ -5467,6 +5657,7 @@ class EventLog extends Component {
 const SCREENS = {
   dashboard: DashboardScreen,
   server: ServerScreen,
+  worktree: WorktreeScreen,
   targets: TargetsScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -5486,6 +5677,7 @@ export class App extends Component {
     Sidebar,
     DashboardScreen,
     ServerScreen,
+    WorktreeScreen,
     TargetsScreen,
     BranchesScreen,
     PrsScreen,

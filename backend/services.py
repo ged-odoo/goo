@@ -907,6 +907,62 @@ class GitService:
         self.notify(checking, event_id=eid, status="done")
         return True, None
 
+    def worktree_add(
+        self, main_path, worktree_path, branch, repo="", new_branch=False, start_point=None
+    ):
+        """Add a git worktree at <worktree_path>, linked to the repo at <main_path>
+        (sharing its .git); git creates intermediate dirs. With new_branch, create
+        <branch> at <start_point> in the new worktree (git worktree add -b) — the
+        usual case, since a branch already checked out in the main tree can't be
+        checked out again elsewhere. Otherwise attach the existing <branch>. Returns
+        (ok, error). Announced as a timed event via notify."""
+        if not main_path or not worktree_path or not branch:
+            return False, "missing path, worktree path or branch"
+        if new_branch and not start_point:
+            return False, "missing start point for the new branch"
+        p = os.path.expanduser(main_path)
+        wp = os.path.expanduser(worktree_path)
+        label = repo or os.path.basename(p)
+        eid = uuid.uuid4().hex
+        creating = f"creating worktree {branch} ({label})"
+        self.notify(creating, event_id=eid, status="start")
+        if new_branch:
+            cmd = ["git", "-C", p, "worktree", "add", "-b", branch, wp, start_point]
+        else:
+            cmd = ["git", "-C", p, "worktree", "add", wp, branch]
+        try:
+            r = self.io.run(cmd, timeout=120)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(creating, event_id=eid, status="error")
+            return False, str(e)
+        if r.returncode != 0:
+            self.notify(creating, event_id=eid, status="error")
+            return False, (r.stderr.strip() or "git worktree add failed").split("\n")[0]
+        self.notify(creating, event_id=eid, status="done")
+        return True, None
+
+    def worktree_remove(self, main_path, worktree_path, repo=""):
+        """Remove the git worktree at <worktree_path> (--force, so it goes even with
+        local changes or a running server). Returns (ok, error). Timed event."""
+        if not main_path or not worktree_path:
+            return False, "missing path or worktree path"
+        p = os.path.expanduser(main_path)
+        wp = os.path.expanduser(worktree_path)
+        label = repo or os.path.basename(p)
+        eid = uuid.uuid4().hex
+        removing = f"removing worktree ({label})"
+        self.notify(removing, event_id=eid, status="start")
+        try:
+            r = self.io.run(["git", "-C", p, "worktree", "remove", "--force", wp], timeout=60)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(removing, event_id=eid, status="error")
+            return False, str(e)
+        if r.returncode != 0:
+            self.notify(removing, event_id=eid, status="error")
+            return False, (r.stderr.strip() or "git worktree remove failed").split("\n")[0]
+        self.notify(removing, event_id=eid, status="done")
+        return True, None
+
     def create_branch(self, path, name, start_point):
         """Create a new local branch <name> at <start_point> WITHOUT checking it
         out (working tree / current branch untouched). Returns (ok, error)."""

@@ -14,6 +14,7 @@ import { AssetsPlugin } from "./assets_plugin.js";
 import { ReviewPlugin } from "./review_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
+import { WorktreePlugin } from "./worktree_plugin.js";
 
 const PLUGINS = [
   ConfigPlugin,
@@ -29,6 +30,7 @@ const PLUGINS = [
   TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,
+  WorktreePlugin,
 ];
 
 async function boot() {
