@@ -126,6 +126,7 @@ const GED_CONFIG = {
     { id: "dashboard", visible: true },
     { id: "targets", visible: true },
     { id: "server", visible: true },
+    { id: "worktree", visible: true },
     { id: "tests", visible: true },
     { id: "branches", visible: true },
     { id: "prs", visible: true },
