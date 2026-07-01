@@ -99,6 +99,28 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // Store a branch-state fetch into the shared branchRepos signal, returning what
+  // was stored. A NARROWED fetch (a subset of repos) MERGES — it only overwrites the
+  // repos it fetched and leaves every other repo's data untouched. This matters
+  // because several screens share this one signal but load different subsets (the
+  // dashboard's favorites, the Targets kebab's single target); a narrow load must
+  // never drop the repos it didn't ask for, or their targets suddenly look "missing"
+  // (branches gone → not present → name no longer clickable) until a full reload.
+  // A full fetch (branchRepoIds null → every repo) replaces, so repos dropped from
+  // config don't linger.
+  _storeBranchRepos(fetched, narrowed) {
+    if (!narrowed) {
+      this.branchRepos.set(fetched);
+      return fetched;
+    }
+    const byId = new Map(fetched.map((r) => [r.id, r]));
+    const existing = this.branchRepos();
+    const merged = existing.map((r) => byId.get(r.id) || r);
+    for (const r of fetched) if (!existing.some((e) => e.id === r.id)) merged.push(r);
+    this.branchRepos.set(merged);
+    return merged;
+  }
+
   // Branches come from local git (fast, volatile) and PRs/runbot/mergebot are now
   // cached server-side, so we simply request everything and let the backend decide
   // freshness. `force` (the manual Refresh) passes refresh:true to bypass the cache.
@@ -119,8 +141,9 @@ export class CodePlugin extends Plugin {
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
     const branchesP = postJSON("/api/code/branches", { repos: branchReq })
       .then((b) => {
-        this.branchRepos.set(b.repos);
-        return b.repos;
+        // merge (not replace) when narrowed, so a subset load never drops the repos
+        // it didn't fetch — see _storeBranchRepos
+        return this._storeBranchRepos(b.repos, !!branchRepoIds);
       })
       .catch((e) => {
         this.error.set(e.message);
@@ -152,7 +175,9 @@ export class CodePlugin extends Plugin {
     const req = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
     try {
       const b = await postJSON("/api/code/branches", { repos: req });
-      this.branchRepos.set(b.repos);
+      // merge when narrowed (the Targets kebab loads a single target's repos): must
+      // not clobber the other repos' branch state that the dashboard/branches rely on
+      this._storeBranchRepos(b.repos, !!branchRepoIds);
     } catch (e) {
       this.error.set(e.message);
     }
@@ -168,11 +193,7 @@ export class CodePlugin extends Plugin {
     if (!repos.length) return;
     try {
       const b = await postJSON("/api/code/branches", { repos });
-      const byId = new Map(b.repos.map((r) => [r.id, r]));
-      const existing = this.branchRepos();
-      const merged = existing.map((r) => byId.get(r.id) || r);
-      for (const r of b.repos) if (!existing.some((e) => e.id === r.id)) merged.push(r);
-      this.branchRepos.set(merged);
+      const merged = this._storeBranchRepos(b.repos, true); // merge: only these repos changed
       // keep the instant-paint cache in step, so a reload right after doesn't flash
       // the pre-checkout branch for the repos we just refreshed
       const cache = this._cache();
