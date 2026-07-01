@@ -1175,6 +1175,10 @@ class DashboardScreen extends Component {
   }
 
   canActivate(tgt) {
+    // a worktree target lives in its own checkout — its branch is checked out in the
+    // worktree (git won't let the main tree check it out too), so it's never applied
+    // here; it's started from the Worktrees screen instead
+    if (this.worktree.isWorktree(tgt)) return false;
     return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
   }
 
@@ -1187,6 +1191,8 @@ class DashboardScreen extends Component {
   // tooltip for the clickable target name — clicking an inactive, applyable target
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
+    if (this.worktree.isWorktree(tgt))
+      return "worktree target — manage it from the Worktrees screen";
     if (this.isActive(tgt)) return "this target is active";
     if (this.canActivate(tgt)) return "click to apply — " + this.activateTitle(tgt);
     return this.activateTitle(tgt);
