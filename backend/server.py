@@ -524,6 +524,37 @@ def build_odoo_cmd(config):
     return cmd, db, is_new
 
 
+def warn_if_rust_bundler_missing(config, bus, context=""):
+    """goo auto-installs the rust_bundler addon in every database it launches, but
+    the speedup only happens when the odoo_bundler Rust extension is importable
+    from the instance's venv — otherwise the addon falls back to the slow Python
+    bundler and its only warning lands in the odoo log, easy to miss. Probe the
+    venv in the background and explain in the goo log when it's missing. Returns
+    the probe thread (callers may ignore it; tests join it)."""
+    venv_activate = (config or {}).get("venv_activate", "")
+    probe = "python3 -c 'import odoo_bundler'"
+    if venv_activate:
+        probe = f"{venv_activate} && {probe}"
+
+    def check():
+        try:
+            result = run(probe, shell=True, executable="/bin/bash", quiet=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return  # can't probe — don't guess, and never disturb the start
+        if result.returncode:
+            where = f" ({context})" if context else ""
+            bus.publish_log(
+                f"{TAG} rust_bundler{where}: odoo_bundler is not importable from the "
+                f"instance's venv — JS asset bundling stays on the slow Python path. "
+                f"Build it into the venv with `maturin develop --release` "
+                f"(https://github.com/Goaman/odoo_bundler)."
+            )
+
+    thread = threading.Thread(target=check, daemon=True)
+    thread.start()
+    return thread
+
+
 def build_shell_cmd(config, db):
     """Build an `odoo-bin shell -d <db>` command (Python read from its stdin) for a
     one-off task like pregenerating assets. Mirrors build_odoo_cmd's venv prefix and
@@ -702,6 +733,7 @@ class OdooManager:
                     f"{TAG} database '{db}' not initialized, applying on_create_args"
                 )
             self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
+            warn_if_rust_bundler_missing(config, self.bus)
 
             with self._raw_lock:
                 self._raw_buf.clear()
@@ -904,6 +936,7 @@ class WorktreeManager:
             port, gport = free_port(), free_port()
             wcmd = f"{cmd} --http-port {port} --gevent-port {gport}"
             self.bus.publish_log(f"{TAG} starting worktree odoo ({target}): {wcmd}")
+            warn_if_rust_bundler_missing(config, self.bus, context=f"worktree {target}")
             effects.trace("run", wcmd)
             process = subprocess.Popen(
                 wcmd,
