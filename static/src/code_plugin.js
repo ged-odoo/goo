@@ -27,6 +27,7 @@ export class CodePlugin extends Plugin {
   mbDetails = signal({}); // "github#number" -> blocked-reason detail (e.g. "Review, CI")
   runbot = signal({}); // branch name -> runbot status (cached server-side)
   _refreshExternal = false; // true during a forced load: ask the server to bypass its cache
+  _branchMerges = 0; // bumped on every targeted branch merge (checkout/kebab refresh) — see load()
   _mbPending = new Set(); // keys in flight, so the dashboard effect doesn't double-fetch
   _rbPending = new Set();
   // grouped, sorted view model — recomputed only when its inputs change
@@ -118,6 +119,7 @@ export class CodePlugin extends Plugin {
     const merged = existing.map((r) => byId.get(r.id) || r);
     for (const r of fetched) if (!existing.some((e) => e.id === r.id)) merged.push(r);
     this.branchRepos.set(merged);
+    this._branchMerges++; // a targeted write landed — see the guard in load()
     return merged;
   }
 
@@ -139,8 +141,14 @@ export class CodePlugin extends Plugin {
     }
     const repos = this.reposWithGithub();
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
+    const mergesAtStart = this._branchMerges;
     const branchesP = postJSON("/api/code/branches", { repos: branchReq })
       .then((b) => {
+        // latest wins: a targeted merge (a checkout/rebase/kebab refresh) that landed
+        // while this full scan was in flight reflects fresher on-disk state. Its full
+        // replace would revert that repo to its pre-checkout branch, so skip the store
+        // and keep the merged state — the next load refreshes the untouched repos (#2).
+        if (!branchRepoIds && this._branchMerges !== mergesAtStart) return this.branchRepos();
         // merge (not replace) when narrowed, so a subset load never drops the repos
         // it didn't fetch — see _storeBranchRepos
         return this._storeBranchRepos(b.repos, !!branchRepoIds);

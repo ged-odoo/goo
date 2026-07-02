@@ -65,11 +65,14 @@ export class AssetsPlugin extends Plugin {
     this.error.set("");
     try {
       const data = await postJSON("/api/assets", { db, refresh: force });
+      // latest wins: if the user switched databases while this was in flight, its
+      // result is stale — drop it rather than show db A's bundles under db B.
+      if (this.selectedDb() !== db) return;
       this.bundles.set(data.bundles);
       this.loadedDb.set(db);
       this.at.set(Date.now());
     } catch (e) {
-      this.error.set(e.message);
+      if (this.selectedDb() === db) this.error.set(e.message);
     } finally {
       this.loading.set(false);
     }
