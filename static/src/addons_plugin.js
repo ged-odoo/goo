@@ -22,6 +22,7 @@ export class AddonsPlugin extends Plugin {
   output = new LogBuffer();
   modules = signal([]);
   loadedDb = signal("");
+  erroredDb = signal(""); // db whose last auto-load failed — don't auto-retry it (avoids a hot loop)
   loading = signal(false);
   error = signal("");
   filter = signal("");
@@ -76,12 +77,18 @@ export class AddonsPlugin extends Plugin {
     }
     this.loading.set(true);
     this.error.set("");
+    this.erroredDb.set("");
     try {
       const data = await postJSON("/api/addons", { repos: this._repos(), db });
+      // latest wins: if the active target's db changed mid-flight, this result is
+      // stale — drop it rather than show one db's modules under another's header.
+      if (this.targetDb() !== db) return;
       this.modules.set(data.modules);
       this.loadedDb.set(db);
     } catch (e) {
+      if (this.targetDb() !== db) return;
       this.error.set(e.message);
+      this.erroredDb.set(db); // remember the failure so the effect doesn't re-fire forever
     } finally {
       this.loading.set(false);
     }

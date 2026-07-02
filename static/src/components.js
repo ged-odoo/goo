@@ -4239,7 +4239,13 @@ class AddonsScreen extends Component {
     // load (and reload when the active target's db changes) while mounted
     useEffect(() => {
       const db = this.addons.targetDb();
-      if (db && db !== this.addons.loadedDb() && !this.addons.loading()) this.addons.load();
+      if (
+        db &&
+        db !== this.addons.loadedDb() &&
+        db !== this.addons.erroredDb() &&
+        !this.addons.loading()
+      )
+        this.addons.load();
     });
   }
 
