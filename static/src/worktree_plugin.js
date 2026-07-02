@@ -320,13 +320,22 @@ export class WorktreePlugin extends Plugin {
     this.eventLog.add(`removing worktree ${tgt.name}`);
     try {
       await postJSON("/api/worktree/remove", { target: tgt.id, dirPath: this.dirPath(tgt), repos });
-      if (res.dropDb && tgt.db)
+    } catch (e) {
+      // the worktree is still on disk / registered with git — keep the target so
+      // there's a UI handle to retry, rather than orphaning it.
+      return this._error("Worktree removal failed", e.message);
+    }
+    if (res.dropDb && tgt.db) {
+      try {
         await postJSON("/api/databases/drop", {
           name: tgt.db,
           filestore: this.config.config.filestore,
         });
-    } catch (e) {
-      this._error("Worktree removal failed", e.message);
+      } catch (e) {
+        // the worktree itself is gone, so still drop the target below; just report
+        // the leftover database.
+        this._error("Database drop failed", e.message);
+      }
     }
     // drop the target from config + local state
     this.config.updateConfig({
