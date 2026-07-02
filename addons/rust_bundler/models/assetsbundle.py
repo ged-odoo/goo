@@ -5,12 +5,15 @@ extended through ``_inherit``. Instead its ``js()`` method is patched at import
 time, so no core file is modified.
 
 goo auto-installs this module in every database it launches, so unlike the
-upstream opt-in addon it must never get in the way: the patch is only applied
-when the ``odoo_bundler`` extension imports (one warning at startup otherwise),
-and any failure on the Rust path falls back to the original Python bundler.
+upstream addon (where installing is the switch) activation is opt-in: the patch
+is only applied when the ``RUST_BUNDLER`` env var is truthy (goo sets it from
+the "rust bundler" checkbox in the config's Miscellaneous section) AND the
+``odoo_bundler`` extension imports (one warning at startup otherwise). Any
+failure on the Rust path falls back to the original Python bundler.
 """
 
 import logging
+import os
 
 from odoo.addons.base.models.assetsbundle import AssetsBundle
 
@@ -78,9 +81,17 @@ def js(self):
     return _original_js(self)
 
 
-if odoo_bundler is None:
+_enabled = os.environ.get("RUST_BUNDLER", "").strip().lower() in ("1", "true", "on")
+
+if not _enabled:
+    _logger.info(
+        "rust_bundler is installed but RUST_BUNDLER is not set; using the Python "
+        "bundler. Tick 'rust bundler' in goo's Miscellaneous config section (or "
+        "`export RUST_BUNDLER=1`) to activate it."
+    )
+elif odoo_bundler is None:
     _logger.warning(
-        "rust_bundler is installed but the odoo_bundler extension is not importable; "
+        "RUST_BUNDLER is set but the odoo_bundler extension is not importable; "
         "JS bundling stays on the pure-Python path. Build it into the Odoo venv with "
         "`maturin develop --release` (https://github.com/Goaman/odoo_bundler)."
     )

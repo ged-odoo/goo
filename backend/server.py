@@ -472,7 +472,8 @@ def build_odoo_cmd(config):
     parts = []
     if venv_activate:
         parts.append(venv_activate)
-    parts.append(f"cd {community_path} && {server_path}")
+    rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
+    parts.append(f"cd {community_path} && {rust}{server_path}")
     cmd = " && ".join(parts)
     cmd += (
         f" -r {db_user} -w {db_password} -d {db} "
@@ -526,11 +527,14 @@ def build_odoo_cmd(config):
 
 def warn_if_rust_bundler_missing(config, bus, context=""):
     """goo auto-installs the rust_bundler addon in every database it launches, but
-    the speedup only happens when the odoo_bundler Rust extension is importable
-    from the instance's venv — otherwise the addon falls back to the slow Python
-    bundler and its only warning lands in the odoo log, easy to miss. Probe the
-    venv in the background and explain in the goo log when it's missing. Returns
-    the probe thread (callers may ignore it; tests join it)."""
+    the speedup only happens when the rust_bundler config key is on AND the
+    odoo_bundler Rust extension is importable from the instance's venv — otherwise
+    the addon falls back to the slow Python bundler and its only warning lands in
+    the odoo log, easy to miss. When the feature is on, probe the venv in the
+    background and explain in the goo log when the extension is missing. Returns
+    the probe thread (callers may ignore it; tests join it), or None when off."""
+    if not (config or {}).get("rust_bundler"):
+        return None  # feature off — the addon won't engage, nothing to warn about
     venv_activate = (config or {}).get("venv_activate", "")
     probe = "python3 -c 'import odoo_bundler'"
     if venv_activate:
@@ -586,7 +590,8 @@ def build_shell_cmd(config, db):
     parts = []
     if venv_activate:
         parts.append(venv_activate)
-    parts.append(f"cd {community_path} && {server_path}")
+    rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
+    parts.append(f"cd {community_path} && {rust}{server_path}")
     cmd = " && ".join(parts)
     cmd += (
         f" shell -d {db} --no-http --no-database-list"

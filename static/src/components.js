@@ -4782,6 +4782,10 @@ class ConfigScreen extends Component {
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
+            <label for="setting-rust-bundler" title="Launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets through the odoo_bundler Rust extension (build it into the venv with 'maturin develop --release'). Takes effect on the next server start.">rust bundler</label>
+            <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets through the odoo_bundler Rust extension (build it into the venv with 'maturin develop --release'). Takes effect on the next server start."
+                   t-att-checked="this.config.config.rust_bundler"
+                   t-on-change="ev => this.config.updateConfig({ rust_bundler: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>

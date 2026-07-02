@@ -6,8 +6,8 @@ Rust extension instead of the pure-Python `AssetsBundle`. Upstream measured
 ~25–30× faster bundling (e.g. `web.assets_web`: 1958 ms → 77 ms).
 
 Adapted from the upstream experiment:
-[odoo-dev/odoo@1a731d1](https://github.com/odoo-dev/odoo/commit/1a731d1ce911f79b0964708b30615a5d969267f0)
-(which also ships a `benchmark.py` if you want to measure your own machine).
+[odoo-dev/odoo@1a731d1](https://github.com/odoo-dev/odoo/commit/1a731d1ce911f79b0964708b30615a5d969267f0).
+Its `benchmark.py` is included — measured here: `web.assets_web` 1658 ms → 136 ms (12.2×).
 
 ## How it works
 
@@ -19,29 +19,36 @@ and calls `odoo_bundler.bundle(name, files, minify_level=...)`, saving the
 result as the bundle attachment.
 
 goo appends this `addons/` directory to every instance's `--addons-path`, and
-the module is `auto_install`, so it is active in every database goo creates.
-It is designed to never get in the way — it falls back to the pure-Python
-bundler when:
+the module is `auto_install`, so it is present in every database goo creates —
+but **activation is opt-in**: the patch is only applied when the `RUST_BUNDLER`
+env var is truthy (`1`/`true`/`on`) at registry load. goo sets `RUST_BUNDLER=1`
+on the odoo command when the "rust bundler" checkbox in the config screen's
+Miscellaneous section is ticked (main server, worktree servers, and shell-based
+asset pregeneration alike); toggling takes effect on the next server start.
+
+Even when activated it is designed to never get in the way — it falls back to
+the pure-Python bundler when:
 
 - the `odoo_bundler` extension isn't importable (one warning at startup, then
   the patch simply isn't applied; goo also probes the instance's venv on every
-  server start and explains this in its own log), or
+  server start with the checkbox on and explains this in its own log), or
 - an asset has no on-disk file (inline / `ir.attachment`-backed), or
 - the Rust bundler raises for any reason.
 
 ## Setup
 
-Build & install the Rust extension into the venv that runs Odoo:
+1. Build & install the Rust extension into the venv that runs Odoo:
 
-```bash
-git clone https://github.com/Goaman/odoo_bundler
-cd odoo_bundler
-pip install maturin
-maturin develop --release
-```
+   ```bash
+   git clone https://github.com/Goaman/odoo_bundler
+   cd odoo_bundler
+   pip install maturin
+   maturin develop --release
+   ```
 
-That's all — the next asset (re)generation goes through Rust. Remove
-`odoo_bundler` from the venv (or uninstall the module) to revert.
+2. Tick "rust bundler" in goo's config → Miscellaneous section (or
+   `export RUST_BUNDLER=1` for manual runs outside goo) and (re)start the
+   server. Untick / unset to revert to the pure-Python bundler.
 
 ## Caveats
 

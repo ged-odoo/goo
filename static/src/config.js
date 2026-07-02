@@ -19,6 +19,9 @@ export const DEFAULT_CONFIG = {
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
   editor: "code", // command used by the dashboard's "Open with editor" action
   auto_open_event_log: false, // open the event log overlay when new events arrive
+  // launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets
+  // through the odoo_bundler Rust extension (must be built into the venv)
+  rust_bundler: false,
   repos: [
     { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo", favorite: true },
     {
