@@ -6,3 +6,8 @@ extend-exclude = ["static"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E501"]  # long SQL / command strings are clearer unwrapped
+
+[tool.ruff.lint.per-file-ignores]
+# Odoo addon idioms: __init__.py re-export imports, __manifest__.py bare dict
+"addons/**/__init__.py" = ["F401"]
+"addons/**/__manifest__.py" = ["B018"]
