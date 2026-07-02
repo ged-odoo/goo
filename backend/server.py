@@ -174,8 +174,11 @@ def port_busy(port):
 def kill_port(port):
     """Kill any process listening on the given port."""
     try:
+        # -sTCP:LISTEN so we only kill the process *listening* on the port, not
+        # every process that merely has a client connection open to it (a browser,
+        # psql, or goo itself) — plain `lsof -ti :PORT` matches those too.
         result = run(
-            ["lsof", "-ti", f":{port}"],
+            ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             timeout=3,
@@ -1299,8 +1302,24 @@ BOOT_ID = time.time()
 
 
 class Handler(BaseHTTPRequestHandler):
+    # the origins a browser is allowed to drive goo from — goo's own UI. Anything
+    # else with an Origin header is a cross-site request (CSRF) and is refused.
+    ALLOWED_ORIGINS = frozenset(f"http://{host}:{PORT}" for host in ("127.0.0.1", "localhost"))
+
     def log_message(self, format, *args):
         pass  # keep the terminal quiet
+
+    def _origin_ok(self):
+        """Reject cross-site requests. goo exposes shell-equivalent endpoints on
+        localhost; localhost is not an auth boundary against the user's own
+        browser, so a malicious page could POST/WS to us without this check.
+        Browsers attach Origin to every cross-origin POST and WebSocket handshake,
+        so an Origin outside our allowlist is a CSRF attempt. A missing Origin is a
+        non-browser client (curl, the --test-tags CLI) and carries no CSRF risk."""
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        return origin in self.ALLOWED_ORIGINS
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -1348,6 +1367,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self):
+        if not self._origin_ok():
+            return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         path = self.path.split("?", 1)[0]
         if path == "/api/start":
             self._action_start(MANAGER.start)
@@ -1859,6 +1880,8 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_terminal(self):
         """Upgrade to WebSocket, replay the PTY ring buffer, then proxy
         live PTY bytes to the browser and browser keystrokes to the PTY."""
+        if not self._origin_ok():
+            return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         key = self.headers.get("Sec-WebSocket-Key", "")
         if not key:
             return self._send_json(400, {"ok": False, "error": "missing WS key"})
@@ -1928,6 +1951,8 @@ class Handler(BaseHTTPRequestHandler):
         """Upgrade to WebSocket and proxy an interactive bash shell running in
         the requested directory. One shell process per connection, killed on
         disconnect. Independent of the Odoo server PTY."""
+        if not self._origin_ok():
+            return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         cwd = os.path.expanduser((qs.get("cwd") or [""])[0])
         if not cwd or not os.path.isdir(cwd):
