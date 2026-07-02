@@ -22,6 +22,9 @@ export const DEFAULT_CONFIG = {
   // launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets
   // through the odoo_bundler Rust extension (must be built into the venv)
   rust_bundler: false,
+  // automatic goo self-update check (git fetch of origin/master at startup +
+  // hourly, driving the navbar badge). The manual check button always works.
+  update_check: true,
   repos: [
     { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo", favorite: true },
     {

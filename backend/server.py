@@ -347,9 +347,12 @@ def check_goo_update():
 
 def goo_update_loop():
     """Check for a goo update at startup and then hourly, so a permanently running
-    goo keeps surfacing new commits on origin/master."""
+    goo keeps surfacing new commits on origin/master. Skipped (but still ticking,
+    so re-enabling needs no restart) when the update check is turned off in the
+    config's Miscellaneous section."""
     while True:
-        check_goo_update()
+        if UPDATE_CHECK_ENABLED:
+            check_goo_update()
         time.sleep(3600)
 
 
@@ -1329,6 +1332,11 @@ GOO_UPDATE = {
     "dirty": False,
     "can_fast_forward": False,
 }
+# whether the automatic (startup + hourly) goo-update check runs. Defaults on;
+# the frontend syncs it from the 'update_check' config key via
+# POST /api/goo/update-check (same push pattern as /api/autoreload). The manual
+# "Check for update" button ignores it — an explicit click always checks.
+UPDATE_CHECK_ENABLED = True
 # per-process boot id (changes on every (re-)exec) so the client can tell a
 # restarted goo apart from the still-shutting-down old one when it polls
 BOOT_ID = time.time()
@@ -1571,6 +1579,18 @@ class Handler(BaseHTTPRequestHandler):
             # on-demand re-check (the "Check for update" button) — fetches + recomputes
             ok = check_goo_update()
             self._send_json(200, {"ok": ok, **GOO_UPDATE, "boot": BOOT_ID})
+        elif path == "/api/goo/update-check":
+            # frontend sync of the 'update_check' config key (pushed on page load and
+            # on change). Turning it back on checks right away instead of waiting for
+            # the next hourly tick; the steady-state on->on push doesn't re-check.
+            global UPDATE_CHECK_ENABLED
+            body, err = self._read_json()
+            if err or not isinstance((body or {}).get("enabled"), bool):
+                return self._send_json(400, {"ok": False, "error": "missing enabled"})
+            was_enabled, UPDATE_CHECK_ENABLED = UPDATE_CHECK_ENABLED, body["enabled"]
+            if body["enabled"] and not was_enabled:
+                threading.Thread(target=check_goo_update, daemon=True).start()
+            self._send_json(200, {"ok": True, "enabled": UPDATE_CHECK_ENABLED})
         elif path == "/api/goo/restart":
             # reply first, then re-exec from a short-delayed thread so the response
             # reaches the client before the process is replaced

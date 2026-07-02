@@ -4786,6 +4786,10 @@ class ConfigScreen extends Component {
             <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets through the odoo_bundler Rust extension (build it into the venv with 'maturin develop --release'). Takes effect on the next server start."
                    t-att-checked="this.config.config.rust_bundler"
                    t-on-change="ev => this.config.updateConfig({ rust_bundler: ev.target.checked })"/>
+            <label for="setting-update-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off.">check for goo updates</label>
+            <input id="setting-update-check" type="checkbox" class="settings-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off."
+                   t-att-checked="this.config.config.update_check !== false"
+                   t-on-change="ev => this.config.updateConfig({ update_check: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>

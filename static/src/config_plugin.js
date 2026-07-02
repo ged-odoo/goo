@@ -90,6 +90,13 @@ export class ConfigPlugin extends Plugin {
         .map((r) => ({ id: r.id, path: r.path, github: r.github }));
       postJSON("/api/autoreload", { repos }).catch(() => {});
     });
+    // same for the automatic goo-update check (startup + hourly git fetch): the
+    // timer is server-side, the switch lives in the config's Miscellaneous section
+    useEffect(() => {
+      postJSON("/api/goo/update-check", { enabled: this.config.update_check !== false }).catch(
+        () => {},
+      );
+    });
   }
 
   _stored() {
