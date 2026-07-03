@@ -16,6 +16,8 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 import { WorktreePlugin } from "./worktree_plugin.js";
 import { ClaudePlugin } from "./claude_plugin.js";
+import { NightlyPlugin } from "./nightly_plugin.js";
+import { MemoryPlugin } from "./memory_plugin.js";
 
 const PLUGINS = [
   ConfigPlugin,
@@ -33,6 +35,8 @@ const PLUGINS = [
   UpdatePlugin,
   WorktreePlugin,
   ClaudePlugin,
+  NightlyPlugin,
+  MemoryPlugin,
 ];
 
 async function boot() {

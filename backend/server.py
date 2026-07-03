@@ -1317,6 +1317,10 @@ DATABASE = services.DatabaseService(effects, TTLCache(60))
 GIT = services.GitService(effects, notify=BUS.publish_event)
 ADDONS = services.AddonsService(effects)
 ASSETS = services.AssetsService(effects, TTLCache(30))
+# 24h is just a safety net for the versions/night-index keys (refresh=True bypasses
+# them); per-build detail keys are never invalidated — see NightlyService's docstring.
+NIGHTLY = services.NightlyService(effects, TTLCache(24 * 3600))
+MEMORY = services.MemoryService(effects)
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -1473,6 +1477,35 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing branches list"})
             states = RUNBOT.statuses(branches, refresh=bool((body or {}).get("refresh")))
             self._send_json(200, {"ok": True, "states": states})
+        elif path == "/api/nightly":
+            body, _ = self._read_json()
+            data = body or {}
+            refresh = bool(data.get("refresh", False))
+            max_nights = min(max(int(data.get("max_nights", 14)), 7), 84)
+            self._send_json(
+                200, {"ok": True, **NIGHTLY.builds(refresh=refresh, max_nights=max_nights)}
+            )
+        elif path == "/api/nightly/errors":
+            body, err = self._read_json()
+            url = (body or {}).get("url", "")
+            if err or not re.match(r"^/runbot/batch/\d+/build/\d+$", url):
+                return self._send_json(400, {"ok": False, "error": "invalid url"})
+            self._send_json(200, {"ok": True, **NIGHTLY.build_errors(url)})
+        elif path == "/api/memory/batch":
+            body, err = self._read_json()
+            url = (body or {}).get("url", "")
+            if err or not url:
+                return self._send_json(400, {"ok": False, "error": "missing url"})
+            self._send_json(200, {"ok": True, "builds": NIGHTLY.batch_builds(url)})
+        elif path == "/api/memory/fetch":
+            body, err = self._read_json()
+            builds = (body or {}).get("builds")
+            if err or not isinstance(builds, list):
+                return self._send_json(400, {"ok": False, "error": "missing builds list"})
+            with_mobile = bool((body or {}).get("with_mobile", False))
+            self._send_json(
+                200, {"ok": True, "data": MEMORY.fetch(builds, with_mobile=with_mobile)}
+            )
         elif path == "/api/autoreload":
             body, err = self._read_json()
             repos = (body or {}).get("repos")

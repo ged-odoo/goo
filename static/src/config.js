@@ -109,6 +109,8 @@ export const SECTIONS = [
   "addons",
   "databases",
   "targets",
+  "nightly",
+  "memory",
   "config",
 ];
 export const RUNBOT = "https://runbot.odoo.com";
