@@ -8,6 +8,7 @@ server-side; the HTTP handlers in goo.py just delegate here.
 
 import ast
 import base64
+import html as html_lib
 import json
 import os
 import re
@@ -456,6 +457,441 @@ class MergebotService:
                 continue
             reasons.append(label)
         return ", ".join(reasons)[:200]
+
+
+# ─────────────────────────── Nightly builds (HTML scraping) ─────────────────
+
+
+class NightlyService:
+    """Nightly Multi Qunit build status per Odoo version, scraped from runbot.
+
+    One `TTLCache` backs three key families: "versions" (the starred-bundle
+    list, rarely changes), ("bundle", id, page) (one bundle page's night
+    listing — grows as new nightly runs land), and ("build"|"child", url) (a
+    single build page's parsed detail). Detail entries are written only once a
+    build's own status is terminal and are never explicitly invalidated — a
+    given runbot URL is fetched and parsed at most once for the life of the
+    process. `refresh=True` (the UI's Refresh button) only invalidates the
+    versions/bundle-index keys; re-scraping a finished build is pointless
+    since its page can't change."""
+
+    _VERSIONS_URL = f"{RUNBOT_BASE}/runbot/rd-1"
+    _VERSIONS_FALLBACK = (
+        ("master", "1"),
+        ("saas-19.4", "483750"),
+        ("saas-19.3", "461010"),
+        ("saas-19.2", "441214"),
+        ("saas-19.1", "424486"),
+        ("19.0", "398573"),
+        ("saas-18.4", "379655"),
+        ("saas-18.3", "365472"),
+        ("saas-18.2", "348552"),
+        ("18.0", "320432"),
+        ("17.0", "192736"),
+    )
+    _BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
+    _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
+
+    def __init__(self, io, cache):
+        self.io = io
+        self.cache = cache
+
+    def _fetch_html(self, url, timeout=20):
+        html, err = self.io.http_get(url, timeout=timeout)
+        return "" if err else html
+
+    # ── versions: starred bundles on the rd-1 page ───────────────────────────
+
+    def _versions(self, refresh=False):
+        if refresh:
+            self.cache.invalidate("versions")
+        return self.cache.get("versions", self._fetch_versions)
+
+    def _fetch_versions(self):
+        html = self._fetch_html(self._VERSIONS_URL)
+        if not html:
+            return list(self._VERSIONS_FALLBACK)
+        starts = [m.start() for m in self._BUNDLE_ROW_RE.finditer(html)]
+        versions = []
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else start + 4000
+            chunk = html[start:end]
+            if "fa fa-star" not in chunk:
+                continue
+            m = self._BUNDLE_LINK_RE.search(chunk)
+            if not m:
+                continue
+            bundle_id, version = m.group(1), m.group(2)
+            if version == "16.0":
+                continue
+            versions.append((version, bundle_id))
+        return versions or list(self._VERSIONS_FALLBACK)
+
+    # ── bundle pages: the night index for one version ────────────────────────
+
+    @staticmethod
+    def _bundle_url(bundle_id, page):
+        url = f"{RUNBOT_BASE}/runbot/bundle/{bundle_id}"
+        return f"{url}?page={page}" if page > 1 else url
+
+    def _bundle_page_html(self, bundle_id, page, refresh=False):
+        key = ("bundle", bundle_id, page)
+        if refresh:
+            self.cache.invalidate(key)
+        return self.cache.get(key, lambda: self._fetch_html(self._bundle_url(bundle_id, page)))
+
+    def _bundle_nights(self, bundle_id, max_nights, refresh=False):
+        """Fetch bundle pages until max_nights nightly builds are collected,
+        stopping early if a page returns no new dates (history exhausted)."""
+        all_nights, seen_dates = [], set()
+        for page in range(1, 8):  # up to 7 pages × ~10 nights = ~70 nights max
+            html = self._bundle_page_html(bundle_id, page, refresh=refresh)
+            if not html:
+                break
+            nights = self._parse_bundle(html, max_nights=max_nights)
+            new_nights = [n for n in nights if n["date"] not in seen_dates]
+            if not new_nights:
+                break
+            all_nights.extend(new_nights)
+            seen_dates.update(n["date"] for n in new_nights)
+            if len(all_nights) >= max_nights:
+                break
+        return all_nights[:max_nights]
+
+    def _parse_bundle(self, html, max_nights=7):
+        """Extract nightly batches from a bundle page.
+
+        Returns a list of {date, community, enterprise} where each build is
+        {status, url} or None. Only batches containing "Multi Qunit" sub-builds
+        are treated as nightly. Name matching is case-insensitive so minor
+        spelling variations ("QUnit", "Qunit Community v2", …) still match."""
+        batch_starts = [m.start() for m in re.finditer(r'class="batch_tile', html)]
+        nights = []
+        html_lower = html.lower()
+        for i, start in enumerate(batch_starts):
+            end = batch_starts[i + 1] if i + 1 < len(batch_starts) else start + 30000
+            chunk = html[start:end]
+            chunk_lower = html_lower[start:end]
+            if "qunit" not in chunk_lower:
+                continue
+            date_m = re.search(r'title="(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"', chunk)
+            if not date_m:
+                continue
+            date_str = date_m.group(1)[:10]  # YYYY-MM-DD
+            community = None
+            enterprise = None
+            slot_starts = [m.start() for m in re.finditer(r'<div class="slot_container">', chunk)]
+            for j, ss in enumerate(slot_starts):
+                se = slot_starts[j + 1] if j + 1 < len(slot_starts) else ss + 2000
+                slot = chunk[ss:se]
+                name_m = re.search(
+                    r'class="btn btn-default slot_name"[^>]*>\s*<span>([^<]+)</span>', slot
+                )
+                if not name_m:
+                    continue
+                name = name_m.group(1).strip()
+                name_l = name.lower()
+                if "qunit" not in name_l:
+                    continue
+                is_community = "community" in name_l
+                is_enterprise = "enterprise" in name_l
+                if not is_community and not is_enterprise:
+                    continue
+                status_m = re.search(r'<span class="btn btn-([a-z]+) disabled"', slot)
+                href_m = re.search(r'href="(/runbot/batch/\d+/build/\d+)"', slot)
+                if not status_m or not href_m:
+                    continue
+                build = {"status": status_m.group(1), "url": href_m.group(1)}
+                if is_community:
+                    community = build
+                else:
+                    enterprise = build
+            if community or enterprise:
+                nights.append({"date": date_str, "community": community, "enterprise": enterprise})
+            if len(nights) >= max_nights:
+                break
+        return nights
+
+    # ── per-build detail: cached forever once the build is terminal ─────────
+
+    def _build_detail(self, url, running=False):
+        """{"counts", "child_rows"} for a Multi Qunit build page. Cached
+        permanently unless `running` (the build's own status isn't terminal
+        yet), in which case it's always re-fetched fresh."""
+        if running:
+            return self._fetch_build_detail(url)
+        return self.cache.get(("build", url), lambda: self._fetch_build_detail(url))
+
+    def _fetch_build_detail(self, url):
+        html = self._fetch_html(f"{RUNBOT_BASE}{url}")
+        if not html:
+            return None
+        ok = len(re.findall(r'<tr class="bg-success-subtle">', html))
+        warning = len(re.findall(r'<tr class="bg-warning-subtle">', html))
+        failed = len(re.findall(r'<tr class="bg-danger-subtle">', html))
+        counts = {"total": ok + warning + failed, "ok": ok, "warning": warning, "failed": failed}
+        seen, child_rows = set(), []
+        for row_m in re.finditer(
+            r'<tr class="bg-(success|warning|danger)-subtle">(.*?)</tr>', html, re.DOTALL
+        ):
+            row_status, row_body = row_m.group(1), row_m.group(2)
+            href_m = re.search(r'href="(/runbot/batch/\d+/build/\d+)"', row_body)
+            if href_m and href_m.group(1) not in seen:
+                seen.add(href_m.group(1))
+                child_rows.append((href_m.group(1), row_status))
+        return {"counts": counts, "child_rows": child_rows}
+
+    # ── per-child detail: individual test failures + perf metrics ───────────
+
+    def _child_detail(self, child_url, row_status):
+        # a child only appears in `child_rows` once its row is success/warning/
+        # danger (i.e. finished) — always safe to cache permanently.
+        return self.cache.get(
+            ("child", child_url), lambda: self._fetch_child_detail(child_url, row_status)
+        )
+
+    def _fetch_child_detail(self, child_url, row_status):
+        html = self._fetch_html(f"{RUNBOT_BASE}{child_url}")
+        if not html:
+            return {"errors": [], "metrics": {}}
+        errors = []
+        if row_status in ("warning", "danger"):
+            errors = self._parse_child_errors(html)
+            for e in errors:
+                e["url"] = child_url
+        metrics = {}
+        if row_status in ("success", "warning"):
+            metrics = self._parse_child_metrics(html)
+        return {"errors": errors, "metrics": metrics}
+
+    @staticmethod
+    def _fmt_warning(text):
+        tl = text.lower()
+        if "time" in tl:
+
+            def _t(m):
+                v = float(m.group())
+                mins = int(v // 60)
+                return f"{mins}m {int(v % 60)}s" if mins else f"{int(v)}s"
+
+            return re.sub(r"\d+(?:\.\d+)?", _t, text)
+        if "memory" in tl:
+            return re.sub(
+                r"\d+(?:\.\d+)?", lambda m: f"{float(m.group()) / 1024 / 1024:.2f} MB", text
+            )
+        return text
+
+    def _parse_child_errors(self, html_text):
+        """[{test_name, status, timeout, known, assignee}] from a Multi Qunit
+        Child build page. log-server rows: ERROR + [HOOT] Test → test failure;
+        ERROR + Script timeout exceeded → timeout. log-runbot rows: WARNING +
+        Test time for ... → time-limit warning."""
+        errors = []
+        for row_m in re.finditer(
+            r'<tr class="log-(?:server|runbot)"[^>]*>(.*?)</tr>', html_text, re.DOTALL
+        ):
+            tds = re.findall(r"<td[^>]*>(.*?)</td>", row_m.group(1), re.DOTALL)
+            if len(tds) < 3:
+                continue
+            td1 = re.sub(r"<[^>]+>", "", tds[1]).strip()
+            raw = html_lib.unescape(re.sub(r"<[^>]+>", "", tds[2])).strip()
+            if td1 == "ERROR":
+                hoot_m = re.search(r'\[HOOT\] Test "([^"]+)"', raw)
+                if hoot_m:
+                    errors.append(
+                        {
+                            "test_name": hoot_m.group(1),
+                            "status": "danger",
+                            "timeout": False,
+                            "known": False,
+                            "assignee": "",
+                        }
+                    )
+                elif "Script timeout exceeded" in raw:
+                    fail_m = re.search(r"FAIL:\s+([\w.]+)", raw)
+                    if fail_m:
+                        errors.append(
+                            {
+                                "test_name": f"{fail_m.group(1)}: timeout",
+                                "status": "danger",
+                                "timeout": True,
+                                "known": False,
+                                "assignee": "",
+                            }
+                        )
+            elif td1 == "WARNING":
+                first_line = raw.splitlines()[0].strip() if raw else ""
+                if first_line:
+                    errors.append(
+                        {
+                            "test_name": self._fmt_warning(first_line),
+                            "status": "warning",
+                            "timeout": False,
+                            "known": False,
+                            "assignee": "",
+                        }
+                    )
+        return errors
+
+    def _parse_child_metrics(self, html):
+        """{suite_name: {avg_mem, max_mem, time, tests, assertions}} for suites
+        where the three required memory/time values are present."""
+        data = {}
+        hoot_matches = re.findall(r"\[HOOT\] Passed (\d+) tests \((\d+) assertions", html)
+        suite_order = []
+        for m in re.finditer(r"Average memory used for ([\w.]+):\s*([\d.]+)", html):
+            suite = m.group(1)
+            data.setdefault(suite, {})["avg_mem"] = float(m.group(2))
+            if suite not in suite_order:
+                suite_order.append(suite)
+        for m in re.finditer(r"Max memory used for ([\w.]+):\s*([\d.]+)", html):
+            data.setdefault(m.group(1), {})["max_mem"] = float(m.group(2))
+        for m in re.finditer(r"Test time for ([\w.]+):\s*([\d.]+)", html):
+            data.setdefault(m.group(1), {})["time"] = float(m.group(2))
+        for i, suite in enumerate(suite_order):
+            if i < len(hoot_matches):
+                data.setdefault(suite, {})["tests"] = int(hoot_matches[i][0])
+                data.setdefault(suite, {})["assertions"] = int(hoot_matches[i][1])
+        return {s: v for s, v in data.items() if "avg_mem" in v and "max_mem" in v and "time" in v}
+
+    # ── public API ────────────────────────────────────────────────────────
+
+    def builds(self, refresh=False, max_nights=14):
+        """{"versions": [...], "nights": [{date, versions: {v: {community,
+        enterprise}}}]} for all starred Odoo versions, newest night first."""
+        max_nights = max(7, min(max_nights, 84))
+        versions = self._versions(refresh=refresh)
+        if not versions:
+            return {"versions": [], "nights": []}
+
+        def fetch_bundle(vb):
+            version, bundle_id = vb
+            return version, self._bundle_nights(bundle_id, max_nights, refresh=refresh)
+
+        with ThreadPoolExecutor(max_workers=min(10, len(versions))) as pool:
+            version_nights = dict(pool.map(fetch_bundle, versions))
+
+        jobs = []
+        for version, nights in version_nights.items():
+            for night in nights:
+                for kind in ("community", "enterprise"):
+                    b = night.get(kind)
+                    if b:
+                        jobs.append((version, night["date"], kind, b))
+
+        def fetch_detail(job):
+            version, date, kind, b = job
+            return version, date, kind, self._build_detail(b["url"], running=b["status"] == "info")
+
+        detail_map = {}
+        if jobs:
+            with ThreadPoolExecutor(max_workers=min(16, len(jobs))) as pool:
+                for version, date, kind, detail in pool.map(fetch_detail, jobs):
+                    if detail:
+                        detail_map[(version, date, kind)] = detail
+
+        date_order = {}
+        for version, nights in version_nights.items():
+            for night in nights:
+                d = night["date"]
+                vdata = date_order.setdefault(d, {})
+                entry = {}
+                for kind in ("community", "enterprise"):
+                    b = night.get(kind)
+                    if not b:
+                        continue
+                    b = dict(b)
+                    detail = detail_map.get((version, d, kind))
+                    if detail:
+                        b["counts"] = detail["counts"]
+                    entry[kind] = b
+                vdata[version] = entry
+
+        sorted_nights = [
+            {"date": d, "versions": date_order[d]} for d in sorted(date_order, reverse=True)
+        ]
+        return {"versions": [v for v, _ in versions], "nights": sorted_nights}
+
+    def build_errors(self, parent_url):
+        """{"errors": [...], "metrics": {suite: {avg_mem, max_mem, time,
+        count, tests, assertions}}} for a Multi Qunit build URL — test-level
+        errors and aggregated per-suite performance metrics across its
+        children (fetched in parallel, each cached forever once fetched)."""
+        detail = self._build_detail(parent_url)
+        if not detail:
+            return {"errors": [], "metrics": {}}
+
+        def fetch_child(info):
+            child_url, row_status = info
+            return self._child_detail(child_url, row_status)
+
+        all_errors, suite_buckets = [], {}
+        if detail["child_rows"]:
+            with ThreadPoolExecutor(max_workers=min(16, len(detail["child_rows"]))) as pool:
+                for result in pool.map(fetch_child, detail["child_rows"]):
+                    all_errors.extend(result["errors"])
+                    for suite, m in result["metrics"].items():
+                        b = suite_buckets.setdefault(
+                            suite,
+                            {
+                                "avg_mem": [],
+                                "max_mem": [],
+                                "time": [],
+                                "tests": None,
+                                "assertions": None,
+                            },
+                        )
+                        b["avg_mem"].append(m["avg_mem"])
+                        b["max_mem"].append(m["max_mem"])
+                        b["time"].append(m["time"])
+                        if b["tests"] is None and "tests" in m:
+                            b["tests"] = m["tests"]
+                            b["assertions"] = m["assertions"]
+
+        agg_metrics = {}
+        for suite, b in suite_buckets.items():
+            n = len(b["avg_mem"])
+            if n:
+                agg_metrics[suite] = {
+                    "avg_mem": sum(b["avg_mem"]) / n,
+                    "max_mem": sum(b["max_mem"]) / n,
+                    "time": sum(b["time"]) / n,
+                    "count": n,
+                    "tests": b["tests"],
+                    "assertions": b["assertions"],
+                }
+        return {"errors": all_errors, "metrics": agg_metrics}
+
+    def batch_builds(self, url):
+        """[{"label", "url"}] of "start_qunit_only" build links from a runbot
+        batch/build page — used by the Memory panel to bulk-import builds from
+        a batch. Not cached: a one-off user action, not a periodic poll."""
+        if url.startswith("/"):
+            url = f"{RUNBOT_BASE}{url}"
+        html = self._fetch_html(url)
+        if not html:
+            return []
+        builds, seen = [], set()
+        for m in re.finditer(r"<a([^>]*)>(.*?)</a>", html, re.DOTALL):
+            attrs, inner = m.group(1), m.group(2)
+            if "dropdown-item" not in attrs:
+                continue
+            text = re.sub(r"<[^>]+>", "", inner).strip()
+            if "start_qunit_only" not in text:
+                continue
+            href_m = re.search(r'href="([^"]+)"', attrs)
+            if not href_m:
+                continue
+            href = href_m.group(1)
+            if href in seen:
+                continue
+            seen.add(href)
+            if href.startswith("/"):
+                href = f"{RUNBOT_BASE}{href}"
+            build_m = re.search(r"/build/(\d+)", href)
+            label = build_m.group(1) if build_m else href.split("/")[-1]
+            builds.append({"label": label, "url": href})
+        return builds
 
 
 # ─────────────────────────── PostgreSQL databases ───────────────────────────
