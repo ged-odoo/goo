@@ -1079,37 +1079,16 @@ class DashboardScreen extends Component {
       seen.add(key);
       (byBranch.get(pr.branch) || byBranch.set(pr.branch, []).get(pr.branch)).push(pr);
     };
+    // PRs arrive already normalized (see models.js); each row just needs its
+    // display repoLabel. Authored PRs carry createdAt (shown instead of updatedAt).
     // authored (Mine) — on the dashboard code PRs are narrowed to target/favorite
     // repos, but a starred branch you authored almost always lives in one of those
     for (const repo of this.code.prRepos()) {
       if (repo.error) continue;
-      for (const pr of repo.prs)
-        add({
-          number: pr.number,
-          title: pr.title || "",
-          url: pr.url,
-          github: repo.github,
-          repoLabel: repo.id,
-          branch: pr.headRefName,
-          state: (pr.state || "").toLowerCase(),
-          draft: !!pr.isDraft,
-          createdAt: pr.createdAt, // your own PRs show created, not updatedAt
-          updatedAt: pr.updatedAt,
-        });
+      for (const pr of repo.prs) add({ ...pr, repoLabel: repo.id });
     }
     // reviewed (Reviewing) — fetched unnarrowed, so this covers review targets
-    for (const pr of this.review.prs())
-      add({
-        number: pr.number,
-        title: pr.title || "",
-        url: pr.url,
-        github: pr.repo,
-        repoLabel: slugToId[pr.repo] || pr.repo,
-        branch: pr.branch,
-        state: pr.state,
-        draft: !!pr.draft,
-        updatedAt: pr.updatedAt,
-      });
+    for (const pr of this.review.prs()) add({ ...pr, repoLabel: slugToId[pr.github] || pr.github });
     const ts = (r) => Date.parse(this.prDate(r)) || 0; // sort by the date shown
     const repoOrder = (this.config.config.repos || []).map((r) => r.github);
     const rank = (r) => {
@@ -2420,7 +2399,7 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
       pr: groups.prIndex[`${repo}:${branch}`],
       github: groups.githubByRepo[repo],
     }))
-    .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
+    .filter((x) => x.pr && x.pr.state === "open" && x.github)
     .map((x) => ({ github: x.github, number: x.pr.number }));
 
   const fields = [];
@@ -2760,7 +2739,7 @@ class TargetsScreen extends Component {
           pr: groups.prIndex[`${repo}:${branch}`],
           github: groups.githubByRepo[repo],
         }))
-        .filter((x) => x.pr && x.pr.state === "OPEN" && x.github)
+        .filter((x) => x.pr && x.pr.state === "open" && x.github)
         .map((x) => ({ github: x.github, number: x.pr.number })),
     );
 
@@ -3174,7 +3153,7 @@ class BranchesScreen extends Component {
     const rows = groups.flatMap((g) => g.repos).filter((r) => !this.deleteBlocked(r));
     const total = groups.reduce((n, g) => n + g.repos.length, 0);
     const skipped = total - rows.length;
-    const prs = rows.filter((r) => r.pr && r.pr.state === "OPEN" && r.github);
+    const prs = rows.filter((r) => r.pr && r.pr.state === "open" && r.github);
     const remoteRows = rows.filter((r) => r.remote && !r.base);
     const what = groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
     const fields = [];
@@ -3219,7 +3198,7 @@ class BranchesScreen extends Component {
   async deleteRow(r) {
     if (this.deleteBlocked(r)) return;
     const canRemote = r.remote && !r.base; // pushed, non-base: removable on the remote
-    const hasPr = !!(r.pr && r.pr.state === "OPEN" && r.github);
+    const hasPr = !!(r.pr && r.pr.state === "open" && r.github);
     const targets = this.config.config.targets.filter((t) =>
       (t.config || []).some((c) => c.repo === r.repo && c.branch === r.branch),
     );
@@ -3311,7 +3290,7 @@ class BranchesScreen extends Component {
       });
     if (!r.base && r.remote && r.github && !r.pr)
       actions.push({ label: "Open PR", onClick: () => this.openPr(r) });
-    if (r.pr && r.github && r.pr.state === "OPEN")
+    if (r.pr && r.github && r.pr.state === "open")
       actions.push({
         label: "Close PR",
         danger: true,
@@ -3409,8 +3388,7 @@ class BranchesScreen extends Component {
   }
 
   prState(p) {
-    const st = p.isDraft && p.state === "OPEN" ? "DRAFT" : p.state;
-    return st.toLowerCase();
+    return p.draft && p.state === "open" ? "draft" : p.state;
   }
 }
 
@@ -3724,12 +3702,11 @@ class PrsScreen extends Component {
     return this._slugToId[github] || github;
   }
 
-  // PRs of the active segment, normalized to one row shape and filtered by search +
-  // repository. The two sources differ (state case, draft/branch/repo field names),
-  // so both fold into { number, title, url, github (slug), repoLabel, branch,
-  // state (lowercase), draft, updatedAt }; every downstream helper reads these.
-  // Mine rows also carry createdAt — the date column shows it for your own PRs
-  // (their updatedAt is noisy: it bumps on any comment/label long after the work).
+  // PRs of the active segment, filtered by search + repository. PRs arrive already
+  // normalized (see models.js), so a row is just the PR plus its display repoLabel;
+  // every downstream helper reads the unified fields. Mine rows carry createdAt —
+  // the date column shows it for your own PRs (their updatedAt is noisy: it bumps on
+  // any comment/label long after the work).
   rows() {
     const q = this.search().trim().toLowerCase();
     const repoFilter = this.repoFilter();
@@ -3738,33 +3715,10 @@ class PrsScreen extends Component {
       list = [];
       for (const repo of this.code.prRepos()) {
         if (repo.error) continue;
-        for (const pr of repo.prs) {
-          list.push({
-            number: pr.number,
-            title: pr.title || "",
-            url: pr.url,
-            github: repo.github,
-            repoLabel: repo.id,
-            branch: pr.headRefName,
-            state: (pr.state || "").toLowerCase(),
-            draft: !!pr.isDraft,
-            createdAt: pr.createdAt,
-            updatedAt: pr.updatedAt,
-          });
-        }
+        for (const pr of repo.prs) list.push({ ...pr, repoLabel: repo.id });
       }
     } else {
-      list = this.review.prs().map((pr) => ({
-        number: pr.number,
-        title: pr.title || "",
-        url: pr.url,
-        github: pr.repo,
-        repoLabel: this.labelFor(pr.repo),
-        branch: pr.branch,
-        state: pr.state,
-        draft: !!pr.draft,
-        updatedAt: pr.updatedAt,
-      }));
+      list = this.review.prs().map((pr) => ({ ...pr, repoLabel: this.labelFor(pr.github) }));
     }
     return list.filter((r) => {
       if (repoFilter && r.repoLabel !== repoFilter) return false;

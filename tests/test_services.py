@@ -536,6 +536,13 @@ class GitHubServiceTest(unittest.TestCase):
         self.assertEqual(pr["ci"]["runbot"], "success")
         self.assertEqual(pr["ci"]["overall"], "failure")  # ci/style failed
         self.assertEqual([c["context"] for c in pr["ci"]["checks"]], ["ci/runbot", "ci/style"])
+        # unified PullRequest shape (raw gh casing normalized at the source)
+        self.assertEqual(pr["relation"], "authored")
+        self.assertEqual(pr["github"], "odoo/odoo")
+        self.assertEqual(pr["branch"], "br")  # headRefName → branch
+        self.assertEqual(pr["state"], "open")  # OPEN → open
+        self.assertFalse(pr["draft"])  # isDraft → draft
+        self.assertEqual(pr["updated_at"], "x")  # snake_case on the wire
 
     def test_prs_reports_gh_error(self):
         io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))
@@ -581,11 +588,12 @@ class GitHubServiceTest(unittest.TestCase):
         result = svc.reviewed(days=14)
         prs = result["prs"]
         self.assertEqual(len(prs), 2)
-        self.assertEqual(prs[0]["repo"], "odoo/odoo")
+        self.assertEqual(prs[0]["github"], "odoo/odoo")  # nameWithOwner → github (identity)
+        self.assertEqual(prs[0]["relation"], "reviewed")
         self.assertEqual(prs[0]["state"], "merged")  # MERGED → "merged"
         self.assertEqual(prs[0]["url"], "https://github.com/odoo/odoo/pull/5")
         self.assertEqual(prs[0]["branch"], "master-fix-abc")
-        self.assertEqual(prs[1]["repo"], "odoo/enterprise")
+        self.assertEqual(prs[1]["github"], "odoo/enterprise")
         self.assertEqual(prs[1]["state"], "open")
         self.assertTrue(prs[1]["draft"])
         self.assertEqual(prs[1]["branch"], "saas-1.0-feat")

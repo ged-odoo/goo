@@ -17,7 +17,10 @@ import threading
 import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+
+from .models import CiCheck, CiRollup, PullRequest
 
 RUNBOT_BASE = "https://runbot.odoo.com"
 MERGEBOT_BASE = "https://mergebot.odoo.com"
@@ -47,12 +50,12 @@ def _ci_state(raw):
 
 
 def _ci_rollup(rollup):
-    """Compress a PR's statusCheckRollup into {overall, runbot, checks}.
+    """Compress a PR's statusCheckRollup into a CiRollup {overall, runbot, checks}.
 
-    `checks` is [{context, state, url}] (state normalized via _ci_state); `runbot`
-    is the ci/runbot context's state; `overall` is failure if any check failed,
-    else pending if any is still pending, else success if all passed (else "").
-    Handles both StatusContext (.context/.state, what Odoo's CI posts) and
+    `checks` is [CiCheck(context, state, url)] (state normalized via _ci_state);
+    `runbot` is the ci/runbot context's state; `overall` is failure if any check
+    failed, else pending if any is still pending, else success if all passed (else
+    ""). Handles both StatusContext (.context/.state, what Odoo's CI posts) and
     CheckRun (.name/.status/.conclusion)."""
     checks = []
     for c in rollup or []:
@@ -61,14 +64,14 @@ def _ci_rollup(rollup):
             continue
         raw = c.get("state") or c.get("conclusion") or c.get("status") or ""
         checks.append(
-            {
-                "context": context,
-                "state": _ci_state(raw),
-                "url": c.get("targetUrl") or c.get("detailsUrl") or "",
-            }
+            CiCheck(
+                context=context,
+                state=_ci_state(raw),
+                url=c.get("targetUrl") or c.get("detailsUrl") or "",
+            )
         )
-    checks.sort(key=lambda c: c["context"])
-    states = {c["state"] for c in checks}
+    checks.sort(key=lambda c: c.context)
+    states = {c.state for c in checks}
     if "failure" in states:
         overall = "failure"
     elif "pending" in states:
@@ -77,8 +80,8 @@ def _ci_rollup(rollup):
         overall = "success"
     else:
         overall = ""
-    runbot = next((c["state"] for c in checks if c["context"] == "ci/runbot"), "")
-    return {"overall": overall, "runbot": runbot, "checks": checks}
+    runbot = next((c.state for c in checks if c.context == "ci/runbot"), "")
+    return CiRollup(overall=overall, runbot=runbot, checks=checks)
 
 
 class GitHubService:
@@ -130,10 +133,24 @@ class GitHubService:
             if r.returncode != 0:
                 entry["error"] = r.stderr.strip().split("\n")[0] or "gh failed"
             else:
-                prs = json.loads(r.stdout)
-                for pr in prs:
-                    pr["ci"] = _ci_rollup(pr.pop("statusCheckRollup", None))
-                entry["prs"] = prs
+                entry["prs"] = [
+                    asdict(
+                        PullRequest(
+                            github=gh_repo,
+                            number=pr.get("number"),
+                            title=pr.get("title", ""),
+                            url=pr.get("url", ""),
+                            state=(pr.get("state") or "").lower(),  # OPEN → open
+                            branch=pr.get("headRefName", ""),
+                            relation="authored",
+                            draft=pr.get("isDraft", False),
+                            created_at=pr.get("createdAt", ""),
+                            updated_at=pr.get("updatedAt", ""),
+                            ci=_ci_rollup(pr.get("statusCheckRollup")),
+                        )
+                    )
+                    for pr in json.loads(r.stdout)
+                ]
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             entry["error"] = str(e)
         except json.JSONDecodeError:
@@ -206,16 +223,19 @@ class GitHubService:
 
     @staticmethod
     def _review_row(node):
-        return {
-            "repo": (node.get("repository") or {}).get("nameWithOwner", ""),
-            "number": node.get("number"),
-            "title": node.get("title", ""),
-            "url": node.get("url", ""),
-            "state": (node.get("state") or "").lower(),  # open / closed / merged
-            "draft": node.get("isDraft", False),
-            "branch": node.get("headRefName", ""),
-            "updatedAt": node.get("updatedAt", ""),
-        }
+        return asdict(
+            PullRequest(
+                github=(node.get("repository") or {}).get("nameWithOwner", ""),
+                number=node.get("number"),
+                title=node.get("title", ""),
+                url=node.get("url", ""),
+                state=(node.get("state") or "").lower(),  # open / closed / merged
+                branch=node.get("headRefName", ""),
+                relation="reviewed",
+                draft=node.get("isDraft", False),
+                updated_at=node.get("updatedAt", ""),
+            )
+        )
 
     def close_pr(self, github, number):
         """Close a GitHub PR. Returns (ok, error); invalidates the PR cache on

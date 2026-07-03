@@ -6,6 +6,7 @@ import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
+import { PullRequest, branchKey } from "./models.js";
 
 const { Plugin, plugin, signal, computed } = owl;
 
@@ -160,8 +161,10 @@ export class CodePlugin extends Plugin {
     const prRepos = repos.filter((r) => r.github && (!prRepoIds || prRepoIds.has(r.id)));
     const prsP = postJSON("/api/prs", { repos: prRepos, refresh: force })
       .then((p) => {
-        this.prRepos.set(p.repos);
-        return p.repos;
+        // normalize each PR into the canonical shape on ingest (see models.js)
+        const normalized = p.repos.map((r) => ({ ...r, prs: (r.prs || []).map(PullRequest.from) }));
+        this.prRepos.set(normalized);
+        return normalized;
       })
       .catch((e) => {
         this.error.set(e.message);
@@ -218,7 +221,7 @@ export class CodePlugin extends Plugin {
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
     const prIndex = {};
     for (const repo of this.prRepos()) {
-      for (const pr of repo.prs) prIndex[`${repo.id}:${pr.headRefName}`] = pr;
+      for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
     }
     const map = new Map();
     for (const repo of this.branchRepos()) {
@@ -465,7 +468,7 @@ export class CodePlugin extends Plugin {
   _closePrLocally(github, number) {
     const prRepos = this.prRepos().map((r) =>
       r.github === github
-        ? { ...r, prs: r.prs.map((p) => (p.number === number ? { ...p, state: "CLOSED" } : p)) }
+        ? { ...r, prs: r.prs.map((p) => (p.number === number ? { ...p, state: "closed" } : p)) }
         : r,
     );
     this.prRepos.set(prRepos);

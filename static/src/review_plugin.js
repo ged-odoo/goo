@@ -9,6 +9,7 @@
 //     (re-probed on a manual Refresh so a false positive can recover).
 
 import { postJSON } from "./utils.js";
+import { PullRequest } from "./models.js";
 import {
   ConfigPlugin,
   REVIEWS_MERGED_KEY,
@@ -44,7 +45,7 @@ export class ReviewPlugin extends Plugin {
       const resp = await fetch(force ? "/api/reviews?refresh=1" : "/api/reviews");
       const data = await resp.json();
       if (!data.ok) throw new Error(data.error || "failed");
-      this.prs.set(data.prs);
+      this.prs.set((data.prs || []).map(PullRequest.from));
       this.at.set(Date.now());
     } catch (e) {
       this.error.set(e.message);
