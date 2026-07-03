@@ -4651,3 +4651,160 @@ a.commit-detail-hash svg {
 .nb-graph-footer {
   padding-top: 8px;
 }
+
+/* ─────────────────────────── Memory panel ─────────────────────────── */
+
+/* dark filled button — reused as-is by .dialog-foot .pbtn.primary, which is
+   more specific and wins there; this is the generic base for any screen. */
+.pbtn.primary {
+  color: var(--l-card);
+  background: var(--l-text);
+  border-color: var(--l-text);
+}
+.pbtn.primary:hover:not(:disabled) {
+  color: var(--l-card);
+  background: var(--l-text-mid);
+  border-color: var(--l-text-mid);
+}
+.pbtn.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* generic inline validation message, reused wherever a form needs one */
+.form-error {
+  font-size: 12.5px;
+  color: var(--l-red);
+}
+
+/* side-by-side: a fixed-width, independently-scrolling sidebar for the build
+   inputs, and the chart filling all remaining width AND height — instead of
+   the old stacked layout, where the chart was squeezed below the inputs */
+.mem-content {
+  flex-direction: row;
+  overflow: hidden;
+  gap: 0;
+  padding: 0;
+}
+.mem-sidebar {
+  position: relative;
+  flex: 0 0 400px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-right: 1px solid var(--l-line-soft);
+  padding: 36px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: flex-basis 0.15s;
+}
+/* folded: just the toggle tab, so the chart can take the freed-up width */
+.mem-sidebar.collapsed {
+  flex-basis: 28px;
+  padding: 16px 0 24px;
+}
+.mem-sidebar-toggle {
+  position: absolute;
+  top: 12px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 6px;
+  background: var(--l-card);
+  color: var(--l-text-dim);
+  cursor: pointer;
+}
+.mem-sidebar-toggle:hover {
+  color: var(--l-text);
+  border-color: var(--l-text-faint);
+}
+.mem-sidebar-toggle svg {
+  width: 11px;
+  height: 11px;
+  transform: rotate(90deg);
+}
+.mem-sidebar-toggle.collapsed {
+  right: 4px;
+}
+.mem-sidebar-toggle.collapsed svg {
+  transform: rotate(-90deg);
+}
+.mem-batch-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mem-batch-input-row {
+  display: flex;
+  gap: 8px;
+}
+.mem-builds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mem-builds > .pbtn {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.mem-build-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mem-label-input,
+.mem-url-input {
+  padding: 7px 10px;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  background: var(--l-card);
+  color: var(--l-text);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.mem-label-input::placeholder,
+.mem-url-input::placeholder {
+  color: var(--l-text-faint);
+}
+.mem-label-input:focus,
+.mem-url-input:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
+.mem-label-input {
+  flex: 0 0 110px;
+}
+.mem-url-input {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.mem-chart-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 24px 24px;
+  position: relative;
+}
+.mem-hint {
+  margin: auto;
+  color: var(--l-text-faint);
+}
+.mem-chart-hint {
+  flex: none;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.mem-chart-wrap canvas {
+  flex: 1;
+  min-height: 0;
+  /* Chart.js sizes the canvas itself (responsive + maintainAspectRatio:false);
+     these just stop it from overflowing before the first resize observation */
+  max-width: 100%;
+  max-height: 100%;
+}

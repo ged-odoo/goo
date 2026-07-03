@@ -22,6 +22,7 @@ import { UpdatePlugin } from "./update_plugin.js";
 import { WorktreePlugin } from "./worktree_plugin.js";
 import { ClaudePlugin } from "./claude_plugin.js";
 import { NightlyPlugin } from "./nightly_plugin.js";
+import { MemoryPlugin } from "./memory_plugin.js";
 import { timeAgo, tintCmd, formatBytes } from "./utils.js";
 
 const {
@@ -81,6 +82,7 @@ const ICONS = {
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
   worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
   nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
+  memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`,
 };
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.code },
@@ -94,6 +96,7 @@ const NAV = [
   { id: "addons", label: "Addons", icon: ICONS.addons },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },
+  { id: "memory", label: "Memory", icon: ICONS.memory, optIn: true },
   { id: "config", label: "Configuration", icon: ICONS.config },
 ];
 // Merge a saved tab config with NAV → the ordered list of tab ids to show. The
@@ -5316,25 +5319,49 @@ function loadXterm() {
   return _xtermReady;
 }
 
-// lazy-load Chart.js (vendored, not a CDN) on first use — shared by the Nightly
-// and Memory panels, each of which draws its own line chart(s) on a <canvas>.
+// lazy-load a <script> and resolve once it has run (or already has, e.g. Chart.js
+// itself once both the Nightly and Memory panel have asked for it)
+function loadScript(src, isLoaded) {
+  return new Promise((resolve, reject) => {
+    if (isLoaded()) return resolve();
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+// lazy-load Chart.js + its zoom/pan plugin (both vendored, not a CDN) on first
+// use — shared by the Nightly and Memory panels, each of which draws its own
+// line chart(s) on a <canvas>. Wheel-zooms and drag-pans; no pinch (that needs
+// hammer.js too, and this is a desktop dev tool).
 let _chartJsReady = null;
 function loadChartJs() {
   if (!_chartJsReady) {
-    _chartJsReady = new Promise((resolve, reject) => {
-      if (window.Chart) return resolve();
-      const s = document.createElement("script");
-      s.src = "/static/lib/chart/chart.umd.min.js";
-      s.onload = resolve;
-      s.onerror = () => {
+    _chartJsReady = loadScript("/static/lib/chart/chart.umd.min.js", () => window.Chart)
+      .then(() =>
+        loadScript("/static/lib/chart/chartjs-plugin-zoom.min.js", () => window.ChartZoom),
+      )
+      .then(() => window.Chart.register(window.ChartZoom))
+      .catch((e) => {
         _chartJsReady = null; // allow retry
-        reject(new Error("failed to load Chart.js"));
-      };
-      document.head.appendChild(s);
-    });
+        throw e;
+      });
   }
   return _chartJsReady;
 }
+
+// options.plugins.zoom config shared by every chart: wheel-zoom + drag-to-pan,
+// double-click to reset
+const CHART_ZOOM_OPTIONS = {
+  pan: { enabled: true, mode: "x" },
+  zoom: {
+    wheel: { enabled: true },
+    drag: { enabled: true, modifierKey: "shift" },
+    mode: "x",
+  },
+};
 
 // shared categorical palette for Chart.js datasets (Tableau-10-ish)
 const CHART_COLORS = [
@@ -6443,6 +6470,178 @@ class NightlyScreen extends Component {
   }
 }
 
+// ─────────────────────────── Memory ───────────────────────────
+
+class MemoryScreen extends Component {
+  static template = xml`
+    <section class="mem-screen">
+      <div class="panel">
+        <div class="panel-top"><h1>Memory</h1></div>
+        <div class="panel-actions">
+          <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
+            <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
+          </button>
+          <label class="toggle" t-att-class="{on: this.memory.withMobile()}" t-on-click="() => this.toggleMobile()">
+            <span class="switch"/> With mobile
+          </label>
+          <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
+        </div>
+      </div>
+      <div class="content mem-content">
+        <div class="mem-sidebar" t-att-class="{collapsed: this.sidebarCollapsed()}">
+          <button class="mem-sidebar-toggle" t-att-class="{collapsed: this.sidebarCollapsed()}"
+                  t-att-title="this.sidebarCollapsed() ? 'Show build list' : 'Hide build list'"
+                  t-on-click="() => this.toggleSidebar()">
+            <t t-out="this.chevronIcon"/>
+          </button>
+          <t t-if="!this.sidebarCollapsed()">
+            <div class="mem-batch-section">
+              <div class="mem-batch-input-row">
+                <input type="text" class="mem-url-input" placeholder="batch URL, e.g. https://runbot.odoo.com/runbot/batch/1/build/1"
+                       t-att-value="this.memory.batchUrl()" t-on-input="ev => this.memory.setBatchUrl(ev.target.value)"
+                       t-on-keydown="ev => this.onBatchKeydown(ev)"/>
+                <button class="pbtn" t-att-disabled="!this.memory.batchUrl().trim() || this.memory.batchLoading()" t-on-click="() => this.fetchBatch()">
+                  <t t-out="this.memory.batchLoading() ? 'Fetching…' : 'Fetch builds'"/>
+                </button>
+              </div>
+              <span t-if="this.memory.batchError()" class="form-error" t-out="this.memory.batchError()"/>
+            </div>
+            <div class="mem-builds">
+              <div class="mem-build-row" t-foreach="this.memory.builds()" t-as="b" t-key="b_index">
+                <input type="text" class="mem-label-input" placeholder="label (e.g. master)"
+                       t-att-value="b.label" t-on-input="ev => this.memory.updateBuild(b_index, 'label', ev.target.value)"/>
+                <input type="text" class="mem-url-input" placeholder="log URL (e.g. https://runbot…/logs/test_only.txt)"
+                       t-att-value="b.url" t-on-input="ev => this.memory.updateBuild(b_index, 'url', ev.target.value)"/>
+                <button class="drop-btn" t-on-click="() => this.memory.removeBuild(b_index)">✕</button>
+              </div>
+              <button class="pbtn" t-on-click="() => this.addBuild()">Add build</button>
+            </div>
+          </t>
+        </div>
+        <div class="mem-chart-wrap">
+          <div t-if="!this.memory.data().length &amp;&amp; !this.memory.loading() &amp;&amp; !this.memory.error()" class="dim mem-hint">
+            Enter one or more build log URLs on the left and click "Draw graph".
+          </div>
+          <div t-if="this.memory.data().length" class="mem-chart-hint dim">Scroll to zoom · shift-drag to zoom a range · double-click to reset</div>
+          <canvas t-ref="this.canvas" t-on-dblclick="() => this.resetZoom()"/>
+        </div>
+      </div>
+    </section>`;
+
+  memory = plugin(MemoryPlugin);
+  canvas = signal.ref(HTMLElement);
+  chevronIcon = m(ICONS.chevron);
+  _chart = null;
+  _focusRowIndex = -1; // index to focus on the next patch, once its DOM exists
+  sidebarCollapsed = signal(false);
+
+  setup() {
+    loadChartJs()
+      .then(() => this._redraw())
+      .catch(() => {});
+    onWillUnmount(() => {
+      if (this._chart) this._chart.destroy();
+    });
+    // onPatched runs after the DOM reflects the new row (a signal.set()'s effect
+    // isn't visible in the DOM yet at the point addBuild() returns, so focusing
+    // straight away — even via requestAnimationFrame — can hit the previous
+    // last row instead of the one just added)
+    onPatched(() => {
+      if (this._focusRowIndex < 0) return;
+      const idx = this._focusRowIndex;
+      this._focusRowIndex = -1;
+      this._focusRow(idx);
+    });
+  }
+
+  hasUrls() {
+    return this.memory.builds().some((b) => b.url.trim());
+  }
+
+  toggleSidebar() {
+    this.sidebarCollapsed.set(!this.sidebarCollapsed());
+  }
+
+  _focusRow(idx) {
+    const rows = document.querySelectorAll(".mem-build-row .mem-label-input");
+    rows[idx]?.focus();
+  }
+
+  addBuild() {
+    const builds = this.memory.builds();
+    const emptyIdx = builds.findIndex((b) => !b.label.trim() && !b.url.trim());
+    if (emptyIdx !== -1) {
+      // an empty row already exists (e.g. the initial placeholder) — reuse it
+      // instead of piling up another one; its DOM is already there, so focus now
+      this._focusRow(emptyIdx);
+      return;
+    }
+    this.memory.addBuild();
+    this._focusRowIndex = builds.length; // the new row lands right after the old ones
+  }
+
+  toggleMobile() {
+    this.memory.withMobile.set(!this.memory.withMobile());
+  }
+
+  async fetchBatch() {
+    await this.memory.fetchBatch();
+  }
+
+  onBatchKeydown(ev) {
+    if (ev.key === "Enter") this.fetchBatch();
+  }
+
+  async draw() {
+    await this.memory.load();
+    this._redraw();
+  }
+
+  _redraw() {
+    if (!window.Chart || !this.canvas()) return;
+    if (this._chart) {
+      this._chart.destroy();
+      this._chart = null;
+    }
+    const data = this.memory.data();
+    if (!data.length) return;
+    const builds = Object.keys(data[0]).filter((k) => k !== "suite");
+    const datasets = builds.map((build, i) => ({
+      label: build,
+      data: data.map((d) =>
+        d[build] != null ? Math.round((d[build] / 1024 / 1024) * 100) / 100 : null,
+      ),
+      borderColor: CHART_COLORS[i % CHART_COLORS.length],
+      backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + "33",
+      borderWidth: 1.5,
+      pointRadius: 1.5,
+      spanGaps: false,
+    }));
+    this._chart = new window.Chart(this.canvas(), {
+      type: "line",
+      data: { labels: data.map((d) => d.suite), datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+          legend: { position: "top" },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y} MB` } },
+          zoom: CHART_ZOOM_OPTIONS,
+        },
+        scales: {
+          x: { ticks: { maxRotation: 90, font: { size: 10 } } },
+          y: { title: { display: true, text: "Memory (MB after GC)" } },
+        },
+      },
+    });
+  }
+
+  resetZoom() {
+    this._chart?.resetZoom();
+  }
+}
+
 // ─────────────────────────── Root ───────────────────────────
 
 const SCREENS = {
@@ -6460,6 +6659,7 @@ const SCREENS = {
   assets: AssetsScreen,
   addons: AddonsScreen,
   nightly: NightlyScreen,
+  memory: MemoryScreen,
   config: ConfigScreen,
 };
 
@@ -6478,6 +6678,7 @@ export class App extends Component {
     AssetsScreen,
     AddonsScreen,
     NightlyScreen,
+    MemoryScreen,
     ConfigScreen,
     ActionMenu,
     CiMenu,

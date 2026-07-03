@@ -1320,6 +1320,7 @@ ASSETS = services.AssetsService(effects, TTLCache(30))
 # 24h is just a safety net for the versions/night-index keys (refresh=True bypasses
 # them); per-build detail keys are never invalidated — see NightlyService's docstring.
 NIGHTLY = services.NightlyService(effects, TTLCache(24 * 3600))
+MEMORY = services.MemoryService(effects)
 # the last start/test config received from the UI — reused by the `goo --test-tags`
 # CLI so agents can run tests without re-supplying the target/db/repos/venv
 LAST_CONFIG = None
@@ -1496,6 +1497,15 @@ class Handler(BaseHTTPRequestHandler):
             if err or not url:
                 return self._send_json(400, {"ok": False, "error": "missing url"})
             self._send_json(200, {"ok": True, "builds": NIGHTLY.batch_builds(url)})
+        elif path == "/api/memory/fetch":
+            body, err = self._read_json()
+            builds = (body or {}).get("builds")
+            if err or not isinstance(builds, list):
+                return self._send_json(400, {"ok": False, "error": "missing builds list"})
+            with_mobile = bool((body or {}).get("with_mobile", False))
+            self._send_json(
+                200, {"ok": True, "data": MEMORY.fetch(builds, with_mobile=with_mobile)}
+            )
         elif path == "/api/autoreload":
             body, err = self._read_json()
             repos = (body or {}).get("repos")

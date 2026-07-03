@@ -894,6 +894,60 @@ class NightlyService:
         return builds
 
 
+# ─────────────────────────── Memory (hoot [MEMINFO] logs) ───────────────────
+
+
+class MemoryService:
+    """Hoot [MEMINFO] memory-usage comparison across build log URLs the user
+    picks explicitly. Not cached — the user is comparing a hand-picked set of
+    builds, not polling for updates, so every "Draw graph" fetches fresh."""
+
+    _MEMINFO_RE = re.compile(
+        r".*(\.MobileWebSuite|\.WebSuite).*:\s+\[MEMINFO\]\s+([^ ]+)\s+\(after GC\)\s+-\s+used:\s+(\d+)"
+    )
+
+    def __init__(self, io):
+        self.io = io
+
+    def parse_log(self, text):
+        """[(suite_name, used_bytes, is_mobile)] from a hoot build log."""
+        results = []
+        for line in text.splitlines():
+            if "[MEMINFO] @" not in line:
+                continue
+            m = self._MEMINFO_RE.match(line)
+            if m:
+                suite_type, suite_name, used = m.group(1), m.group(2), int(m.group(3))
+                results.append((suite_name, used, suite_type == ".MobileWebSuite"))
+        return results
+
+    def fetch(self, builds, with_mobile=False):
+        """[{suite, <label>: bytes, ...}] — one row per suite, one column per
+        build — for a list of {"label", "url"} builds, fetched in parallel."""
+        valid = [b for b in builds if b.get("url")]
+
+        def fetch_one(build):
+            html, err = self.io.http_get(build["url"], timeout=60)
+            return build.get("label", ""), ([] if err else self.parse_log(html))
+
+        per_build = {}
+        if valid:
+            with ThreadPoolExecutor(max_workers=min(16, len(valid))) as pool:
+                per_build = dict(pool.map(fetch_one, valid))
+
+        rows, seen = [], {}
+        for build in builds:
+            label = build.get("label", "")
+            for suite_name, used, is_mobile in per_build.get(label, []):
+                if not with_mobile and is_mobile:
+                    continue
+                if suite_name not in seen:
+                    seen[suite_name] = len(rows)
+                    rows.append({"suite": suite_name})
+                rows[seen[suite_name]][label] = used
+        return rows
+
+
 # ─────────────────────────── PostgreSQL databases ───────────────────────────
 
 
