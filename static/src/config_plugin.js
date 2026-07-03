@@ -1,33 +1,30 @@
-// Config store + persistence (localStorage, with optional mirroring to a
-// server-side JSON file). Owns the localStorage keys other plugins persist
-// through (favorites, last target).
+// Config + app-state store, owned by the server (backend/services.py ConfigStore,
+// persisted to ~/.config/goo/config.json as {rev, config, state}). This plugin is a
+// mirror + action layer: it seeds from GET /api/config at boot (see loadServerConfig),
+// writes back with POST /api/config (rev-checked, optimistic), and stays in lockstep
+// across tabs via the SSE "config" broadcast (applyBroadcast). The browser holds no
+// durable config or state — only the volatile caches other plugins keep directly.
+//
+//   config = the user's settings/repos/targets/… (the schema lives in config.js;
+//            DEFAULT_CONFIG is merged in at read, so new default keys apply)
+//   state  = app-recorded: active_target, test_history, reviews_*, claude_model
 
 import { DEFAULT_CONFIG } from "./config.js";
 import { PRESETS } from "./presets.js";
-import { postJSON, worktreeDirFor } from "./utils.js";
+import { worktreeDirFor } from "./utils.js";
 
-const { Plugin, signal, useEffect } = owl;
+const { Plugin, signal } = owl;
 
-const STORAGE_KEY = "oo-config";
-export const LAST_TARGET_KEY = "oo-last-target";
-const DATA_FILE_KEY = "oo-data-file";
-export const FAVORITES_KEY = "oo-prs-favorites";
-export const TEST_HISTORY_KEY = "oo-test-history";
-// Reviews tab: PRs known merged (terminal — never re-fetched) and repos with no
-// mergebot support (skipped). Persisted so the work survives reloads/restarts.
-export const REVIEWS_MERGED_KEY = "oo-reviews-merged";
-export const REVIEWS_NO_MERGEBOT_KEY = "oo-reviews-no-mergebot";
-// branch groups the user starred in the Reviews tab (by branch name), sorted first
-export const REVIEWS_FAVORITES_KEY = "oo-reviews-favorites";
-const PERSISTENT_KEYS = [
-  STORAGE_KEY,
-  FAVORITES_KEY,
-  LAST_TARGET_KEY,
-  TEST_HISTORY_KEY,
-  REVIEWS_MERGED_KEY,
-  REVIEWS_NO_MERGEBOT_KEY,
-  REVIEWS_FAVORITES_KEY,
-];
+// old localStorage keys → their field in the server `state` blob. Used to adopt an
+// upgrading user's browser data on first boot, and to translate config presets.
+const STATE_KEYS = {
+  "oo-last-target": "active_target",
+  "oo-test-history": "test_history",
+  "oo-reviews-merged": "reviews_merged",
+  "oo-reviews-no-mergebot": "reviews_no_mergebot",
+  "oo-reviews-favorites": "reviews_favorites",
+  "oo-claude-model": "claude_model",
+};
 
 // a stable, unique id for a new target (referenced internally so renaming is safe)
 export function newTargetId() {
@@ -36,8 +33,8 @@ export function newTargetId() {
     : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// a deterministic id derived from a name (used when migrating old configs, so
-// re-running the migration — e.g. for data-file users — yields the same ids)
+// a deterministic id derived from a name (used when migrating old configs so a
+// re-run — e.g. re-adopting the same source — yields the same ids)
 function slugId(name, used) {
   const base =
     (name || "target")
@@ -49,35 +46,30 @@ function slugId(name, used) {
   return id;
 }
 
-export class ConfigPlugin extends Plugin {
-  static sequence = 1; // everything else may depend on config
+function tryParse(v) {
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v; // plain strings (active_target, claude_model) aren't JSON
+  }
+}
 
-  _migrated = this._migrate(); // runs before cfg is read (backfills target ids)
-  cfg = signal(this._merged()); // the merged config object (replaced wholesale)
-  dataFileSig = signal(this.getDataFile());
-  _timer = null;
-
-  // one-time migration, idempotent and deterministic (safe to re-run on the same
-  // stored config — e.g. data-file re-hydration). Normalizes each stored target:
-  //   - backfills a stable id (so renaming `name` is safe),
-  //   - renames the checkout list `config` → `checkouts` (the field name hurt: it
-  //     collided with the ConfigPlugin and the whole-config object),
-  //   - adds an explicit `kind` ("plain" | "worktree") instead of relying on the
-  //     presence of a `worktree` object as the flag,
-  //   - freezes each worktree's directory into `worktree.dir`, so a later rename
-  //     can't orphan the on-disk checkout (previously the dir was re-derived from
-  //     the name on every use). Existing worktrees freeze their *current* derived
-  //     path — the same one dirPath computes today, so no behavior changes.
-  // Also migrates the persisted active target from a name (old format) to its id.
-  _migrate() {
-    const stored = this._stored();
+// one-time, idempotent, deterministic migration of a {config, state} pair. Normalizes
+// each target (backfill a stable id; rename the checkout list `config`→`checkouts`; add
+// an explicit `kind`; freeze a worktree's `dir` so a rename can't orphan its checkout)
+// and maps a name-based active target to its id. Runs at first-boot adoption and on
+// preset-apply — never on already-server-owned config (which is already migrated).
+export function migrateConfigState(config, state) {
+  config = { ...(config || {}) };
+  state = { ...(state || {}) };
+  if (Array.isArray(config.targets)) {
     const stale = (t) =>
       !t.id || t.config !== undefined || !t.kind || (t.worktree && !t.worktree.dir);
-    if (Array.isArray(stored.targets) && stored.targets.some(stale)) {
-      const worktreeDir = this._merged().worktree_dir;
-      const used = new Set(stored.targets.map((t) => t.id).filter(Boolean));
-      const targets = stored.targets.map((t) => {
-        const { config, ...rest } = t;
+    if (config.targets.some(stale)) {
+      const worktreeDir = config.worktree_dir ?? DEFAULT_CONFIG.worktree_dir;
+      const used = new Set(config.targets.map((t) => t.id).filter(Boolean));
+      config.targets = config.targets.map((t) => {
+        const { config: checkoutList, ...rest } = t;
         const id = t.id || slugId(t.name, used);
         used.add(id);
         const worktree = t.worktree
@@ -86,182 +78,227 @@ export class ConfigPlugin extends Plugin {
         return {
           ...rest,
           id,
-          checkouts: t.checkouts ?? config ?? [],
+          checkouts: t.checkouts ?? checkoutList ?? [],
           kind: t.kind ?? (t.worktree ? "worktree" : "plain"),
           ...(worktree ? { worktree } : {}),
         };
       });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...stored, targets }));
-    }
-    const last = localStorage.getItem(LAST_TARGET_KEY);
-    if (last) {
-      const targets = this._merged().targets || [];
-      if (!targets.some((t) => t.id === last)) {
-        const byName = targets.find((t) => t.name === last);
-        if (byName) localStorage.setItem(LAST_TARGET_KEY, byName.id);
-      }
     }
   }
-
-  setup() {
-    // keep the backend's auto-reload set in sync with the config (it runs the
-    // 4h `git fetch master` timer server-side, independent of the frontend)
-    useEffect(() => {
-      const repos = (this.config.repos || [])
-        .filter((r) => r.autoreload && r.path)
-        .map((r) => ({ id: r.id, path: r.path, github: r.github }));
-      postJSON("/api/autoreload", { repos }).catch(() => {});
-    });
-    // same for the automatic goo-update check (startup + hourly git fetch): the
-    // timer is server-side, the switch lives in the config's Miscellaneous section
-    useEffect(() => {
-      postJSON("/api/goo/update-check", { enabled: this.config.update_check !== false }).catch(
-        () => {},
-      );
-    });
+  const at = state.active_target;
+  if (at && Array.isArray(config.targets) && !config.targets.some((t) => t.id === at)) {
+    const byName = config.targets.find((t) => t.name === at);
+    if (byName) state.active_target = byName.id;
   }
+  return { config, state };
+}
 
-  _stored() {
+// the payload GET /api/config returned at boot (or an adopted/seeded one), stashed by
+// loadServerConfig() for the plugin's field initializers to read at construction.
+let _boot = null;
+
+function merge(config) {
+  return { ...DEFAULT_CONFIG, ...(config || {}) };
+}
+
+// Fetch the server config before mount. If the server has none yet (first run), adopt
+// this browser's existing localStorage (an upgrading user) or DEFAULT_CONFIG (fresh),
+// migrate it, and seed the server. Always resolves — on any failure the UI still boots
+// from the migrated/default data in memory. Called from main.js before owl.mount.
+export async function loadServerConfig() {
+  let payload = null;
+  try {
+    const resp = await fetch("/api/config");
+    payload = await resp.json();
+  } catch {
+    /* server unreachable — fall through to defaults */
+  }
+  if (payload && payload.ok && payload.config) {
+    _boot = { rev: payload.rev, config: payload.config, state: payload.state || {} };
+    return;
+  }
+  // no server config yet — adopt + seed
+  const rev = payload && payload.ok ? payload.rev : 0;
+  const adopted = adoptFromLocalStorage();
+  const { config, state } = migrateConfigState(adopted.config, adopted.state);
+  try {
+    const resp = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rev, config, state }),
+    });
+    const res = await resp.json();
+    // 200 → our seed; 409 → another tab seeded first, adopt theirs
+    _boot = { rev: res.rev, config: res.config ?? config, state: res.state ?? state };
+  } catch {
+    _boot = { rev, config, state };
+  }
+}
+
+// build a {config, state} pair from this browser's legacy localStorage keys, for the
+// one-time first-boot adoption of an upgrading user's setup
+function adoptFromLocalStorage() {
+  let config;
+  try {
+    config = JSON.parse(localStorage.getItem("oo-config"));
+  } catch {
+    config = null;
+  }
+  config = merge(config); // full config (server needs real repos/targets)
+  const state = {};
+  for (const [key, field] of Object.entries(STATE_KEYS)) {
+    const v = localStorage.getItem(key);
+    if (v !== null) state[field] = tryParse(v);
+  }
+  return { config, state };
+}
+
+// translate a preset (a bundle of legacy localStorage entries — see presets.js) into a
+// {config, state} pair, migrated, ready to POST
+function presetToConfigState(preset) {
+  const data = preset.data || {};
+  let overrides = {};
+  if (data["oo-config"]) {
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+      overrides = JSON.parse(data["oo-config"]);
     } catch {
-      return {};
+      /* leave empty */
     }
   }
-
-  _merged() {
-    return { ...DEFAULT_CONFIG, ...this._stored() };
+  const state = {};
+  for (const [key, field] of Object.entries(STATE_KEYS)) {
+    if (data[key] !== undefined) state[field] = tryParse(data[key]);
   }
+  return migrateConfigState(merge(overrides), state);
+}
+
+export class ConfigPlugin extends Plugin {
+  static sequence = 1; // everything else may depend on config
+
+  _b = _boot || { rev: 0, config: {}, state: {} };
+  cfg = signal(merge(this._b.config)); // the merged config object (replaced wholesale)
+  rev = signal(this._b.rev); // server revision — guards concurrent writes
+  stateSig = signal(this._b.state || {}); // the app-state blob
+  _dirty = { config: false, state: false }; // blobs edited since the last flush
+  _timer = null;
 
   get config() {
     return this.cfg();
   } // read in render -> tracked
 
+  // ── config writes ──────────────────────────────────────────────────────────
+  // merge a patch into the config and persist it. Optimistic: the signal updates now,
+  // the POST is debounced/coalesced (see _schedule). ~25 callers across the Config and
+  // Targets UIs — their call sites are unchanged.
   updateConfig(patch) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this._stored(), ...patch }));
-    this.cfg.set(this._merged());
-    this.persist();
+    this.cfg.set({ ...this.cfg(), ...patch });
+    this._dirty.config = true;
+    this._schedule();
   }
 
-  resetKey(key) {
-    const stored = this._stored();
-    delete stored[key];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
-    this.cfg.set(this._merged());
-    this.persist();
+  // ── app-state (was the scattered oo-* localStorage keys) ─────────────────────
+  getState(field, fallback = null) {
+    const v = this.stateSig()[field];
+    return v === undefined || v === null ? fallback : v;
   }
 
-  // drop every goo-owned localStorage key (config, favorites, last target,
-  // history, caches…) except the data-file link, so the config reverts to the
-  // built-in defaults. Shared by resetConfig and applyPreset.
-  _wipeKeys() {
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("oo-") && k !== DATA_FILE_KEY) localStorage.removeItem(k);
+  setState(field, value) {
+    this.stateSig.set({ ...this.stateSig(), [field]: value });
+    this._dirty.state = true;
+    this._schedule();
+  }
+
+  // ── server sync ──────────────────────────────────────────────────────────────
+  _schedule() {
+    clearTimeout(this._timer);
+    this._timer = setTimeout(() => this._flush(), 250);
+  }
+
+  // POST whatever changed since the last flush, rev-checked. On a stale rev (another
+  // tab wrote), adopt the server's rev and retry so our edit lands on top
+  // (last-write-wins — fine for a single user); bounded so a pathological loop can't
+  // hang. Clears the dirty flags optimistically and re-sets them on failure/conflict.
+  async _flush(tries = 0) {
+    if (!this._dirty.config && !this._dirty.state) return;
+    const sent = { ...this._dirty };
+    this._dirty = { config: false, state: false };
+    const body = { rev: this.rev() };
+    if (sent.config) body.config = this.cfg();
+    if (sent.state) body.state = this.stateSig();
+    try {
+      const resp = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const res = await resp.json().catch(() => ({}));
+      if (resp.status === 409 && tries < 3) {
+        this.rev.set(res.rev);
+        this._dirty.config ||= sent.config;
+        this._dirty.state ||= sent.state;
+        return this._flush(tries + 1);
+      }
+      if (!resp.ok) throw new Error(res.error || resp.status);
+      this.rev.set(res.rev);
+    } catch (e) {
+      this._dirty.config ||= sent.config;
+      this._dirty.state ||= sent.state;
+      console.error(`[goo] config save failed: ${e.message}`);
     }
   }
 
-  // Nuke the complete current config back to the initial data (DEFAULT_CONFIG).
-  // The data-file link is kept; the wiped state is flushed to it synchronously so
-  // a reload can't rehydrate stale data.
-  async resetConfig() {
-    this._wipeKeys();
-    this.cfg.set(this._merged());
-    const path = this.getDataFile();
-    if (path) await this.flush(path);
+  // apply a config broadcast from another tab (SSE "config"). Ignored while we have a
+  // pending local edit (our own flush reconciles via the 409 retry) or when the rev
+  // isn't newer than ours (stale, or the echo of our own write).
+  applyBroadcast(payload) {
+    if (!payload || typeof payload.rev !== "number") return;
+    if (this._dirty.config || this._dirty.state) return;
+    if (payload.rev <= this.rev()) return;
+    this.rev.set(payload.rev);
+    this.cfg.set(merge(payload.config));
+    this.stateSig.set(payload.state || {});
   }
 
-  // Replace the whole config with a preset (see presets.js): wipe everything, then
-  // write the preset's persisted entries. Normal's data is empty → pure defaults.
-  // Flushed to the data file (if linked) so a reload reflects the new config.
+  // ── reset / presets (immediate, awaited so the caller can reload) ─────────────
+  async _pushNow(config, state) {
+    this.cfg.set(merge(config));
+    this.stateSig.set(state || {});
+    this._dirty = { config: false, state: false };
+    clearTimeout(this._timer);
+    try {
+      const resp = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rev: this.rev(), config: this.cfg(), state: this.stateSig() }),
+      });
+      const res = await resp.json();
+      if (res.rev !== undefined) this.rev.set(res.rev);
+    } catch (e) {
+      console.error(`[goo] config save failed: ${e.message}`);
+    }
+  }
+
+  // reset the whole config + state back to the built-in defaults
+  async resetConfig() {
+    await this._pushNow({ ...DEFAULT_CONFIG }, {});
+  }
+
+  // a portable snapshot for the Backup export (config + app state, no rev)
+  snapshot() {
+    return { config: this.cfg(), state: this.stateSig() };
+  }
+
+  // restore a snapshot (from a Backup import), replacing config + state on the server
+  async importSnapshot(snap) {
+    await this._pushNow(snap.config || {}, snap.state || {});
+  }
+
+  // replace the whole config + state with a preset (see presets.js)
   async applyPreset(id) {
     const preset = PRESETS.find((p) => p.id === id);
     if (!preset) return false;
-    this._wipeKeys();
-    // some presets detach from the data file (back to browser storage); _wipeKeys
-    // keeps oo-data-file by default, so drop it here when the preset asks for it
-    if (preset.clearDataFile) {
-      localStorage.removeItem(DATA_FILE_KEY);
-      this.dataFileSig.set("");
-    }
-    for (const [k, v] of Object.entries(preset.data || {})) localStorage.setItem(k, v);
-    this.cfg.set(this._merged());
-    const path = this.getDataFile();
-    if (path) await this.flush(path);
+    const { config, state } = presetToConfigState(preset);
+    await this._pushNow(config, state);
     return true;
   }
-
-  // generic persistent key/value (favorites, last target)
-  read(key) {
-    return localStorage.getItem(key);
-  }
-
-  write(key, value) {
-    localStorage.setItem(key, value);
-    this.persist();
-  }
-
-  // ── server-side data file ──
-  getDataFile() {
-    return localStorage.getItem(DATA_FILE_KEY) || "";
-  }
-
-  _collect() {
-    const data = {};
-    for (const k of PERSISTENT_KEYS) {
-      const v = localStorage.getItem(k);
-      if (v !== null) data[k] = v;
-    }
-    return data;
-  }
-
-  persist() {
-    const path = this.getDataFile();
-    if (!path) return;
-    clearTimeout(this._timer);
-    this._timer = setTimeout(() => {
-      this.flush(path).catch((e) => console.error(`[goo] data file save failed: ${e.message}`));
-    }, 300);
-  }
-
-  async flush(path) {
-    await postJSON("/api/data", { path, data: this._collect() });
-  }
-
-  async useFile(path) {
-    path = path.trim();
-    if (!path) {
-      this.clearFile();
-      return "Using browser storage.";
-    }
-    const hydrated = await loadDataFile(path);
-    localStorage.setItem(DATA_FILE_KEY, path);
-    this.dataFileSig.set(path);
-    if (!hydrated) await this.flush(path);
-    return hydrated
-      ? "Linked to existing file, reloading…"
-      : "Linked — file created from current data. Reloading…";
-  }
-
-  clearFile() {
-    localStorage.removeItem(DATA_FILE_KEY);
-    this.dataFileSig.set("");
-  }
-}
-
-// load a data file into localStorage (used at bootstrap and by useFile/import)
-export async function loadDataFile(path) {
-  const resp = await fetch(`/api/data?path=${encodeURIComponent(path)}`);
-  const res = await resp.json();
-  if (!res.ok) throw new Error(res.error || resp.status);
-  if (res.data && typeof res.data === "object") {
-    for (const k of PERSISTENT_KEYS) {
-      if (typeof res.data[k] === "string") localStorage.setItem(k, res.data[k]);
-    }
-    return true;
-  }
-  return false;
-}
-export function dataFilePath() {
-  return localStorage.getItem(DATA_FILE_KEY) || "";
 }

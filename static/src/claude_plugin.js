@@ -25,7 +25,6 @@ export const CLAUDE_MODELS = [
   { value: "sonnet", label: "Sonnet 5" },
   { value: "haiku", label: "Haiku 4.5" },
 ];
-const MODEL_KEY = "oo-claude-model";
 
 export class ClaudePlugin extends Plugin {
   static sequence = 6; // after WorktreePlugin (5), whose wtRepos() it reuses
@@ -37,7 +36,7 @@ export class ClaudePlugin extends Plugin {
   dialogs = plugin(DialogPlugin);
   convos = signal({}); // targetId -> { items: [...], state: "idle"|"running" }
   models = CLAUDE_MODELS;
-  model = signal(this.config.read(MODEL_KEY) || ""); // chosen model, persisted
+  model = signal(this.config.getState("claude_model", "")); // chosen model, persisted
   _primed = new Set(); // targets whose transcript we've fetched from the backend
 
   setup() {
@@ -46,7 +45,7 @@ export class ClaudePlugin extends Plugin {
 
   setModel(v) {
     this.model.set(v || "");
-    this.config.write(MODEL_KEY, v || "");
+    this.config.setState("claude_model", v || "");
   }
 
   _get(id) {

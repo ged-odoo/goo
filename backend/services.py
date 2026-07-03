@@ -1996,3 +1996,96 @@ class AssetsService:
             end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
             out.append([m.group(1).replace(".", "/"), len(text[m.end() : end].encode("utf-8"))])
         return out
+
+
+# ─────────────────────────── Config store ───────────────────────────
+
+_KEEP = object()  # sentinel: "leave this blob unchanged" in ConfigStore.save
+
+
+class ConfigStore:
+    """The server-owned config file: {rev, config, state}, persisted atomically.
+
+    `config` (the user's settings/repos/targets) and `state` (app-recorded: active
+    target, test history, reviews, claude model) are opaque JSON blobs — the schema
+    lives in the frontend (static/src/config.js); the server only versions them under
+    one shared `rev`, guards concurrent writes, and reads a few well-known fields for
+    the CLI / auto-reloader. A missing file reads as rev 0 with null blobs (the client
+    seeds it on first boot). Writes go through the effects seam, so it's unit-testable.
+    """
+
+    def __init__(self, io, path, notify=None):
+        self.io = io
+        self.path = path
+        self._notify = notify  # called with the new {rev, config, state} after a save
+        self._lock = threading.Lock()
+        self._cache = None  # {rev, config, state}, lazily loaded
+
+    def _load(self):
+        data, error = self.io.read_json_file(self.path)
+        if error:
+            # a corrupt file: don't clobber it — surface rev 0 so the client can decide
+            return {"rev": 0, "config": None, "state": None, "error": error}
+        if not data:
+            return {"rev": 0, "config": None, "state": None}
+        return {
+            "rev": data.get("rev", 0),
+            "config": data.get("config"),
+            "state": data.get("state"),
+        }
+
+    def get(self):
+        """The current {rev, config, state} (cached after first read)."""
+        with self._lock:
+            if self._cache is None:
+                self._cache = self._load()
+            return dict(self._cache)
+
+    def save(self, rev, config=_KEEP, state=_KEEP):
+        """Replace `config` and/or `state` (whichever isn't _KEEP) iff `rev` matches the
+        current rev. Returns (ok, result): on success (True, {rev, config, state}) with
+        rev bumped; on a stale rev (False, {conflict:True, rev, config, state}) leaving
+        the file untouched; on a write failure (False, {error})."""
+        with self._lock:
+            cur = self._cache if self._cache is not None else self._load()
+            self._cache = cur
+            if rev != cur.get("rev", 0):
+                return False, {
+                    "conflict": True,
+                    "rev": cur.get("rev", 0),
+                    "config": cur.get("config"),
+                    "state": cur.get("state"),
+                }
+            new = {
+                "rev": cur.get("rev", 0) + 1,
+                "config": cur.get("config") if config is _KEEP else config,
+                "state": cur.get("state") if state is _KEEP else state,
+            }
+            ok, error = self.io.write_json_file(self.path, new)
+            if not ok:
+                return False, {"error": error}
+            self._cache = new
+            if self._notify:
+                self._notify(dict(new))
+            return True, dict(new)
+
+
+def build_start_config(config, target_id, other_args=None):
+    """Assemble the launch config `build_odoo_cmd` consumes from the stored config and a
+    target id — the Python port of ServerPlugin.buildStartConfig. The addons path comes
+    from the target's repos; the checkout branches aren't applied here (they're checked
+    out separately). Returns None if the target id isn't in the config."""
+    target = next((t for t in (config.get("targets") or []) if t.get("id") == target_id), None)
+    if not target:
+        return None
+    start = config.get("start") or {}
+    return {
+        **config,
+        "target": target["id"],
+        "start": {
+            "repos": [c["repo"] for c in (target.get("checkouts") or []) if c.get("repo")],
+            "db": target.get("db"),
+            "on_create_args": target.get("on_create_args") or "",
+            "other_args": start.get("other_args", "") if other_args is None else other_args,
+        },
+    }

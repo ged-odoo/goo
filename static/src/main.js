@@ -2,7 +2,7 @@
 // read up-to-date localStorage, then mount the Owl app with all plugins.
 import { App } from "./components.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
-import { ConfigPlugin, dataFilePath, loadDataFile } from "./config_plugin.js";
+import { ConfigPlugin, loadServerConfig } from "./config_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -40,14 +40,8 @@ const PLUGINS = [
 ];
 
 async function boot() {
-  const path = dataFilePath();
-  if (path) {
-    try {
-      await loadDataFile(path);
-    } catch (e) {
-      console.error(`[goo] data file load failed, using browser storage: ${e.message}`);
-    }
-  }
+  // load the server-owned config before mount, so ConfigPlugin seeds from it
+  await loadServerConfig();
   owl.mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });
 }
 

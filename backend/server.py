@@ -103,6 +103,15 @@ class EventBus:
         for q in subscribers:
             q.put(("goo_update", status))
 
+    def publish_config(self, payload):
+        """Broadcast the new {rev, config, state} to every tab (SSE 'config') after a
+        config/state write, so all open tabs stay in lockstep — the multi-tab
+        consistency the server-owned config buys over per-browser localStorage."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("config", payload))
+
     def publish_worktree(self, payload):
         """Push a per-target worktree-server status change to the browser (SSE
         'worktree') so the Worktree screen updates live as a server moves through
@@ -351,7 +360,7 @@ def goo_update_loop():
     so re-enabling needs no restart) when the update check is turned off in the
     config's Miscellaneous section."""
     while True:
-        if UPDATE_CHECK_ENABLED:
+        if (CONFIG.get()["config"] or {}).get("update_check", True) is not False:
             check_goo_update()
         time.sleep(3600)
 
@@ -390,34 +399,30 @@ def restart_goo():
 
 
 class AutoReloader:
-    """Fetches master for opted-in repos every INTERVAL seconds, in the
-    background. The repo set is pushed by the frontend (config lives there).
-    Each repo's first fetch is one interval after it is first registered, so
-    starting goo never triggers a fetch storm."""
+    """Fetches master for opted-in repos every INTERVAL seconds, in the background.
+    The repo set is read from the server's own config each tick (`repos_getter`, which
+    returns the config's `autoreload`-flagged repos) — no frontend push. Each repo's
+    first fetch is one interval after it is first seen, so starting goo never triggers
+    a fetch storm."""
 
     INTERVAL = 4 * 3600
 
-    def __init__(self):
-        self._repos = []
+    def __init__(self, repos_getter):
+        self._repos_getter = repos_getter  # () -> [{id, path, github}, …]
         self._next = {}  # path -> earliest next fetch time
-        self._lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
-
-    def set_repos(self, repos):
-        with self._lock:
-            self._repos = [r for r in repos if r.get("path")]
-            now = time.time()
-            for r in self._repos:
-                self._next.setdefault(r["path"], now + self.INTERVAL)
 
     def _loop(self):
         while True:
             time.sleep(60)
             now = time.time()
-            with self._lock:
-                due = [r for r in self._repos if now >= self._next.get(r["path"], 0)]
-                for r in due:
+            repos = [r for r in self._repos_getter() if r.get("path")]
+            due = []
+            for r in repos:
+                nxt = self._next.setdefault(r["path"], now + self.INTERVAL)
+                if now >= nxt:
                     self._next[r["path"]] = now + self.INTERVAL
+                    due.append(r)
             for r in due:
                 GIT.fetch_master(r)
 
@@ -1321,10 +1326,34 @@ ASSETS = services.AssetsService(effects, TTLCache(30))
 # them); per-build detail keys are never invalidated — see NightlyService's docstring.
 NIGHTLY = services.NightlyService(effects, TTLCache(24 * 3600))
 MEMORY = services.MemoryService(effects)
-# the last start/test config received from the UI — reused by the `goo --test-tags`
-# CLI so agents can run tests without re-supplying the target/db/repos/venv
-LAST_CONFIG = None
-AUTORELOAD = AutoReloader()
+
+
+def _default_config_path():
+    """goo's server-owned config file, outside the checkout (so the --ff-only
+    self-updater never touches it). Honors XDG_CONFIG_HOME. Overridable with
+    `goo --config <path>` (resolved in main())."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "goo", "config.json")
+
+
+# the server-owned config: {rev, config, state}. The frontend owns the schema and
+# mirrors this file; the CLI / auto-reloader / update-check read it directly. `.path`
+# may be reassigned in main() from --config before any request/loop reads it.
+CONFIG_PATH = _default_config_path()
+CONFIG = services.ConfigStore(effects, CONFIG_PATH, notify=BUS.publish_config)
+
+
+def _autoreload_repos():
+    """The config's repos opted into the 4h background `git fetch master`."""
+    cfg = CONFIG.get()["config"] or {}
+    return [
+        {"id": r.get("id"), "path": r.get("path"), "github": r.get("github")}
+        for r in (cfg.get("repos") or [])
+        if r.get("autoreload") and r.get("path")
+    ]
+
+
+AUTORELOAD = AutoReloader(_autoreload_repos)
 # how goo's own checkout compares to origin/master (filled by check_goo_update at
 # startup; the navbar reads it via GET /api/goo/update)
 GOO_UPDATE = {
@@ -1336,11 +1365,6 @@ GOO_UPDATE = {
     "dirty": False,
     "can_fast_forward": False,
 }
-# whether the automatic (startup + hourly) goo-update check runs. Defaults on;
-# the frontend syncs it from the 'update_check' config key via
-# POST /api/goo/update-check (same push pattern as /api/autoreload). The manual
-# "Check for update" button ignores it — an explicit click always checks.
-UPDATE_CHECK_ENABLED = True
 # per-process boot id (changes on every (re-)exec) so the client can tell a
 # restarted goo apart from the still-shutting-down old one when it polls
 BOOT_ID = time.time()
@@ -1404,15 +1428,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_terminal()
         elif path == "/api/shell":
             self._handle_shell()
-        elif path == "/api/data":
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            fpath = (qs.get("path") or [""])[0]
-            if not fpath:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            data, error = effects.read_json_file(fpath)
-            if error:
-                return self._send_json(400, {"ok": False, "error": error})
-            self._send_json(200, {"ok": True, "data": data})
+        elif path == "/api/config":
+            self._send_json(200, {"ok": True, **CONFIG.get()})
         else:
             self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -1426,8 +1443,8 @@ class Handler(BaseHTTPRequestHandler):
             self._action_start(MANAGER.restart)
         elif path in ("/api/tests/run", "/api/addons/run"):
             self._action_oneshot()
-        elif path == "/api/cli/config":
-            self._cli_config()
+        elif path == "/api/config":
+            self._save_config()
         elif path == "/api/cli/test":
             self._handle_cli_test()
         elif path == "/api/command":
@@ -1506,13 +1523,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(
                 200, {"ok": True, "data": MEMORY.fetch(builds, with_mobile=with_mobile)}
             )
-        elif path == "/api/autoreload":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            AUTORELOAD.set_repos(repos)
-            self._send_json(200, {"ok": True})
         elif path == "/api/addons":
             body, err = self._read_json()
             repos = (body or {}).get("repos")
@@ -1612,18 +1622,6 @@ class Handler(BaseHTTPRequestHandler):
             # on-demand re-check (the "Check for update" button) — fetches + recomputes
             ok = check_goo_update()
             self._send_json(200, {"ok": ok, **GOO_UPDATE, "boot": BOOT_ID})
-        elif path == "/api/goo/update-check":
-            # frontend sync of the 'update_check' config key (pushed on page load and
-            # on change). Turning it back on checks right away instead of waiting for
-            # the next hourly tick; the steady-state on->on push doesn't re-check.
-            global UPDATE_CHECK_ENABLED
-            body, err = self._read_json()
-            if err or not isinstance((body or {}).get("enabled"), bool):
-                return self._send_json(400, {"ok": False, "error": "missing enabled"})
-            was_enabled, UPDATE_CHECK_ENABLED = UPDATE_CHECK_ENABLED, body["enabled"]
-            if body["enabled"] and not was_enabled:
-                threading.Thread(target=check_goo_update, daemon=True).start()
-            self._send_json(200, {"ok": True, "enabled": UPDATE_CHECK_ENABLED})
         elif path == "/api/goo/restart":
             # reply first, then re-exec from a short-delayed thread so the response
             # reaches the client before the process is replaced
@@ -1802,16 +1800,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing name or new_name"})
             ok, error = DATABASE.rename(name, new_name, _filestore(body))
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/data":
-            body, err = self._read_json()
-            fpath = (body or {}).get("path")
-            if err or not fpath:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = effects.write_json_file(fpath, (body or {}).get("data"))
-            if ok:
-                self._send_json(200, {"ok": True})
-            else:
-                self._send_json(400, {"ok": False, "error": error})
         elif path == "/api/prs/close":
             body, err = self._read_json()
             repo = (body or {}).get("repo")
@@ -1904,8 +1892,6 @@ class Handler(BaseHTTPRequestHandler):
         config, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
-        global LAST_CONFIG
-        LAST_CONFIG = config
         ok, detail = action(config)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
@@ -1919,8 +1905,6 @@ class Handler(BaseHTTPRequestHandler):
         config, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
-        global LAST_CONFIG
-        LAST_CONFIG = config
         MANAGER.stop()
         ok, detail = MANAGER.start(config)
         if ok:
@@ -2144,6 +2128,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()  # no Content-Length: HTTP/1.0 read-until-close
             self._send_event("status", MANAGER.status())
+            self._send_event("config", CONFIG.get())
             for line in backlog:
                 self._send_event("log", {"line": line})
             while True:
@@ -2159,27 +2144,41 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             BUS.unsubscribe(q)
 
-    def _cli_config(self):
-        """Store the current UI config (pushed by the browser) so the
-        `goo --test-tags` CLI can run a one-shot test without the server having
-        been started."""
-        config, err = self._read_json()
-        if err:
-            return self._send_json(400, {"ok": False, "error": err})
-        global LAST_CONFIG
-        LAST_CONFIG = config
-        self._send_json(200, {"ok": True})
+    def _save_config(self):
+        """Persist a config and/or state write from the browser, rev-checked. Body:
+        {rev, config?, state?}. On success replies {ok, rev, config, state} (rev
+        bumped) and broadcasts the new config to every tab (SSE 'config'); a stale
+        rev replies 409 with the current {rev, config, state} so the client can
+        reconcile; a write failure replies 500."""
+        body, err = self._read_json()
+        if err or "rev" not in (body or {}):
+            return self._send_json(400, {"ok": False, "error": "missing rev"})
+        kw = {}
+        if "config" in body:
+            kw["config"] = body["config"]
+        if "state" in body:
+            kw["state"] = body["state"]
+        ok, result = CONFIG.save(body["rev"], **kw)
+        if ok:
+            return self._send_json(200, {"ok": True, **result})
+        if result.get("conflict"):
+            return self._send_json(409, {"ok": False, **result})
+        return self._send_json(500, {"ok": False, "error": result.get("error", "write failed")})
 
     def _handle_cli_test(self):
         """Run a one-shot test (triggered by the `goo --test-tags` CLI) as its own
         odoo process — on free ports, so a running server is left untouched — and
         stream the log back as plain text. Announces the run on the server log +
-        the browser event log, reusing the last config (target, db, repos, venv)."""
+        the browser event log, using the server's own config + active target."""
         body, err = self._read_json()
         tags = ((body or {}).get("test_tags") or "").strip()
         if err or not tags:
             return self._send_json(400, {"ok": False, "error": "missing test_tags"})
-        if LAST_CONFIG is None:
+        snapshot = CONFIG.get()
+        config = snapshot.get("config")
+        active = (snapshot.get("state") or {}).get("active_target")
+        cfg = services.build_start_config(config, active) if config and active else None
+        if not cfg:
             return self._send_json(
                 409,
                 {
@@ -2187,8 +2186,7 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "no target yet — open the goo UI (with a target configured) once",
                 },
             )
-        cfg = dict(LAST_CONFIG)
-        cfg["start"] = {**(LAST_CONFIG.get("start") or {}), "test_tags": tags}
+        cfg["start"] = {**(cfg.get("start") or {}), "test_tags": tags}
         try:
             cmd, _db, _is_new = build_odoo_cmd(cfg)
         except ValueError as e:
@@ -2289,6 +2287,14 @@ def main():
         help="run a test with these --test-tags on the running goo server and stream the log",
     )
     parser.add_argument(
+        "--config",
+        dest="config",
+        metavar="PATH",
+        help="path to goo's config file (default: $XDG_CONFIG_HOME/goo/config.json, "
+        "i.e. ~/.config/goo/config.json). Kept outside the checkout so the self-updater "
+        "never touches it.",
+    )
+    parser.add_argument(
         "--trace",
         action="store_true",
         help="log every external operation goo runs to the goo terminal: each "
@@ -2297,6 +2303,12 @@ def main():
         "Verbose — handy for seeing exactly what goo does under the hood.",
     )
     args = parser.parse_args()
+
+    # point the config store at --config before anything (the CLI run, the loops,
+    # or the first request) reads it. Reassigning .path is safe: nothing has been
+    # loaded/cached yet at startup.
+    if args.config:
+        CONFIG.path = os.path.expanduser(args.config)
 
     # turn on tracing before any work (incl. the one-shot --test-tags run) happens
     if args.trace:

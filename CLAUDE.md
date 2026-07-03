@@ -25,7 +25,13 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
   - `services.py` — domain services over the seam (`GitService`, `GitHubService`,
     `RunbotService`, `MergebotService`, `DatabaseService`, `AddonsService`); fetch +
     parse external state, cached server-side where it's worth it (PRs/runbot/
-    mergebot/databases have TTLs; git reads are volatile so they're uncached).
+    mergebot/databases have TTLs; git reads are volatile so they're uncached). Also
+    `ConfigStore` — the server-owned config, persisted to `~/.config/goo/config.json`
+    as `{rev, config, state}` (config = user settings/repos/targets, state =
+    active target/test history/reviews/claude model). The frontend owns the schema
+    and mirrors it (`GET/POST /api/config`, rev-checked, SSE-broadcast for multi-tab);
+    the CLI / auto-reloader / update-check read it directly. It lives outside `GOO_DIR`
+    so the self-updater's `git pull` never touches it. Overridable with `goo --config`.
   - `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
 - `tests/` — stdlib `unittest` suite; services run against a fake IO (no network,
   subprocess, or disk). Run `python3 -m unittest discover`.

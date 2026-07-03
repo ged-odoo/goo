@@ -1,13 +1,13 @@
 // The single odoo process: live status, SSE log fan-out, start/stop/restart.
 
-import { ConfigPlugin, LAST_TARGET_KEY } from "./config_plugin.js";
+import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal, useEffect } = owl;
+const { Plugin, plugin, signal } = owl;
 
 export class ServerPlugin extends Plugin {
   static sequence = 2;
@@ -29,20 +29,13 @@ export class ServerPlugin extends Plugin {
   claudeListeners = new Set(); // ClaudePlugin appends per-worktree chat items from here
   lastConfig = null; // last server start config (to resume after a one-shot run)
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
-  // the active target (last started or activated), persisted + reactive
-  activeTarget = signal(this.config.read(LAST_TARGET_KEY) || "");
+  // the active target (last started or activated), server-persisted + reactive. The
+  // backend reads it from its own config for `goo --test-tags` (no client mirror).
+  activeTarget = signal(this.config.getState("active_target", ""));
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
     this._connect();
-    // mirror the current target's launch config to the backend so `goo --test-tags`
-    // can run a one-shot test without the server having been started
-    useEffect(() => {
-      const targets = this.config.config.targets;
-      const tid = targets.find((t) => t.id === this.activeTarget())?.id || targets[0]?.id;
-      const cfg = tid && this.buildStartConfig(tid);
-      if (cfg) postJSON("/api/cli/config", cfg).catch(() => {});
-    });
   }
 
   onLine(cb) {
@@ -87,6 +80,14 @@ export class ServerPlugin extends Plugin {
       this._resolveStartEvent(prev, s);
     });
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
+    // config/state written by another tab → keep this tab's ConfigPlugin in lockstep
+    es.addEventListener("config", (e) => {
+      const d = JSON.parse(e.data);
+      this.config.applyBroadcast(d);
+      // active_target lives in a signal here too; follow the broadcast
+      const at = (d.state || {}).active_target;
+      if (at !== undefined && at !== this.activeTarget()) this.activeTarget.set(at);
+    });
     // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log.
     // A timed event carries an `id` + `status`: "start" opens a row with an animated
     // "...", "done"/"error" resolves that same row to "ok"/"failed".
@@ -170,7 +171,7 @@ export class ServerPlugin extends Plugin {
 
   setLastTarget(id) {
     this.activeTarget.set(id);
-    this.config.write(LAST_TARGET_KEY, id);
+    this.config.setState("active_target", id);
   }
 
   // the command that would launch this target (built by the backend); "" if invalid

@@ -32,6 +32,7 @@ class FakeIO:
         http_nofollow=None,
         dirs=None,
         files=None,
+        json_files=None,
         fs_fail=None,
     ):
         self._run_result = run_result if run_result is not None else completed()
@@ -41,6 +42,7 @@ class FakeIO:
         self._http_nofollow = http_nofollow or {}
         self._dirs = dirs or {}  # {dir path: [entry names]}
         self._files = files or {}  # {file path: text content}
+        self._json_files = dict(json_files or {})  # {path: parsed-json-object}
         self.fs_fail = fs_fail  # path substring whose filesystem op should fail
         self.run_calls = []
         self.http_calls = []
@@ -83,6 +85,18 @@ class FakeIO:
 
     def read_text(self, path):
         return self._files.get(path)
+
+    # JSON file IO — an in-memory {path: object} store mirroring effects.*_json_file.
+    # A missing file is (None, None); fs_fail (a path substring) forces a write error.
+    def read_json_file(self, path):
+        return self._json_files.get(path), None
+
+    def write_json_file(self, path, data):
+        self.fs_ops.append(("write_json", path, None))
+        if self.fs_fail and self.fs_fail in path:
+            return False, "boom"
+        self._json_files[path] = data
+        return True, None
 
     # filesystem mutations — record them and keep self._dirs consistent so a later
     # is_dir() reflects the change. fs_fail (a path substring) forces an error.
@@ -1220,6 +1234,97 @@ class AssetsServiceTest(unittest.TestCase):
         data, err = services.AssetsService(io, TTLCache(ttl=0)).breakdown("db1", "web.assets_x")
         self.assertIsNone(data)
         self.assertIn("Generate asset bundles", err)
+
+
+class ConfigStoreTest(unittest.TestCase):
+    P = "/cfg/config.json"
+
+    def test_missing_file_reads_as_rev_zero(self):
+        store = services.ConfigStore(FakeIO(), self.P)
+        self.assertEqual(store.get(), {"rev": 0, "config": None, "state": None})
+
+    def test_loads_existing_file(self):
+        io = FakeIO(json_files={self.P: {"rev": 5, "config": {"a": 1}, "state": {"b": 2}}})
+        self.assertEqual(
+            services.ConfigStore(io, self.P).get(),
+            {"rev": 5, "config": {"a": 1}, "state": {"b": 2}},
+        )
+
+    def test_save_bumps_rev_and_persists(self):
+        io = FakeIO()
+        seen = []
+        store = services.ConfigStore(io, self.P, notify=seen.append)
+        ok, res = store.save(0, config={"repos": []}, state={"active_target": "t1"})
+        self.assertTrue(ok)
+        self.assertEqual(res["rev"], 1)
+        self.assertEqual(res["config"], {"repos": []})
+        self.assertEqual(io._json_files[self.P]["rev"], 1)  # actually written
+        self.assertEqual([n["rev"] for n in seen], [1])  # notify fired once
+        # a fresh store reads the persisted rev back
+        self.assertEqual(services.ConfigStore(io, self.P).get()["rev"], 1)
+
+    def test_stale_rev_conflicts_without_mutating(self):
+        io = FakeIO(json_files={self.P: {"rev": 3, "config": {"a": 1}, "state": None}})
+        seen = []
+        store = services.ConfigStore(io, self.P, notify=seen.append)
+        ok, res = store.save(2, config={"a": 999})  # stale rev
+        self.assertFalse(ok)
+        self.assertTrue(res["conflict"])
+        self.assertEqual(res["rev"], 3)
+        self.assertEqual(res["config"], {"a": 1})  # returns current, not the attempt
+        self.assertEqual(io._json_files[self.P]["config"], {"a": 1})  # file untouched
+        self.assertEqual(seen, [])  # no broadcast on conflict
+
+    def test_state_only_save_keeps_config(self):
+        io = FakeIO(json_files={self.P: {"rev": 1, "config": {"a": 1}, "state": {"x": 1}}})
+        store = services.ConfigStore(io, self.P)
+        ok, res = store.save(1, state={"x": 2})
+        self.assertTrue(ok)
+        self.assertEqual(res["config"], {"a": 1})  # config preserved
+        self.assertEqual(res["state"], {"x": 2})
+        self.assertEqual(res["rev"], 2)
+
+    def test_write_failure_returns_error(self):
+        io = FakeIO(fs_fail="config.json")
+        ok, res = services.ConfigStore(io, self.P).save(0, config={"a": 1})
+        self.assertFalse(ok)
+        self.assertIn("error", res)
+        self.assertNotIn("conflict", res)
+
+
+class BuildStartConfigTest(unittest.TestCase):
+    CFG = {
+        "venv_activate": "src activate",
+        "repos": [{"id": "community", "path": "/c"}, {"id": "enterprise", "path": "/e"}],
+        "targets": [
+            {
+                "id": "t1",
+                "db": "db1",
+                "on_create_args": "-i sale",
+                "checkouts": [
+                    {"repo": "community", "branch": "master"},
+                    {"repo": "enterprise", "branch": "master"},
+                ],
+            }
+        ],
+        "start": {"other_args": "--dev all"},
+    }
+
+    def test_maps_target_to_start_block(self):
+        cfg = services.build_start_config(self.CFG, "t1")
+        self.assertEqual(cfg["target"], "t1")
+        self.assertEqual(cfg["start"]["repos"], ["community", "enterprise"])
+        self.assertEqual(cfg["start"]["db"], "db1")
+        self.assertEqual(cfg["start"]["on_create_args"], "-i sale")
+        self.assertEqual(cfg["start"]["other_args"], "--dev all")  # from config.start
+        self.assertEqual(cfg["venv_activate"], "src activate")  # scalars spread through
+
+    def test_other_args_override(self):
+        cfg = services.build_start_config(self.CFG, "t1", other_args="-u web")
+        self.assertEqual(cfg["start"]["other_args"], "-u web")
+
+    def test_unknown_target_is_none(self):
+        self.assertIsNone(services.build_start_config(self.CFG, "nope"))
 
 
 if __name__ == "__main__":

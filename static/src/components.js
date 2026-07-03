@@ -4858,18 +4858,8 @@ class ConfigScreen extends Component {
         <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
         <div class="config-block">
-          <h2 class="subtitle">Storage</h2>
-          <p class="dim">By default, config and favorites live only in this browser. Set a file path to persist them on disk instead — shared across browsers and safe from clearing site data.</p>
-          <div class="config-actions">
-            <input type="text" class="w-flex" t-att-value="this.path()" t-on-input="ev => this.path.set(ev.target.value)" placeholder="e.g. ~/.config/oo/data.json"/>
-            <button t-on-click="() => this.useFile()">Use file</button>
-            <button t-on-click="() => this.clearFile()">Use browser</button>
-            <span t-out="this.msg()"/>
-          </div>
-        </div>
-        <div class="config-block">
           <h2 class="subtitle">Backup</h2>
-          <p class="dim">Save your config and favorites to a file, or restore them from one.</p>
+          <p class="dim">goo stores your config on the server (~/.config/goo/config.json). Save a copy to a file, or restore one.</p>
           <div class="config-actions">
             <button t-on-click="() => this.exportData()">Export</button>
             <button t-on-click="() => this.triggerImport()">Import</button>
@@ -4894,8 +4884,6 @@ class ConfigScreen extends Component {
   refreshIcon = m(ICONS.refresh);
   checking = signal(false);
   upToDate = signal(false); // brief green check by the button when already up to date
-  path = signal(this.config.getDataFile());
-  msg = signal("");
   backupMsg = signal("");
   settingsFields = SETTINGS_FIELDS.filter((f) => f.key !== "editor"); // editor lives in Miscellaneous
   settings = signal(this._loadSettings());
@@ -4988,28 +4976,10 @@ class ConfigScreen extends Component {
     location.reload();
   }
 
-  async useFile() {
-    try {
-      this.msg.set(await this.config.useFile(this.path()));
-      setTimeout(() => location.reload(), 700);
-    } catch (e) {
-      this.msg.set(`Could not use file: ${e.message}`);
-    }
-  }
-
-  clearFile() {
-    this.config.clearFile();
-    this.path.set("");
-    this.msg.set("Using browser storage.");
-  }
-
   exportData() {
-    const data = {};
-    for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target", "oo-test-history"]) {
-      const v = localStorage.getItem(k);
-      if (v !== null) data[k] = v;
-    }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(this.config.snapshot(), null, 2)], {
+      type: "application/json",
+    });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "goo-backup.json";
@@ -5024,17 +4994,10 @@ class ConfigScreen extends Component {
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!data || typeof data !== "object") throw new Error("not a JSON object");
-      let n = 0;
-      for (const k of ["oo-config", "oo-prs-favorites", "oo-last-target", "oo-test-history"]) {
-        if (typeof data[k] === "string") {
-          localStorage.setItem(k, data[k]);
-          n++;
-        }
-      }
-      if (!n) throw new Error("no recognized data in file");
-      if (this.config.getDataFile()) await this.config.flush(this.config.getDataFile());
-      this.backupMsg.set(`Imported ${n} item(s), reloading…`);
+      if (!data || typeof data !== "object" || !data.config)
+        throw new Error("not a goo config backup");
+      await this.config.importSnapshot(data);
+      this.backupMsg.set("Imported, reloading…");
       setTimeout(() => location.reload(), 700);
     } catch (e) {
       this.backupMsg.set(`Import failed: ${e.message}`);

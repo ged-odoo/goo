@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import urllib.request
 
@@ -143,15 +144,29 @@ def read_json_file(path):
 
 
 def write_json_file(path, data):
-    """Write data as pretty JSON, creating parent dirs. Returns (ok, error)."""
+    """Write data as pretty JSON atomically, creating parent dirs. Returns (ok, error).
+
+    Writes to a temp file in the target directory, fsyncs, then os.replace()s it into
+    place — so a crash mid-write can never leave a partial/corrupt file (this backs the
+    server-owned config, so a torn write would be data loss)."""
     trace("write", path)
     p = os.path.expanduser(path)
     try:
-        parent = os.path.dirname(p)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        parent = os.path.dirname(p) or "."
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=parent, prefix=".goo-tmp-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return True, None
     except OSError as e:
         return False, str(e)

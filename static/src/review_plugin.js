@@ -10,12 +10,7 @@
 
 import { postJSON } from "./utils.js";
 import { PullRequest } from "./models.js";
-import {
-  ConfigPlugin,
-  REVIEWS_MERGED_KEY,
-  REVIEWS_NO_MERGEBOT_KEY,
-  REVIEWS_FAVORITES_KEY,
-} from "./config_plugin.js";
+import { ConfigPlugin } from "./config_plugin.js";
 
 const { Plugin, plugin, signal } = owl;
 
@@ -31,10 +26,10 @@ export class ReviewPlugin extends Plugin {
   error = signal("");
   mergebot = signal({}); // "github#number" -> mergebot state (or "" / "merged")
   mbDetails = signal({}); // "github#number" -> blocked-reason detail (e.g. "Review, CI")
-  favorites = signal(this._readArr(REVIEWS_FAVORITES_KEY)); // [branch, …] (starred groups, sorted first)
+  favorites = signal(this._readArr("reviews_favorites")); // [branch, …] (starred groups, sorted first)
   _mbPending = new Set(); // in-flight mergebot keys (dedup)
-  _merged = new Set(this._readArr(REVIEWS_MERGED_KEY)); // terminal merged PRs
-  _noMergebot = new Set(this._readArr(REVIEWS_NO_MERGEBOT_KEY)); // repos without mergebot
+  _merged = new Set(this._readArr("reviews_merged")); // terminal merged PRs
+  _noMergebot = new Set(this._readArr("reviews_no_mergebot")); // repos without mergebot
 
   // fetch the commented-on PRs (the server caches them). `force` (manual Refresh)
   // adds ?refresh=1 so the backend re-queries instead of serving its cache.
@@ -63,7 +58,7 @@ export class ReviewPlugin extends Plugin {
     const favs = this.favorites();
     const next = favs.includes(key) ? favs.filter((k) => k !== key) : [...favs, key];
     this.favorites.set(next);
-    this.config.write(REVIEWS_FAVORITES_KEY, JSON.stringify(next));
+    this.config.setState("reviews_favorites", next);
   }
 
   // load mergebot states for `prs` ([{github, number}]). Skips PRs already known
@@ -127,15 +122,12 @@ export class ReviewPlugin extends Plugin {
   }
 
   _persist() {
-    this.config.write(REVIEWS_MERGED_KEY, JSON.stringify([...this._merged]));
-    this.config.write(REVIEWS_NO_MERGEBOT_KEY, JSON.stringify([...this._noMergebot]));
+    this.config.setState("reviews_merged", [...this._merged]);
+    this.config.setState("reviews_no_mergebot", [...this._noMergebot]);
   }
 
-  _readArr(key) {
-    try {
-      return JSON.parse(this.config.read(key) || "[]");
-    } catch {
-      return [];
-    }
+  _readArr(field) {
+    const v = this.config.getState(field, []);
+    return Array.isArray(v) ? v : [];
   }
 }

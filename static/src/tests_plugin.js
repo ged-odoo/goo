@@ -1,6 +1,6 @@
 // Run `odoo-bin --test-tags …` against a target (via the shared process).
 
-import { ConfigPlugin, TEST_HISTORY_KEY } from "./config_plugin.js";
+import { ConfigPlugin } from "./config_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
@@ -30,12 +30,8 @@ export class TestsPlugin extends Plugin {
   _failSeq = 0; // monotonic id source for failure-row anchors (never reset)
 
   _readHistory() {
-    try {
-      const h = JSON.parse(this.config.read(TEST_HISTORY_KEY));
-      return Array.isArray(h) ? h : [];
-    } catch {
-      return [];
-    }
+    const h = this.config.getState("test_history", []);
+    return Array.isArray(h) ? h : [];
   }
 
   // record a run's tag at the front, deduped, capped at HISTORY_MAX
@@ -44,7 +40,7 @@ export class TestsPlugin extends Plugin {
     if (!tag) return;
     const h = [tag, ...this.history().filter((t) => t !== tag)].slice(0, HISTORY_MAX);
     this.history.set(h);
-    this.config.write(TEST_HISTORY_KEY, JSON.stringify(h));
+    this.config.setState("test_history", h);
   }
 
   // the target tests run against: the running/starting server's target, else
