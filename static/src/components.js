@@ -614,7 +614,7 @@ class DashboardScreen extends Component {
   _pushableBranches(tgt) {
     const groups = this.code.groups();
     const repoMap = this.repoMap;
-    return (tgt.config || [])
+    return (tgt.checkouts || [])
       .filter(
         ({ repo, branch }) => !BASE_BRANCH_RE.test(branch) && repoMap[repo]?.branches.has(branch),
       )
@@ -736,8 +736,8 @@ class DashboardScreen extends Component {
   _dashRepoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
     const current = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
-    for (const c of current?.config || []) ids.add(c.repo);
-    for (const tgt of this.targets) for (const c of tgt.config || []) ids.add(c.repo);
+    for (const c of current?.checkouts || []) ids.add(c.repo);
+    for (const tgt of this.targets) for (const c of tgt.checkouts || []) ids.add(c.repo);
     return ids;
   }
 
@@ -786,7 +786,7 @@ class DashboardScreen extends Component {
   // target's repos share one, so prefer its feature (non-base) branch, else the
   // shared base branch ("" if the target has no branches)
   bundleBranch(tgt) {
-    const branches = (tgt.config || []).map((c) => c.branch).filter(Boolean);
+    const branches = (tgt.checkouts || []).map((c) => c.branch).filter(Boolean);
     return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
   }
 
@@ -941,7 +941,7 @@ class DashboardScreen extends Component {
   rows(tgt) {
     const repos = this.repoMap;
     const groups = this.code.groups();
-    return (tgt.config || []).map(({ repo, branch }) => {
+    return (tgt.checkouts || []).map(({ repo, branch }) => {
       const r = repos[repo];
       const b = r && r.branches.get(branch);
       return {
@@ -962,7 +962,7 @@ class DashboardScreen extends Component {
   // every repo in the target's config is checked out on the target's branch
   _checkedOut(tgt) {
     const repos = this.repoMap;
-    const cfg = tgt.config || [];
+    const cfg = tgt.checkouts || [];
     return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
   }
 
@@ -976,12 +976,12 @@ class DashboardScreen extends Component {
   // can't switch branches with uncommitted work, or to branches not present
   _targetDirty(tgt) {
     const repos = this.repoMap;
-    return (tgt.config || []).some(({ repo }) => repos[repo]?.dirty);
+    return (tgt.checkouts || []).some(({ repo }) => repos[repo]?.dirty);
   }
 
   _targetPresent(tgt) {
     const repos = this.repoMap;
-    return (tgt.config || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
+    return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
   }
 
   canActivate(tgt) {
@@ -1012,7 +1012,7 @@ class DashboardScreen extends Component {
   async activate(tgt) {
     if (!this.canActivate(tgt)) return;
     const pathByRepo = this.code.groups().pathByRepo;
-    const repos = (tgt.config || [])
+    const repos = (tgt.checkouts || [])
       .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
     // repos that will actually switch (skip the ones already on the target branch)
@@ -1266,7 +1266,7 @@ class CodeScreen extends Component {
   _repoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
     const current = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
-    for (const c of current?.config || []) ids.add(c.repo);
+    for (const c of current?.checkouts || []) ids.add(c.repo);
     return ids;
   }
 
@@ -1282,7 +1282,7 @@ class CodeScreen extends Component {
     const groups = this.code.groups();
     const currentTarget = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
     const visibleIds = new Set([
-      ...(currentTarget?.config || []).map((c) => c.repo),
+      ...(currentTarget?.checkouts || []).map((c) => c.repo),
       ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id),
     ]);
     return this.config.config.repos
@@ -1842,7 +1842,7 @@ class WorktreeScreen extends Component {
   }
 
   branchOf(tgt) {
-    return (tgt.config && tgt.config[0] && tgt.config[0].branch) || "";
+    return (tgt.checkouts && tgt.checkouts[0] && tgt.checkouts[0].branch) || "";
   }
 
   dotClass(tgt) {
@@ -2222,7 +2222,8 @@ async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, r
     id: newTargetId(),
     name: res.name.trim(),
     favorite: !!res.fav,
-    config: repoBranchList.parse(res.config.trim()),
+    kind: "plain",
+    checkouts: repoBranchList.parse(res.config.trim()),
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
   };
@@ -2236,7 +2237,7 @@ async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, r
 // record it as the last-used target. Used by the create dialog's "activate it".
 async function activateTarget(server, code, eventLog, target) {
   const pathByRepo = code.groups().pathByRepo;
-  const repos = (target.config || [])
+  const repos = (target.checkouts || [])
     .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
     .filter((r) => r.path);
   eventLog.add(`activating target ${target.name}`);
@@ -2277,12 +2278,12 @@ async function startCreateTarget(config, eventLog, code, dialogs, db, server) {
           const tpl = existingTargets.find((t) => t.id === tplId);
           if (!tpl) return null;
           const branchName =
-            tpl.config.find((c) => c.repo === "enterprise")?.branch ||
-            tpl.config.find((c) => c.repo === "community")?.branch ||
+            tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
+            tpl.checkouts.find((c) => c.repo === "community")?.branch ||
             "";
           return {
             name: branchName,
-            config: repoBranchList.format(tpl.config),
+            config: repoBranchList.format(tpl.checkouts),
             db: tpl.db || "",
             args: tpl.on_create_args || "",
             fav: !!tpl.favorite,
@@ -2336,7 +2337,8 @@ async function startCreateTarget(config, eventLog, code, dialogs, db, server) {
     id: newTargetId(),
     name: res.name.trim(),
     favorite: !!res.fav,
-    config: repoBranchList.parse(res.config.trim()),
+    kind: "plain",
+    checkouts: repoBranchList.parse(res.config.trim()),
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
   };
@@ -2344,10 +2346,12 @@ async function startCreateTarget(config, eventLog, code, dialogs, db, server) {
   config.updateConfig({ targets: [...config.config.targets, target] });
   if (res.createBranches && code) {
     const tpl = existingTargets.find((t) => t.id === res.template);
-    const baseBranchByRepo = Object.fromEntries((tpl?.config || []).map((c) => [c.repo, c.branch]));
+    const baseBranchByRepo = Object.fromEntries(
+      (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
+    );
     const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
     await code.createBranches(
-      target.config.map((c) => ({
+      target.checkouts.map((c) => ({
         path: pathByRepo[c.repo],
         name: c.branch,
         startPoint: baseBranchByRepo[c.repo],
@@ -2384,7 +2388,7 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   if (isActive) return; // the active target cannot be deleted
   const groups = code.groups();
   // deletable branches: present locally and not a base/primary branch
-  const branches = (tgt.config || [])
+  const branches = (tgt.checkouts || [])
     .map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) }))
     .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
     .map((x) => ({
@@ -2394,7 +2398,7 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
       remote: !!x.b.remote,
     }));
   // open PRs for the target's branches
-  const prs = (tgt.config || [])
+  const prs = (tgt.checkouts || [])
     .map(({ repo, branch }) => ({
       pr: groups.prIndex[`${repo}:${branch}`],
       github: groups.githubByRepo[repo],
@@ -2546,7 +2550,7 @@ class TargetsScreen extends Component {
   // the deduped set of repo ids used by the given targets — to scope the lazy reads
   _repoIdsFor(targets) {
     const ids = new Set();
-    for (const t of targets) for (const c of t.config || []) ids.add(c.repo);
+    for (const t of targets) for (const c of t.checkouts || []) ids.add(c.repo);
     return ids;
   }
 
@@ -2584,12 +2588,12 @@ class TargetsScreen extends Component {
 
   _targetDirty(tgt) {
     const repos = this.repoMap;
-    return (tgt.config || []).some(({ repo }) => repos[repo]?.dirty);
+    return (tgt.checkouts || []).some(({ repo }) => repos[repo]?.dirty);
   }
 
   _targetPresent(tgt) {
     const repos = this.repoMap;
-    return (tgt.config || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
+    return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
   }
 
   canActivate(tgt) {
@@ -2607,7 +2611,7 @@ class TargetsScreen extends Component {
   async activate(tgt) {
     if (!this.canActivate(tgt)) return;
     const pathByRepo = this.code.groups().pathByRepo;
-    const repos = (tgt.config || [])
+    const repos = (tgt.checkouts || [])
       .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
     // repos that will actually switch (skip the ones already on the target branch)
@@ -2671,7 +2675,7 @@ class TargetsScreen extends Component {
   }
 
   fmtConfig(tgt) {
-    return (tgt.config || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
+    return (tgt.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
   }
 
   toggleFavorite(id) {
@@ -2721,7 +2725,7 @@ class TargetsScreen extends Component {
 
     // aggregate deletable branches across all selected targets
     const allBranches = targets.flatMap((tgt) =>
-      (tgt.config || [])
+      (tgt.checkouts || [])
         .map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) }))
         .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
         .map((x) => ({
@@ -2734,7 +2738,7 @@ class TargetsScreen extends Component {
 
     // aggregate open PRs across all selected targets
     const allPrs = targets.flatMap((tgt) =>
-      (tgt.config || [])
+      (tgt.checkouts || [])
         .map(({ repo, branch }) => ({
           pr: groups.prIndex[`${repo}:${branch}`],
           github: groups.githubByRepo[repo],
@@ -2871,7 +2875,7 @@ class TargetsScreen extends Component {
   // (only one row is editable at a time)
   startEdit(tgt) {
     this.draftName.set(tgt.name);
-    this.draftConfig.set(repoBranchList.format(tgt.config));
+    this.draftConfig.set(repoBranchList.format(tgt.checkouts));
     this.draftDb.set(tgt.db || "");
     this.draftArgs.set(tgt.on_create_args || "");
     this.error.set("");
@@ -2886,11 +2890,17 @@ class TargetsScreen extends Component {
     if (!name) return this.error.set("a name is required");
     if (this.config.config.targets.some((t) => t.name === name && t.id !== id))
       return this.error.set(`a target named "${name}" already exists`);
-    const config = repoBranchList.parse(this.draftConfig().trim());
-    if (!config.length) return this.error.set("a config is required");
+    const checkouts = repoBranchList.parse(this.draftConfig().trim());
+    if (!checkouts.length) return this.error.set("a config is required");
     const targets = this.config.config.targets.map((t) =>
       t.id === id
-        ? { ...t, name, config, db: this.draftDb().trim(), on_create_args: this.draftArgs().trim() }
+        ? {
+            ...t,
+            name,
+            checkouts,
+            db: this.draftDb().trim(),
+            on_create_args: this.draftArgs().trim(),
+          }
         : t,
     );
     this.config.updateConfig({ targets });
@@ -2913,7 +2923,7 @@ class TargetsScreen extends Component {
   // When "Create branches" is checked, also create that branch in each repo,
   // starting from the repo's branch in the original target (its base).
   async duplicateTarget(tgt) {
-    const first = tgt.config?.[0]?.branch || "master";
+    const first = tgt.checkouts?.[0]?.branch || "master";
     const res = await this.dialogs.open({
       title: `Duplicate "${tgt.name}"`,
       fields: [
@@ -2938,7 +2948,8 @@ class TargetsScreen extends Component {
       id: newTargetId(),
       name,
       favorite: !!tgt.favorite,
-      config: (tgt.config || []).map((c) => ({ repo: c.repo, branch: b })),
+      kind: "plain",
+      checkouts: (tgt.checkouts || []).map((c) => ({ repo: c.repo, branch: b })),
       db: b, // default the database to the branch name
       on_create_args: tgt.on_create_args || "",
     };
@@ -2947,7 +2958,7 @@ class TargetsScreen extends Component {
     if (res.create) {
       const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
       await this.code.createBranches(
-        (tgt.config || []).map((c) => ({
+        (tgt.checkouts || []).map((c) => ({
           path: pathByRepo[c.repo],
           name: b,
           startPoint: c.branch, // start from the base
@@ -3200,7 +3211,7 @@ class BranchesScreen extends Component {
     const canRemote = r.remote && !r.base; // pushed, non-base: removable on the remote
     const hasPr = !!(r.pr && r.pr.state === "open" && r.github);
     const targets = this.config.config.targets.filter((t) =>
-      (t.config || []).some((c) => c.repo === r.repo && c.branch === r.branch),
+      (t.checkouts || []).some((c) => c.repo === r.repo && c.branch === r.branch),
     );
     const fields = [];
     if (canRemote)
@@ -6858,7 +6869,7 @@ const SPECS = {
         return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
       for (const t of config.targets) {
-        const used = (t.config || []).find((c) => !ids.has(c.repo));
+        const used = (t.checkouts || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by target "${t.name}"`;
       }
       return null;

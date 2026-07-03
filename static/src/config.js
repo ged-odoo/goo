@@ -36,13 +36,14 @@ export const DEFAULT_CONFIG = {
   ],
   // First-class targets — what you actually work with. This is just the initial
   // set; each carries a stable `id` (used internally so renaming `name` is safe),
-  // its own config (repo:branch pairs), database, args and favorite flag.
+  // its checkout list (repo:branch pairs), a `kind`, database, args and favorite flag.
   targets: [
     {
       id: "master",
       name: "master",
       favorite: true,
-      config: [{ repo: "community", branch: "master" }],
+      kind: "plain",
+      checkouts: [{ repo: "community", branch: "master" }],
       db: "master",
       on_create_args: "-i sale_management",
     },
@@ -50,7 +51,8 @@ export const DEFAULT_CONFIG = {
       id: "master-e",
       name: "master(e)",
       favorite: false,
-      config: [
+      kind: "plain",
+      checkouts: [
         { repo: "community", branch: "master" },
         { repo: "enterprise", branch: "master" },
       ],
@@ -61,7 +63,8 @@ export const DEFAULT_CONFIG = {
       id: "19.0",
       name: "19.0",
       favorite: false,
-      config: [{ repo: "community", branch: "19.0" }],
+      kind: "plain",
+      checkouts: [{ repo: "community", branch: "19.0" }],
       db: "19.0",
       on_create_args: "-i sale_management",
     },
@@ -69,7 +72,8 @@ export const DEFAULT_CONFIG = {
       id: "19.0-e",
       name: "19.0(e)",
       favorite: false,
-      config: [
+      kind: "plain",
+      checkouts: [
         { repo: "community", branch: "19.0" },
         { repo: "enterprise", branch: "19.0" },
       ],

@@ -131,8 +131,8 @@ export class ServerPlugin extends Plugin {
       target: target.id,
       start: {
         // addons path is built from the target's repos; the branches in the
-        // config are stored for later (not checked out yet)
-        repos: (target.config || []).map((c) => c.repo),
+        // checkout list are stored for later (not checked out yet)
+        repos: (target.checkouts || []).map((c) => c.repo),
         db: target.db,
         on_create_args: target.on_create_args || "",
         other_args: otherArgs ?? cfg.start.other_args,
@@ -248,7 +248,7 @@ export class ServerPlugin extends Plugin {
     await this.code.load(); // cache-aware; populates branchRepos
     const current = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r.current]));
     // only flag repos whose current branch we actually know
-    const off = (target.config || []).filter(
+    const off = (target.checkouts || []).filter(
       ({ repo, branch }) => current[repo] !== undefined && current[repo] !== branch,
     );
     if (!off.length) return true;

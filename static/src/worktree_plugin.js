@@ -12,7 +12,7 @@ import { CodePlugin } from "./code_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
-import { postJSON } from "./utils.js";
+import { postJSON, worktreeDirFor } from "./utils.js";
 
 const { Plugin, plugin, signal } = owl;
 
@@ -36,9 +36,11 @@ export class WorktreePlugin extends Plugin {
   }
 
   // ── which targets are worktrees ──────────────────────────────────────────────
-  // a worktree target carries a `worktree` metadata object; its presence marks it.
+  // the explicit `kind` marks a worktree; fall back to the presence of the
+  // `worktree` metadata object for any target not yet carrying a kind.
   isWorktree(tgt) {
-    return !!(tgt && tgt.worktree);
+    if (!tgt) return false;
+    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree";
   }
 
   worktreeTargets() {
@@ -58,7 +60,7 @@ export class WorktreePlugin extends Plugin {
   worktreeBranches() {
     const s = new Set();
     for (const t of this.worktreeTargets())
-      for (const c of t.config || []) if (c.branch) s.add(c.branch);
+      for (const c of t.checkouts || []) if (c.branch) s.add(c.branch);
     return s;
   }
 
@@ -67,26 +69,22 @@ export class WorktreePlugin extends Plugin {
   }
 
   // ── paths ────────────────────────────────────────────────────────────────────
-  // filesystem-safe folder name from the target name (fall back to the id)
-  slug(tgt) {
-    const s = (tgt.name || tgt.id).replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    return s || tgt.id;
-  }
-
+  // the worktree's checkout directory: the value frozen at creation
+  // (worktree.dir), else derived from the name. Persisting it means a later rename
+  // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
   dirPath(tgt) {
-    const base = (this.config.config.worktree_dir || "/tmp").replace(/\/+$/, "");
-    return `${base}/${this.slug(tgt)}`;
+    return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt);
   }
 
   hasCommunity(tgt) {
-    return (tgt.config || []).some((c) => c.repo === "community");
+    return (tgt.checkouts || []).some((c) => c.repo === "community");
   }
 
   // per-repo worktree descriptors for an existing worktree target (start / remove)
   wtRepos(tgt) {
     const g = this.code.groups();
     const dir = this.dirPath(tgt);
-    return (tgt.config || [])
+    return (tgt.checkouts || [])
       .map(({ repo, branch }) => ({
         repo,
         branch,
@@ -194,15 +192,19 @@ export class WorktreePlugin extends Plugin {
       id,
       name: name || branch,
       favorite: false,
-      config: (base.config || []).map((c) => ({ repo: c.repo, branch })),
+      kind: "worktree",
+      checkouts: (base.checkouts || []).map((c) => ({ repo: c.repo, branch })),
       db: dbName,
       on_create_args: base.on_create_args || "",
       worktree: { base: baseTargetId },
     };
     // per-repo: create the NEW branch <branch> forked from the base's branch
     const g = this.code.groups();
+    // dirPath derives from the name here (no dir stored yet); freeze it onto the
+    // target so a later rename can't orphan the checkout git is about to create.
     const dir = this.dirPath(tgt);
-    const repos = (base.config || [])
+    tgt.worktree.dir = dir;
+    const repos = (base.checkouts || [])
       .map((c) => ({
         repo: c.repo,
         newBranch: branch,

@@ -4,7 +4,7 @@
 
 import { DEFAULT_CONFIG } from "./config.js";
 import { PRESETS } from "./presets.js";
-import { postJSON } from "./utils.js";
+import { postJSON, worktreeDirFor } from "./utils.js";
 
 const { Plugin, signal, useEffect } = owl;
 
@@ -57,17 +57,39 @@ export class ConfigPlugin extends Plugin {
   dataFileSig = signal(this.getDataFile());
   _timer = null;
 
-  // one-time migration: give every stored target a stable id, and convert the
-  // persisted active target from a name (old format) to its id.
+  // one-time migration, idempotent and deterministic (safe to re-run on the same
+  // stored config — e.g. data-file re-hydration). Normalizes each stored target:
+  //   - backfills a stable id (so renaming `name` is safe),
+  //   - renames the checkout list `config` → `checkouts` (the field name hurt: it
+  //     collided with the ConfigPlugin and the whole-config object),
+  //   - adds an explicit `kind` ("plain" | "worktree") instead of relying on the
+  //     presence of a `worktree` object as the flag,
+  //   - freezes each worktree's directory into `worktree.dir`, so a later rename
+  //     can't orphan the on-disk checkout (previously the dir was re-derived from
+  //     the name on every use). Existing worktrees freeze their *current* derived
+  //     path — the same one dirPath computes today, so no behavior changes.
+  // Also migrates the persisted active target from a name (old format) to its id.
   _migrate() {
     const stored = this._stored();
-    if (Array.isArray(stored.targets) && stored.targets.some((t) => !t.id)) {
+    const stale = (t) =>
+      !t.id || t.config !== undefined || !t.kind || (t.worktree && !t.worktree.dir);
+    if (Array.isArray(stored.targets) && stored.targets.some(stale)) {
+      const worktreeDir = this._merged().worktree_dir;
       const used = new Set(stored.targets.map((t) => t.id).filter(Boolean));
       const targets = stored.targets.map((t) => {
-        if (t.id) return t;
-        const id = slugId(t.name, used);
+        const { config, ...rest } = t;
+        const id = t.id || slugId(t.name, used);
         used.add(id);
-        return { ...t, id };
+        const worktree = t.worktree
+          ? { ...t.worktree, dir: t.worktree.dir ?? worktreeDirFor(worktreeDir, { ...t, id }) }
+          : t.worktree;
+        return {
+          ...rest,
+          id,
+          checkouts: t.checkouts ?? config ?? [],
+          kind: t.kind ?? (t.worktree ? "worktree" : "plain"),
+          ...(worktree ? { worktree } : {}),
+        };
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...stored, targets }));
     }

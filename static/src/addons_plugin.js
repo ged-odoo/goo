@@ -63,7 +63,7 @@ export class AddonsPlugin extends Plugin {
     const target = this._activeTarget();
     if (!target) return [];
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    return (target.config || [])
+    return (target.checkouts || [])
       .map((c) => ({ id: c.repo, path: pathById[c.repo] }))
       .filter((r) => r.path);
   }

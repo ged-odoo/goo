@@ -197,3 +197,19 @@ export async function postJSON(path, body) {
   if (!resp.ok) throw new Error(data.error || resp.status);
   return data;
 }
+
+// filesystem-safe folder name for a worktree target (case-preserving; falls back
+// to the stable id). Kept pure so both WorktreePlugin.dirPath and the config
+// migration derive the same path.
+export function worktreeSlug(tgt) {
+  const s = (tgt.name || tgt.id || "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return s || tgt.id;
+}
+
+// the derived worktree directory <worktree_dir>/<slug>. A worktree target's
+// persisted `worktree.dir` (frozen at creation) should be preferred over this —
+// see WorktreePlugin.dirPath. Deriving from the name is only correct at creation
+// time; afterwards a rename would move the derived path off the real checkout.
+export function worktreeDirFor(worktreeDir, tgt) {
+  return `${(worktreeDir || "/tmp").replace(/\/+$/, "")}/${worktreeSlug(tgt)}`;
+}
