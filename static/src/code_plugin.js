@@ -3,6 +3,7 @@
 
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
@@ -16,23 +17,34 @@ export class CodePlugin extends Plugin {
   static sequence = 3;
 
   config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin); // the shared observed store (branches/PRs/runbot/mergebot)
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  branchRepos = signal((this._cache() || {}).branchRepos || []);
-  prRepos = signal([]); // PRs are cached server-side now, fetched fresh each load
+  // observed state lives in the store, normalized by identity; these expose it in the
+  // shapes the components already read — array views over the keyed maps, and the
+  // shared runbot/mergebot signals (the same maps the Reviews screen reads).
+  branchRepos = computed(() => this.store.repoStatusList());
+  prRepos = computed(() => this.store.prReposList());
+  mergebot = this.store.mergebot; // "github#number" -> mergebot state (one shared copy)
+  mbDetails = this.store.mbDetails; // "github#number" -> blocked-reason detail
+  runbot = this.store.runbot; // branch name -> runbot status
   at = signal((this._cache() || {}).at || 0);
   loading = signal(false);
   error = signal("");
   busy = signal(false);
-  mergebot = signal({}); // "github#number" -> mergebot state (cached server-side)
-  mbDetails = signal({}); // "github#number" -> blocked-reason detail (e.g. "Review, CI")
-  runbot = signal({}); // branch name -> runbot status (cached server-side)
   _refreshExternal = false; // true during a forced load: ask the server to bypass its cache
-  _branchMerges = 0; // bumped on every targeted branch merge (checkout/kebab refresh) — see load()
-  _mbPending = new Set(); // keys in flight, so the dashboard effect doesn't double-fetch
-  _rbPending = new Set();
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
+
+  // hydrate the store from the instant-paint cache once, so a reload doesn't flash
+  // empty until the branch fetch lands (branches are local git — uncached server-side).
+  // The cached snapshots carry an old stamp, so the fresh fetch's later `at` wins.
+  setup() {
+    const c = this._cache();
+    if (c && c.branchRepos) {
+      this.store.mergeRepoStatus(c.branchRepos, c.at || 0, { authoritative: false });
+    }
+  }
 
   // mergebot state for the given PRs. Only fetch what we don't already hold and
   // isn't already in flight — that `have`-based dedup is what stops the dashboard
@@ -43,19 +55,18 @@ export class CodePlugin extends Plugin {
     const have = this.mergebot();
     const todo = prs.filter((p) => {
       const k = `${p.github}#${p.number}`;
-      return !(k in have) && !this._mbPending.has(k);
+      return !(k in have) && !this.store.mbPending.has(k);
     });
     if (!todo.length) return;
     const keys = todo.map((p) => `${p.github}#${p.number}`);
-    keys.forEach((k) => this._mbPending.add(k));
+    keys.forEach((k) => this.store.mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.mergebot.set({ ...this.mergebot(), ...res.states });
-      this.mbDetails.set({ ...this.mbDetails(), ...(res.details || {}) });
+      this.store.mergeMergebot(res.states, res.details || {});
     } catch {
       /* leave states blank on failure */
     } finally {
-      keys.forEach((k) => this._mbPending.delete(k));
+      keys.forEach((k) => this.store.mbPending.delete(k));
     }
   }
 
@@ -63,16 +74,16 @@ export class CodePlugin extends Plugin {
   async loadRunbot(branches) {
     const refresh = this._refreshExternal;
     const have = this.runbot();
-    const todo = branches.filter((b) => !(b in have) && !this._rbPending.has(b));
+    const todo = branches.filter((b) => !(b in have) && !this.store.rbPending.has(b));
     if (!todo.length) return;
-    todo.forEach((b) => this._rbPending.add(b));
+    todo.forEach((b) => this.store.rbPending.add(b));
     try {
       const res = await postJSON("/api/runbot", { branches: todo, refresh });
-      this.runbot.set({ ...this.runbot(), ...res.states });
+      this.store.mergeRunbot(res.states);
     } catch {
       /* leave status blank on failure */
     } finally {
-      todo.forEach((b) => this._rbPending.delete(b));
+      todo.forEach((b) => this.store.rbPending.delete(b));
     }
   }
 
@@ -101,29 +112,6 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  // Store a branch-state fetch into the shared branchRepos signal, returning what
-  // was stored. A NARROWED fetch (a subset of repos) MERGES — it only overwrites the
-  // repos it fetched and leaves every other repo's data untouched. This matters
-  // because several screens share this one signal but load different subsets (the
-  // dashboard's favorites, the Targets kebab's single target); a narrow load must
-  // never drop the repos it didn't ask for, or their targets suddenly look "missing"
-  // (branches gone → not present → name no longer clickable) until a full reload.
-  // A full fetch (branchRepoIds null → every repo) replaces, so repos dropped from
-  // config don't linger.
-  _storeBranchRepos(fetched, narrowed) {
-    if (!narrowed) {
-      this.branchRepos.set(fetched);
-      return fetched;
-    }
-    const byId = new Map(fetched.map((r) => [r.id, r]));
-    const existing = this.branchRepos();
-    const merged = existing.map((r) => byId.get(r.id) || r);
-    for (const r of fetched) if (!existing.some((e) => e.id === r.id)) merged.push(r);
-    this.branchRepos.set(merged);
-    this._branchMerges++; // a targeted write landed — see the guard in load()
-    return merged;
-  }
-
   // Branches come from local git (fast, volatile) and PRs/runbot/mergebot are now
   // cached server-side, so we simply request everything and let the backend decide
   // freshness. `force` (the manual Refresh) passes refresh:true to bypass the cache.
@@ -135,46 +123,42 @@ export class CodePlugin extends Plugin {
     this.loading.set(true);
     this.error.set("");
     this._refreshExternal = force;
-    if (force) {
-      this.mergebot.set({}); // re-display fresh runbot/mergebot on a real refresh
-      this.mbDetails.set({});
-      this.runbot.set({});
-    }
+    if (force) this.store.clearExternal(); // re-display fresh runbot/mergebot on a real refresh
+    const at = Date.now(); // request-start stamp — the freshness of these snapshots
     const repos = this.reposWithGithub();
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
-    const mergesAtStart = this._branchMerges;
     const branchesP = postJSON("/api/code/branches", { repos: branchReq })
       .then((b) => {
-        // latest wins: a targeted merge (a checkout/rebase/kebab refresh) that landed
-        // while this full scan was in flight reflects fresher on-disk state. Its full
-        // replace would revert that repo to its pre-checkout branch, so skip the store
-        // and keep the merged state — the next load refreshes the untouched repos (#2).
-        if (!branchRepoIds && this._branchMerges !== mergesAtStart) return this.branchRepos();
-        // merge (not replace) when narrowed, so a subset load never drops the repos
-        // it didn't fetch — see _storeBranchRepos
-        return this._storeBranchRepos(b.repos, !!branchRepoIds);
+        // One merge rule: a full scan is authoritative for its scope (repos gone from
+        // config are dropped); a narrowed load only merges. A targeted refresh that
+        // raced this scan carries a later `at`, so mergeEntities keeps it per-repo
+        // while this scan still updates every other repo — no race counter needed.
+        this.store.mergeRepoStatus(b.repos, at, { authoritative: !branchRepoIds });
+        return true;
       })
       .catch((e) => {
         this.error.set(e.message);
-        return null;
+        return false;
       });
-    const prRepos = repos.filter((r) => r.github && (!prRepoIds || prRepoIds.has(r.id)));
-    const prsP = postJSON("/api/prs", { repos: prRepos, refresh: force })
+    const prReq = repos.filter((r) => r.github && (!prRepoIds || prRepoIds.has(r.id)));
+    const scopeIds = new Set(prReq.map((r) => r.id));
+    const prsP = postJSON("/api/prs", { repos: prReq, refresh: force })
       .then((p) => {
         // normalize each PR into the canonical shape on ingest (see models.js)
         const normalized = p.repos.map((r) => ({ ...r, prs: (r.prs || []).map(PullRequest.from) }));
-        this.prRepos.set(normalized);
-        return normalized;
+        this.store.mergePrRepos(normalized, at, scopeIds);
       })
       .catch((e) => {
         this.error.set(e.message);
-        return null;
       });
-    const [b] = await Promise.all([branchesP, prsP]);
+    const [ok] = await Promise.all([branchesP, prsP]);
     this.loading.set(false);
-    const at = Date.now();
     this.at.set(at);
-    if (b) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos: b }));
+    // keep the instant-paint cache in step with the store's current branch snapshots
+    if (ok) {
+      const branchRepos = this.store.repoStatusList();
+      localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos }));
+    }
   }
 
   // fetch just the local branch/checkout state (no PRs, runbot or mergebot),
@@ -184,11 +168,12 @@ export class CodePlugin extends Plugin {
   async loadBranches(branchRepoIds = null) {
     const repos = this.reposWithGithub();
     const req = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
+    const at = Date.now();
     try {
       const b = await postJSON("/api/code/branches", { repos: req });
       // merge when narrowed (the Targets kebab loads a single target's repos): must
       // not clobber the other repos' branch state that the dashboard/branches rely on
-      this._storeBranchRepos(b.repos, !!branchRepoIds);
+      this.store.mergeRepoStatus(b.repos, at, { authoritative: !branchRepoIds });
     } catch (e) {
       this.error.set(e.message);
     }
@@ -202,14 +187,17 @@ export class CodePlugin extends Plugin {
   async refreshBranches(repoIds) {
     const repos = this.reposWithGithub().filter((r) => repoIds.has(r.id));
     if (!repos.length) return;
+    const at = Date.now();
     try {
       const b = await postJSON("/api/code/branches", { repos });
-      const merged = this._storeBranchRepos(b.repos, true); // merge: only these repos changed
+      this.store.mergeRepoStatus(b.repos, at, { authoritative: false }); // only these changed
       // keep the instant-paint cache in step, so a reload right after doesn't flash
       // the pre-checkout branch for the repos we just refreshed
       const cache = this._cache();
-      if (cache)
-        localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos: merged }));
+      if (cache) {
+        const branchRepos = this.store.repoStatusList();
+        localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
+      }
     } catch (e) {
       this.error.set(e.message);
     }
@@ -379,12 +367,12 @@ export class CodePlugin extends Plugin {
   // drop a branch from the view + cache without a server round-trip — a full
   // reload would re-fetch every branch's runbot badge, which is pointless here
   _dropBranch(repo, branch) {
-    const branchRepos = this.branchRepos().map((r) =>
-      r.id === repo ? { ...r, branches: r.branches.filter((b) => b.name !== branch) } : r,
-    );
-    this.branchRepos.set(branchRepos);
+    this.store.dropBranch(repo, branch);
     const cache = this._cache();
-    if (cache) localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
+    if (cache) {
+      const branchRepos = this.store.repoStatusList();
+      localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
+    }
   }
 
   async deleteBranch(branch, repo, path, deleteRemote = false) {
@@ -466,12 +454,7 @@ export class CodePlugin extends Plugin {
   // everything just to flip one PR's state). The server already invalidated its PR
   // cache in close_pr, so the next load reflects it too.
   _closePrLocally(github, number) {
-    const prRepos = this.prRepos().map((r) =>
-      r.github === github
-        ? { ...r, prs: r.prs.map((p) => (p.number === number ? { ...p, state: "closed" } : p)) }
-        : r,
-    );
-    this.prRepos.set(prRepos);
+    this.store.closePr(github, number);
   }
 
   async closePr(github, number) {

@@ -3,6 +3,7 @@
 import { App } from "./components.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { ConfigPlugin, loadServerConfig } from "./config_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
@@ -20,6 +21,7 @@ import { NightlyPlugin } from "./nightly_plugin.js";
 import { MemoryPlugin } from "./memory_plugin.js";
 
 const PLUGINS = [
+  StorePlugin,
   ConfigPlugin,
   RouterPlugin,
   EventLogPlugin,

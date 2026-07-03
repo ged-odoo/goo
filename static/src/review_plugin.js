@@ -11,6 +11,7 @@
 import { postJSON } from "./utils.js";
 import { PullRequest } from "./models.js";
 import { ConfigPlugin } from "./config_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 
 const { Plugin, plugin, signal } = owl;
 
@@ -20,14 +21,16 @@ export class ReviewPlugin extends Plugin {
   static sequence = 5;
 
   config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin); // the shared observed store
   prs = signal([]); // view state; freshness is the server's job
   at = signal(0);
   loading = signal(false);
   error = signal("");
-  mergebot = signal({}); // "github#number" -> mergebot state (or "" / "merged")
-  mbDetails = signal({}); // "github#number" -> blocked-reason detail (e.g. "Review, CI")
+  // mergebot state is one shared map: the Code screen reads and writes the same one,
+  // so a PR scraped on either screen shows its badge on both (dedup via store.mbPending)
+  mergebot = this.store.mergebot; // "github#number" -> mergebot state (or "" / "merged")
+  mbDetails = this.store.mbDetails; // "github#number" -> blocked-reason detail
   favorites = signal(this._readArr("reviews_favorites")); // [branch, …] (starred groups, sorted first)
-  _mbPending = new Set(); // in-flight mergebot keys (dedup)
   _merged = new Set(this._readArr("reviews_merged")); // terminal merged PRs
   _noMergebot = new Set(this._readArr("reviews_no_mergebot")); // repos without mergebot
 
@@ -72,28 +75,27 @@ export class ReviewPlugin extends Plugin {
       const k = mbKey(p);
       if (this._merged.has(k) && this.mergebot()[k] !== "merged") seeded[k] = "merged";
     }
-    if (Object.keys(seeded).length) this.mergebot.set({ ...this.mergebot(), ...seeded });
+    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null);
 
     const have = this.mergebot();
     const todo = prs.filter((p) => {
       const k = mbKey(p);
       if (this._merged.has(k)) return false; // terminal — never refetch, even on refresh
       if (this._noMergebot.has(p.github) && !refresh) return false; // skip unsupported repos
-      return refresh || (!(k in have) && !this._mbPending.has(k));
+      return refresh || (!(k in have) && !this.store.mbPending.has(k));
     });
     if (!todo.length) return;
 
     const keys = todo.map(mbKey);
-    keys.forEach((k) => this._mbPending.add(k));
+    keys.forEach((k) => this.store.mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.mergebot.set({ ...this.mergebot(), ...res.states });
-      this.mbDetails.set({ ...this.mbDetails(), ...(res.details || {}) });
+      this.store.mergeMergebot(res.states, res.details || {});
       this._record(todo, res);
     } catch {
       /* leave states blank on failure */
     } finally {
-      keys.forEach((k) => this._mbPending.delete(k));
+      keys.forEach((k) => this.store.mbPending.delete(k));
     }
   }
 
