@@ -5313,6 +5313,40 @@ function loadXterm() {
   return _xtermReady;
 }
 
+// lazy-load Chart.js (vendored, not a CDN) on first use — shared by the Nightly
+// and Memory panels, each of which draws its own line chart(s) on a <canvas>.
+let _chartJsReady = null;
+function loadChartJs() {
+  if (!_chartJsReady) {
+    _chartJsReady = new Promise((resolve, reject) => {
+      if (window.Chart) return resolve();
+      const s = document.createElement("script");
+      s.src = "/static/lib/chart/chart.umd.min.js";
+      s.onload = resolve;
+      s.onerror = () => {
+        _chartJsReady = null; // allow retry
+        reject(new Error("failed to load Chart.js"));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return _chartJsReady;
+}
+
+// shared categorical palette for Chart.js datasets (Tableau-10-ish)
+const CHART_COLORS = [
+  "#4e79a7",
+  "#f28e2b",
+  "#e15759",
+  "#76b7b2",
+  "#59a14f",
+  "#edc948",
+  "#b07aa1",
+  "#ff9da7",
+  "#9c755f",
+  "#bab0ac",
+];
+
 /* global Terminal, FitAddon */
 // attach an xterm terminal to `el`, backed by the WebSocket at `wsUrl` (bytes
 // both ways, JSON resize messages). Returns a dispose() that tears it all down.
