@@ -99,6 +99,7 @@ export const DEFAULT_CONFIG = {
 
 export const SECTIONS = [
   "dashboard",
+  "code",
   "server",
   "worktree",
   "branches",
