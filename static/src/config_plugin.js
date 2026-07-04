@@ -1,19 +1,31 @@
 // Config + app-state store, owned by the server (backend/services.py ConfigStore,
-// persisted to ~/.config/goo/config.json as {rev, config, state}). This plugin is a
-// mirror + action layer: it seeds from GET /api/config at boot (see loadServerConfig),
-// writes back with POST /api/config (rev-checked, optimistic), and stays in lockstep
-// across tabs via the SSE "config" broadcast (applyBroadcast). The browser holds no
-// durable config or state — only the volatile caches other plugins keep directly.
+// persisted to ~/.config/goo/config.json as {rev, config, state}). This plugin is the
+// client's adapter over that config: it seeds an owl-orm ORM from GET /api/config at
+// boot (see loadServerConfig + config_models.js), and keeps its flat public API —
+// `config` / `getState` / `setState` / `updateConfig` / presets / snapshot — so the
+// ~72 config consumers and the full-blob write wire are unchanged. Internally the
+// state now lives in normalized ORM records (Settings/Repository/Target/Checkout/
+// AppState) instead of a flat signal; the changeset write wire + migrating consumers
+// to read records directly are later passes.
 //
-//   config = the user's settings/repos/targets/… (the schema lives in config.js;
-//            DEFAULT_CONFIG is merged in at read, so new default keys apply)
+//   config = the user's settings/repos/targets/… (schema in config.js; the models
+//            mirror it, and DEFAULT_CONFIG is merged in at read for new keys)
 //   state  = app-recorded: active_target, test_history, reviews_*, claude_model
 
 import { DEFAULT_CONFIG } from "./config.js";
 import { PRESETS } from "./presets.js";
 import { worktreeDirFor } from "./utils.js";
+import {
+  ORM,
+  AppState,
+  CONFIG_MODELS,
+  toModels,
+  toConfig,
+  toState,
+  applyPatch,
+} from "./config_models.js";
 
-const { Plugin, signal } = owl;
+const { Plugin, signal, computed } = owl;
 
 // old localStorage keys → their field in the server `state` blob. Used to adopt an
 // upgrading user's browser data on first boot, and to translate config presets.
@@ -154,7 +166,7 @@ function adoptFromLocalStorage() {
 }
 
 // translate a preset (a bundle of legacy localStorage entries — see presets.js) into a
-// {config, state} pair, migrated, ready to POST
+// {config, state} pair, migrated, ready to load
 function presetToConfigState(preset) {
   const data = preset.data || {};
   let overrides = {};
@@ -176,34 +188,54 @@ export class ConfigPlugin extends Plugin {
   static sequence = 1; // everything else may depend on config
 
   _b = _boot || { rev: 0, config: {}, state: {} };
-  cfg = signal(merge(this._b.config)); // the merged config object (replaced wholesale)
+  orm = this._seedOrm(); // the config graph as owl-orm records (config_models.js)
   rev = signal(this._b.rev); // server revision — guards concurrent writes
-  stateSig = signal(this._b.state || {}); // the app-state blob
+  // the flat config blob, derived from the ORM records — recomputed only when a
+  // record changes, so the ~72 `config.config.*` consumers stay reactive + cheap
+  _configView = computed(() => merge(toConfig(this.orm)));
   _dirty = { config: false, state: false }; // blobs edited since the last flush
   _timer = null;
 
+  // seed a fresh ORM from the boot payload (field initializer, so config + state are
+  // populated the moment the plugin is constructed — other plugins' field inits read
+  // getState right after `plugin(ConfigPlugin)` returns)
+  _seedOrm() {
+    const orm = new ORM();
+    toModels(orm, merge(this._b.config), this._b.state || {});
+    return orm;
+  }
+
+  // clear + re-seed the ORM in place (reset / preset / import / another tab's write).
+  // Mutating the existing ORM — not replacing it — keeps `_configView` tracking it.
+  _reload(config, state) {
+    for (const M of CONFIG_MODELS) for (const rec of this.orm.records(M)) this.orm.delete(rec);
+    toModels(this.orm, merge(config), state || {});
+  }
+
   get config() {
-    return this.cfg();
-  } // read in render -> tracked
+    return this._configView(); // read in render -> tracked on the records it touches
+  }
 
   // ── config writes ──────────────────────────────────────────────────────────
-  // merge a patch into the config and persist it. Optimistic: the signal updates now,
-  // the POST is debounced/coalesced (see _schedule). ~25 callers across the Config and
+  // merge a patch into the config and persist it. Optimistic: the records update now,
+  // the POST is debounced/coalesced (see _schedule). ~20 callers across the Config and
   // Targets UIs — their call sites are unchanged.
   updateConfig(patch) {
-    this.cfg.set({ ...this.cfg(), ...patch });
+    applyPatch(this.orm, patch);
     this._dirty.config = true;
     this._schedule();
   }
 
-  // ── app-state (was the scattered oo-* localStorage keys) ─────────────────────
+  // ── app-state (the AppState singleton record) ────────────────────────────────
   getState(field, fallback = null) {
-    const v = this.stateSig()[field];
+    const st = this.orm.getById(AppState, "state");
+    const v = st && st[field] ? st[field]() : undefined;
     return v === undefined || v === null ? fallback : v;
   }
 
   setState(field, value) {
-    this.stateSig.set({ ...this.stateSig(), [field]: value });
+    const st = this.orm.getById(AppState, "state");
+    if (st && st[field]) st[field].set(value);
     this._dirty.state = true;
     this._schedule();
   }
@@ -223,8 +255,8 @@ export class ConfigPlugin extends Plugin {
     const sent = { ...this._dirty };
     this._dirty = { config: false, state: false };
     const body = { rev: this.rev() };
-    if (sent.config) body.config = this.cfg();
-    if (sent.state) body.state = this.stateSig();
+    if (sent.config) body.config = toConfig(this.orm);
+    if (sent.state) body.state = toState(this.orm);
     try {
       const resp = await fetch("/api/config", {
         method: "POST",
@@ -255,21 +287,23 @@ export class ConfigPlugin extends Plugin {
     if (this._dirty.config || this._dirty.state) return;
     if (payload.rev <= this.rev()) return;
     this.rev.set(payload.rev);
-    this.cfg.set(merge(payload.config));
-    this.stateSig.set(payload.state || {});
+    this._reload(payload.config, payload.state);
   }
 
   // ── reset / presets (immediate, awaited so the caller can reload) ─────────────
   async _pushNow(config, state) {
-    this.cfg.set(merge(config));
-    this.stateSig.set(state || {});
+    this._reload(config, state);
     this._dirty = { config: false, state: false };
     clearTimeout(this._timer);
     try {
       const resp = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rev: this.rev(), config: this.cfg(), state: this.stateSig() }),
+        body: JSON.stringify({
+          rev: this.rev(),
+          config: toConfig(this.orm),
+          state: toState(this.orm),
+        }),
       });
       const res = await resp.json();
       if (res.rev !== undefined) this.rev.set(res.rev);
@@ -285,7 +319,7 @@ export class ConfigPlugin extends Plugin {
 
   // a portable snapshot for the Backup export (config + app state, no rev)
   snapshot() {
-    return { config: this.cfg(), state: this.stateSig() };
+    return { config: toConfig(this.orm), state: toState(this.orm) };
   }
 
   // restore a snapshot (from a Backup import), replacing config + state on the server
