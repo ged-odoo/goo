@@ -4,15 +4,17 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Local Odoo development helper — stdlib Python server + Owl 3 frontend (no bundler; modules are served as-is).",
+  "description": "Local Odoo development helper — stdlib Python server + Owl 3 frontend (served as-is; the only built asset is the vendored owlx ORM bundle).",
   "scripts": {
     "format": "prettier --write \"static/**/*.{js,css,html}\" \"*.md\"",
     "format:check": "prettier --check \"static/**/*.{js,css,html}\" \"*.md\"",
     "lint": "eslint static/src",
-    "lint:fix": "eslint static/src --fix"
+    "lint:fix": "eslint static/src --fix",
+    "build:owlx": "esbuild vendor/owl-orm/index.ts --bundle --format=esm --alias:@odoo/owl=./vendor/owl-orm/owl-global.js --outfile=static/lib/owlx.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "esbuild": "^0.28.0",
     "eslint": "^9.0.0",
     "globals": "^15.0.0",
     "prettier": "^3.0.0"

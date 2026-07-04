@@ -6,7 +6,11 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 ## Stack
 
 - **Backend**: the `backend/` package, Python 3.10+, **stdlib only** (no pip deps).
-- **Frontend**: `static/` — Owl 3, served as-is (**no bundler**, no build step).
+- **Frontend**: `static/` — Owl 3, served as-is (no bundler for the app code). The one
+  built asset is `static/lib/owlx.js` — the vendored `@odoo/owl-orm` client ORM (the
+  state layer the frontend is being rewritten onto), bundled by `npm run build:owlx`
+  from `vendor/owl-orm/` and **committed**, so the app still runs straight from the
+  checkout with no build at dev time.
 - Runs straight from the checkout: `python3 goo.py` (UI on `127.0.0.1:8068`).
 
 ## Layout
@@ -42,6 +46,9 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
   in the addons path
 - `static/src/` a owl 3 frontend application
 - `static/src/main.js` — app entry
+- `vendor/owl-orm/` — pinned `@odoo/owl-orm` source + the `window.owl` build shim;
+  `npm run build:owlx` bundles it to `static/lib/owlx.js`. The frontend state layer is
+  being incrementally rewritten onto this ORM (see the `state-model-refactor` memory).
 
 ## Commands
 
@@ -49,6 +56,8 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 - `python3 -m unittest discover` — run the backend tests (from the repo root).
 - `npm run lint` / `npm run lint:fix` — eslint (`static/src` only).
 - `npm run format` — prettier (js/css/html/md).
+- `npm run build:owlx` — re-bundle `vendor/owl-orm/` → `static/lib/owlx.js` (esbuild;
+  `@odoo/owl` aliased to the `window.owl` global). Only needed after editing `vendor/owl-orm/`.
 - `ruff check --fix` / `ruff format` — Python lint+format.
 - `pre-commit` runs ruff + prettier + eslint on changed files.
 
