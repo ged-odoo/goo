@@ -45,11 +45,10 @@ export class TestsPlugin extends Plugin {
     this.config.setState("test_history", h);
   }
 
-  // the target tests run against: the running/starting server's target, else
-  // the last-used one, else the first configured target. Tests are a one-shot
-  // run against the target's db, so they work even with the server down.
-  // the active target id: the running server's, else the last-used one, else the
-  // first configured target (buildStartConfig resolves it by id)
+  // the target id tests run against: the running/starting server's target, else the
+  // last-used one, else the first configured target. Tests are a one-shot run against
+  // the target's db, so they work even with the server down; the run endpoint resolves
+  // the launch config from this id server-side.
   get target() {
     const targets = this.config.config.targets;
     const candidate = this.server.status().target || this.server.lastTarget();
@@ -145,13 +144,12 @@ export class TestsPlugin extends Plugin {
 
   async run(tags) {
     if (!tags.trim()) return;
-    const s = this.server.status();
-    const cfg = this.server.buildStartConfig(this.target);
-    if (!cfg) return this.server.log(`[goo] no valid target to test`);
+    const targetId = this.target;
+    if (!targetId) return this.server.log(`[goo] no valid target to test`);
     // a real server is up; the backend stops it for the one-shot run and resumes it
     // when the run ends (resume-after is backend-owned now — no client flag)
+    const s = this.server.status();
     const serverWasUp = (s.state === "running" || s.state === "starting") && s.mode === "server";
-    cfg.start.test_tags = tags.trim();
     this._pushHistory(tags);
     this._tags = tags.trim(); // logged once the test server is actually up
     this._cutOnChrome = this._tags.includes("web:WebSuite");
@@ -164,7 +162,8 @@ export class TestsPlugin extends Plugin {
     this._pending.set(true);
     this.status.set("starting…");
     try {
-      await postJSON("/api/tests/run", cfg);
+      // the server resolves the launch config from the target + overrides
+      await postJSON("/api/tests/run", { target: targetId, overrides: { test_tags: this._tags } });
     } catch (e) {
       this._pending.set(false);
       this.status.set(`failed to start: ${e.message}`);

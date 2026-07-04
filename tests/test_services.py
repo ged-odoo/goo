@@ -1297,7 +1297,11 @@ class ConfigStoreTest(unittest.TestCase):
 class BuildStartConfigTest(unittest.TestCase):
     CFG = {
         "venv_activate": "src activate",
-        "repos": [{"id": "community", "path": "/c"}, {"id": "enterprise", "path": "/e"}],
+        "worktree_dir": "/wt",
+        "repos": [
+            {"id": "community", "path": "/c", "github": "odoo/odoo"},
+            {"id": "enterprise", "path": "/e", "github": "odoo/enterprise"},
+        ],
         "targets": [
             {
                 "id": "t1",
@@ -1307,7 +1311,14 @@ class BuildStartConfigTest(unittest.TestCase):
                     {"repo": "community", "branch": "master"},
                     {"repo": "enterprise", "branch": "master"},
                 ],
-            }
+            },
+            {
+                "id": "wt1",
+                "db": "wtdb",
+                "kind": "worktree",
+                "worktree": {"base": "t1", "dir": "/wt/feature-x"},
+                "checkouts": [{"repo": "community", "branch": "feat"}],
+            },
         ],
         "start": {"other_args": "--dev all"},
     }
@@ -1320,10 +1331,26 @@ class BuildStartConfigTest(unittest.TestCase):
         self.assertEqual(cfg["start"]["on_create_args"], "-i sale")
         self.assertEqual(cfg["start"]["other_args"], "--dev all")  # from config.start
         self.assertEqual(cfg["venv_activate"], "src activate")  # scalars spread through
+        self.assertEqual(cfg["repos"], self.CFG["repos"])  # plain: real repo paths untouched
 
-    def test_other_args_override(self):
-        cfg = services.build_start_config(self.CFG, "t1", other_args="-u web")
+    def test_overrides(self):
+        cfg = services.build_start_config(
+            self.CFG, "t1", {"other_args": "-u web", "test_tags": ":Foo"}
+        )
         self.assertEqual(cfg["start"]["other_args"], "-u web")
+        self.assertEqual(cfg["start"]["test_tags"], ":Foo")
+
+    def test_worktree_target_rewrites_paths(self):
+        cfg = services.build_start_config(self.CFG, "wt1", {"test_tags": ":Bar"})
+        # repos point at the worktree's on-disk copies under its persisted dir
+        self.assertEqual(
+            cfg["repos"],
+            [{"id": "community", "path": "/wt/feature-x/community", "github": "odoo/odoo"}],
+        )
+        self.assertEqual(cfg["server_path"], "/wt/feature-x/community/odoo-bin")
+        self.assertEqual(cfg["start"]["db"], "wtdb")
+        self.assertEqual(cfg["start"]["repos"], ["community"])
+        self.assertEqual(cfg["start"]["test_tags"], ":Bar")
 
     def test_unknown_target_is_none(self):
         self.assertIsNone(services.build_start_config(self.CFG, "nope"))

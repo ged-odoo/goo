@@ -160,8 +160,9 @@ export class AddonsPlugin extends Plugin {
   }
 
   async run(op, name) {
+    const target = this._activeTarget();
     const db = this.targetDb();
-    if (!db) return;
+    if (!target || !db) return;
     const verb = op === "upgrade" ? "Upgrade" : "Install";
     const ok = await this.dialogs.open({
       title: `${verb} "${name}" on ${db}?`,
@@ -170,17 +171,13 @@ export class AddonsPlugin extends Plugin {
     if (!ok) return;
     // if a real server is up the backend stops it for the one-shot run and resumes it
     // when the run ends (resume-after is backend-owned now — no client flag)
-    const cfg = {
-      ...this.config.config,
-      target: null,
-      start: { repos: this._repos().map((r) => r.id), db, [op]: name },
-    };
     this.output.clear();
     this._pending.set(true);
     this.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}…`);
     this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
     try {
-      await postJSON("/api/addons/run", cfg);
+      // the server resolves the target's repos + db; overrides carry the module op
+      await postJSON("/api/addons/run", { target: target.id, overrides: { [op]: name } });
     } catch (e) {
       this._pending.set(false);
       this.status.set(`failed to start: ${e.message}`);

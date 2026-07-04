@@ -1549,11 +1549,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/cli/test":
             self._handle_cli_test()
         elif path == "/api/command":
-            config, err = self._read_json()
+            body, err = self._read_json()
             if err:
                 return self._send_json(400, {"ok": False, "error": err})
+            cfg = self._build_launch(body)
+            if cfg is None:
+                return self._send_json(400, {"ok": False, "error": "unknown target"})
             try:
-                cmd, _, _ = build_odoo_cmd(config)
+                cmd, _, _ = build_odoo_cmd(cfg)
                 self._send_json(200, {"ok": True, "cmd": cmd})
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
@@ -1654,7 +1657,9 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(db, str) or not db:
                 return self._send_json(400, {"ok": False, "error": "missing db"})
             try:
-                cmd = build_shell_cmd(body, db)
+                # the shell cmd spans all configured repos (not a target) — build from
+                # the server's own config, no config in the request body
+                cmd = build_shell_cmd(CONFIG.get()["config"], db)
             except ValueError as e:
                 return self._send_json(400, {"ok": False, "error": str(e)})
             ok, error = ASSETS.generate(cmd, db)
@@ -1795,10 +1800,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/worktree/start":
             body, err = self._read_json()
             target = (body or {}).get("target")
-            config = (body or {}).get("config")
-            if err or not target or not isinstance(config, dict):
-                return self._send_json(400, {"ok": False, "error": "missing target or config"})
-            ok, detail = WORKTREES.start(target, config)
+            if err or not target:
+                return self._send_json(400, {"ok": False, "error": "missing target"})
+            cfg = self._build_launch(body)  # server builds the worktree launch config
+            if cfg is None:
+                return self._send_json(400, {"ok": False, "error": "unknown target"})
+            ok, detail = WORKTREES.start(target, cfg)
             if ok:
                 self._send_json(200, {"ok": True, "port": detail["port"]})
             else:
@@ -1995,11 +2002,24 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- API helpers ---
 
+    def _build_launch(self, body):
+        """Resolve a thin {target, overrides} launch request against the server's own
+        config into the dict build_odoo_cmd consumes (handles plain + worktree targets).
+        Returns None if the target is missing/unknown."""
+        target = (body or {}).get("target")
+        if not target:
+            return None
+        overrides = (body or {}).get("overrides") or {}
+        return services.build_start_config(CONFIG.get()["config"], target, overrides)
+
     def _action_start(self, action):
-        config, err = self._read_json()
+        body, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
-        ok, detail = action(config)
+        cfg = self._build_launch(body)
+        if cfg is None:
+            return self._send_json(400, {"ok": False, "error": "unknown target"})
+        ok, detail = action(cfg)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
         else:
@@ -2011,9 +2031,12 @@ class Handler(BaseHTTPRequestHandler):
         (tests / install / upgrade). Shares the manager with the server. If a real
         server is interrupted, its config is handed to the run so the backend restarts
         it when the run ends (resume-after, owned server-side)."""
-        config, err = self._read_json()
+        body, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
+        cfg = self._build_launch(body)
+        if cfg is None:
+            return self._send_json(400, {"ok": False, "error": "unknown target"})
         pre = MANAGER.status()
         resume_config = (
             MANAGER.server_config()
@@ -2021,7 +2044,7 @@ class Handler(BaseHTTPRequestHandler):
             else None
         )
         MANAGER.stop()
-        ok, detail = MANAGER.start(config, resume_config=resume_config)
+        ok, detail = MANAGER.start(cfg, resume_config=resume_config)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
         else:
@@ -2295,7 +2318,11 @@ class Handler(BaseHTTPRequestHandler):
         snapshot = CONFIG.get()
         config = snapshot.get("config")
         active = (snapshot.get("state") or {}).get("active_target")
-        cfg = services.build_start_config(config, active) if config and active else None
+        cfg = (
+            services.build_start_config(config, active, {"test_tags": tags})
+            if config and active
+            else None
+        )
         if not cfg:
             return self._send_json(
                 409,
@@ -2304,7 +2331,6 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "no target yet — open the goo UI (with a target configured) once",
                 },
             )
-        cfg["start"] = {**(cfg.get("start") or {}), "test_tags": tags}
         try:
             cmd, _db, _is_new = build_odoo_cmd(cfg)
         except ValueError as e:

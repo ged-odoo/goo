@@ -79,7 +79,7 @@ export class AssetsPlugin extends Plugin {
   }
 
   // force a pregeneration of the bundles (odoo-bin shell), then reload the list.
-  // Sends the whole config so the server can build the addons-path + venv prefix.
+  // The server builds the addons-path + venv prefix from its own config — just the db.
   async generate() {
     const db = this.selectedDb();
     if (!db) return;
@@ -87,7 +87,7 @@ export class AssetsPlugin extends Plugin {
     this.error.set("");
     const eid = this.eventLog.begin(`generating asset bundles in ${db}…`);
     try {
-      await postJSON("/api/assets/generate", { ...this.config.config, db });
+      await postJSON("/api/assets/generate", { db });
       this.eventLog.finish(eid, "done");
       await this.load(true);
     } catch (e) {

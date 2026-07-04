@@ -28,7 +28,6 @@ export class ServerPlugin extends Plugin {
   worktreeListeners = new Set(); // WorktreePlugin updates per-worktree state from here
   worktreeLogListeners = new Set(); // WorktreePlugin streams per-worktree logs from here
   claudeListeners = new Set(); // ClaudePlugin appends per-worktree chat items from here
-  lastConfig = null; // last server start config (to resume after a one-shot run)
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
@@ -135,24 +134,14 @@ export class ServerPlugin extends Plugin {
     });
   }
 
-  buildStartConfig(targetId, otherArgs) {
-    const cfg = this.config.config;
-    const target = cfg.targets.find((t) => t.id === targetId);
-    if (!target) return null;
-    return {
-      ...cfg,
-      // `target` carries the id (the backend just echoes it back in status);
-      // the frontend maps it to the name for display
-      target: target.id,
-      start: {
-        // addons path is built from the target's repos; the branches in the
-        // checkout list are stored for later (not checked out yet)
-        repos: (target.checkouts || []).map((c) => c.repo),
-        db: target.db,
-        on_create_args: target.on_create_args || "",
-        other_args: otherArgs ?? cfg.start.other_args,
-      },
-    };
+  // an override bundle for a thin launch request — only the bits that differ from the
+  // target's stored config (the server resolves the rest from its own config)
+  _overrides(otherArgs) {
+    return otherArgs == null ? {} : { other_args: otherArgs };
+  }
+
+  _hasTarget(targetId) {
+    return !!this.config.config.targets.find((t) => t.id === targetId);
   }
 
   // fetch the live status once, synchronously, before the first render — the SSE
@@ -190,10 +179,13 @@ export class ServerPlugin extends Plugin {
 
   // the command that would launch this target (built by the backend); "" if invalid
   async previewCommand(targetId, otherArgs) {
-    const cfg = this.buildStartConfig(targetId, otherArgs);
-    if (!cfg) return "";
+    if (!this._hasTarget(targetId)) return "";
     try {
-      return (await postJSON("/api/command", cfg)).cmd;
+      const res = await postJSON("/api/command", {
+        target: targetId,
+        overrides: this._overrides(otherArgs),
+      });
+      return res.cmd;
     } catch (e) {
       return `# ${e.message}`;
     }
@@ -282,35 +274,38 @@ export class ServerPlugin extends Plugin {
   }
 
   async start(targetId, otherArgs) {
-    const cfg = this.buildStartConfig(targetId, otherArgs);
-    if (!cfg) return this.log(`[goo] no such target: "${targetId}"`);
+    if (!this._hasTarget(targetId)) return this.log(`[goo] no such target: "${targetId}"`);
     this.pending.set("start"); // immediate feedback, before the confirm/POST awaits
-    this._beginStart(`starting server (target: ${this._targetName(cfg.target)})`);
+    this._beginStart(`starting server (target: ${this._targetName(targetId)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
-    this.lastConfig = cfg;
-    this.setLastTarget(cfg.target);
-    await this._run("/api/start", cfg, "start");
+    this.setLastTarget(targetId);
+    await this._run(
+      "/api/start",
+      { target: targetId, overrides: this._overrides(otherArgs) },
+      "start",
+    );
   }
 
   async restart(targetId, otherArgs) {
-    const cfg = this.buildStartConfig(targetId, otherArgs);
-    if (!cfg) return;
+    if (!this._hasTarget(targetId)) return;
     this.pending.set("restart"); // immediate feedback, before the confirm/POST awaits
-    this._beginStart(`restarting server (target: ${this._targetName(cfg.target)})`);
+    this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
-    this.lastConfig = cfg;
-    this.setLastTarget(cfg.target);
-    await this._run("/api/restart", cfg, "restart");
+    this.setLastTarget(targetId);
+    await this._run(
+      "/api/restart",
+      { target: targetId, overrides: this._overrides(otherArgs) },
+      "restart",
+    );
   }
 
-  // re-start the server with the last config used (e.g. after a one-shot install
-  // that had to stop a running server)
+  // re-start the server on the last target (e.g. DatabasePlugin stops it for a db op,
+  // then resumes). The backend rebuilds the launch config from the target id.
   async resume() {
-    const cfg = this.lastConfig || this.buildStartConfig(this.lastTarget());
-    if (cfg) {
-      this._beginStart(`restarting server (target: ${this._targetName(cfg.target)})`);
-      await this._run("/api/start", cfg, "resume");
-    }
+    const targetId = this.lastTarget();
+    if (!this._hasTarget(targetId)) return;
+    this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
+    await this._run("/api/start", { target: targetId, overrides: {} }, "resume");
   }
 
   async stop() {

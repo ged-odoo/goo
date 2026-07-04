@@ -2070,22 +2070,62 @@ class ConfigStore:
             return True, dict(new)
 
 
-def build_start_config(config, target_id, other_args=None):
-    """Assemble the launch config `build_odoo_cmd` consumes from the stored config and a
-    target id — the Python port of ServerPlugin.buildStartConfig. The addons path comes
-    from the target's repos; the checkout branches aren't applied here (they're checked
-    out separately). Returns None if the target id isn't in the config."""
+def _worktree_slug(target):
+    """Filesystem-safe folder name for a worktree target — the Python twin of
+    utils.js worktreeSlug (case-preserving, falls back to the stable id)."""
+    s = re.sub(r"(^-+|-+$)", "", re.sub(r"[^a-zA-Z0-9._-]+", "-", target.get("name") or ""))
+    return s or target.get("id")
+
+
+def _worktree_dir(config, target):
+    """A worktree target's on-disk directory: its persisted `worktree.dir` (frozen at
+    creation, Step 3), else the derived <worktree_dir>/<slug> fallback."""
+    wt = target.get("worktree") or {}
+    if wt.get("dir"):
+        return wt["dir"]
+    base = (config.get("worktree_dir") or "/tmp").rstrip("/")
+    return f"{base}/{_worktree_slug(target)}"
+
+
+def build_start_config(config, target_id, overrides=None):
+    """Assemble the launch config `build_odoo_cmd` consumes from the stored config, a
+    target id, and optional `overrides` ({other_args?, test_tags?, install?, upgrade?}).
+    This is the one server-side builder the thin launch endpoints resolve
+    `{target, overrides}` to — the Python home of the retired frontend
+    buildStartConfig/buildWorktreeStartConfig. A worktree target points its repos +
+    server_path at its on-disk copies (so build_odoo_cmd cd's into the worktree's
+    community and runs its odoo-bin). Returns None if the target id isn't in the config.
+    The checkout branches aren't applied here — they're checked out separately."""
     target = next((t for t in (config.get("targets") or []) if t.get("id") == target_id), None)
     if not target:
         return None
-    start = config.get("start") or {}
-    return {
-        **config,
-        "target": target["id"],
-        "start": {
-            "repos": [c["repo"] for c in (target.get("checkouts") or []) if c.get("repo")],
-            "db": target.get("db"),
-            "on_create_args": target.get("on_create_args") or "",
-            "other_args": start.get("other_args", "") if other_args is None else other_args,
-        },
+    overrides = overrides or {}
+    start_cfg = config.get("start") or {}
+    repo_ids = [c["repo"] for c in (target.get("checkouts") or []) if c.get("repo")]
+    start = {
+        "repos": repo_ids,
+        "db": target.get("db"),
+        "on_create_args": target.get("on_create_args") or "",
+        "other_args": overrides.get("other_args", start_cfg.get("other_args", "")),
     }
+    for key in ("test_tags", "install", "upgrade"):
+        if overrides.get(key):
+            start[key] = overrides[key]
+    cfg = {**config, "target": target["id"], "start": start}
+    is_worktree = (
+        target.get("kind") or ("worktree" if target.get("worktree") else "plain")
+    ) == "worktree"
+    if is_worktree:
+        d = _worktree_dir(config, target)
+        github = {
+            r["id"]: r.get("github", "")
+            for r in config.get("repos", [])
+            if isinstance(r, dict) and r.get("id")
+        }
+        # point repos at the worktree's on-disk copies; build_odoo_cmd derives the
+        # community path (and thus the addons-path + odoo-bin) from these
+        cfg["repos"] = [
+            {"id": rid, "path": f"{d}/{rid}", "github": github.get(rid, "")} for rid in repo_ids
+        ]
+        cfg["server_path"] = f"{d}/community/odoo-bin"
+    return cfg

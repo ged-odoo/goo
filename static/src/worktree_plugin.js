@@ -246,37 +246,17 @@ export class WorktreePlugin extends Plugin {
   }
 
   // ── server lifecycle ─────────────────────────────────────────────────────────
-  // a worktree start config: the target's repos pointed at the worktree copies, the
-  // worktree's own odoo-bin, on the target's own db (the backend assigns the port)
-  buildWorktreeStartConfig(tgt) {
-    const cfg = this.config.config;
-    const dir = this.dirPath(tgt);
-    const wt = this.wtRepos(tgt);
-    if (!wt.length || !this.hasCommunity(tgt)) return null;
-    return {
-      ...cfg,
-      target: tgt.id,
-      repos: wt.map((r) => ({ id: r.repo, path: r.worktreePath, github: r.github })),
-      server_path: `${dir}/community/odoo-bin`,
-      start: {
-        repos: wt.map((r) => r.repo),
-        db: tgt.db,
-        on_create_args: tgt.on_create_args || "",
-        other_args: cfg.start.other_args,
-      },
-    };
-  }
-
+  // The backend builds the worktree launch config from the target id (repos pointed
+  // at the worktree copies + the worktree's odoo-bin, from the persisted worktree.dir).
   async startServer(tgt) {
     if (this.running(tgt)) return;
-    const cfg = this.buildWorktreeStartConfig(tgt);
-    if (!cfg)
+    if (!this.hasCommunity(tgt))
       return this._error("Cannot start worktree server", "this target has no community repo");
     const eid = this.eventLog.begin(`starting worktree server (${tgt.name})`);
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/worktree/start", { target: tgt.id, config: cfg });
+      const res = await postJSON("/api/worktree/start", { target: tgt.id });
       this._merge(tgt.id, { state: "starting", port: res.port });
     } catch (e) {
       delete this._startEids[tgt.id];
