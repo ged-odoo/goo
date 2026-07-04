@@ -1,135 +1,195 @@
-// The shared state store, normalized by identity — each store is a Map keyed by the
-// entity's canonical id, and the plugins around it are action layers.
+// The shared state store. The observed family now lives in owl-orm records (see
+// observed_models.js); the runtime family (servers/runs) is still plain Maps and
+// converts in the next ORM pass. Either way the plugins around it are action layers,
+// and StorePlugin keeps stable accessors so they're unchanged.
 //
 //   observed — read-only snapshots of external systems (git branches, GitHub PRs,
-//     runbot, mergebot) the backend fetches + caches. Every write goes through the
-//     one mergeEntities rule (full/narrowed loads, targeted refreshes, stale
-//     responses). CodePlugin and ReviewPlugin share these (one mergebot map both
-//     screens read and write).
-//   runtime — live odoo processes the backend owns and mirrors over SSE. One
-//     `servers` map keyed by "main" | target id (the main OdooManager process and
-//     each worktree server, unified — see backend ServerSnapshot); ServerPlugin and
-//     WorktreePlugin are action layers over it. `targetView` is the derived join.
+//     runbot, mergebot) the backend fetches + caches, held as ORM records. Writers
+//     preserve the step-4 rule: latest fetchedAt wins per id; a full/authoritative
+//     fetch drops ids that vanished from its scope. Accessors rebuild the Map-shaped
+//     views CodePlugin/ReviewPlugin read (one mergebot map both screens share).
+//   runtime — live odoo processes mirrored over SSE. One `servers` map ("main" |
+//     target id) + a `runs` map; ServerPlugin/WorktreePlugin/Tests/Addons are action
+//     layers. `targetView` is the derived join.
 
-const { Plugin, signal } = owl;
+import { ORM, RepoStatus, PrRepo, MergebotStatus, RunbotStatus } from "./observed_models.js";
 
-// The one merge rule (design doc §"Observed: normalized snapshot stores"). Fold
-// `entities` into the map signal keyed by keyOf, keeping the entity with the latest
-// fetchedAt per key — a stale response can't clobber a fresher one, so "latest wins"
-// is a comparison, not a guard flag threaded through callbacks. When a fetch is
-// authoritative for a scope (a full load of every repo, not a narrowed subset),
-// entities that vanished from that scope are removed, so a repo dropped from config
-// (or a branch that's gone) doesn't linger.
-export function mergeEntities(mapSignal, entities, keyOf, authoritativeScope = null) {
-  const next = new Map(mapSignal());
-  for (const e of entities) {
-    const k = keyOf(e);
-    const cur = next.get(k);
-    if (!cur || cur.fetchedAt <= e.fetchedAt) next.set(k, e); // latest wins, per entity
-  }
-  if (authoritativeScope) {
-    const seen = new Set(entities.map(keyOf));
-    for (const k of [...next.keys()]) if (authoritativeScope(k) && !seen.has(k)) next.delete(k);
-  }
-  mapSignal.set(next);
-}
+const { Plugin, signal, computed } = owl;
 
 export class StorePlugin extends Plugin {
   static sequence = 0; // the shared store — set up before every plugin that reads it
 
-  // ── observed: keyed snapshot maps (every entity carries fetchedAt) ────────────
-  repoStatus = signal(new Map()); // repoId → { id, current, dirty, error, branches:[…], fetchedAt }
-  prByRepo = signal(new Map()); // repoId → { id, github, error, prs:[PullRequest], fetchedAt }
-
-  // mergebot / runbot are already plain key→value maps; kept as objects so the many
-  // `store.mergebot()[key]` reads across the components stay unchanged. One shared copy.
-  mergebot = signal({}); // "github#number" → state ("" | "merged" | reason)
-  mbDetails = signal({}); // "github#number" → blocked-reason detail (e.g. "Review, CI")
-  runbot = signal({}); // branch name → runbot status
+  // ── observed: owl-orm records (RepoStatus / PrRepo / MergebotStatus / RunbotStatus)
+  orm = new ORM();
 
   // in-flight keys, shared across the Code + Reviews screens so they never double-fetch
   mbPending = new Set();
   rbPending = new Set();
 
-  // ── runtime: one servers map (main + worktree odoos), fed by the "server" SSE ──
+  // ── runtime: one servers map (main + worktree odoos) + a runs map (converts next) ─
   servers = signal(new Map()); // "main" | targetId → OdooServer (ServerSnapshot)
   runs = signal(new Map()); // runId → Run (one-shot test/install/upgrade), fed by "run" SSE
 
-  // ── writers — every store write goes through here ─────────────────────────────
+  // ── observed accessors — computeds that rebuild the shapes consumers already read ─
+  _repoList = computed(() =>
+    this.orm.records(RepoStatus).map((r) => ({
+      id: r.id,
+      current: r.current(),
+      dirty: r.dirty(),
+      error: r.error(),
+      branches: r.branches(),
+      fetchedAt: r.fetchedAt(),
+    })),
+  );
 
-  // fold a branch-state fetch into repoStatus. `at` is the request-start timestamp:
-  // stamping the snapshot when the read was *requested* (not when it returned) makes
-  // "latest wins" order a full scan behind a targeted refresh that raced it — the
-  // targeted read reflects fresher on-disk state, so it must win for its repos while
-  // the full scan still updates every other repo. A full fetch (authoritative) drops
-  // repos that vanished from config.
-  mergeRepoStatus(repos, at, { authoritative } = {}) {
-    const stamped = repos.map((r) => ({ ...r, fetchedAt: r.fetchedAt ?? at }));
-    mergeEntities(this.repoStatus, stamped, (r) => r.id, authoritative ? () => true : null);
+  _prList = computed(() =>
+    this.orm.records(PrRepo).map((r) => ({
+      id: r.id,
+      github: r.github(),
+      error: r.error(),
+      prs: r.prs(),
+      fetchedAt: r.fetchedAt(),
+    })),
+  );
+
+  // one shared mergebot map both the Code and Reviews screens read (aliased there)
+  mergebot = computed(() =>
+    Object.fromEntries(this.orm.records(MergebotStatus).map((m) => [m.id, m.state()])),
+  );
+
+  mbDetails = computed(() =>
+    Object.fromEntries(
+      this.orm
+        .records(MergebotStatus)
+        .filter((m) => m.detail() != null)
+        .map((m) => [m.id, m.detail()]),
+    ),
+  );
+
+  runbot = computed(() =>
+    Object.fromEntries(this.orm.records(RunbotStatus).map((r) => [r.id, r.status()])),
+  );
+
+  repoStatusList() {
+    return this._repoList();
   }
 
-  // fold a PR fetch into prByRepo. Authoritative only over the repos it requested
+  prReposList() {
+    return this._prList();
+  }
+
+  // ── observed writers — preserve the step-4 semantics over records ─────────────
+
+  // fold a branch-state fetch into RepoStatus records. `at` is the request-start
+  // timestamp: stamping when the read was *requested* makes "latest wins" order a full
+  // scan behind a targeted refresh that raced it. A full fetch (authoritative) drops
+  // repos that vanished from config.
+  mergeRepoStatus(repos, at, { authoritative } = {}) {
+    for (const raw of repos) {
+      const fetchedAt = raw.fetchedAt ?? at;
+      const rec = this.orm.getById(RepoStatus, raw.id);
+      if (!rec) {
+        this.orm.create(RepoStatus, {
+          id: raw.id,
+          current: raw.current ?? "",
+          dirty: !!raw.dirty,
+          error: raw.error ?? null,
+          branches: raw.branches ?? [],
+          fetchedAt,
+        });
+      } else if (rec.fetchedAt() <= fetchedAt) {
+        // latest wins — a stale response can't clobber a fresher one
+        rec.current.set(raw.current ?? "");
+        rec.dirty.set(!!raw.dirty);
+        rec.error.set(raw.error ?? null);
+        rec.branches.set(raw.branches ?? []);
+        rec.fetchedAt.set(fetchedAt);
+      }
+    }
+    if (authoritative) {
+      const seen = new Set(repos.map((r) => r.id));
+      for (const rec of this.orm.records(RepoStatus)) if (!seen.has(rec.id)) this.orm.delete(rec);
+    }
+  }
+
+  // fold a PR fetch into PrRepo records. Authoritative only over the repos it requested
   // (scopeIds), so a narrowed dashboard/target load merges into — rather than replaces
   // — the full list, while a full load still drops repos that left the config.
   mergePrRepos(repos, at, scopeIds) {
-    const stamped = repos.map((r) => ({ ...r, fetchedAt: r.fetchedAt ?? at }));
-    mergeEntities(
-      this.prByRepo,
-      stamped,
-      (r) => r.id,
-      (id) => scopeIds.has(id),
-    );
+    for (const raw of repos) {
+      const fetchedAt = raw.fetchedAt ?? at;
+      const rec = this.orm.getById(PrRepo, raw.id);
+      if (!rec) {
+        this.orm.create(PrRepo, {
+          id: raw.id,
+          github: raw.github ?? "",
+          error: raw.error ?? null,
+          prs: raw.prs ?? [],
+          fetchedAt,
+        });
+      } else if (rec.fetchedAt() <= fetchedAt) {
+        rec.github.set(raw.github ?? "");
+        rec.error.set(raw.error ?? null);
+        rec.prs.set(raw.prs ?? []);
+        rec.fetchedAt.set(fetchedAt);
+      }
+    }
+    const seen = new Set(repos.map((r) => r.id));
+    for (const rec of this.orm.records(PrRepo)) {
+      if (scopeIds.has(rec.id) && !seen.has(rec.id)) this.orm.delete(rec);
+    }
   }
 
   mergeMergebot(states, details) {
-    if (states) this.mergebot.set({ ...this.mergebot(), ...states });
-    if (details) this.mbDetails.set({ ...this.mbDetails(), ...details });
+    for (const [k, v] of Object.entries(states || {})) {
+      const rec = this.orm.getById(MergebotStatus, k);
+      if (rec) rec.state.set(v);
+      else this.orm.create(MergebotStatus, { id: k, state: v, detail: (details || {})[k] ?? null });
+    }
+    for (const [k, v] of Object.entries(details || {})) {
+      const rec = this.orm.getById(MergebotStatus, k);
+      if (rec) rec.detail.set(v);
+      else this.orm.create(MergebotStatus, { id: k, state: (states || {})[k] ?? "", detail: v });
+    }
   }
 
   mergeRunbot(states) {
-    if (states) this.runbot.set({ ...this.runbot(), ...states });
+    for (const [k, v] of Object.entries(states || {})) {
+      const rec = this.orm.getById(RunbotStatus, k);
+      if (rec) rec.status.set(v);
+      else this.orm.create(RunbotStatus, { id: k, status: v });
+    }
   }
 
-  // clear the mergebot / runbot maps so a forced refresh re-displays fresh badges
+  // clear the mergebot / runbot records so a forced refresh re-displays fresh badges
   clearExternal() {
-    this.mergebot.set({});
-    this.mbDetails.set({});
-    this.runbot.set({});
+    for (const m of this.orm.records(MergebotStatus)) this.orm.delete(m);
+    for (const r of this.orm.records(RunbotStatus)) this.orm.delete(r);
   }
 
   // ── optimistic local edits (no server round-trip) ─────────────────────────────
 
   // drop a branch from a repo's snapshot after a local delete, without a refetch
-  // (a full reload would re-fetch every branch's runbot badge — pointless here)
   dropBranch(repoId, name) {
-    const cur = this.repoStatus().get(repoId);
-    if (!cur) return;
-    const next = new Map(this.repoStatus());
-    next.set(repoId, { ...cur, branches: (cur.branches || []).filter((b) => b.name !== name) });
-    this.repoStatus.set(next);
+    const rec = this.orm.getById(RepoStatus, repoId);
+    if (rec) rec.branches.set((rec.branches() || []).filter((b) => b.name !== name));
   }
 
-  // mark a PR closed in the view after closing it, without a refetch (the server has
-  // already invalidated its PR cache, so the next load reflects it too)
+  // mark a PR closed in the view after closing it, without a refetch
   closePr(github, number) {
-    const next = new Map(this.prByRepo());
-    for (const [id, repo] of next) {
-      if (repo.github !== github) continue;
-      next.set(id, {
-        ...repo,
-        prs: (repo.prs || []).map((p) => (p.number === number ? { ...p, state: "closed" } : p)),
-      });
+    for (const rec of this.orm.records(PrRepo)) {
+      if (rec.github() !== github) continue;
+      rec.prs.set(
+        (rec.prs() || []).map((p) => (p.number === number ? { ...p, state: "closed" } : p)),
+      );
     }
-    this.prByRepo.set(next);
   }
 
-  // ── runtime: server snapshots + the derived TargetView join ───────────────────
+  // ── runtime: server snapshots + the derived TargetView join (Maps for now) ────────
 
   // fold one server snapshot into the map, keyed by id. Spread-merge so a partial
   // SSE update (a worktree carrying only state/port) preserves the fields it omits —
-  // notably a worktree's client-only `exists`, set once by the /api/worktree/list
-  // bootstrap. The "main" snapshot always carries every field, so this is a full
-  // replace for it.
+  // notably a worktree's client-only `exists`. The "main" snapshot carries every field.
   mergeServer(snap) {
     if (!snap || !snap.id) return;
     const next = new Map(this.servers());
@@ -188,11 +248,10 @@ export class StorePlugin extends Plugin {
   // (current branch, does it match, dirty), its server, and the one-shot run holding
   // its slot. db/claude are filled in a later step.
   targetView(tgt) {
-    const rs = this.repoStatus();
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
-      const st = rs.get(repo);
-      const current = st ? st.current : undefined;
-      return { repo, branch, current, matches: current === branch, dirty: !!(st && st.dirty) };
+      const rec = this.orm.getById(RepoStatus, repo);
+      const current = rec ? rec.current() : undefined;
+      return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });
     const active = this.activeRun();
     const run = active && active.target === tgt.id ? active : null;
@@ -204,14 +263,5 @@ export class StorePlugin extends Plugin {
       run,
       claude: null,
     };
-  }
-
-  // ── array views for the existing per-repo iterators ───────────────────────────
-  repoStatusList() {
-    return [...this.repoStatus().values()];
-  }
-
-  prReposList() {
-    return [...this.prByRepo().values()];
   }
 }
