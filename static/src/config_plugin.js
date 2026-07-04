@@ -18,6 +18,8 @@ import { worktreeDirFor } from "./utils.js";
 import {
   ORM,
   AppState,
+  Target,
+  Repository,
   CONFIG_MODELS,
   toModels,
   toConfig,
@@ -224,6 +226,22 @@ export class ConfigPlugin extends Plugin {
     applyPatch(this.orm, patch);
     this._dirty.config = true;
     this._schedule();
+  }
+
+  // persist a model-driven edit (a Target/Repository method mutated its own record)
+  // through the same debounced, rev-checked save — the record already reflects it.
+  touch() {
+    this._dirty.config = true;
+    this._schedule();
+  }
+
+  // record accessors, so consumers holding an id can call the models' own methods
+  target(id) {
+    return this.orm.getById(Target, id);
+  }
+
+  repoByGithub(github) {
+    return this.orm.records(Repository).find((r) => r.githubOrDefault() === github) || null;
   }
 
   // ── app-state (the AppState singleton record) ────────────────────────────────

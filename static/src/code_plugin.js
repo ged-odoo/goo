@@ -1,7 +1,8 @@
 // Branches & PRs across repos: grouped view model and the per-branch actions
 // (delete, close PR, push).
 
-import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE } from "./config.js";
+import { repoUrls } from "./config_models.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
@@ -249,29 +250,27 @@ export class CodePlugin extends Plugin {
     };
   }
 
+  // GitHub / mergebot URL helpers. The logic lives on the Repository model (via the
+  // shared repoUrls builders); these resolve the repo by slug and delegate, falling
+  // back to the bare-slug builder for a reviewed PR from a repo that isn't in config.
   prCreateUrl(github, branch) {
-    const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
-    const name = github.split("/")[1];
-    return `https://github.com/${github}/compare/${base}...odoo-dev:${name}:${branch}?expand=1`;
+    return this.config.repoByGithub(github)?.compareUrl(branch) ?? repoUrls.compare(github, branch);
   }
 
   forkBranchUrl(github, branch) {
-    const name = github.split("/")[1];
-    return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
+    return this.config.repoByGithub(github)?.forkBranchUrl(branch) ?? repoUrls.fork(github, branch);
   }
 
-  // where a local branch lives remotely: base branches (master, 19.0, saas-x.y)
-  // are on the canonical repo; work branches are pushed to the odoo-dev fork
   remoteBranchUrl(github, branch) {
-    if (BASE_BRANCH_RE.test(branch)) {
-      return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
-    }
-    return this.forkBranchUrl(github, branch);
+    return (
+      this.config.repoByGithub(github)?.remoteBranchUrl(branch) ?? repoUrls.remote(github, branch)
+    );
   }
 
-  // mergebot page for a PR, e.g. https://mergebot.odoo.com/odoo/odoo/pull/269532
   mergebotUrl(github, number) {
-    return `${MERGEBOT}/${github}/pull/${number}`;
+    return (
+      this.config.repoByGithub(github)?.mergebotUrl(number) ?? repoUrls.mergebot(github, number)
+    );
   }
 
   async remoteExists(path, branch) {

@@ -17,8 +17,28 @@
 // a later refinement. The relational spine — Target → Checkout → Repository — is real.
 
 import { Model, ORM, fields } from "../lib/owlx.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
+import { worktreeDirFor } from "./utils.js";
+// Plugin classes are imported for the models' action methods to resolve via plugin().
+// This makes config_models ↔ config_plugin / code_plugin a cycle, but every use is
+// call-time (inside a method), so the bindings are live by the time any method runs.
+import { ConfigPlugin } from "./config_plugin.js";
+import { ServerPlugin } from "./server_plugin.js";
+import { CodePlugin } from "./code_plugin.js";
+import { EventLogPlugin } from "./event_log_plugin.js";
+
+const { plugin } = owl;
 
 export { ORM };
+
+// Resolve owl plugins from a record's own ORM scope, at call time. A config record is
+// seeded during ConfigPlugin construction — before higher-sequence plugins start — so a
+// field-initializer plugin() would resolve too early; running inside the record's stored
+// scope (orm._ctx) at call time resolves against the fully-started plugin manager.
+function withScope(rec, fn) {
+  const ctx = rec.orm._ctx;
+  return ctx ? ctx.run(fn) : fn();
+}
 
 // scalar settings that live as flat keys on the config blob
 const SETTINGS_CHARS = [
@@ -64,7 +84,57 @@ export class Repository extends Model {
   external = fields.bool();
   autoreload = fields.bool();
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "repository" });
+
+  // the canonical GitHub slug — the stored value, else the built-in default for this id
+  githubOrDefault() {
+    return this.github() || DEFAULT_CONFIG.repos.find((d) => d.id === this.id)?.github || "";
+  }
+
+  compareUrl(branch) {
+    return repoUrls.compare(this.githubOrDefault(), branch);
+  }
+
+  forkBranchUrl(branch) {
+    return repoUrls.fork(this.githubOrDefault(), branch);
+  }
+
+  remoteBranchUrl(branch) {
+    return repoUrls.remote(this.githubOrDefault(), branch);
+  }
+
+  mergebotUrl(number) {
+    return repoUrls.mergebot(this.githubOrDefault(), number);
+  }
 }
+
+// The pure GitHub/mergebot URL builders (keyed by slug). The Repository methods above
+// are the model-facing API; these back them and are exported so CodePlugin can build a
+// URL for a PR whose repo isn't in config (a reviewed PR from an unfavorited repo has no
+// Repository record). One source of truth, callable with a record or a bare slug.
+export const repoUrls = {
+  // GitHub "create PR" compare page for a work branch (base inferred from the name)
+  compare(github, branch) {
+    const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+    const name = github.split("/")[1];
+    return `https://github.com/${github}/compare/${base}...odoo-dev:${name}:${branch}?expand=1`;
+  },
+  // the branch on the odoo-dev fork
+  fork(github, branch) {
+    const name = github.split("/")[1];
+    return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
+  },
+  // where a branch lives remotely: base branches on the canonical repo, work branches on the fork
+  remote(github, branch) {
+    if (BASE_BRANCH_RE.test(branch)) {
+      return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
+    }
+    return repoUrls.fork(github, branch);
+  },
+  // the mergebot page for one of this repo's PRs
+  mergebot(github, number) {
+    return `${MERGEBOT}/${github}/pull/${number}`;
+  },
+};
 
 export class Target extends Model {
   static id = "target";
@@ -75,6 +145,95 @@ export class Target extends Model {
   kind = fields.char({ defaultValue: "plain" });
   worktree = fields.json(); // { base, dir } | null — only worktree targets
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "target" });
+
+  // ── derivations (pure — this + this.orm) ─────────────────────────────────────
+  // "repo:branch, …" — the human-readable checkout list
+  checkoutsLabel() {
+    return this.checkouts()
+      .map((c) => `${c.repository().id}:${c.branch()}`)
+      .join(", ");
+  }
+
+  // the explicit `kind` marks a worktree, falling back to `worktree` metadata presence
+  isWorktree() {
+    return (this.kind() || (this.worktree() ? "worktree" : "plain")) === "worktree";
+  }
+
+  hasCommunity() {
+    return this.checkouts().some((c) => c.repository().id === "community");
+  }
+
+  // the repo ids this target checks out
+  repoIds() {
+    return this.checkouts().map((c) => c.repository().id);
+  }
+
+  // the worktree's on-disk directory: the value frozen at creation (worktree.dir),
+  // else derived from <settings.worktree_dir>/<name>. Persisting it means a later
+  // rename can't move the path off the real checkout (worktreeDirFor, utils.js).
+  dirPath() {
+    const dir = this.worktree()?.dir;
+    if (dir) return dir;
+    const settings = this.orm.getById(Settings, "settings");
+    return worktreeDirFor(settings?.worktree_dir(), { name: this.name(), id: this.id });
+  }
+
+  // ── mutations (edit records, persist via ConfigPlugin's existing save wire) ───
+  _configPlugin() {
+    return withScope(this, () => plugin(ConfigPlugin));
+  }
+
+  toggleFavorite() {
+    this.favorite.set(!this.favorite());
+    this._configPlugin().touch();
+  }
+
+  // commit an inline edit onto the target (favorite untouched — toggled via the star).
+  // The caller validates; checkouts arrive already parsed as [{repo, branch}].
+  applyEdit({ name, checkouts, db, on_create_args }) {
+    this.name.set(name);
+    this.db.set(db);
+    this.on_create_args.set(on_create_args);
+    reconcileCheckouts(this.orm, { id: this.id, checkouts });
+    this._configPlugin().touch();
+  }
+
+  // ── action: stop the server, switch to this target, check out its branches ────
+  async activate() {
+    const { server, code, eventLog } = withScope(this, () => ({
+      server: plugin(ServerPlugin),
+      code: plugin(CodePlugin),
+      eventLog: plugin(EventLogPlugin),
+    }));
+    // live git state per repo — for the guard + deciding which repos actually switch
+    const repoMap = {};
+    for (const r of code.branchRepos()) {
+      repoMap[r.id] = {
+        current: r.current,
+        dirty: r.dirty,
+        branches: new Set((r.branches || []).map((b) => b.name)),
+      };
+    }
+    const cos = this.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }));
+    // guard (mirrors canActivate): not already active, all branches present, none dirty
+    const s = server.status();
+    const activeId =
+      s.state === "running" || s.state === "starting" ? s.target : server.lastTarget();
+    if (this.id === activeId) return;
+    if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
+    if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
+    const pathByRepo = code.groups().pathByRepo;
+    const repos = cos
+      .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
+      .filter((r) => r.path);
+    const switched = repos.filter((r) => repoMap[r.repo]?.current !== r.branch);
+    eventLog.add(`activating target ${this.name()}`);
+    for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
+    // stop the server and switch branches concurrently (independent ops)
+    const stopping = s.state === "running" || s.state === "starting" ? server.stop() : null;
+    await Promise.all([stopping, code.checkout(repos)]);
+    server.setLastTarget(this.id);
+  }
 }
 
 export class Checkout extends Model {

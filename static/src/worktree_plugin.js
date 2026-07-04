@@ -41,7 +41,9 @@ export class WorktreePlugin extends Plugin {
   // `worktree` metadata object for any target not yet carrying a kind.
   isWorktree(tgt) {
     if (!tgt) return false;
-    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree";
+    const rec = this.config.target(tgt.id);
+    if (rec) return rec.isWorktree(); // logic lives on the Target model
+    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree"; // transient
   }
 
   worktreeTargets() {
@@ -74,11 +76,15 @@ export class WorktreePlugin extends Plugin {
   // (worktree.dir), else derived from the name. Persisting it means a later rename
   // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
   dirPath(tgt) {
-    return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt);
+    const rec = this.config.target(tgt.id);
+    if (rec) return rec.dirPath(); // logic lives on the Target model
+    return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt); // transient
   }
 
   hasCommunity(tgt) {
-    return (tgt.checkouts || []).some((c) => c.repo === "community");
+    const rec = this.config.target(tgt.id);
+    if (rec) return rec.hasCommunity();
+    return (tgt.checkouts || []).some((c) => c.repo === "community"); // transient
   }
 
   // per-repo worktree descriptors for an existing worktree target (start / remove)

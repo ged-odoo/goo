@@ -1008,24 +1008,11 @@ class DashboardScreen extends Component {
     return this.activateTitle(tgt);
   }
 
-  // stop the server, switch to this target, check out its branches
+  // stop the server, switch to this target, check out its branches — the action lives
+  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
   async activate(tgt) {
     if (!this.canActivate(tgt)) return;
-    const pathByRepo = this.code.groups().pathByRepo;
-    const repos = (tgt.checkouts || [])
-      .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
-      .filter((r) => r.path);
-    // repos that will actually switch (skip the ones already on the target branch)
-    const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
-    this.eventLog.add(`activating target ${tgt.name}`);
-    for (const r of switched) this.eventLog.add(`checking out ${r.branch} (${r.repo})`);
-    // stop the server and switch branches concurrently: the checkout only swaps
-    // working-tree files, which the running Odoo (already-loaded code in memory)
-    // doesn't care about, so the two are independent
-    const s = this.server.status().state;
-    const stopping = s === "running" || s === "starting" ? this.server.stop() : null;
-    await Promise.all([stopping, this.code.checkout(repos)]);
-    this.server.setLastTarget(tgt.id);
+    await this.config.target(tgt.id)?.activate();
   }
 
   // the canonical base branch a branch derives from: master-owl-update -> master,
@@ -2607,24 +2594,11 @@ class TargetsScreen extends Component {
     return "stop the server, switch to this target and check out its branches";
   }
 
-  // stop the server, switch to this target, check out its branches
+  // stop the server, switch to this target, check out its branches — the action lives
+  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
   async activate(tgt) {
     if (!this.canActivate(tgt)) return;
-    const pathByRepo = this.code.groups().pathByRepo;
-    const repos = (tgt.checkouts || [])
-      .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
-      .filter((r) => r.path);
-    // repos that will actually switch (skip the ones already on the target branch)
-    const switched = repos.filter((r) => this.repoMap[r.repo]?.current !== r.branch);
-    this.eventLog.add(`activating target ${tgt.name}`);
-    for (const r of switched) this.eventLog.add(`checking out ${r.branch} (${r.repo})`);
-    // stop the server and switch branches concurrently: the checkout only swaps
-    // working-tree files, which the running Odoo (already-loaded code in memory)
-    // doesn't care about, so the two are independent
-    const s = this.server.status().state;
-    const stopping = s === "running" || s === "starting" ? this.server.stop() : null;
-    await Promise.all([stopping, this.code.checkout(repos)]);
-    this.server.setLastTarget(tgt.id);
+    await this.config.target(tgt.id)?.activate();
   }
 
   // the configured order — reorderable by dragging a row's name
@@ -2675,14 +2649,14 @@ class TargetsScreen extends Component {
   }
 
   fmtConfig(tgt) {
-    return (tgt.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
+    return (
+      this.config.target(tgt.id)?.checkoutsLabel() ??
+      (tgt.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ")
+    );
   }
 
   toggleFavorite(id) {
-    const targets = this.config.config.targets.map((t) =>
-      t.id === id ? { ...t, favorite: !t.favorite } : t,
-    );
-    this.config.updateConfig({ targets });
+    this.config.target(id)?.toggleFavorite(); // logic + persistence live on the Target model
   }
 
   toggleSelect(id) {
@@ -2892,18 +2866,13 @@ class TargetsScreen extends Component {
       return this.error.set(`a target named "${name}" already exists`);
     const checkouts = repoBranchList.parse(this.draftConfig().trim());
     if (!checkouts.length) return this.error.set("a config is required");
-    const targets = this.config.config.targets.map((t) =>
-      t.id === id
-        ? {
-            ...t,
-            name,
-            checkouts,
-            db: this.draftDb().trim(),
-            on_create_args: this.draftArgs().trim(),
-          }
-        : t,
-    );
-    this.config.updateConfig({ targets });
+    // the edit itself lives on the Target model (favorite is left untouched)
+    this.config.target(id).applyEdit({
+      name,
+      checkouts,
+      db: this.draftDb().trim(),
+      on_create_args: this.draftArgs().trim(),
+    });
     this.cancelEdit();
   }
 
