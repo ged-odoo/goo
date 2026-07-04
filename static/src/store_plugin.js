@@ -1,34 +1,33 @@
-// The shared state store. The observed family now lives in owl-orm records (see
-// observed_models.js); the runtime family (servers/runs) is still plain Maps and
-// converts in the next ORM pass. Either way the plugins around it are action layers,
-// and StorePlugin keeps stable accessors so they're unchanged.
+// The shared state store — all of it now owl-orm records (observed_models.js +
+// runtime_models.js), one ORM. The plugins around it are action layers, and
+// StorePlugin keeps stable accessors so they're unchanged.
 //
 //   observed — read-only snapshots of external systems (git branches, GitHub PRs,
-//     runbot, mergebot) the backend fetches + caches, held as ORM records. Writers
-//     preserve the step-4 rule: latest fetchedAt wins per id; a full/authoritative
-//     fetch drops ids that vanished from its scope. Accessors rebuild the Map-shaped
-//     views CodePlugin/ReviewPlugin read (one mergebot map both screens share).
-//   runtime — live odoo processes mirrored over SSE. One `servers` map ("main" |
-//     target id) + a `runs` map; ServerPlugin/WorktreePlugin/Tests/Addons are action
-//     layers. `targetView` is the derived join.
+//     runbot, mergebot) the backend fetches + caches. Writers preserve the step-4
+//     rule: latest fetchedAt wins per id; a full/authoritative fetch drops ids that
+//     vanished from its scope. Accessors rebuild the Map-shaped views CodePlugin/
+//     ReviewPlugin read (one mergebot map both screens share).
+//   runtime — live odoo processes/runs the backend owns and mirrors over SSE:
+//     OdooServer ("main" | target id) + Run records, each a `data` json snapshot.
+//     ServerPlugin/WorktreePlugin/Tests/Addons are action layers; `targetView` is the
+//     derived join. (Real fields + the OdooServer→Target twin ride a later pass — the
+//     config models live in ConfigPlugin's ORM, this runtime state in StorePlugin's.)
 
 import { ORM, RepoStatus, PrRepo, MergebotStatus, RunbotStatus } from "./observed_models.js";
+import { OdooServer, Run } from "./runtime_models.js";
 
-const { Plugin, signal, computed } = owl;
+const { Plugin, computed } = owl;
 
 export class StorePlugin extends Plugin {
   static sequence = 0; // the shared store — set up before every plugin that reads it
 
-  // ── observed: owl-orm records (RepoStatus / PrRepo / MergebotStatus / RunbotStatus)
+  // one owl-orm ORM for all of StorePlugin's state — observed (RepoStatus / PrRepo /
+  // MergebotStatus / RunbotStatus) and runtime (OdooServer / Run)
   orm = new ORM();
 
   // in-flight keys, shared across the Code + Reviews screens so they never double-fetch
   mbPending = new Set();
   rbPending = new Set();
-
-  // ── runtime: one servers map (main + worktree odoos) + a runs map (converts next) ─
-  servers = signal(new Map()); // "main" | targetId → OdooServer (ServerSnapshot)
-  runs = signal(new Map()); // runId → Run (one-shot test/install/upgrade), fed by "run" SSE
 
   // ── observed accessors — computeds that rebuild the shapes consumers already read ─
   _repoList = computed(() =>
@@ -185,51 +184,54 @@ export class StorePlugin extends Plugin {
     }
   }
 
-  // ── runtime: server snapshots + the derived TargetView join (Maps for now) ────────
+  // ── runtime: OdooServer / Run records + the derived TargetView join ───────────────
 
-  // fold one server snapshot into the map, keyed by id. Spread-merge so a partial
-  // SSE update (a worktree carrying only state/port) preserves the fields it omits —
-  // notably a worktree's client-only `exists`. The "main" snapshot carries every field.
+  // fold one server snapshot into its OdooServer record, keyed by id. Spread-merge into
+  // the `data` json so a partial SSE update (a worktree carrying only state/port)
+  // preserves the fields it omits — notably a worktree's client-only `exists`. The
+  // "main" snapshot carries every field.
   mergeServer(snap) {
     if (!snap || !snap.id) return;
-    const next = new Map(this.servers());
-    next.set(snap.id, { ...(next.get(snap.id) || {}), ...snap });
-    this.servers.set(next);
+    const rec = this.orm.getById(OdooServer, snap.id);
+    if (rec) rec.data.set({ ...rec.data(), ...snap });
+    else this.orm.create(OdooServer, { id: snap.id, data: { ...snap } });
   }
 
-  // forget a server entry (a worktree removed from config)
+  // forget a server record (a worktree removed from config)
   dropServer(id) {
-    if (!this.servers().has(id)) return;
-    const next = new Map(this.servers());
-    next.delete(id);
-    this.servers.set(next);
+    const rec = this.orm.getById(OdooServer, id);
+    if (rec) this.orm.delete(rec);
   }
 
   server(id) {
-    return this.servers().get(id) || null;
+    const rec = this.orm.getById(OdooServer, id);
+    return rec ? rec.data() : null;
   }
 
   // the server backing a target: the main process when it's running this target,
   // otherwise the target's own worktree server (or null)
   serverFor(tgt) {
-    const main = this.servers().get("main");
+    const main = this.server("main");
     if (main && main.target === tgt.id && (main.state === "running" || main.state === "starting")) {
       return main;
     }
-    return this.servers().get(tgt.id) || null;
+    return this.server(tgt.id);
   }
 
-  // fold one run snapshot into the map, keyed by run id (SSE "run": running → done/failed)
+  // fold one run snapshot into its Run record, keyed by run id (SSE "run": running → done/failed)
   mergeRun(snap) {
     if (!snap || !snap.id) return;
-    const next = new Map(this.runs());
-    next.set(snap.id, { ...(next.get(snap.id) || {}), ...snap });
-    this.runs.set(next);
+    const rec = this.orm.getById(Run, snap.id);
+    if (rec) rec.data.set({ ...rec.data(), ...snap });
+    else this.orm.create(Run, { id: snap.id, data: { ...snap } });
   }
 
   // the currently-running one-shot (there's one shared slot), or null
   activeRun() {
-    for (const r of this.runs().values()) if (r.state === "running") return r;
+    for (const r of this.orm.records(Run)) {
+      const d = r.data();
+      if (d.state === "running") return d;
+    }
     return null;
   }
 
@@ -237,9 +239,10 @@ export class StorePlugin extends Plugin {
   // a screen still shows its last result after a run of another kind occupied the slot
   latestRunOfKind(kind) {
     let best = null;
-    for (const r of this.runs().values()) {
-      if (r.kind !== kind) continue;
-      if (!best || (r.started_at || 0) >= (best.started_at || 0)) best = r;
+    for (const r of this.orm.records(Run)) {
+      const d = r.data();
+      if (d.kind !== kind) continue;
+      if (!best || (d.started_at || 0) >= (best.started_at || 0)) best = d;
     }
     return best;
   }
