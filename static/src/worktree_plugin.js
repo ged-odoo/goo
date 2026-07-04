@@ -7,6 +7,7 @@
 // and each worktree's server log streams into its own LogBuffer ("worktree_log").
 
 import { ConfigPlugin } from "./config_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
@@ -20,11 +21,11 @@ export class WorktreePlugin extends Plugin {
   static sequence = 5;
 
   config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin); // worktree servers live in the shared servers map
   server = plugin(ServerPlugin);
   code = plugin(CodePlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  worktrees = signal({}); // targetId -> { exists, state, port }
   selectedId = signal(""); // the worktree selected in the Worktree screen
   logs = new Map(); // targetId -> LogBuffer (per-server scrollback + live stream)
   _startEids = {}; // targetId -> pending "starting worktree server" timed-event id
@@ -95,9 +96,9 @@ export class WorktreePlugin extends Plugin {
       .filter((r) => r.mainPath);
   }
 
-  // ── live state ─────────────────────────────────────────────────────────────
+  // ── live state (from the shared servers map, keyed by target id) ─────────────
   state(tgt) {
-    return this.worktrees()[tgt.id] || { exists: false, state: "stopped", port: null };
+    return this.store.server(tgt.id) || { exists: false, state: "stopped", port: null };
   }
 
   exists(tgt) {
@@ -118,19 +119,18 @@ export class WorktreePlugin extends Plugin {
   }
 
   _merge(id, patch) {
-    const all = this.worktrees();
-    const cur = all[id] || { exists: false, state: "stopped", port: null };
-    this.worktrees.set({ ...all, [id]: { ...cur, ...patch } });
+    this.store.mergeServer({ id, ...patch });
   }
 
-  // live SSE update for one target; also resolves its pending start timed-event
+  // resolve a worktree's pending start timed-event on a state transition. The store
+  // merge already happened in ServerPlugin's "server" SSE handler (which relays each
+  // worktree snapshot here); this just drives the event-log row.
   applyStatus(d) {
-    if (!d || !d.target) return;
-    this._merge(d.target, { state: d.state, port: d.port });
-    const eid = this._startEids[d.target];
+    if (!d || !d.id) return;
+    const eid = this._startEids[d.id];
     if (eid && (d.state === "running" || d.state === "stopped")) {
       this.eventLog.finish(eid, d.state === "running" ? "done" : "error");
-      delete this._startEids[d.target];
+      delete this._startEids[d.id];
     }
   }
 
@@ -140,7 +140,7 @@ export class WorktreePlugin extends Plugin {
     if (!targets.length) return;
     try {
       const res = await postJSON("/api/worktree/list", { targets });
-      this.worktrees.set({ ...this.worktrees(), ...(res.worktrees || {}) });
+      for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
     } catch {
       /* leave current state */
     }
@@ -343,9 +343,7 @@ export class WorktreePlugin extends Plugin {
     this.config.updateConfig({
       targets: (this.config.config.targets || []).filter((t) => t.id !== tgt.id),
     });
-    const all = { ...this.worktrees() };
-    delete all[tgt.id];
-    this.worktrees.set(all);
+    this.store.dropServer(tgt.id);
     this.logs.delete(tgt.id);
     if (this.selectedId() === tgt.id) this.selectedId.set("");
   }

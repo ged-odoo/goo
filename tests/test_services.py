@@ -9,9 +9,11 @@ import subprocess
 import threading
 import time
 import unittest
+from dataclasses import asdict
 
 from backend import services
 from backend.cache import TTLCache
+from backend.models import ServerSnapshot
 
 
 def completed(stdout="", returncode=0, stderr=""):
@@ -1325,6 +1327,51 @@ class BuildStartConfigTest(unittest.TestCase):
 
     def test_unknown_target_is_none(self):
         self.assertIsNone(services.build_start_config(self.CFG, "nope"))
+
+
+class ServerSnapshotTest(unittest.TestCase):
+    """The unified runtime wire shape (Step 5): one ServerSnapshot for the main odoo
+    and each worktree server, keyed by id. asdict() must always emit every field so
+    the client's spread-merge behaves as a full replace for the complete main
+    snapshot."""
+
+    EXPECTED_KEYS = {
+        "id",
+        "state",
+        "terminal",
+        "target",
+        "db",
+        "port",
+        "mode",
+        "pid",
+        "cmd",
+        "started_at",
+        "exited_unexpectedly",
+        "returncode",
+        "odoo_port_busy",
+        "odoo_version",
+        "enterprise",
+        "exists",
+    }
+
+    def test_asdict_always_has_every_key(self):
+        # a minimal snapshot still carries the full field set (defaults filled in)
+        snap = asdict(ServerSnapshot(id="main", state="stopped"))
+        self.assertEqual(set(snap), self.EXPECTED_KEYS)
+
+    def test_main_defaults(self):
+        snap = asdict(ServerSnapshot(id="main", state="running", terminal=True))
+        self.assertEqual(snap["id"], "main")
+        self.assertTrue(snap["terminal"])
+        self.assertFalse(snap["exited_unexpectedly"])  # bool default, not omitted
+        self.assertIsNone(snap["odoo_version"])  # enrichment absent until set
+
+    def test_worktree_shape(self):
+        snap = asdict(
+            ServerSnapshot(id="wt-x", state="running", terminal=False, target="wt-x", port=8072)
+        )
+        self.assertEqual((snap["id"], snap["target"], snap["port"]), ("wt-x", "wt-x", 8072))
+        self.assertFalse(snap["terminal"])
 
 
 if __name__ == "__main__":

@@ -1,10 +1,15 @@
-// The observed-state store: read-only snapshots of external systems (git branches,
-// GitHub PRs, runbot, mergebot) that the backend fetches + caches and the frontend
-// mirrors. Everything is normalized by identity — each store is a Map keyed by the
-// entity's canonical id, and every write goes through mergeEntities (the one merge
-// rule for full loads, narrowed loads, targeted refreshes and stale-response
-// handling). CodePlugin and ReviewPlugin are action layers over this single store,
-// so e.g. the mergebot map has exactly one copy that both screens read and write.
+// The shared state store, normalized by identity — each store is a Map keyed by the
+// entity's canonical id, and the plugins around it are action layers.
+//
+//   observed — read-only snapshots of external systems (git branches, GitHub PRs,
+//     runbot, mergebot) the backend fetches + caches. Every write goes through the
+//     one mergeEntities rule (full/narrowed loads, targeted refreshes, stale
+//     responses). CodePlugin and ReviewPlugin share these (one mergebot map both
+//     screens read and write).
+//   runtime — live odoo processes the backend owns and mirrors over SSE. One
+//     `servers` map keyed by "main" | target id (the main OdooManager process and
+//     each worktree server, unified — see backend ServerSnapshot); ServerPlugin and
+//     WorktreePlugin are action layers over it. `targetView` is the derived join.
 
 const { Plugin, signal } = owl;
 
@@ -45,6 +50,9 @@ export class StorePlugin extends Plugin {
   // in-flight keys, shared across the Code + Reviews screens so they never double-fetch
   mbPending = new Set();
   rbPending = new Set();
+
+  // ── runtime: one servers map (main + worktree odoos), fed by the "server" SSE ──
+  servers = signal(new Map()); // "main" | targetId → OdooServer (ServerSnapshot)
 
   // ── writers — every store write goes through here ─────────────────────────────
 
@@ -112,6 +120,62 @@ export class StorePlugin extends Plugin {
       });
     }
     this.prByRepo.set(next);
+  }
+
+  // ── runtime: server snapshots + the derived TargetView join ───────────────────
+
+  // fold one server snapshot into the map, keyed by id. Spread-merge so a partial
+  // SSE update (a worktree carrying only state/port) preserves the fields it omits —
+  // notably a worktree's client-only `exists`, set once by the /api/worktree/list
+  // bootstrap. The "main" snapshot always carries every field, so this is a full
+  // replace for it.
+  mergeServer(snap) {
+    if (!snap || !snap.id) return;
+    const next = new Map(this.servers());
+    next.set(snap.id, { ...(next.get(snap.id) || {}), ...snap });
+    this.servers.set(next);
+  }
+
+  // forget a server entry (a worktree removed from config)
+  dropServer(id) {
+    if (!this.servers().has(id)) return;
+    const next = new Map(this.servers());
+    next.delete(id);
+    this.servers.set(next);
+  }
+
+  server(id) {
+    return this.servers().get(id) || null;
+  }
+
+  // the server backing a target: the main process when it's running this target,
+  // otherwise the target's own worktree server (or null)
+  serverFor(tgt) {
+    const main = this.servers().get("main");
+    if (main && main.target === tgt.id && (main.state === "running" || main.state === "starting")) {
+      return main;
+    }
+    return this.servers().get(tgt.id) || null;
+  }
+
+  // the aggregate the UI orbits: a target joined with its checkouts' live git state
+  // (current branch, does it match, dirty) and its server. db/run/claude are filled
+  // in a later step (they need the observed-databases store and the Run model).
+  targetView(tgt) {
+    const rs = this.repoStatus();
+    const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
+      const st = rs.get(repo);
+      const current = st ? st.current : undefined;
+      return { repo, branch, current, matches: current === branch, dirty: !!(st && st.dirty) };
+    });
+    return {
+      target: tgt,
+      checkouts,
+      server: this.serverFor(tgt),
+      db: null,
+      run: null,
+      claude: null,
+    };
   }
 
   // ── array views for the existing per-repo iterators ───────────────────────────

@@ -1,6 +1,7 @@
 // The single odoo process: live status, SSE log fan-out, start/stop/restart.
 
 import { ConfigPlugin } from "./config_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
@@ -13,10 +14,10 @@ export class ServerPlugin extends Plugin {
   static sequence = 2;
 
   config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin); // the shared store — the main odoo lives in servers["main"]
   eventLog = plugin(EventLogPlugin);
   code = plugin(CodePlugin);
   dialogs = plugin(DialogPlugin);
-  status = signal({ state: "stopped" }); // whole status object, replaced wholesale
   // optimistic in-flight action, for immediate button feedback in the gap between
   // a click and the first real status event: "start" | "stop" | "restart" | ""
   pending = signal("");
@@ -36,6 +37,12 @@ export class ServerPlugin extends Plugin {
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
     this._connect();
+  }
+
+  // the main odoo's live snapshot — servers["main"], fed by the "server" SSE event
+  // ("stopped" until the first one lands). The ~40 status() reads app-wide are unchanged.
+  status() {
+    return this.store.server("main") || { state: "stopped" };
   }
 
   onLine(cb) {
@@ -71,13 +78,22 @@ export class ServerPlugin extends Plugin {
   _connect() {
     const es = new EventSource("/api/events");
     es.onopen = () => this.output.clear(); // server replays its buffer on connect
-    es.onerror = () => this.status.set({ ...this.status(), state: "disconnected" });
-    es.addEventListener("status", (e) => {
-      const prev = this.status();
-      const s = JSON.parse(e.data);
-      this.status.set(s);
-      this.pending.set(""); // the real state is in — drop the optimistic override
-      this._resolveStartEvent(prev, s);
+    es.onerror = () => this.store.mergeServer({ id: "main", state: "disconnected" });
+    // one "server" event for every odoo (main + each worktree), keyed by id. Fold it
+    // into the shared servers map; the main snapshot drives this plugin's start-event
+    // resolution, a worktree snapshot is relayed to WorktreePlugin (which resolves its
+    // own per-target start events and reads the same map).
+    es.addEventListener("server", (e) => {
+      const snap = JSON.parse(e.data);
+      if (snap.id === "main") {
+        const prev = this.status();
+        this.store.mergeServer(snap);
+        this.pending.set(""); // the real state is in — drop the optimistic override
+        this._resolveStartEvent(prev, this.status());
+      } else {
+        this.store.mergeServer(snap);
+        for (const cb of this.worktreeListeners) cb(snap);
+      }
     });
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
     // config/state written by another tab → keep this tab's ConfigPlugin in lockstep
@@ -103,11 +119,6 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("goo_update", (e) => {
       const d = JSON.parse(e.data);
       for (const cb of this.gooUpdateListeners) cb(d);
-    });
-    // per-worktree server status (starting/running/stopped) → WorktreePlugin
-    es.addEventListener("worktree", (e) => {
-      const d = JSON.parse(e.data);
-      for (const cb of this.worktreeListeners) cb(d);
     });
     // per-worktree server log lines → WorktreePlugin's per-target LogBuffer
     es.addEventListener("worktree_log", (e) => {
@@ -148,9 +159,9 @@ export class ServerPlugin extends Plugin {
   async loadStatus() {
     try {
       const res = await fetch("/api/status");
-      if (res.ok) this.status.set(await res.json());
+      if (res.ok) this.store.mergeServer(await res.json()); // the id="main" snapshot
     } catch {
-      // ignore — the SSE status event will arrive once connected
+      // ignore — the SSE server event will arrive once connected
     }
   }
 
@@ -246,15 +257,15 @@ export class ServerPlugin extends Plugin {
   async _confirmBranches(targetId) {
     const target = this.config.config.targets.find((t) => t.id === targetId);
     if (!target) return true;
-    await this.code.load(); // cache-aware; populates branchRepos
-    const current = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r.current]));
-    // only flag repos whose current branch we actually know
-    const off = (target.checkouts || []).filter(
-      ({ repo, branch }) => current[repo] !== undefined && current[repo] !== branch,
-    );
+    await this.code.load(); // cache-aware; populates the store's repoStatus
+    // the TargetView join computes current/matches per checkout; flag only the repos
+    // whose current branch we actually know and which differ from the target's
+    const off = this.store
+      .targetView(target)
+      .checkouts.filter((c) => c.current !== undefined && !c.matches);
     if (!off.length) return true;
     const lines = off
-      .map(({ repo, branch }) => `${repo}: on "${current[repo]}" — target wants "${branch}"`)
+      .map(({ repo, branch, current }) => `${repo}: on "${current}" — target wants "${branch}"`)
       .join("\n");
     const ok = await this.dialogs.open({
       title: "Branches don't match this target",

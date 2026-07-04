@@ -90,3 +90,38 @@ class LaunchSpec:
     test_tags: str | None = None  # → test mode, one-shot
     install: str | None = None  # → install mode, one-shot
     upgrade: str | None = None  # → upgrade mode, one-shot
+
+
+# ─────────────────────────── Runtime snapshots ───────────────────────────────
+# Live-process state the backend owns and mirrors to the browser over SSE. Step 5
+# unifies the main odoo (OdooManager) and each worktree odoo (WorktreeManager) —
+# the same thing, a server bound to a db + port — into one shape keyed by id
+# ("main" | target id), published on a single "server" event.
+
+
+@dataclass
+class ServerSnapshot:
+    """One odoo server, whether the main process (`id="main"`, `terminal=True`) or a
+    worktree server (`id=target`). Keyed by `id`. Every field is always present so a
+    client-side spread-merge behaves as a full replace for the complete "main"
+    snapshot while still preserving a worktree's client-only `exists` across the
+    partial updates the SSE stream carries."""
+
+    id: str  # "main" | target id — the map key
+    state: str  # stopped | starting | running | stopping (| disconnected, client-only)
+    terminal: bool = False  # only "main" has the PTY/xterm channel
+    target: str | None = None  # the target this server runs
+    db: str | None = None
+    port: int | None = None  # 8069 for main (implicit), an assigned free port for worktrees
+    mode: str | None = None  # server | test | install | upgrade (main only; → Run in Step 6)
+    pid: int | None = None
+    cmd: str | None = None
+    started_at: float | None = None
+    exited_unexpectedly: bool = False
+    returncode: int | None = None
+    # main-only observed enrichment
+    odoo_port_busy: bool = False
+    odoo_version: str | None = None
+    enterprise: bool | None = None
+    # worktree-only, client-facing: checkout present on disk (bootstrap; None for main)
+    exists: bool | None = None

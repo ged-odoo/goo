@@ -30,6 +30,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import effects, services
@@ -38,6 +39,7 @@ from .cache import TTLCache
 # the IO seam (effects) and the services layer over it; the server's remaining
 # subprocess calls (kill_port, the goo self-update probes) go through run().
 from .effects import TAG, run
+from .models import ServerSnapshot
 
 HOST = "127.0.0.1"
 PORT = 8068
@@ -69,11 +71,15 @@ class EventBus:
         for q in subscribers:
             q.put(("log", {"line": line}))
 
-    def publish_status(self, status):
+    def publish_server(self, snapshot):
+        """Push one server snapshot to the browser (SSE 'server'), keyed by
+        snapshot["id"] ("main" | target id). Both the main OdooManager and the
+        per-target WorktreeManager publish through here — one event, one shape — so
+        the frontend folds them into a single `servers` map."""
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
-            q.put(("status", status))
+            q.put(("server", snapshot))
 
     def publish_event(self, text, level="", event_id="", status=""):
         """A business event: logged to the goo server stdout and pushed to the
@@ -111,15 +117,6 @@ class EventBus:
             subscribers = list(self._subscribers)
         for q in subscribers:
             q.put(("config", payload))
-
-    def publish_worktree(self, payload):
-        """Push a per-target worktree-server status change to the browser (SSE
-        'worktree') so the Worktree screen updates live as a server moves through
-        starting -> running -> stopped."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("worktree", payload))
 
     def publish_worktree_log(self, target, line):
         """Stream one worktree server's log line to the browser (SSE 'worktree_log',
@@ -695,18 +692,22 @@ class OdooManager:
     def status(self):
         with self.lock:
             active = self.state in ("starting", "running")
-            status = {
-                "state": self.state,
-                "pid": self.process.pid if (active and self.process) else None,
-                "db": self.db if active else None,
-                "target": self.target if active else None,
-                "cmd": self.cmd if active else None,
-                "mode": self.mode if active else None,
-                "started_at": self.started_at if active else None,
-            }
-            if self.exited_unexpectedly:
-                status["exited_unexpectedly"] = True
-                status["returncode"] = self.returncode
+            snap = ServerSnapshot(
+                id="main",
+                state=self.state,
+                terminal=True,  # the main server owns the PTY/xterm channel
+                pid=self.process.pid if (active and self.process) else None,
+                db=self.db if active else None,
+                target=self.target if active else None,
+                cmd=self.cmd if active else None,
+                mode=self.mode if active else None,
+                started_at=self.started_at if active else None,
+                exited_unexpectedly=self.exited_unexpectedly,
+                returncode=self.returncode if self.exited_unexpectedly else None,
+            )
+        # asdict → every field present (odoo_version/enterprise/exists = None here),
+        # so the client's spread-merge behaves as a full replace for "main"
+        status = asdict(snap)
         status["odoo_port_busy"] = port_busy(ODOO_PORT)
         if status["db"]:
             version, enterprise, _ = DATABASE.odoo_info(status["db"])
@@ -771,7 +772,7 @@ class OdooManager:
                 daemon=True,
             )
             self.reader_thread.start()
-        self.bus.publish_status(self.status())
+        self.bus.publish_server(self.status())
         return True, cmd
 
     def stop(self):
@@ -787,7 +788,7 @@ class OdooManager:
                 self.state = "stopping"
 
         if was_active:
-            self.bus.publish_status(self.status())
+            self.bus.publish_server(self.status())
             self.bus.publish_log(f"{TAG} stopping odoo...")
             # never let an exception leave us stuck in "stopping" (the guard
             # above would then refuse every future stop until goo restarts)
@@ -815,7 +816,7 @@ class OdooManager:
             kill_port(ODOO_PORT)
             self.bus.publish_log(f"{TAG} killed process on port {ODOO_PORT}")
 
-        self.bus.publish_status(self.status())
+        self.bus.publish_server(self.status())
         return True, "stopped"
 
     def _terminate(self, process):
@@ -885,7 +886,7 @@ class OdooManager:
             self.exited_unexpectedly = True
             self.returncode = ret
         self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
-        self.bus.publish_status(self.status())
+        self.bus.publish_server(self.status())
 
     def _handle_line(self, line):
         self.bus.publish_log(line)
@@ -894,7 +895,7 @@ class OdooManager:
                 if self.state != "starting":
                     return
                 self.state = "running"
-            self.bus.publish_status(self.status())
+            self.bus.publish_server(self.status())
 
 
 class WorktreeManager:
@@ -914,13 +915,23 @@ class WorktreeManager:
         self.servers = {}  # target_id -> entry dict
 
     def _public(self, target, entry):
-        """The SSE/JSON-safe view of one server entry."""
-        return {
-            "target": target,
-            "state": entry["state"],
-            "port": entry["port"],
-            "db": entry["db"],
-        }
+        """The SSE/JSON-safe view of one server entry — a ServerSnapshot keyed by the
+        worktree's own target id (no PTY, so terminal=False). `exists` is dropped
+        here: it's a client-facing on-disk fact added only by status_for on bootstrap,
+        so the live SSE stream carries just state/port and the client's spread-merge
+        preserves the bootstrapped `exists` rather than clobbering it with null."""
+        snap = asdict(
+            ServerSnapshot(
+                id=target,
+                state=entry["state"],
+                terminal=False,
+                target=target,
+                db=entry["db"],
+                port=entry["port"],
+            )
+        )
+        del snap["exists"]
+        return snap
 
     def start(self, target, config):
         """Launch a worktree odoo server for <target> on its own free port. Returns
@@ -974,7 +985,7 @@ class WorktreeManager:
             }
             self.servers[target] = entry
             threading.Thread(target=self._reader, args=(target, process), daemon=True).start()
-        self.bus.publish_worktree(self._public(target, entry))
+        self.bus.publish_server(self._public(target, entry))
         return True, {"port": port}
 
     def _reader(self, target, process):
@@ -994,7 +1005,7 @@ class WorktreeManager:
             if current:
                 self.bus.publish_worktree_log(target, line)
             if ready:
-                self.bus.publish_worktree(snap)
+                self.bus.publish_server(snap)
         ret = process.wait()
         with self.lock:
             entry = self.servers.get(target)
@@ -1010,7 +1021,7 @@ class WorktreeManager:
         self.bus.publish_event(
             f"worktree server ({target}) exited unexpectedly (code {ret})", level="error"
         )
-        self.bus.publish_worktree(snap)
+        self.bus.publish_server(snap)
 
     def stop(self, target):
         """Stop a worktree server. Idempotent; always frees its port."""
@@ -1039,8 +1050,10 @@ class WorktreeManager:
                 entry["process"] = None
                 snap = self._public(target, entry)
             else:
-                snap = {"target": target, "state": "stopped", "port": None, "db": None}
-        self.bus.publish_worktree(snap)
+                snap = asdict(
+                    ServerSnapshot(id=target, state="stopped", terminal=False, target=target)
+                )
+        self.bus.publish_server(snap)
         return True, "stopped"
 
     def logs_for(self, target):
@@ -1050,8 +1063,9 @@ class WorktreeManager:
             return list(entry["log"]) if entry else []
 
     def status_for(self, targets):
-        """targets: [{"id", "dirPath"}]. Returns {id: {exists, state, port}}, merging
-        on-disk worktree existence with the live server state."""
+        """targets: [{"id", "dirPath"}]. Returns {id: ServerSnapshot-dict}, merging
+        each target's on-disk worktree existence with its live server state (or a
+        stopped snapshot when no server is running)."""
         with self.lock:
             servers = {t: self._public(t, e) for t, e in self.servers.items()}
         out = {}
@@ -1059,12 +1073,11 @@ class WorktreeManager:
             tid = t.get("id")
             if not tid:
                 continue
-            s = servers.get(tid)
-            out[tid] = {
-                "exists": effects.is_dir(t.get("dirPath", "")),
-                "state": s["state"] if s else "stopped",
-                "port": s["port"] if s else None,
-            }
+            snap = servers.get(tid) or asdict(
+                ServerSnapshot(id=tid, state="stopped", terminal=False, target=tid)
+            )
+            snap["exists"] = effects.is_dir(t.get("dirPath", ""))
+            out[tid] = snap
         return out
 
     def shutdown(self):
@@ -2127,7 +2140,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()  # no Content-Length: HTTP/1.0 read-until-close
-            self._send_event("status", MANAGER.status())
+            self._send_event("server", MANAGER.status())
             self._send_event("config", CONFIG.get())
             for line in backlog:
                 self._send_event("log", {"line": line})
