@@ -53,6 +53,7 @@ export class StorePlugin extends Plugin {
 
   // ── runtime: one servers map (main + worktree odoos), fed by the "server" SSE ──
   servers = signal(new Map()); // "main" | targetId → OdooServer (ServerSnapshot)
+  runs = signal(new Map()); // runId → Run (one-shot test/install/upgrade), fed by "run" SSE
 
   // ── writers — every store write goes through here ─────────────────────────────
 
@@ -158,9 +159,34 @@ export class StorePlugin extends Plugin {
     return this.servers().get(tgt.id) || null;
   }
 
+  // fold one run snapshot into the map, keyed by run id (SSE "run": running → done/failed)
+  mergeRun(snap) {
+    if (!snap || !snap.id) return;
+    const next = new Map(this.runs());
+    next.set(snap.id, { ...(next.get(snap.id) || {}), ...snap });
+    this.runs.set(next);
+  }
+
+  // the currently-running one-shot (there's one shared slot), or null
+  activeRun() {
+    for (const r of this.runs().values()) if (r.state === "running") return r;
+    return null;
+  }
+
+  // the most recent run of a kind (test | install | upgrade), running or finished — so
+  // a screen still shows its last result after a run of another kind occupied the slot
+  latestRunOfKind(kind) {
+    let best = null;
+    for (const r of this.runs().values()) {
+      if (r.kind !== kind) continue;
+      if (!best || (r.started_at || 0) >= (best.started_at || 0)) best = r;
+    }
+    return best;
+  }
+
   // the aggregate the UI orbits: a target joined with its checkouts' live git state
-  // (current branch, does it match, dirty) and its server. db/run/claude are filled
-  // in a later step (they need the observed-databases store and the Run model).
+  // (current branch, does it match, dirty), its server, and the one-shot run holding
+  // its slot. db/claude are filled in a later step.
   targetView(tgt) {
     const rs = this.repoStatus();
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
@@ -168,12 +194,14 @@ export class StorePlugin extends Plugin {
       const current = st ? st.current : undefined;
       return { repo, branch, current, matches: current === branch, dirty: !!(st && st.dirty) };
     });
+    const active = this.activeRun();
+    const run = active && active.target === tgt.id ? active : null;
     return {
       target: tgt,
       checkouts,
       server: this.serverFor(tgt),
       db: null,
-      run: null,
+      run,
       claude: null,
     };
   }

@@ -125,3 +125,24 @@ class ServerSnapshot:
     enterprise: bool | None = None
     # worktree-only, client-facing: checkout present on disk (bootstrap; None for main)
     exists: bool | None = None
+
+
+@dataclass
+class RunSnapshot:
+    """A one-shot run occupying the shared odoo slot — a test / install / upgrade,
+    backend-minted and keyed by `id`. `spec` carries the run's parameters
+    (`{"tags": …}` for a test, `{"module": …}` for install/upgrade); `resume` records
+    that a real server was interrupted to make room, so the backend restarts it when
+    the run ends (survives a mid-run reload — the point of owning this server-side)."""
+
+    id: str  # backend-minted (e.g. "run-3")
+    kind: str  # test | install | upgrade
+    state: str  # running | done | failed
+    server: str = "main"  # the slot it occupies
+    target: str | None = None
+    db: str | None = None
+    spec: dict = field(default_factory=dict)  # {"tags": …} | {"module": …}
+    returncode: int | None = None
+    ok: bool | None = None  # None while running / when manually stopped
+    resume: bool = False  # a server was interrupted for this run and will be resumed
+    started_at: float | None = None

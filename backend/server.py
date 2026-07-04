@@ -39,7 +39,7 @@ from .cache import TTLCache
 # the IO seam (effects) and the services layer over it; the server's remaining
 # subprocess calls (kill_port, the goo self-update probes) go through run().
 from .effects import TAG, run
-from .models import ServerSnapshot
+from .models import RunSnapshot, ServerSnapshot
 
 HOST = "127.0.0.1"
 PORT = 8068
@@ -117,6 +117,16 @@ class EventBus:
             subscribers = list(self._subscribers)
         for q in subscribers:
             q.put(("config", payload))
+
+    def publish_run(self, snapshot):
+        """Push one-shot run state to the browser (SSE 'run'): a RunSnapshot as it
+        goes running → done/failed. The Tests/Addons screens watch these instead of
+        keeping their own runActive/sawRun flags; the backend also owns resume-after,
+        so the run survives a mid-run reload."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put(("run", snapshot))
 
     def publish_worktree_log(self, target, line):
         """Stream one worktree server's log line to the browser (SSE 'worktree_log',
@@ -683,6 +693,14 @@ class OdooManager:
         self.started_at = None
         self.exited_unexpectedly = False
         self.returncode = None
+        # one-shot Run occupying the slot (test/install/upgrade) — None for a plain
+        # server or when stopped; kept as the last finished snapshot until superseded
+        self.run = None
+        self._run_seq = 0  # monotonic run-id source
+        # resume-after: the config of the server that was interrupted to run a one-shot
+        # (so we can restart it when the run ends), and the last server config we saw
+        self._server_config = None
+        self._resume_config = None
         # raw PTY byte ring buffer: replayed to each new terminal WebSocket client
         # so xterm.js can reconstruct the current terminal state on connect
         self._raw_buf = bytearray()
@@ -715,9 +733,44 @@ class OdooManager:
             status["enterprise"] = enterprise
         return status
 
-    def start(self, config):
-        """Returns (ok, detail). detail is the command on success, an error
-        code otherwise."""
+    def run_snapshot(self):
+        """The current/last one-shot run (or None) — primed on SSE connect."""
+        with self.lock:
+            return dict(self.run) if self.run else None
+
+    def server_config(self):
+        """The config of the last plain-server start, for resume-after."""
+        with self.lock:
+            return self._server_config
+
+    def _finish_run(self, returncode):
+        """Finalize the active run (if any) and return the server config to resume, or
+        None. `returncode` is the process exit code, or None when the run was stopped
+        manually. Publishes the finished run. The caller holds no lock and, if a config
+        is returned, restarts the server via start()."""
+        with self.lock:
+            run = self.run
+            if not run or run.get("state") != "running":
+                return None
+            if returncode is None:  # manually stopped mid-run
+                run["state"] = "failed"
+                run["ok"] = False
+            else:
+                run["state"] = "failed" if returncode else "done"
+                run["ok"] = returncode == 0
+            run["returncode"] = returncode
+            snapshot = dict(run)
+            resume = self._resume_config
+            self._resume_config = None
+        self.bus.publish_run(snapshot)
+        return resume
+
+    def start(self, config, resume_config=None):
+        """Launch the odoo process. A one-shot run (test/install/upgrade) is minted as
+        a first-class Run occupying the slot; `resume_config` (set by _action_oneshot
+        when a running server was interrupted) is the server config to restart when the
+        run ends. Returns (ok, detail): detail is the command on success, else an error
+        code."""
         with self.lock:
             if self.state != "stopped":
                 return False, "already_running"
@@ -742,6 +795,32 @@ class OdooManager:
                 else "server"
             )
             self.started_at = time.time()
+            # a plain server clears any active run and is remembered so a later run can
+            # resume it; a one-shot run is minted as a Run and records its resume config
+            if self.mode == "server":
+                self.run = None
+                self._server_config = config
+                self._resume_config = None
+            else:
+                self._run_seq += 1
+                spec = (
+                    {"tags": s.get("test_tags")}
+                    if self.mode == "test"
+                    else {"module": s.get("install") or s.get("upgrade")}
+                )
+                self.run = asdict(
+                    RunSnapshot(
+                        id=f"run-{self._run_seq}",
+                        kind=self.mode,
+                        state="running",
+                        target=self.target,
+                        db=db,
+                        spec=spec,
+                        resume=bool(resume_config),
+                        started_at=self.started_at,
+                    )
+                )
+                self._resume_config = resume_config
             if is_new:
                 self.bus.publish_log(
                     f"{TAG} database '{db}' not initialized, applying on_create_args"
@@ -772,7 +851,10 @@ class OdooManager:
                 daemon=True,
             )
             self.reader_thread.start()
+            run = self.run
         self.bus.publish_server(self.status())
+        if run:
+            self.bus.publish_run(dict(run))  # a fresh one-shot run went "running"
         return True, cmd
 
     def stop(self):
@@ -887,6 +969,12 @@ class OdooManager:
             self.returncode = ret
         self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
         self.bus.publish_server(self.status())
+        # a one-shot run just ended on its own: finalize it and, if it had interrupted
+        # a server, bring that server back (resume-after, owned here so it survives a
+        # mid-run reload). start() runs a fresh process + reader thread.
+        resume = self._finish_run(ret)
+        if resume:
+            self.start(resume)
 
     def _handle_line(self, line):
         self.bus.publish_log(line)
@@ -1471,7 +1559,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "error": str(e)})
         elif path == "/api/stop":
             ok, detail = MANAGER.stop()
+            # stopping a one-shot run mid-flight finalizes it and, like a natural
+            # finish, resumes any server it had interrupted (the reader bailed out
+            # because stop() owns the exit, so drive the resume from here)
             if ok:
+                resume = MANAGER._finish_run(None)
+                if resume:
+                    MANAGER.start(resume)
                 self._send_json(200, {"ok": True, "state": "stopped"})
             else:
                 self._send_json(409, {"ok": False, "error": detail})
@@ -1914,12 +2008,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _action_oneshot(self):
         """Stop whatever holds the odoo port, then start a one-shot run
-        (tests / install / upgrade). Shares the manager with the server."""
+        (tests / install / upgrade). Shares the manager with the server. If a real
+        server is interrupted, its config is handed to the run so the backend restarts
+        it when the run ends (resume-after, owned server-side)."""
         config, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
+        pre = MANAGER.status()
+        resume_config = (
+            MANAGER.server_config()
+            if pre.get("state") in ("starting", "running") and pre.get("mode") == "server"
+            else None
+        )
         MANAGER.stop()
-        ok, detail = MANAGER.start(config)
+        ok, detail = MANAGER.start(config, resume_config=resume_config)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
         else:
@@ -2141,6 +2243,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()  # no Content-Length: HTTP/1.0 read-until-close
             self._send_event("server", MANAGER.status())
+            run = MANAGER.run_snapshot()
+            if run:
+                self._send_event("run", run)
             self._send_event("config", CONFIG.get())
             for line in backlog:
                 self._send_event("log", {"line": line})

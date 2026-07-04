@@ -3,6 +3,7 @@
 // the last one used — using its database and its set of repositories.
 
 import { ConfigPlugin } from "./config_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
@@ -16,6 +17,7 @@ export class AddonsPlugin extends Plugin {
   static MAX_ROWS = 200;
 
   config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin); // install/upgrade runs live in the shared store's runs map
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
@@ -29,17 +31,32 @@ export class AddonsPlugin extends Plugin {
   stateFilter = signal(""); // "" | "installed" | "uninstalled"
   appOnly = signal(true); // only modules flagged as an application (on by default)
   status = signal("");
-  runActive = signal(false);
-  sawRun = signal(false);
-  _resumeAfter = false; // a real server was running and got stopped to install
+  _pending = signal(false); // optimistic "run starting", until the backend's "run" event lands
+  _announced = null; // run id we've seen running this session
+  _finishedRun = null; // run id we've finalized (once per run)
   // filtered + sorted modules — recomputed only when modules/filter change
   filtered = computed(() => this._filtered());
 
   setup() {
-    useEffect(() => this._onStatus(this.server.status()));
+    useEffect(() => this._onRun(this.currentRun()));
     this.server.onLine((line) => {
       if (this.runActive()) this.output.append(line);
     });
+  }
+
+  // the current/last install-or-upgrade run (backend-minted, from the shared store)
+  currentRun() {
+    const i = this.store.latestRunOfKind("install");
+    const u = this.store.latestRunOfKind("upgrade");
+    return (
+      [i, u].filter(Boolean).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null
+    );
+  }
+
+  // a run is active — optimistic between clicking Install/Upgrade and the backend's
+  // first "run" event, then driven by the run's state (a method: components call it)
+  runActive() {
+    return this._pending() || this.currentRun()?.state === "running";
   }
 
   // the active target: the running server's target, else the last one used
@@ -117,36 +134,29 @@ export class AddonsPlugin extends Plugin {
     return { total: matched.length, shown: matched.slice(0, AddonsPlugin.MAX_ROWS) };
   }
 
-  _onStatus(status) {
-    const active = status.state === "starting" || status.state === "running";
-    const running = active && (status.mode === "install" || status.mode === "upgrade");
-    if (running) {
-      this.sawRun.set(true);
-      this.status.set(`${status.mode === "upgrade" ? "upgrading" : "installing"}…`);
-    } else if (this.runActive() && this.sawRun() && status.state === "stopped") {
-      this.runActive.set(false);
-      this.sawRun.set(false);
+  // react to the backend-minted install/upgrade Run moving running → done/failed.
+  // Resume-after is backend-owned now; this just drives the status + reloads module
+  // states when the run ends. Finalize once per run id.
+  _onRun(run) {
+    if (!run) return;
+    if (run.state === "running") {
+      this._pending.set(false); // the real run is in — drop the optimistic override
+      this._announced = run.id;
+      this.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}…`);
+    } else if (this._finishedRun !== run.id) {
+      this._finishedRun = run.id;
+      // finished before we saw it run this session (e.g. a reload) — skip the reload
+      if (this._announced !== run.id) return;
+      const stopped = run.returncode === null; // manually stopped mid-run
       this.status.set(
-        status.exited_unexpectedly
-          ? status.returncode
-            ? `failed — exit ${status.returncode}`
-            : "done"
-          : "stopped",
+        stopped ? "stopped" : run.returncode ? `failed — exit ${run.returncode}` : "done",
       );
       this.load(); // refresh install states (psql reads the db even while stopped)
-      if (this._resumeAfter) {
-        this._resumeAfter = false;
-        this.server.resume(); // bring back the server that was stopped to install
-      }
     }
   }
 
   get running() {
-    const s = this.server.status();
-    return (
-      (s.state === "starting" || s.state === "running") &&
-      (s.mode === "install" || s.mode === "upgrade")
-    );
+    return this.currentRun()?.state === "running";
   }
 
   async run(op, name) {
@@ -158,23 +168,21 @@ export class AddonsPlugin extends Plugin {
       okLabel: verb,
     });
     if (!ok) return;
-    // if a real server is up, it will be stopped for the one-shot run — resume it after
-    const s = this.server.status();
-    this._resumeAfter = (s.state === "running" || s.state === "starting") && s.mode === "server";
+    // if a real server is up the backend stops it for the one-shot run and resumes it
+    // when the run ends (resume-after is backend-owned now — no client flag)
     const cfg = {
       ...this.config.config,
       target: null,
       start: { repos: this._repos().map((r) => r.id), db, [op]: name },
     };
     this.output.clear();
-    this.runActive.set(true);
-    this.sawRun.set(false);
+    this._pending.set(true);
     this.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}…`);
     this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
     try {
       await postJSON("/api/addons/run", cfg);
     } catch (e) {
-      this.runActive.set(false);
+      this._pending.set(false);
       this.status.set(`failed to start: ${e.message}`);
     }
   }

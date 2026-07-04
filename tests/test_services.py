@@ -1374,5 +1374,73 @@ class ServerSnapshotTest(unittest.TestCase):
         self.assertFalse(snap["terminal"])
 
 
+class _FakeBus:
+    """Records what an OdooManager would publish, without any SSE plumbing."""
+
+    def __init__(self):
+        self.runs = []
+        self.servers = []
+
+    def publish_run(self, snap):
+        self.runs.append(snap)
+
+    def publish_server(self, snap):
+        self.servers.append(snap)
+
+    def publish_log(self, line):
+        pass
+
+
+class OdooManagerRunTest(unittest.TestCase):
+    """The Run lifecycle + backend-owned resume decision (Step 6), tested at the
+    _finish_run seam — no real process. This is the part that restarts the user's
+    server, so it's unit-covered even though a live run can't run in CI."""
+
+    def _manager(self):
+        # import here so the module's global singletons aren't disturbed
+        from backend import server
+
+        return server.OdooManager(_FakeBus()), server
+
+    def test_finish_run_done_and_resume(self):
+        mgr, _ = self._manager()
+        mgr.run = {"id": "run-1", "kind": "test", "state": "running", "returncode": None}
+        mgr._resume_config = {"target": "t1"}
+        resume = mgr._finish_run(0)
+        self.assertEqual(resume, {"target": "t1"})  # a server was interrupted → resume it
+        self.assertEqual(mgr.run["state"], "done")
+        self.assertTrue(mgr.run["ok"])
+        self.assertEqual(mgr.run["returncode"], 0)
+        self.assertIsNone(mgr._resume_config)  # consumed
+        self.assertEqual(mgr.bus.runs[-1]["state"], "done")  # published
+
+    def test_finish_run_failed_by_returncode(self):
+        mgr, _ = self._manager()
+        mgr.run = {"id": "run-2", "kind": "install", "state": "running", "returncode": None}
+        mgr._resume_config = None
+        self.assertIsNone(mgr._finish_run(1))  # nothing to resume
+        self.assertEqual(mgr.run["state"], "failed")
+        self.assertFalse(mgr.run["ok"])
+        self.assertEqual(mgr.run["returncode"], 1)
+
+    def test_finish_run_manual_stop(self):
+        mgr, _ = self._manager()
+        mgr.run = {"id": "run-3", "kind": "test", "state": "running", "returncode": None}
+        mgr._finish_run(None)  # None returncode = stopped manually
+        self.assertEqual(mgr.run["state"], "failed")
+        self.assertFalse(mgr.run["ok"])
+        self.assertIsNone(mgr.run["returncode"])
+
+    def test_finish_run_noop_when_not_running(self):
+        mgr, _ = self._manager()
+        mgr.run = None
+        self.assertIsNone(mgr._finish_run(0))
+        self.assertEqual(mgr.bus.runs, [])
+        # an already-finished run isn't finalized twice
+        mgr.run = {"id": "run-4", "kind": "test", "state": "done", "returncode": 0}
+        self.assertIsNone(mgr._finish_run(0))
+        self.assertEqual(mgr.bus.runs, [])
+
+
 if __name__ == "__main__":
     unittest.main()

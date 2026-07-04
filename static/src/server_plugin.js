@@ -95,6 +95,9 @@ export class ServerPlugin extends Plugin {
         for (const cb of this.worktreeListeners) cb(snap);
       }
     });
+    // one-shot run state (test/install/upgrade), backend-minted → the shared runs map
+    // (Tests/Addons watch it; the backend owns resume-after, so no client flag)
+    es.addEventListener("run", (e) => this.store.mergeRun(JSON.parse(e.data)));
     es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
     // config/state written by another tab → keep this tab's ConfigPlugin in lockstep
     es.addEventListener("config", (e) => {
