@@ -3130,264 +3130,111 @@ var RouterPlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/database_plugin.js
-var DatabasePlugin = class extends Plugin {
-  static sequence = 3;
+// static/src/plugins/update_plugin.js
+var UpdatePlugin = class extends Plugin {
   server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  config = plugin(ConfigPlugin);
-  databases = signal([]);
-  // view state; freshness is the server's job now
-  at = signal(0);
-  loading = signal(false);
-  error = signal("");
-  dropping = signal("");
-  _wasRunning = false;
-  // last-seen server-running state, to detect the start edge
+  dialogs = plugin(DialogPlugin);
+  // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
+  info = signal(null);
+  applying = signal(false);
+  // true while updating + restarting (drives an overlay)
   setup() {
-    useEffect(() => this._onStatus(this.server.status()));
+    this._load();
+    setInterval(() => this._load(true), 30 * 60 * 1e3);
+    this.server.onGooUpdate((status) => this.info.set(status));
   }
-  // reload (bypassing the cache) on the rising edge into "running" — the freshly
-  // created db may not be in the cached list yet
-  _onStatus(status) {
-    const running = status.state === "running";
-    if (running && !this._wasRunning) this.load(true);
-    this._wasRunning = running;
-  }
-  get activeDb() {
-    return this.server.status().db || null;
-  }
-  // fetch the database list (the server caches it). `force` (manual Refresh) adds
-  // ?refresh=1 so the backend re-queries instead of serving its cache.
-  async load(force = false) {
-    this.loading.set(true);
-    this.error.set("");
+  // on-demand re-check (the Config tab's "Check for update" button): fetch +
+  // recompute on the backend, refresh `info`, and return the fresh result
+  async check() {
     try {
-      const resp = await fetch(force ? "/api/databases?refresh=1" : "/api/databases");
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || "failed");
-      this.databases.set(data.databases);
-      this.at.set(Date.now());
+      const data = await postJSON("/api/goo/check");
+      this.info.set(data);
+      return data;
     } catch (e) {
-      this.error.set(e.message);
-    } finally {
-      this.loading.set(false);
+      return { ok: false, error: e.message };
     }
   }
-  // drop a database; returns null on success or an error message on failure
-  // (the caller handles confirmation + error reporting via the dialog)
-  async drop(name) {
-    this.dropping.set(name);
-    this.eventLog.add(`dropping database ${name}`);
-    try {
-      await postJSON("/api/databases/drop", { name, filestore: this._filestore() });
-      await this.load(true);
-      return null;
-    } catch (e) {
-      this.eventLog.add(`failed to drop database ${name}: ${e.message}`);
-      return e.message;
-    } finally {
-      this.dropping.set("");
-    }
-  }
-  // clone `name` into a new database `target`; returns null on success or an error
-  async clone(name, target) {
-    this.eventLog.add(`cloning database ${name} \u2192 ${target}`);
-    try {
-      await postJSON("/api/databases/clone", {
-        source: name,
-        target,
-        filestore: this._filestore()
+  // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
+  // otherwise explain how to update manually so local work is never clobbered.
+  // Only meaningful when behind > 0 (the badge / a positive check gate it).
+  async promptUpdate() {
+    const u = this.info() || {};
+    if (!u.behind) return;
+    if (!u.can_fast_forward) {
+      let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
+      if (u.ahead) why += `, with ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} on top`;
+      if (u.dirty) why += ", and the working tree has uncommitted changes";
+      why += ". Update manually to keep your work, e.g. `git pull --rebase`.";
+      return void this.dialogs.open({
+        title: "goo update available",
+        message: why,
+        okLabel: "OK",
+        cancelLabel: null
       });
-      await this.load(true);
-      return null;
-    } catch (e) {
-      this.eventLog.add(`failed to clone database ${name}: ${e.message}`);
-      return e.message;
     }
-  }
-  // clone `source` into `target`, transparently stopping + resuming the server when
-  // `source` is the active db (postgres createdb -T needs exclusive access). Returns
-  // null on success or an error message; the server is resumed even if the clone fails.
-  async cloneStoppingServer(source, target) {
-    const resume = this.activeDb === source && this.server.status().state !== "stopped";
-    if (resume) await this.server.stop();
-    const error = await this.clone(source, target);
-    if (resume) await this.server.resume();
-    return error;
-  }
-  // drop `name`, stopping the server first when it's the active db (the server
-  // holds a connection to it). Unlike clone, we don't resume — the database is
-  // gone, so the server stays stopped. Returns null on success or an error message.
-  async dropStoppingServer(name) {
-    if (this.activeDb === name && this.server.status().state !== "stopped") {
-      await this.server.stop();
-    }
-    return this.drop(name);
-  }
-  // rename `name` to `newName`; returns null on success or an error message
-  async rename(name, newName) {
-    this.eventLog.add(`renaming database ${name} \u2192 ${newName}`);
-    try {
-      await postJSON("/api/databases/rename", {
-        name,
-        new_name: newName,
-        filestore: this._filestore()
-      });
-      await this.load(true);
-      return null;
-    } catch (e) {
-      this.eventLog.add(`failed to rename database ${name}: ${e.message}`);
-      return e.message;
-    }
-  }
-  // the configured filestore root, sent with drop/clone/rename so the backend keeps
-  // each db's <filestore>/<db> directory in lockstep (empty = leave the disk alone)
-  _filestore() {
-    return this.config.config.filestore || "";
-  }
-};
-
-// static/src/plugins/tests_plugin.js
-var HISTORY_MAX = 10;
-var TestsPlugin = class extends Plugin {
-  static sequence = 3;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
-  // one-shot runs live in the shared store's runs map
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  output = new LogBuffer();
-  status = signal("");
-  history = signal(this._readHistory());
-  // last test tags run, most recent first
-  _pending = signal(false);
-  // optimistic "run starting", until the backend's "run" event lands
-  _capturing = false;
-  // whether server lines are currently mirrored to the test console
-  _finished = false;
-  // guard: "test suite finished" is logged once per run
-  _tags = "";
-  // current run's tags (for the deferred "running tests" log)
-  _cutOnChrome = false;
-  // WebSuite runs end the console window at the chrome teardown
-  _result = "";
-  // "success" | "fail" — derived from the HOOT result lines
-  _failSeq = 0;
-  // monotonic id source for failure-row anchors (never reset)
-  _announced = null;
-  // run id we've logged "running tests" for (once per run)
-  _finishedRun = null;
-  // run id we've finalized (once per run)
-  _readHistory() {
-    const h = this.config.getState("test_history", []);
-    return Array.isArray(h) ? h : [];
-  }
-  // record a run's tag at the front, deduped, capped at HISTORY_MAX
-  _pushHistory(tag) {
-    tag = tag.trim();
-    if (!tag) return;
-    const h = [tag, ...this.history().filter((t2) => t2 !== tag)].slice(0, HISTORY_MAX);
-    this.history.set(h);
-    this.config.setState("test_history", h);
-  }
-  // the target id tests run against: the running/starting server's target, else the
-  // last-used one, else the first configured target. Tests are a one-shot run against
-  // the target's db, so they work even with the server down; the run endpoint resolves
-  // the launch config from this id server-side.
-  get target() {
-    const targets = this.config.config.targets;
-    const candidate = this.server.status().target || this.server.lastTarget();
-    if (targets.some((t2) => t2.id === candidate)) return candidate;
-    return targets[0]?.id || "";
-  }
-  // the current/last test run (backend-minted, from the shared store)
-  currentRun() {
-    return this.store.latestRunOfKind("test");
-  }
-  // a test run is active — optimistically true between clicking Run and the backend's
-  // first "run" event, then driven by the run's state (a method: components call it)
-  runActive() {
-    return this._pending() || this.currentRun()?.state === "running";
-  }
-  setup() {
-    useEffect(() => this._onRun(this.currentRun()));
-    this.server.onLine((line) => {
-      if (!this.runActive()) return;
-      if (!this._capturing && line.includes("[goo] starting odoo:")) this._capturing = true;
-      if (!this._capturing) return;
-      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
-      const anchor = failed ? `test-fail-${++this._failSeq}` : "";
-      this.output.append(line, anchor);
-      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
-      if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
-      else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
-        this._result = "fail";
-      if (this._cutOnChrome && line.includes("Terminating chrome headless with pid"))
-        this._finishRun();
+    const serverNote = this.server.status().state === "running" ? " The running Odoo server will be stopped." : "";
+    const ok = await this.dialogs.open({
+      title: "goo update available",
+      message: `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master and can be updated cleanly. goo will fast-forward, restart, and this page will reload automatically.${serverNote}`,
+      okLabel: "Update & restart",
+      cancelLabel: "Later"
     });
+    if (!ok) return;
+    const res = await this.applyAndRestart();
+    if (!res.ok)
+      this.dialogs.open({
+        title: "Update failed",
+        message: res.error,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
   }
-  // react to the backend-minted test Run moving running → done/failed. Resume-after
-  // (bringing back a server the run interrupted) is owned by the backend now, so this
-  // just drives the console + event log. Announce/finalize once per run id.
-  _onRun(run) {
-    if (!run) return;
-    if (run.state === "running") {
-      this._pending.set(false);
-      if (this._announced !== run.id) {
-        this._announced = run.id;
-        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? this._tags})`);
-        this._capturing = true;
-      }
-      this.status.set("running\u2026");
-    } else if (this._finishedRun !== run.id) {
-      this._finishedRun = run.id;
-      if (this._announced !== run.id) return;
-      const stopped = run.returncode === null;
-      this.status.set(
-        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "passed"
-      );
-      const byExit = stopped ? "" : run.returncode ? "fail" : "success";
-      this._finishRun(this._result || byExit);
-    }
-  }
-  // close the test-tab log window and log the finish event (once per run)
-  _finishRun(result = this._result) {
-    this._capturing = false;
-    if (this._finished) return;
-    this._finished = true;
-    const failed = result && String(result).includes("fail");
-    this.eventLog.add(
-      `test run finished${result ? ` (${result})` : ""}`,
-      "",
-      failed ? "error" : ""
-    );
-  }
-  get running() {
-    return this.currentRun()?.state === "running";
-  }
-  async run(tags) {
-    if (!tags.trim()) return;
-    const targetId = this.target;
-    if (!targetId) return this.server.log(`[goo] no valid target to test`);
-    const s = this.server.status();
-    const serverWasUp = (s.state === "running" || s.state === "starting") && s.mode === "server";
-    this._pushHistory(tags);
-    this._tags = tags.trim();
-    this._cutOnChrome = this._tags.includes("web:WebSuite");
-    this._result = "";
-    if (serverWasUp) this.eventLog.add("stopping server to run tests");
-    this.output.clear();
-    this._capturing = false;
-    this._finished = false;
-    this._pending.set(true);
-    this.status.set("starting\u2026");
+  async _load(retried = false) {
     try {
-      await postJSON("/api/tests/run", { target: targetId, overrides: { test_tags: this._tags } });
-    } catch (e) {
-      this._pending.set(false);
-      this.status.set(`failed to start: ${e.message}`);
+      const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
+      this.info.set(data);
+      if (!data.checked && !retried) setTimeout(() => this._load(true), 3e3);
+    } catch {
     }
+  }
+  // fast-forward goo onto origin/master, restart the server, then reload the page
+  // once it's back. Returns { ok, error }; on success the page is reloading.
+  async applyAndRestart() {
+    this.applying.set(true);
+    const boot2 = this.info()?.boot;
+    try {
+      await postJSON("/api/goo/update");
+      await postJSON("/api/goo/restart").catch(() => {
+      });
+      if (await this._waitUntilRestarted(boot2)) {
+        location.reload();
+        return { ok: true };
+      }
+      this.applying.set(false);
+      return { ok: false, error: "goo was updated but didn't come back \u2014 restart it manually." };
+    } catch (e) {
+      this.applying.set(false);
+      return { ok: false, error: e.message };
+    }
+  }
+  // wait until the re-exec'd goo is serving: a changed boot id is the reliable
+  // signal (the old, still-shutting-down server keeps the old id); fall back to
+  // "saw it go down, then back up" if we never had a boot id to compare.
+  async _waitUntilRestarted(boot2, timeout = 3e4) {
+    const t0 = Date.now();
+    let wentDown = false;
+    await new Promise((r) => setTimeout(r, 600));
+    while (Date.now() - t0 < timeout) {
+      try {
+        const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
+        if (boot2 ? data.boot && data.boot !== boot2 : wentDown) return true;
+      } catch {
+        wentDown = true;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return false;
   }
 };
 
@@ -3543,6 +3390,481 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   }
 };
 
+// static/src/components/common.js
+var appBus = new EventBus();
+var m = (s) => markup(s);
+function mbCategory(s) {
+  if (s === "merged") return "merged";
+  if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
+  if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
+  if (["blocked", "error"].includes(s)) return "blocked";
+  return "other";
+}
+var ICONS = {
+  dashboard: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
+  refresh: `<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.6 4"/><polyline points="20 4 20 11 13 11"/></svg>`,
+  clear: `<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
+  star: `<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>`,
+  server: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none"/></svg>`,
+  code: `<svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>`,
+  target: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>`,
+  branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
+  pr: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="6" y1="9" x2="6" y2="15"/><circle cx="18" cy="18" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/></svg>`,
+  tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
+  databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
+  addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
+  assets: `<svg viewBox="0 0 24 24"><polygon points="12 2 22 7 12 12 2 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
+  config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
+  kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
+  chevron: `<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`,
+  check: `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`,
+  push: `<svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>`,
+  play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
+  stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
+  external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
+  journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
+  terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
+  history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
+  worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
+  nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
+  memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`
+};
+var NAV = [
+  { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
+  { id: "code", label: "Code", icon: ICONS.code },
+  { id: "targets", label: "Targets", icon: ICONS.target },
+  { id: "server", label: "Server", icon: ICONS.server },
+  { id: "worktree", label: "Worktrees", icon: ICONS.worktree, optIn: true },
+  { id: "tests", label: "Tests", icon: ICONS.tests },
+  { id: "branches", label: "Branches", icon: ICONS.branches },
+  { id: "prs", label: "PRs", icon: ICONS.pr },
+  { id: "assets", label: "Assets", icon: ICONS.assets },
+  { id: "addons", label: "Addons", icon: ICONS.addons },
+  { id: "databases", label: "Databases", icon: ICONS.databases },
+  { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },
+  { id: "memory", label: "Memory", icon: ICONS.memory, optIn: true },
+  { id: "config", label: "Configuration", icon: ICONS.config }
+];
+function mergedTabIds(configured) {
+  const inNav = new Set(NAV.map((n) => n.id));
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const t2 of configured || []) {
+    if (!inNav.has(t2.id) || seen.has(t2.id)) continue;
+    seen.add(t2.id);
+    out.push(t2.id);
+  }
+  let anchor = -1;
+  for (const n of NAV) {
+    const idx = out.indexOf(n.id);
+    if (idx !== -1) {
+      anchor = idx;
+    } else {
+      out.splice(++anchor, 0, n.id);
+    }
+  }
+  return out;
+}
+var LogConsole = class extends Component {
+  static template = xml`
+    <section class="console" t-att-class="this.consoleClass">
+      <div t-if="!this.props.bare" class="log-toolbar">
+        <span class="console-title"><span class="cdot" t-att-class="{on: this.live}"/><t t-out="this.props.title"/></span>
+        <div class="toolbar-right">
+          <label class="toggle" t-att-class="{on: this.props.buffer.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+          <button class="tool-btn" t-on-click="() => this.props.buffer.clear()"><t t-out="this.clearIcon"/>Clear</button>
+        </div>
+      </div>
+      <div class="log-host" t-ref="this.host"/>
+    </section>`;
+  props = props({
+    title: t.string(),
+    buffer: t.any(),
+    extraClass: t.string().optional(),
+    bare: t.boolean().optional()
+  });
+  server = plugin(ServerPlugin);
+  host = signal.ref(HTMLElement);
+  clearIcon = m(ICONS.clear);
+  setup() {
+    onMounted(() => {
+      this.host().appendChild(this.props.buffer.el);
+      this.props.buffer.restore();
+    });
+    onWillUnmount(() => {
+      this.props.buffer.savedScroll = this.props.buffer.el.scrollTop;
+    });
+  }
+  get live() {
+    return this.server.status().state === "running";
+  }
+  get consoleClass() {
+    return [this.props.extraClass, this.props.bare ? "bare" : ""].filter(Boolean).join(" ");
+  }
+  toggleAuto() {
+    const b = this.props.buffer;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
+  }
+};
+var SearchBox = class extends Component {
+  static template = xml`
+    <div class="search-box">
+      <input type="text" t-att-value="this.props.value()" autocomplete="off" placeholder="Search…"
+             t-on-input="ev => this.props.value.set(ev.target.value)"/>
+      <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
+    </div>`;
+  props = props({ value: t.any() });
+};
+var DirtyBadge = class extends Component {
+  static template = xml`
+    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
+  props = props({ path: t.string(), repo: t.string() });
+  openMenu(ev) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(
+      new CustomEvent("dirty-menu", {
+        detail: { rect, path: this.props.path, repo: this.props.repo }
+      })
+    );
+  }
+};
+var DirtyMenu = class extends Component {
+  static template = xml`
+    <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
+      <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
+    </div>`;
+  code = plugin(CodePlugin);
+  open = signal(false);
+  _path = null;
+  _repo = null;
+  _el = null;
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".dirty-menu");
+      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
+      document.addEventListener("click", () => this.open.set(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.open.set(false);
+      });
+    });
+  }
+  async openMenu({ rect, path, repo }) {
+    this._path = path;
+    this._repo = repo;
+    this.open.set(true);
+    await Promise.resolve();
+    const w = this._el.offsetWidth;
+    this._el.style.top = `${rect.bottom + 4}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+  }
+  wipCommit() {
+    this.open.set(false);
+    this.code.wipCommit(this._path, this._repo);
+  }
+  discard() {
+    this.open.set(false);
+    this.code.discard(this._path, this._repo);
+  }
+};
+function loadScript(src, isLoaded) {
+  return new Promise((resolve, reject) => {
+    if (isLoaded()) return resolve();
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+function useDragResize({ w = 780, h = 440, place = null } = {}) {
+  const handle = signal.ref(HTMLElement);
+  let x = 0;
+  let y = 0;
+  let width = w;
+  let height = h;
+  let placed = false;
+  let dragging = false;
+  let resizing = false;
+  let offX = 0;
+  let offY = 0;
+  let startX = 0;
+  let startY = 0;
+  let startW = 0;
+  let startH = 0;
+  const apply = () => {
+    const el = handle();
+    if (!el) return;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.width = `${width}px`;
+    el.style.height = `${height}px`;
+  };
+  const onMouseMove = (e) => {
+    if (dragging) {
+      x = Math.max(0, e.clientX - offX);
+      y = Math.max(0, e.clientY - offY);
+      apply();
+    } else if (resizing) {
+      width = Math.max(300, startW + e.clientX - startX);
+      height = Math.max(200, startH + e.clientY - startY);
+      apply();
+    }
+  };
+  const onMouseUp = () => {
+    dragging = false;
+    resizing = false;
+  };
+  onMounted(() => {
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+  onWillUnmount(() => {
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+  });
+  useEffect(() => {
+    const el = handle();
+    if (!el) return;
+    if (!placed) {
+      const p = place ? place(width, height) : null;
+      x = p ? p.x : Math.max(0, Math.floor((window.innerWidth - width) / 2));
+      y = p ? p.y : Math.max(0, Math.floor((window.innerHeight - height) / 2));
+      placed = true;
+    }
+    apply();
+  });
+  return {
+    handle,
+    onDragStart: (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      offX = e.clientX - x;
+      offY = e.clientY - y;
+      e.preventDefault();
+    },
+    onResizeStart: (e) => {
+      if (e.button !== 0) return;
+      resizing = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startW = width;
+      startH = height;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+}
+
+// static/src/components/addons.js
+var AddonsScreen = class extends Component {
+  static components = { LogConsole, SearchBox };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top has-filters">
+          <h1>Addons</h1>
+          <div class="panel-filters">
+            <SearchBox value="this.addons.filter"/>
+            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
+            <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
+          </div>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.addons.status()"/>
+            <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
+          <span t-if="this.addons.targetDb()" class="row-count" t-out="this.count"/>
+        </div>
+      </div>
+      <div class="content addons-content">
+        <div t-if="!this.addons.targetDb()" class="dim addons-empty">No active target — start a server to browse its addons.</div>
+        <t t-else="">
+          <div class="addons-grid-wrap">
+            <div t-if="this.addons.loading()" class="dim addons-msg">Loading…</div>
+            <div t-elif="this.addons.error()" class="dim addons-msg" t-out="'Failed to load: ' + this.addons.error()"/>
+            <div t-elif="!this.view.total" class="dim addons-msg">No modules match.</div>
+            <t t-else="">
+              <div class="brg-table">
+                <table class="br-table brg-flat">
+                  <thead>
+                    <tr><th>Module</th><th>Summary</th><th>Repository</th><th>State</th><th/></tr>
+                  </thead>
+                  <tbody>
+                    <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
+                      <td class="addon-name" t-att-title="mod.summary" t-out="mod.name"/>
+                      <td class="dim"><div class="br-ellip" t-att-title="mod.summary" t-out="mod.summary || '—'"/></td>
+                      <td class="dim" t-out="mod.repo"/>
+                      <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
+                      <td>
+                        <div class="br-act">
+                          <button class="addon-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
+                                  t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name)"
+                                  t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
+                   t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
+            </t>
+          </div>
+          <LogConsole t-if="this.addons.runActive() or this.addons.running" title="'Install / upgrade output'" buffer="this.addons.output" extraClass="'addons-console'"/>
+        </t>
+      </div>
+    </section>`;
+  addons = plugin(AddonsPlugin);
+  refreshIcon = m(ICONS.refresh);
+  setup() {
+    useEffect(() => {
+      const db = this.addons.targetDb();
+      if (db && db !== this.addons.loadedDb() && db !== this.addons.erroredDb() && !this.addons.loading())
+        this.addons.load();
+    });
+  }
+  get view() {
+    return this.addons.filtered();
+  }
+  get count() {
+    const n = this.view.total;
+    return `${n} module${n === 1 ? "" : "s"}`;
+  }
+  get targetLabel() {
+    return `${this.addons.targetName()} \xB7 ${this.addons.targetDb()}`;
+  }
+  toggleState(value) {
+    this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
+  }
+  stateClass(mod) {
+    return (mod.state || "none").replace(/\s+/g, "-");
+  }
+};
+
+// static/src/plugins/database_plugin.js
+var DatabasePlugin = class extends Plugin {
+  static sequence = 3;
+  server = plugin(ServerPlugin);
+  eventLog = plugin(EventLogPlugin);
+  config = plugin(ConfigPlugin);
+  databases = signal([]);
+  // view state; freshness is the server's job now
+  at = signal(0);
+  loading = signal(false);
+  error = signal("");
+  dropping = signal("");
+  _wasRunning = false;
+  // last-seen server-running state, to detect the start edge
+  setup() {
+    useEffect(() => this._onStatus(this.server.status()));
+  }
+  // reload (bypassing the cache) on the rising edge into "running" — the freshly
+  // created db may not be in the cached list yet
+  _onStatus(status) {
+    const running = status.state === "running";
+    if (running && !this._wasRunning) this.load(true);
+    this._wasRunning = running;
+  }
+  get activeDb() {
+    return this.server.status().db || null;
+  }
+  // fetch the database list (the server caches it). `force` (manual Refresh) adds
+  // ?refresh=1 so the backend re-queries instead of serving its cache.
+  async load(force = false) {
+    this.loading.set(true);
+    this.error.set("");
+    try {
+      const resp = await fetch(force ? "/api/databases?refresh=1" : "/api/databases");
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "failed");
+      this.databases.set(data.databases);
+      this.at.set(Date.now());
+    } catch (e) {
+      this.error.set(e.message);
+    } finally {
+      this.loading.set(false);
+    }
+  }
+  // drop a database; returns null on success or an error message on failure
+  // (the caller handles confirmation + error reporting via the dialog)
+  async drop(name) {
+    this.dropping.set(name);
+    this.eventLog.add(`dropping database ${name}`);
+    try {
+      await postJSON("/api/databases/drop", { name, filestore: this._filestore() });
+      await this.load(true);
+      return null;
+    } catch (e) {
+      this.eventLog.add(`failed to drop database ${name}: ${e.message}`);
+      return e.message;
+    } finally {
+      this.dropping.set("");
+    }
+  }
+  // clone `name` into a new database `target`; returns null on success or an error
+  async clone(name, target) {
+    this.eventLog.add(`cloning database ${name} \u2192 ${target}`);
+    try {
+      await postJSON("/api/databases/clone", {
+        source: name,
+        target,
+        filestore: this._filestore()
+      });
+      await this.load(true);
+      return null;
+    } catch (e) {
+      this.eventLog.add(`failed to clone database ${name}: ${e.message}`);
+      return e.message;
+    }
+  }
+  // clone `source` into `target`, transparently stopping + resuming the server when
+  // `source` is the active db (postgres createdb -T needs exclusive access). Returns
+  // null on success or an error message; the server is resumed even if the clone fails.
+  async cloneStoppingServer(source, target) {
+    const resume = this.activeDb === source && this.server.status().state !== "stopped";
+    if (resume) await this.server.stop();
+    const error = await this.clone(source, target);
+    if (resume) await this.server.resume();
+    return error;
+  }
+  // drop `name`, stopping the server first when it's the active db (the server
+  // holds a connection to it). Unlike clone, we don't resume — the database is
+  // gone, so the server stays stopped. Returns null on success or an error message.
+  async dropStoppingServer(name) {
+    if (this.activeDb === name && this.server.status().state !== "stopped") {
+      await this.server.stop();
+    }
+    return this.drop(name);
+  }
+  // rename `name` to `newName`; returns null on success or an error message
+  async rename(name, newName) {
+    this.eventLog.add(`renaming database ${name} \u2192 ${newName}`);
+    try {
+      await postJSON("/api/databases/rename", {
+        name,
+        new_name: newName,
+        filestore: this._filestore()
+      });
+      await this.load(true);
+      return null;
+    } catch (e) {
+      this.eventLog.add(`failed to rename database ${name}: ${e.message}`);
+      return e.message;
+    }
+  }
+  // the configured filestore root, sent with drop/clone/rename so the backend keeps
+  // each db's <filestore>/<db> directory in lockstep (empty = leave the disk alone)
+  _filestore() {
+    return this.config.config.filestore || "";
+  }
+};
+
 // static/src/plugins/assets_plugin.js
 var AssetsPlugin = class extends Plugin {
   static sequence = 6;
@@ -3654,233 +3976,285 @@ var AssetsPlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/review_plugin.js
-var mbKey = (p) => `${p.github}#${p.number}`;
-var ReviewPlugin = class extends Plugin {
-  static sequence = 5;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
-  // the shared observed store
-  prs = signal([]);
-  // view state; freshness is the server's job
-  at = signal(0);
-  loading = signal(false);
-  error = signal("");
-  // mergebot state is one shared map: the Code screen reads and writes the same one,
-  // so a PR scraped on either screen shows its badge on both (dedup via store.mbPending)
-  mergebot = this.store.mergebot;
-  // "github#number" -> mergebot state (or "" / "merged")
-  mbDetails = this.store.mbDetails;
-  // "github#number" -> blocked-reason detail
-  favorites = signal(this._readArr("reviews_favorites"));
-  // [branch, …] (starred groups, sorted first)
-  _merged = new Set(this._readArr("reviews_merged"));
-  // terminal merged PRs
-  _noMergebot = new Set(this._readArr("reviews_no_mergebot"));
-  // repos without mergebot
-  // fetch the commented-on PRs (the server caches them). `force` (manual Refresh)
-  // adds ?refresh=1 so the backend re-queries instead of serving its cache.
-  async load(force = false) {
-    this.loading.set(true);
-    this.error.set("");
-    try {
-      const resp = await fetch(force ? "/api/reviews?refresh=1" : "/api/reviews");
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || "failed");
-      this.prs.set((data.prs || []).map(PullRequest.from));
-      this.at.set(Date.now());
-    } catch (e) {
-      this.error.set(e.message);
-    } finally {
-      this.loading.set(false);
-    }
-  }
-  // starred branch groups (by branch name), persisted; sorted first in the Reviews screen
-  isFavorite(key) {
-    return this.favorites().includes(key);
-  }
-  toggleFavorite(key) {
-    const favs = this.favorites();
-    const next = favs.includes(key) ? favs.filter((k) => k !== key) : [...favs, key];
-    this.favorites.set(next);
-    this.config.setState("reviews_favorites", next);
-  }
-  // load mergebot states for `prs` ([{github, number}]). Skips PRs already known
-  // merged and (on normal loads) repos known to lack mergebot, so only the unknown
-  // ones hit the network. Pass {refresh:true} to re-probe (bypasses caches; still
-  // never re-fetches merged PRs).
-  async loadMergebot(prs, { refresh = false } = {}) {
-    const seeded = {};
-    for (const p of prs) {
-      const k = mbKey(p);
-      if (this._merged.has(k) && this.mergebot()[k] !== "merged") seeded[k] = "merged";
-    }
-    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null);
-    const have = this.mergebot();
-    const todo = prs.filter((p) => {
-      const k = mbKey(p);
-      if (this._merged.has(k)) return false;
-      if (this._noMergebot.has(p.github) && !refresh) return false;
-      return refresh || !(k in have) && !this.store.mbPending.has(k);
-    });
-    if (!todo.length) return;
-    const keys = todo.map(mbKey);
-    keys.forEach((k) => this.store.mbPending.add(k));
-    try {
-      const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.store.mergeMergebot(res.states, res.details || {});
-      this._record(todo, res);
-    } catch {
-    } finally {
-      keys.forEach((k) => this.store.mbPending.delete(k));
-    }
-  }
-  // fold a /api/mergebot response into the persisted sets: newly-merged PRs become
-  // terminal; repos the backend flags unsupported are remembered; repos we re-probed
-  // that came back supported recover (dropped from the skip list).
-  _record(requested, res) {
-    let changed = false;
-    for (const [k, state] of Object.entries(res.states || {})) {
-      if (state === "merged" && !this._merged.has(k)) {
-        this._merged.add(k);
-        changed = true;
-      }
-    }
-    const unsupported = new Set(res.unsupported || []);
-    for (const repo of new Set(requested.map((p) => p.github))) {
-      if (!unsupported.has(repo) && this._noMergebot.delete(repo)) changed = true;
-    }
-    for (const repo of unsupported) {
-      if (!this._noMergebot.has(repo)) {
-        this._noMergebot.add(repo);
-        changed = true;
-      }
-    }
-    if (changed) this._persist();
-  }
-  _persist() {
-    this.config.setState("reviews_merged", [...this._merged]);
-    this.config.setState("reviews_no_mergebot", [...this._noMergebot]);
-  }
-  _readArr(field) {
-    const v = this.config.getState(field, []);
-    return Array.isArray(v) ? v : [];
-  }
-};
-
-// static/src/plugins/terminal_plugin.js
-var TerminalPlugin = class extends Plugin {
+// static/src/components/assets.js
+var BundleNode = class extends Component {
+  static template = xml`
+    <div class="bnode">
+      <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
+        <span class="bnode-caret" t-out="this.props.node.children.length ? (this.open() ? '▾' : '▸') : ''"/>
+        <span class="bnode-name" t-out="this.props.node.name"/>
+        <span class="bnode-size" t-out="this.fmt(this.props.node.size)"/>
+      </div>
+      <t t-if="this.open()">
+        <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
+      </t>
+    </div>`;
+  props = props({ node: t.any(), depth: t.any() });
   open = signal(false);
+  setup() {
+    if (this.props.depth === 0) this.open.set(true);
+  }
   toggle() {
-    this.open.set(!this.open());
+    if (this.props.node.children.length) this.open.set(!this.open());
+  }
+  fmt(n) {
+    return formatBytes(n);
   }
 };
-
-// static/src/plugins/update_plugin.js
-var UpdatePlugin = class extends Plugin {
-  server = plugin(ServerPlugin);
-  dialogs = plugin(DialogPlugin);
-  // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
-  info = signal(null);
-  applying = signal(false);
-  // true while updating + restarting (drives an overlay)
+BundleNode.components = { BundleNode };
+var AssetsScreen = class extends Component {
+  static components = { SearchBox, BundleNode };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top has-filters">
+          <h1>Assets</h1>
+          <div class="panel-filters">
+            <SearchBox value="this.search"/>
+            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
+            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
+            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
+          </div>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <select t-att-value="this.assets.selectedDb()" t-on-change="ev => this.assets.selectDb(ev.target.value)" title="database to inspect">
+            <option value="">Select a database…</option>
+            <option t-foreach="this.dbOptions" t-as="d" t-key="d" t-att-value="d" t-out="d"/>
+          </select>
+          <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.generate()">Generate asset bundles</button>
+          <span t-if="this.assets.selectedDb()" class="row-count" t-out="this.count"/>
+        </div>
+      </div>
+      <div class="content br-fill">
+        <t t-if="this.assets.bundleData()">
+          <div class="assets-analysis">
+            <div class="assets-analysis-bar">
+              <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
+              <span class="assets-analysis-title" t-out="this.analysisTitle"/>
+              <span class="meta" t-out="this.analysisTotal"/>
+              <div class="assets-analysis-views">
+                <SearchBox value="this.treeSearch"/>
+                <button class="pbtn" t-att-class="{active: this.view() === 'tree'}" t-on-click="() => this.view.set('tree')">Aggregate</button>
+                <button class="pbtn" t-att-class="{active: this.view() === 'flat'}" t-on-click="() => this.view.set('flat')">Flat</button>
+              </div>
+            </div>
+            <div class="assets-tree">
+              <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing…</div>
+              <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
+              <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
+              <div t-else="" class="assets-tree-inner">
+                <t t-if="this.view() === 'tree'">
+                  <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
+                </t>
+                <t t-else="">
+                  <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
+                    <span class="bnode-name" t-out="f.path"/>
+                    <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
+                  </div>
+                </t>
+              </div>
+            </div>
+          </div>
+        </t>
+        <t t-else="">
+        <div t-att-class="{busy: this.assets.busy()}">
+          <div t-if="!this.assets.selectedDb()" class="dim br-empty">Select a database to list its asset bundles.</div>
+          <div t-elif="this.assets.error()" class="dim br-empty" t-out="'Failed to load: ' + this.assets.error()"/>
+          <div t-elif="this.assets.loading() and !this.rows().length" class="dim br-empty">Loading…</div>
+          <div t-elif="!this.rows().length" class="dim br-empty">No asset bundles in this database.</div>
+          <div t-else="" class="br-card">
+            <div class="brg-table">
+              <table class="br-table brg-flat">
+                <thead>
+                  <tr>
+                    <th class="br-sort" t-on-click="() => this.sort('name')">Bundle<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
+                    <th class="br-sort" t-on-click="() => this.sort('size')">Size<span class="br-arrow" t-out="this.sortArrow('size')"/></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr t-foreach="this.rows()" t-as="b" t-key="b.id">
+                    <td class="addon-name">
+                      <button class="assets-name" t-att-title="'analyze ' + this.bundleBase(b.name) + '.min bundle'" t-on-click="() => this.analyze(b)" t-out="b.name"/>
+                      <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
+                    </td>
+                    <td t-out="this.fmtSize(b.size)"/>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        </t>
+      </div>
+    </section>`;
+  assets = plugin(AssetsPlugin);
+  db = plugin(DatabasePlugin);
+  refreshIcon = m(ICONS.refresh);
+  view = signal("tree");
+  // analysis view: "tree" (aggregate) | "flat"
+  treeSearch = signal("");
+  // filter files within the analysis
+  copiedId = signal(null);
+  // id of the row whose url was just copied (transient label)
+  sortKey = signal("size");
+  // "name" | "size"
+  sortDir = signal("desc");
+  // "asc" | "desc" — default: largest bundle first
+  search = signal("");
+  showJs = signal(true);
+  // include .js bundles
+  showCss = signal(true);
+  // include .css bundles
+  showOther = signal(true);
+  // include non-js/non-css assets (fonts, source maps, xml…)
   setup() {
-    this._load();
-    setInterval(() => this._load(true), 30 * 60 * 1e3);
-    this.server.onGooUpdate((status) => this.info.set(status));
-  }
-  // on-demand re-check (the Config tab's "Check for update" button): fetch +
-  // recompute on the backend, refresh `info`, and return the fresh result
-  async check() {
-    try {
-      const data = await postJSON("/api/goo/check");
-      this.info.set(data);
-      return data;
-    } catch (e) {
-      return { ok: false, error: e.message };
+    this.db.load();
+    if (!this.assets.selectedDb()) {
+      const d = this.assets.defaultDb();
+      if (d) this.assets.selectDb(d);
     }
   }
-  // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
-  // otherwise explain how to update manually so local work is never clobbered.
-  // Only meaningful when behind > 0 (the badge / a positive check gate it).
-  async promptUpdate() {
-    const u = this.info() || {};
-    if (!u.behind) return;
-    if (!u.can_fast_forward) {
-      let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
-      if (u.ahead) why += `, with ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} on top`;
-      if (u.dirty) why += ", and the working tree has uncommitted changes";
-      why += ". Update manually to keep your work, e.g. `git pull --rebase`.";
-      return void this.dialogs.open({
-        title: "goo update available",
-        message: why,
-        okLabel: "OK",
-        cancelLabel: null
-      });
+  get dbOptions() {
+    return this.db.databases().map((d) => d.name);
+  }
+  get stamp() {
+    if (this.assets.generating()) return "generating\u2026";
+    if (this.assets.loading()) return "loading\u2026";
+    return this.assets.at() ? `updated ${timeAgo(new Date(this.assets.at()).toISOString())}` : "";
+  }
+  get count() {
+    const n = this.rows().length;
+    return `${n} bundle${n === 1 ? "" : "s"}`;
+  }
+  // the bundle base name an attachment belongs to, e.g. "web.assets_web.min.js" or
+  // "web.assets_web.css.map" -> "web.assets_web"
+  bundleBase(name) {
+    return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
+  }
+  // analyze the bundle this row belongs to (its per-file size breakdown), scoped to
+  // the clicked attachment's kind so the total matches its row size: any .css/.css.map
+  // → css, everything else (.min.js, .js.map, …) → js.
+  analyze(b) {
+    const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
+    this.assets.analyze(this.bundleBase(b.name), kind);
+  }
+  // the analyzed attachment's name, e.g. "web.assets_web.min.js" — the .min asset the
+  // breakdown was scoped to, so it reads as the row that was clicked
+  get analysisTitle() {
+    const d = this.assets.bundleData();
+    if (!d) return "";
+    return `${d.name}.min.${d.kind === "css" ? "css" : "js"}`;
+  }
+  // total minified size across the analyzed bundle's js + css + xml
+  get analysisTotal() {
+    const d = this.assets.bundleData();
+    if (!d) return "";
+    const all = [...d.js || [], ...d.css || [], ...d.xml || []];
+    return `${formatBytes(all.reduce((s, [, n]) => s + n, 0))} minified`;
+  }
+  // the analyzed bundle's files as a flat list ({path, bytes}), search-filtered,
+  // largest first. Same path can occur more than once (e.g. a template and its
+  // registerTemplateExtension share their base template's name) — merge those into
+  // one row (sizes summed), matching how the tree view aggregates by path already.
+  get flat() {
+    const d = this.assets.bundleData();
+    if (!d) return [];
+    const q = this.treeSearch().trim().toLowerCase();
+    const byPath = /* @__PURE__ */ new Map();
+    for (const [path, bytes] of [...d.js || [], ...d.css || [], ...d.xml || []]) {
+      byPath.set(path, (byPath.get(path) || 0) + bytes);
     }
-    const serverNote = this.server.status().state === "running" ? " The running Odoo server will be stopped." : "";
-    const ok = await this.dialogs.open({
-      title: "goo update available",
-      message: `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master and can be updated cleanly. goo will fast-forward, restart, and this page will reload automatically.${serverNote}`,
-      okLabel: "Update & restart",
-      cancelLabel: "Later"
+    return [...byPath.entries()].map(([path, bytes]) => ({ path, bytes })).filter((f) => !q || f.path.toLowerCase().includes(q)).sort((a, b) => b.bytes - a.bytes);
+  }
+  // the analyzed bundle aggregated into a tree: top level is js/css/xml, then each
+  // path segment, sizes summed up the tree; children sorted largest first
+  get tree() {
+    const d = this.assets.bundleData();
+    if (!d) return [];
+    const q = this.treeSearch().trim().toLowerCase();
+    const top = [];
+    for (const [label, files] of [
+      ["js", d.js],
+      ["css", d.css],
+      ["xml", d.xml]
+    ]) {
+      const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
+      if (!matched.length) continue;
+      const root = { name: label, size: 0, children: {} };
+      for (const [path, bytes] of matched) {
+        root.size += bytes;
+        let node = root;
+        for (const part of path.split("/").filter(Boolean)) {
+          node.children[part] = node.children[part] || { name: part, size: 0, children: {} };
+          node = node.children[part];
+          node.size += bytes;
+        }
+      }
+      top.push(root);
+    }
+    const finalize = (n) => ({
+      name: n.name,
+      size: n.size,
+      children: Object.values(n.children).map(finalize).sort((a, b) => b.size - a.size)
     });
-    if (!ok) return;
-    const res = await this.applyAndRestart();
-    if (!res.ok)
-      this.dialogs.open({
-        title: "Update failed",
-        message: res.error,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+    return top.map(finalize).sort((a, b) => b.size - a.size);
   }
-  async _load(retried = false) {
-    try {
-      const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
-      this.info.set(data);
-      if (!data.checked && !retried) setTimeout(() => this._load(true), 3e3);
-    } catch {
+  // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)
+  // and everything that isn't plain js/css (fonts, xml, …) count as "other".
+  kind(b) {
+    if (/\.map$/i.test(b.name)) return "other";
+    if (/\.css$/i.test(b.name)) return "css";
+    if (/\.js$/i.test(b.name)) return "js";
+    return "other";
+  }
+  // search- and kind-filtered bundles, sorted by the active column
+  rows() {
+    const q = this.search().trim().toLowerCase();
+    const showJs = this.showJs();
+    const showCss = this.showCss();
+    const showOther = this.showOther();
+    const dir = this.sortDir() === "asc" ? 1 : -1;
+    const bySize = this.sortKey() === "size";
+    return this.assets.bundles().filter((b) => {
+      const k = this.kind(b);
+      if (k === "js" && !showJs) return false;
+      if (k === "css" && !showCss) return false;
+      if (k === "other" && !showOther) return false;
+      return !q || b.name.toLowerCase().includes(q) || b.url.toLowerCase().includes(q);
+    }).sort(
+      (a, b) => bySize ? dir * ((a.size || 0) - (b.size || 0)) : dir * a.name.localeCompare(b.name)
+    );
+  }
+  // toggle direction when re-clicking the active column, else switch column with a
+  // sensible default (names ascending A→Z, sizes descending largest-first)
+  sort(key) {
+    if (this.sortKey() === key) {
+      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
+    } else {
+      this.sortKey.set(key);
+      this.sortDir.set(key === "size" ? "desc" : "asc");
     }
   }
-  // fast-forward goo onto origin/master, restart the server, then reload the page
-  // once it's back. Returns { ok, error }; on success the page is reloading.
-  async applyAndRestart() {
-    this.applying.set(true);
-    const boot2 = this.info()?.boot;
-    try {
-      await postJSON("/api/goo/update");
-      await postJSON("/api/goo/restart").catch(() => {
-      });
-      if (await this._waitUntilRestarted(boot2)) {
-        location.reload();
-        return { ok: true };
-      }
-      this.applying.set(false);
-      return { ok: false, error: "goo was updated but didn't come back \u2014 restart it manually." };
-    } catch (e) {
-      this.applying.set(false);
-      return { ok: false, error: e.message };
-    }
+  // " ▲" / " ▼" for the active sort column, else ""
+  sortArrow(key) {
+    if (this.sortKey() !== key) return "";
+    return this.sortDir() === "asc" ? " \u25B2" : " \u25BC";
   }
-  // wait until the re-exec'd goo is serving: a changed boot id is the reliable
-  // signal (the old, still-shutting-down server keeps the old id); fall back to
-  // "saw it go down, then back up" if we never had a boot id to compare.
-  async _waitUntilRestarted(boot2, timeout = 3e4) {
-    const t0 = Date.now();
-    let wentDown = false;
-    await new Promise((r) => setTimeout(r, 600));
-    while (Date.now() - t0 < timeout) {
-      try {
-        const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
-        if (boot2 ? data.boot && data.boot !== boot2 : wentDown) return true;
-      } catch {
-        wentDown = true;
-      }
-      await new Promise((r) => setTimeout(r, 400));
-    }
-    return false;
+  // copy a bundle's /web/assets/… path to the clipboard, flipping its link to
+  // "copied" for a moment
+  copyUrl(b) {
+    navigator.clipboard?.writeText(b.url);
+    this.copiedId.set(b.id);
+    setTimeout(() => {
+      if (this.copiedId() === b.id) this.copiedId.set(null);
+    }, 1400);
+  }
+  fmtSize(n) {
+    return formatBytes(n || 0);
   }
 };
 
@@ -4177,2103 +4551,196 @@ var WorktreePlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/claude_plugin.js
-var CLAUDE_MODELS = [
-  { value: "", label: "Default model" },
-  { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
-  { value: "opus", label: "Opus 4.8" },
-  { value: "sonnet", label: "Sonnet 5" },
-  { value: "haiku", label: "Haiku 4.5" }
-];
-var ClaudePlugin = class extends Plugin {
-  static sequence = 6;
-  // after WorktreePlugin (5), whose wtRepos() it reuses
+// static/src/components/dialogs.js
+var RemoteBranchDialog = class extends Component {
+  static template = xml`
+    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+      <div class="dialog rbd" t-on-click.stop="() => {}">
+        <h2 class="dialog-title">Target from remote branch</h2>
+        <div class="dialog-body">
+          <div class="dialog-field">
+            <label>Branch name</label>
+            <input type="text" class="rbd-input" t-ref="this.inputEl"
+                   placeholder="type to search across all repos…"
+                   t-on-input="(ev) => this.onInput(ev.target.value)"
+                   t-on-keydown="(ev) => this.onKey(ev)"/>
+          </div>
+          <div class="rbd-results">
+            <div t-if="this.loading()" class="rbd-status">Searching…</div>
+            <div t-elif="this.searched() and !this.rows().length" class="rbd-status">No matching branches found.</div>
+            <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
+                 class="rbd-row" t-att-class="{selected: this.sel() === r.branch}"
+                 t-on-click="() => this.sel.set(r.branch)">
+              <span class="rbd-branch" t-out="r.branch"/>
+              <span class="rbd-repos" t-out="r.repos.join(', ')"/>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Create target</button>
+          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  props = props({ done: t.function() });
   config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  worktree = plugin(WorktreePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
-  convos = signal({});
-  // targetId -> { items: [...], state: "idle"|"running" }
-  models = CLAUDE_MODELS;
-  model = signal(this.config.getState("claude_model", ""));
-  // chosen model, persisted
-  _primed = /* @__PURE__ */ new Set();
-  // targets whose transcript we've fetched from the backend
+  loading = signal(false);
+  searched = signal(false);
+  rows = signal([]);
+  sel = signal("");
+  inputEl = signal.ref(HTMLElement);
+  _timer = null;
   setup() {
-    this.server.onClaude((d) => this.apply(d));
+    onMounted(() => this.inputEl()?.focus());
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => {
+      document.removeEventListener("keydown", onKey);
+      clearTimeout(this._timer);
+    });
   }
-  setModel(v) {
-    this.model.set(v || "");
-    this.config.setState("claude_model", v || "");
+  done(result) {
+    this.props.done(result);
   }
-  _get(id) {
-    return this.convos()[id] || { items: [], state: "idle" };
-  }
-  _set(id, next) {
-    this.convos.set({ ...this.convos(), [id]: next });
-  }
-  _append(id, item) {
-    const c = this._get(id);
-    this._set(id, { ...c, items: [...c.items, item] });
-  }
-  items(id) {
-    return this._get(id).items;
-  }
-  running(id) {
-    return this._get(id).state === "running";
-  }
-  // a live chat item pushed from the backend (assistant text, tool activity, result,
-  // or error). The final "result" ends the turn — flip back to idle.
-  apply(d) {
-    if (!d || !d.target) return;
-    const id = d.target;
-    if (d.role === "result") {
-      const c = this._get(id);
-      if (!d.ok && d.error) this._set(id, { ...c, items: [...c.items, d], state: "idle" });
-      else this._set(id, { ...c, state: "idle" });
+  onInput(val) {
+    this.sel.set("");
+    clearTimeout(this._timer);
+    if (!val.trim()) {
+      this.loading.set(false);
+      this.searched.set(false);
+      this.rows.set([]);
       return;
     }
-    this._append(id, d);
+    this.loading.set(true);
+    this._timer = setTimeout(() => this._search(val.trim()), 300);
   }
-  // fetch the transcript once per target (after a reload the backend still holds it);
-  // skip if we already have live items so an in-flight turn isn't clobbered
-  async prime(id) {
-    if (!id || this._primed.has(id)) return;
-    this._primed.add(id);
-    if (this._get(id).items.length) return;
+  async _search(query) {
+    const repos = this.config.config.repos.filter((r) => r.github).map((r) => ({ id: r.id, github: r.github }));
     try {
-      const res = await postJSON("/api/worktree/claude/history", { target: id });
-      this._set(id, { items: res.items || [], state: res.state || "idle" });
-    } catch {
-    }
-  }
-  // send a task to Claude for <tgt>, running in its worktree's community checkout with
-  // the target's other repos added as extra allowed dirs
-  async send(tgt, prompt) {
-    const text = (prompt || "").trim();
-    if (!text || this.running(tgt.id)) return;
-    const repos = this.worktree.wtRepos(tgt);
-    const community = repos.find((r) => r.repo === "community");
-    if (!community) {
-      this._error("Cannot run Claude", "this worktree has no community repo");
-      return;
-    }
-    const addDirs = repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath);
-    this._append(tgt.id, { role: "user", text });
-    this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
-    try {
-      await postJSON("/api/worktree/claude", {
-        target: tgt.id,
-        prompt: text,
-        cwd: community.worktreePath,
-        addDirs,
-        model: this.model() || void 0
+      const res = await fetch("/api/code/remote-branches/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repos, query })
       });
-    } catch (e) {
-      this._append(tgt.id, { role: "error", text: e.message });
-      this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
+      const data = await res.json();
+      if (!data.ok) return;
+      const byBranch = {};
+      for (const { repo, branch } of data.results) {
+        if (!byBranch[branch]) byBranch[branch] = [];
+        byBranch[branch].push(repo);
+      }
+      this.rows.set(Object.entries(byBranch).map(([branch, repos2]) => ({ branch, repos: repos2 })));
+    } finally {
+      this.loading.set(false);
+      this.searched.set(true);
     }
   }
-  async stop(tgt) {
-    try {
-      await postJSON("/api/worktree/claude/stop", { target: tgt.id });
-    } catch {
-    }
-    this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
+  onKey(ev) {
+    if (ev.key === "Enter" && this.sel()) this.ok();
   }
-  _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+  ok() {
+    if (!this.sel()) return;
+    const branch = this.sel();
+    const repos = this.rows().find((r) => r.branch === branch)?.repos || [];
+    this.done({ branch, repos });
   }
 };
-
-// static/src/plugins/nightly_plugin.js
-var NightlyPlugin = class extends Plugin {
-  static sequence = 4;
-  versions = signal([]);
-  nights = signal([]);
-  loading = signal(false);
+var CommitsDialog = class extends Component {
+  static template = xml`
+    <div class="term-panel commits-panel" t-ref="this.drag.handle">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.props.label"/>
+        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
+      </div>
+      <div class="commits-body">
+        <div t-if="this.loading()" class="commits-empty">loading…</div>
+        <div t-elif="this.error()" class="commits-empty" t-out="this.error()"/>
+        <div t-elif="!this.commits().length" class="commits-empty">no commits</div>
+        <t t-else="">
+          <t t-foreach="this.commits()" t-as="c" t-key="c.sha">
+            <div class="commit-row" t-att-class="{expanded: this.isExpanded(c.sha)}" t-on-click="() => this.toggle(c.sha)">
+              <span class="commit-when" t-att-title="c.date" t-out="this.when(c.date)"/>
+              <span class="commit-subject" t-att-title="c.subject" t-out="c.subject"/>
+              <span class="commit-author" t-out="c.author"/>
+            </div>
+            <div t-if="this.isExpanded(c.sha)" class="commit-detail">
+              <div class="commit-detail-meta">
+                <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
+                <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
+                <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
+              </div>
+              <pre class="commit-body" t-out="this.message(c)"/>
+            </div>
+          </t>
+        </t>
+      </div>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+  props = props({
+    done: t.function(),
+    path: t.string(),
+    label: t.string(),
+    ref: t.string(),
+    github: t.string().optional()
+  });
+  code = plugin(CodePlugin);
+  externalIcon = m(ICONS.external);
+  commits = signal([]);
+  loading = signal(true);
   error = signal("");
-  at = signal(0);
-  _maxNights = 0;
-  // how many nights the backend last fetched, this session
-  _errorsCache = /* @__PURE__ */ new Map();
-  // build url -> { errors, metrics } (session-only memo)
-  timeoutUrls = signal(/* @__PURE__ */ new Set());
-  // URLs whose builds contain a timeout error
-  async fetchErrors(url) {
-    if (this._errorsCache.has(url)) return this._errorsCache.get(url);
-    const res = await postJSON("/api/nightly/errors", { url });
-    const result = { errors: res.errors || [], metrics: res.metrics || {} };
-    this._errorsCache.set(url, result);
-    if (result.errors.some((e) => e.timeout)) {
-      const s = new Set(this.timeoutUrls());
-      s.add(url);
-      this.timeoutUrls.set(s);
-    }
-    return result;
+  expanded = signal(/* @__PURE__ */ new Set());
+  setup() {
+    this.drag = useDragResize({ w: 620, h: 460 });
+    onMounted(() => this.load());
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
   }
-  async load(force = false, maxNights = 7) {
-    if (this.loading()) return;
-    if (!force && this.at() && this._maxNights >= maxNights) return;
-    this.loading.set(true);
-    this.error.set("");
+  async load() {
     try {
-      const res = await postJSON("/api/nightly", { refresh: !!force, max_nights: maxNights });
-      this.versions.set(res.versions || []);
-      this.nights.set(res.nights || []);
-      this._maxNights = maxNights;
-      this.at.set(Date.now());
+      this.commits.set(await this.code.commits(this.props.path, this.props.ref));
     } catch (e) {
       this.error.set(e.message);
     } finally {
       this.loading.set(false);
     }
   }
-};
-
-// static/src/plugins/memory_plugin.js
-var STORAGE_KEY = "oo-memory-builds";
-var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
-var MemoryPlugin = class extends Plugin {
-  static sequence = 4;
-  builds = signal(this._loadBuilds());
-  data = signal([]);
-  loading = signal(false);
-  error = signal("");
-  withMobile = signal(false);
-  batchUrl = signal(localStorage.getItem(STORAGE_KEY_BATCH_URL) || "");
-  batchLoading = signal(false);
-  batchError = signal("");
-  _loadBuilds() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : null;
-      return Array.isArray(parsed) && parsed.length ? parsed : [{ label: "", url: "" }];
-    } catch {
-      return [{ label: "", url: "" }];
-    }
-  }
-  _saveBuilds(builds) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(builds));
-    } catch {
-    }
-  }
-  setBuilds(builds) {
-    this.builds.set(builds);
-    this._saveBuilds(builds);
-  }
-  addBuild() {
-    this.setBuilds([...this.builds(), { label: "", url: "" }]);
-  }
-  removeBuild(idx) {
-    const next = this.builds().filter((_, i) => i !== idx);
-    this.setBuilds(next.length ? next : [{ label: "", url: "" }]);
-    this.data.set([]);
-  }
-  updateBuild(idx, key, value) {
-    const next = this.builds().map((b, i) => i === idx ? { ...b, [key]: value } : b);
-    this.setBuilds(next);
-  }
-  setBatchUrl(url) {
-    this.batchUrl.set(url);
-    try {
-      localStorage.setItem(STORAGE_KEY_BATCH_URL, url);
-    } catch {
-    }
-  }
-  async fetchBatch() {
-    const url = this.batchUrl().trim();
-    if (!url || this.batchLoading()) return;
-    this.batchLoading.set(true);
-    this.batchError.set("");
-    try {
-      const res = await postJSON("/api/memory/batch", { url });
-      if (!res.builds || !res.builds.length) {
-        this.batchError.set("No builds found at that URL.");
-      } else {
-        const existing = this.builds().filter((b) => b.label.trim() || b.url.trim());
-        this.setBuilds([...existing, ...res.builds]);
-      }
-    } catch (e) {
-      this.batchError.set(e.message || "failed to fetch batch builds");
-    } finally {
-      this.batchLoading.set(false);
-    }
-  }
-  async load() {
-    const builds = this.builds().filter((b) => b.url.trim());
-    if (!builds.length || this.loading()) return;
-    this.loading.set(true);
-    this.error.set("");
-    try {
-      const res = await postJSON("/api/memory/fetch", {
-        builds,
-        with_mobile: this.withMobile()
-      });
-      this.data.set(res.data || []);
-    } catch (e) {
-      this.error.set(e.message || "failed to load memory data");
-    } finally {
-      this.loading.set(false);
-    }
-  }
-};
-
-// static/src/components.js
-var appBus = new EventBus();
-var m = (s) => markup(s);
-function mbCategory(s) {
-  if (s === "merged") return "merged";
-  if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
-  if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
-  if (["blocked", "error"].includes(s)) return "blocked";
-  return "other";
-}
-var ICONS = {
-  dashboard: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
-  refresh: `<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.6 4"/><polyline points="20 4 20 11 13 11"/></svg>`,
-  clear: `<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>`,
-  copy: `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
-  star: `<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>`,
-  server: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none"/></svg>`,
-  code: `<svg viewBox="0 0 24 24"><polyline points="8.5 8 4.5 12 8.5 16"/><polyline points="15.5 8 19.5 12 15.5 16"/></svg>`,
-  target: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>`,
-  branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
-  pr: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="6" y1="9" x2="6" y2="15"/><circle cx="18" cy="18" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/></svg>`,
-  tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
-  databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
-  addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
-  assets: `<svg viewBox="0 0 24 24"><polygon points="12 2 22 7 12 12 2 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
-  config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
-  kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
-  chevron: `<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`,
-  check: `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`,
-  push: `<svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>`,
-  play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
-  stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>`,
-  external: `<svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
-  journal: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
-  terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
-  history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
-  worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
-  nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
-  memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`
-};
-var NAV = [
-  { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
-  { id: "code", label: "Code", icon: ICONS.code },
-  { id: "targets", label: "Targets", icon: ICONS.target },
-  { id: "server", label: "Server", icon: ICONS.server },
-  { id: "worktree", label: "Worktrees", icon: ICONS.worktree, optIn: true },
-  { id: "tests", label: "Tests", icon: ICONS.tests },
-  { id: "branches", label: "Branches", icon: ICONS.branches },
-  { id: "prs", label: "PRs", icon: ICONS.pr },
-  { id: "assets", label: "Assets", icon: ICONS.assets },
-  { id: "addons", label: "Addons", icon: ICONS.addons },
-  { id: "databases", label: "Databases", icon: ICONS.databases },
-  { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },
-  { id: "memory", label: "Memory", icon: ICONS.memory, optIn: true },
-  { id: "config", label: "Configuration", icon: ICONS.config }
-];
-function mergedTabIds(configured) {
-  const inNav = new Set(NAV.map((n) => n.id));
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const t2 of configured || []) {
-    if (!inNav.has(t2.id) || seen.has(t2.id)) continue;
-    seen.add(t2.id);
-    out.push(t2.id);
-  }
-  let anchor = -1;
-  for (const n of NAV) {
-    const idx = out.indexOf(n.id);
-    if (idx !== -1) {
-      anchor = idx;
-    } else {
-      out.splice(++anchor, 0, n.id);
-    }
-  }
-  return out;
-}
-var Topbar = class extends Component {
-  static template = xml`
-    <header class="topbar">
-      <div class="top-left">
-        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/><button t-if="this.updateAvailable" class="nav-update" t-att-title="this.updateTip" t-on-click="() => this.update.promptUpdate()">↑ update</button></div>
-      </div>
-      <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
-        <span class="nt-name">
-          <span class="dot"/>
-          <span class="t-name" t-out="this.target"/>
-        </span>
-        <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
-      </div>
-      <div class="top-right">
-        <t t-foreach="this.routes" t-as="r" t-key="r_index">
-          <a t-if="!this.isMenu(r)" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
-          <div t-elif="r.children.length" class="route-menu">
-            <span class="route route-menu-label"><t t-out="r.label"/><span class="route-caret">▾</span></span>
-            <div class="route-menu-drop">
-              <a t-foreach="r.children" t-as="c" t-key="c_index" class="route-menu-item" t-att-href="c.href" target="_blank" t-out="c.label"/>
-            </div>
-          </div>
-        </t>
-        <button class="nav-events" t-att-class="{active: this.eventLog.open()}" t-on-click="() => this.eventLog.toggle()" t-att-title="this.eventsTip">
-          <t t-out="this.journalIcon"/>
-          <span t-if="this.eventLog.unread()" class="nav-events-badge" t-out="this.eventLog.unread()"/>
-        </button>
-      </div>
-    </header>`;
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  update = plugin(UpdatePlugin);
-  eventLog = plugin(EventLogPlugin);
-  journalIcon = m(ICONS.journal);
-  version = `v${VERSION}`;
-  // event-log toggle tooltip, surfacing the unread count when there is one
-  get eventsTip() {
-    const n = this.eventLog.unread();
-    return n ? `${n} new event${n === 1 ? "" : "s"} \u2014 toggle the event log` : "toggle the event log";
-  }
-  // user-configurable navbar links (/odoo + /web/tests included — they go through
-  // the autologin addon and only resolve while the server is up). An entry with a
-  // `children` array is a menu, rendered as a dropdown of links.
-  get routes() {
-    return this.config.config.links;
-  }
-  isMenu(r) {
-    return Array.isArray(r.children);
-  }
-  // goo's own checkout is behind origin/master (see UpdatePlugin)
-  get updateAvailable() {
-    return (this.update.info()?.behind || 0) > 0;
-  }
-  get updateTip() {
-    const u = this.update.info() || {};
-    let tip = `${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
-    if (u.ahead) tip += `, ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} ahead`;
-    if (u.dirty) tip += ", working tree dirty";
-    return tip;
-  }
-  get active() {
-    const s = this.server.status().state;
-    return s === "running" || s === "starting";
-  }
-  // the active target id: the running one while up, else the last-used one
-  get activeId() {
-    const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
-  }
-  // the active target's display name (dimmed when the server is stopped)
-  get target() {
-    const tgt = this.config.config.targets.find((t2) => t2.id === this.activeId);
-    return tgt ? tgt.name : this.activeId || "";
-  }
-  get stateClass() {
-    const s = this.server.displayState();
-    return s === "running" ? "live" : s === "starting" ? "starting" : "idle";
-  }
-  get tooltip() {
-    return this.active ? `current target (${this.server.status().state})` : "last target \u2014 server stopped";
-  }
-  // the Start/Stop control on the right of the badge. "Starting…" spans the whole
-  // launch — from the optimistic click (pending) through the backend's "starting"
-  // phase — flipping to "Stop" only once the server reports running. An optimistic
-  // `pending` likewise drives the stopping side before the first status lands.
-  get toggle() {
-    const pending = this.server.pending();
-    const s = this.server.status().state;
-    if (pending === "start" || s === "starting")
-      return { label: "Starting\u2026", cls: "start", disabled: true, title: "starting the server\u2026" };
-    if (pending === "stop" || pending === "restart" || s === "stopping")
-      return { label: "Stopping\u2026", cls: "stop", disabled: true, title: "stopping the server\u2026" };
-    if (s === "running")
-      return { label: "Stop", cls: "stop", disabled: false, title: "stop the server" };
-    if (s === "disconnected")
-      return { label: "Start", cls: "start", disabled: true, title: "server unreachable" };
-    return { label: "Start", cls: "start", disabled: false, title: "start the active target" };
-  }
-  onToggle() {
-    const s = this.server.status().state;
-    if (s === "running" || s === "starting") this.server.stop();
-    else if (s === "stopped") this.server.start(this.activeId);
-  }
-};
-var Sidebar = class extends Component {
-  static template = xml`
-    <nav class="sidebar">
-      <button t-foreach="this.nav" t-as="item" t-key="item.id" class="nav-item"
-              t-att-class="{active: this.router.section() === item.id}"
-              t-on-click="() => this.router.go(item.id)">
-        <t t-out="this.icon(item.icon)"/>
-        <t t-out="item.label"/>
-      </button>
-    </nav>`;
-  router = plugin(RouterPlugin);
-  config = plugin(ConfigPlugin);
-  // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
-  // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from
-  // config slot in at their natural position (see mergedTabIds); Config is always
-  // kept, hidden tabs are filtered out.
-  get nav() {
-    const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
-    const configured = this.config.config.tabs;
-    const cfg = Object.fromEntries((configured || []).map((t2) => [t2.id, t2]));
-    const shown = (id) => id === "config" || (cfg[id] ? cfg[id].visible !== false : !meta[id].optIn);
-    if (!configured || !configured.length) return NAV.filter((n) => shown(n.id));
-    const out = mergedTabIds(configured).filter((id) => shown(id)).map((id) => meta[id]);
-    if (!out.some((n) => n.id === "config")) out.push(meta.config);
-    return out;
-  }
-  icon(s) {
-    return m(s);
-  }
-};
-var LogConsole = class extends Component {
-  static template = xml`
-    <section class="console" t-att-class="this.consoleClass">
-      <div t-if="!this.props.bare" class="log-toolbar">
-        <span class="console-title"><span class="cdot" t-att-class="{on: this.live}"/><t t-out="this.props.title"/></span>
-        <div class="toolbar-right">
-          <label class="toggle" t-att-class="{on: this.props.buffer.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
-          <button class="tool-btn" t-on-click="() => this.props.buffer.clear()"><t t-out="this.clearIcon"/>Clear</button>
-        </div>
-      </div>
-      <div class="log-host" t-ref="this.host"/>
-    </section>`;
-  props = props({
-    title: t.string(),
-    buffer: t.any(),
-    extraClass: t.string().optional(),
-    bare: t.boolean().optional()
-  });
-  server = plugin(ServerPlugin);
-  host = signal.ref(HTMLElement);
-  clearIcon = m(ICONS.clear);
-  setup() {
-    onMounted(() => {
-      this.host().appendChild(this.props.buffer.el);
-      this.props.buffer.restore();
-    });
-    onWillUnmount(() => {
-      this.props.buffer.savedScroll = this.props.buffer.el.scrollTop;
-    });
-  }
-  get live() {
-    return this.server.status().state === "running";
-  }
-  get consoleClass() {
-    return [this.props.extraClass, this.props.bare ? "bare" : ""].filter(Boolean).join(" ");
-  }
-  toggleAuto() {
-    const b = this.props.buffer;
-    b.autoScroll.set(!b.autoScroll());
-    if (b.autoScroll()) b.toBottom();
-  }
-};
-var SearchBox = class extends Component {
-  static template = xml`
-    <div class="search-box">
-      <input type="text" t-att-value="this.props.value()" autocomplete="off" placeholder="Search…"
-             t-on-input="ev => this.props.value.set(ev.target.value)"/>
-      <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
-    </div>`;
-  props = props({ value: t.any() });
-};
-var DirtyBadge = class extends Component {
-  static template = xml`
-    <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
-  props = props({ path: t.string(), repo: t.string() });
-  openMenu(ev) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(
-      new CustomEvent("dirty-menu", {
-        detail: { rect, path: this.props.path, repo: this.props.repo }
-      })
-    );
-  }
-};
-var DirtyMenu = class extends Component {
-  static template = xml`
-    <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
-      <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
-      <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
-    </div>`;
-  code = plugin(CodePlugin);
-  open = signal(false);
-  _path = null;
-  _repo = null;
-  _el = null;
-  setup() {
-    onMounted(() => {
-      this._el = document.querySelector(".dirty-menu");
-      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
-      document.addEventListener("click", () => this.open.set(false));
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.open.set(false);
-      });
-    });
-  }
-  async openMenu({ rect, path, repo }) {
-    this._path = path;
-    this._repo = repo;
-    this.open.set(true);
-    await Promise.resolve();
-    const w = this._el.offsetWidth;
-    this._el.style.top = `${rect.bottom + 4}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
-  }
-  wipCommit() {
-    this.open.set(false);
-    this.code.wipCommit(this._path, this._repo);
-  }
-  discard() {
-    this.open.set(false);
-    this.code.discard(this._path, this._repo);
-  }
-};
-var DashboardScreen = class extends Component {
-  static components = { DirtyBadge };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Dashboard</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
-          <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
-        </div>
-      </div>
-      <div class="content">
-        <div t-att-class="{busy: this.code.busy()}">
-          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-
-          <div class="dash-layout">
-          <!-- build targets — a responsive grid, one self-contained card per target -->
-          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
-          <section t-else="" class="dash-tgts-sec">
-            <div class="dash-tgts">
-              <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
-                <div class="dash-tgt-head">
-                  <div class="dash-tgt-title">
-                    <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
-                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.activate(tgt)" t-out="tgt.name"/>
-                    <!-- one runbot/CI badge per target (the build is per bundle, the same
-                         across the target's repos): a link to the runbot bundle that, when
-                         there's a per-check CI breakdown, opens the breakdown popover on
-                         hover (info on hover, the runbot link on click) -->
-                    <t t-set="brow" t-value="this.bundleRow(tgt)"/>
-                    <t t-if="brow">
-                      <t t-set="ci" t-value="this.ciBadge(brow)"/>
-                      <t t-set="rbUrl" t-value="this.runbotUrl(tgt)"/>
-                      <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                        <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
-                      </a>
-                      <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                        <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
-                      </span>
-                    </t>
-                    <!-- one mergebot badge per target, aggregating its PRs' mergebot
-                         states (the most-blocking is shown). A link to the first PR's
-                         mergebot page; the per-repo breakdown opens in a popover on hover. -->
-                    <t t-set="mb" t-value="this.mbBadge(tgt)"/>
-                    <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
-                      <span class="dash-ci-dot"/><t t-out="mb.label"/>
-                    </a>
-                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Worktree screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
-                  </div>
-                  <div class="dash-tgt-actions">
-                    <div class="dash-kebab-wrap">
-                      <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
-                      <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
-                        <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
-                        <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
-                        <button class="dash-menu-item danger" t-att-disabled="!this.targetDbExists(tgt)" t-att-title="this.dropDbTitle(tgt)" t-on-click="() => this.menuDropDb(tgt)">Drop database</button>
-                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="dash-tgt-body">
-                  <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-trow">
-                    <div class="dash-trow-repo">
-                      <div class="dash-row-name" t-out="row.repo"/>
-                      <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
-                      <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
-                    </div>
-                    <t t-if="row.present">
-                      <!-- commit title + PR link share one cell: the title fills the
-                           space (truncating), the PR number aligns at the end; with no
-                           PR the title gets the full width -->
-                      <div class="dash-trow-cm">
-                        <span class="dash-trow-commit commit-open" t-att-class="{disabled: !row.path}" t-att-title="this.commitTip(row)" t-on-click="() => this.openRowCommits(row)" t-out="row.subject || '—'"/>
-                        <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
-                      </div>
-                      <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
-                    </t>
-                    <div t-else="" class="dash-row-missing">
-                      <span>no local branch</span>
-                      <button class="dash-create" t-on-click="() => this.createTargetBranch(row)">create it</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <!-- starred PRs — the PRs whose branch you starred in the PRs tab (Mine +
-               Reviewing), one per line, so the PRs you're tracking sit below your
-               targets. Hidden until something is starred. -->
-          <section t-if="this.starredPrs().length" class="dash-stars-sec">
-            <div class="dash-stars-head">
-              <h2 class="dash-stars-title">Starred PRs</h2>
-            </div>
-            <div class="dash-stars">
-              <div t-foreach="this.starredPrs()" t-as="pr" t-key="pr.github + ':' + pr.number" class="dash-star-row">
-                <button class="dash-star-fav" title="unstar — removes this branch from Starred PRs" t-on-click="() => this.toggleStar(pr)">★</button>
-                <a class="dash-pr-num" target="_blank" t-att-href="pr.url" t-att-title="'open #' + pr.number + ' on GitHub'" t-out="'#' + pr.number"/>
-                <span class="dash-star-branch" t-att-title="pr.branch" t-out="pr.branch || '—'"/>
-                <span class="dash-star-repo" t-out="pr.repoLabel"/>
-                <span class="dash-star-title" t-att-title="pr.title" t-out="pr.title || '—'"/>
-                <span class="pr-state" t-att-class="this.prState(pr)" t-out="this.prState(pr)"/>
-                <a t-if="this.prMb(pr)" class="dash-pr-state" t-att-class="this.prMbClass(pr)" target="_blank" t-att-href="this.code.mergebotUrl(pr.github, pr.number)" t-att-title="'mergebot: ' + this.prMb(pr) + (this.prMbDetail(pr) ? ' — missing: ' + this.prMbDetail(pr) : '')" t-out="this.prMb(pr)"/>
-                <span t-else="" class="dash-star-nomb">—</span>
-                <span class="dash-star-when" t-att-title="this.prDate(pr)" t-out="this.prDate(pr) ? this.cell(this.prDate(pr)) : '—'"/>
-              </div>
-            </div>
-          </section>
-          </div><!-- /.dash-layout -->
-        </div>
-      </div>
-    </section>`;
-  code = plugin(CodePlugin);
-  config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
-  review = plugin(ReviewPlugin);
-  // starred branch groups + their reviewed PRs
-  worktree = plugin(WorktreePlugin);
-  // "wt" badge on worktree targets
-  router = plugin(RouterPlugin);
-  refreshIcon = m(ICONS.refresh);
-  kebabIcon = m(ICONS.kebab);
-  pushIcon = m(ICONS.push);
-  terminalIcon = m(ICONS.terminal);
-  historyIcon = m(ICONS.history);
-  prIcon = m(ICONS.pr);
-  menuId = signal("");
-  // id of the card whose kebab menu is open ("" = none)
-  openWorktree(tgt) {
-    this.worktree.select(tgt.id);
-    this.router.go("worktree");
-  }
-  startCreate() {
-    return startCreateTarget(
-      this.config,
-      this.eventLog,
-      this.code,
-      this.dialogs,
-      this.db,
-      this.server
-    );
-  }
-  toggleMenu(id) {
-    this.menuId.set(this.menuId() === id ? "" : id);
-  }
-  // the "current" target: the one being worked on (last activated), regardless
-  // of whether its branches are still checked out
-  isCurrent(tgt) {
-    return tgt.id === this.server.lastTarget();
-  }
-  async menuDelete(tgt) {
-    this.menuId.set("");
-    if (this.isCurrent(tgt)) return;
-    await this.deleteTarget(tgt);
-  }
-  deleteTarget(tgt) {
-    return deleteTargetDialog(tgt, {
-      config: this.config,
-      code: this.code,
-      db: this.db,
-      eventLog: this.eventLog,
-      repoMap: this.repoMap,
-      dialogs: this.dialogs,
-      isActive: this.isActive(tgt)
-    });
-  }
-  // the target's work branches that exist locally and have a canonical repo on
-  // GitHub (base branches like master are never pushed to the dev fork)
-  _pushableBranches(tgt) {
-    const groups = this.code.groups();
-    const repoMap = this.repoMap;
-    return (tgt.checkouts || []).filter(
-      ({ repo, branch }) => !BASE_BRANCH_RE.test(branch) && repoMap[repo]?.branches.has(branch)
-    ).map(({ repo, branch }) => ({
-      branch,
-      path: groups.pathByRepo[repo],
-      github: groups.githubByRepo[repo]
-    })).filter((x) => x.path && x.github);
-  }
-  canPushTarget(tgt) {
-    return this._pushableBranches(tgt).length > 0;
-  }
-  menuPush(tgt) {
-    this.menuId.set("");
-    const branches = this._pushableBranches(tgt);
-    if (!branches.length) return;
-    const n = branches.length;
-    return pushBranchesDialog(this.code, this.dialogs, branches, {
-      title: `Push ${n} branch${n === 1 ? "" : "es"}?`,
-      message: `Push ${n} branch${n === 1 ? "" : "es"} of "${tgt.name}" to the dev remote (odoo-dev)?`
-    });
-  }
-  menuRemoveFavorite(tgt) {
-    this.menuId.set("");
-    const targets = this.config.config.targets.map(
-      (t2) => t2.id === tgt.id ? { ...t2, favorite: false } : t2
-    );
-    this.config.updateConfig({ targets });
-  }
-  // whether the target's configured database actually exists (so there's something
-  // to drop) — drives the "Drop database" item's enabled state
-  targetDbExists(tgt) {
-    return !!tgt.db && this.db.databases().some((d) => d.name === tgt.db);
-  }
-  dropDbTitle(tgt) {
-    if (!tgt.db) return "no database set for this target";
-    if (!this.targetDbExists(tgt)) return `database "${tgt.db}" does not exist`;
-    return `drop database "${tgt.db}"`;
-  }
-  // drop the target's database, stopping the server first when it's running on it
-  // (the db is about to vanish, so the server stays stopped)
-  async menuDropDb(tgt) {
-    this.menuId.set("");
-    if (!this.targetDbExists(tgt)) return;
-    const stopping = this.db.activeDb === tgt.db && this.server.status().state !== "stopped";
-    const res = await this.dialogs.open({
-      title: `Drop "${tgt.db}"?`,
-      message: stopping ? `This permanently deletes the database and stops the server (it's running on "${tgt.db}"). This cannot be undone.` : "This permanently deletes the database. This cannot be undone.",
-      okLabel: "Drop"
-    });
-    if (!res) return;
-    const error = await this.db.dropStoppingServer(tgt.db);
-    if (error)
-      await this.dialogs.open({
-        title: "Drop failed",
-        message: error,
-        okLabel: "OK",
-        cancelLabel: null
-      });
-  }
-  setup() {
-    this._dashLoad(false);
-    this.db.load();
-    if (this.review.favorites().length) this.review.load();
-    const closeMenu = () => this.menuId() && this.menuId.set("");
-    onMounted(() => document.addEventListener("click", closeMenu));
-    onWillUnmount(() => document.removeEventListener("click", closeMenu));
-    useEffect(() => {
-      const branches = this._runbotBranches();
-      if (branches.length) this.code.loadRunbot(branches);
-      const prs = this._prs();
-      if (prs.length) this.code.loadMergebot(prs);
-      const starred = this._starredMbPrs();
-      if (starred.length) this.code.loadMergebot(starred);
-    });
-  }
-  // branches that still need the scraped runbot fallback: shown on the dashboard,
-  // backed by a real bundle of ours, and NOT already covered by a PR's GitHub CI
-  // rollup (that comes free with the PR list, so there's no point scraping). A
-  // feature branch only has a bundle once its local tip is actually pushed (`synced`)
-  // — otherwise runbot name-matches an unrelated, often ancient bundle that merely
-  // shares the name (e.g. a fresh local `master-test` vs a 1.5y-old `master-test`
-  // bundle from a long-gone same-named ref). Base branches (master, 19.0, saas-x.y)
-  // always have a canonical bundle, synced or not.
-  _runbotBranches() {
-    const seen = /* @__PURE__ */ new Set();
-    for (const tgt of this.targets)
-      for (const row of this.rows(tgt)) {
-        if (!row.present) continue;
-        if (this.code.isExternalRepo(row.github)) continue;
-        if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
-        const ci = row.pr && row.pr.ci;
-        if (ci && ci.checks && ci.checks.length) continue;
-        seen.add(row.branch);
-      }
-    return [...seen];
-  }
-  // repo ids the dashboard actually shows PRs for — favorite repos, the current
-  // target's repos, and every favorite target's repos. PRs for any other repo
-  // (e.g. tutorials/owl when neither favorited nor targeted) aren't displayed, so
-  // load() skips fetching them. Returns a Set of repo ids.
-  _dashRepoIds() {
-    const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
-    for (const c of current?.checkouts || []) ids.add(c.repo);
-    for (const tgt of this.targets) for (const c of tgt.checkouts || []) ids.add(c.repo);
-    return ids;
-  }
-  // the dashboard shows only this subset of repos, so narrow both the PR and the
-  // branch fetch to it (same ids for both) — no point reading branches/PRs for repos
-  // that appear nowhere on this screen. Other tabs call code.load() unnarrowed.
-  _dashLoad(force) {
-    const ids = this._dashRepoIds();
-    this.code.load(force, ids, ids);
-  }
-  // the unique {github, number} of every PR shown on the dashboard (for mergebot)
-  _prs() {
-    const seen = /* @__PURE__ */ new Set();
-    const prs = [];
-    for (const tgt of this.targets) {
-      for (const row of this.rows(tgt)) {
-        if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
-        const key = `${row.github}#${row.pr.number}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        prs.push({ github: row.github, number: row.pr.number });
-      }
-    }
-    return prs;
-  }
-  // the scraped mergebot state for a row's PR ("" if unknown / not fetched yet)
-  mbState(row) {
-    if (!row.pr || !row.github) return "";
-    return this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
-  }
-  // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
-  mbDetail(row) {
-    if (!row.pr || !row.github) return "";
-    return this.code.mbDetails()[`${row.github}#${row.pr.number}`] || "";
-  }
-  // color category for a mergebot state
-  mbClass(row) {
-    return mbCategory(this.mbState(row));
-  }
-  // the runbot bundle branch for a target: a bundle is per branch name and a
-  // target's repos share one, so prefer its feature (non-base) branch, else the
-  // shared base branch ("" if the target has no branches)
-  bundleBranch(tgt) {
-    const branches = (tgt.checkouts || []).map((c) => c.branch).filter(Boolean);
-    return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
-  }
-  // a present row representing the target's bundle (the bundle-branch row, else the
-  // first present row) — drives the single runbot/CI badge in the target header
-  bundleRow(tgt) {
-    const present = this.rows(tgt).filter((r) => r.present);
-    const branch = this.bundleBranch(tgt);
-    return present.find((r) => r.branch === branch) || present[0] || null;
-  }
-  // the fetched runbot status for a row's branch ({result, running} or null)
-  rbState(row) {
-    return this.code.runbot()[row.branch] || null;
-  }
-  // commit tooltip: the last-commit date (no longer shown inline) before the title
-  commitTip(row) {
-    const subject = row.subject || "\u2014";
-    return row.date ? `${this.cell(row.date)} \xB7 ${subject}` : subject;
-  }
-  // CI badge model for a card row. Prefer the PR's GitHub status rollup (runbot
-  // + every other CI check, fetched alongside the PR list); fall back to the
-  // scraped runbot bundle for branches that have no PR. `running` adds a "still
-  // running" indicator next to a verdict; `checks` (when set) drives the
-  // click-through breakdown popover.
-  ciBadge(row) {
-    const ci = row.pr && row.pr.ci;
-    if (ci && ci.checks && ci.checks.length) {
-      const pending = ci.checks.some((c) => c.state === "pending");
-      let badge2;
-      if (ci.overall === "failure")
-        badge2 = { cls: "fail", label: "ko", title: "a CI check failed" };
-      else if (ci.overall === "success")
-        badge2 = { cls: "pass", label: "ok", title: "all CI checks passing" };
-      else if (ci.overall === "pending" || pending)
-        badge2 = { cls: "run", label: "running", title: "CI running" };
-      else badge2 = { cls: "unknown", label: "\u2014", title: "no CI status" };
-      badge2.running = pending && (ci.overall === "success" || ci.overall === "failure");
-      badge2.checks = ci.checks;
-      return badge2;
-    }
-    const s = this.rbState(row);
-    const result = s && s.result || "";
-    const running = !!(s && s.running);
-    let badge;
-    if (result === "success") badge = { cls: "pass", label: "ok", title: "passing" };
-    else if (result === "failure") badge = { cls: "fail", label: "ko", title: "failing" };
-    else if (running) badge = { cls: "run", label: "running", title: "running" };
-    else badge = { cls: "unknown", label: "\u2014", title: "unknown" };
-    badge.running = running && !!result;
-    if (badge.running) badge.title += " \u2014 still running";
-    return badge;
-  }
-  // the runbot URL for a target's bundle badge. The backend resolves the branch
-  // *name* to its canonical bundle URL (and only when a bundle actually exists — a
-  // never-pushed branch has none), so link to that rather than building
-  // /runbot/bundle/<branch>, which runbot would mis-resolve to a foreign bundle when
-  // the branch ends in a number. When the branch has a PR, its runbot scrape is
-  // skipped (the GitHub CI rollup already covers it), so fall back to the ci/runbot
-  // check's URL from that rollup. "" only when neither source has a runbot link yet.
-  runbotUrl(tgt) {
-    const branch = this.bundleBranch(tgt);
-    const scraped = branch && this.code.runbot()[branch]?.url;
-    if (scraped) return scraped;
-    const checks = this.bundleRow(tgt)?.pr?.ci?.checks || [];
-    return checks.find((c) => c.context === "ci/runbot")?.url || "";
-  }
-  // open the CI breakdown popover (full per-check status) anchored to the badge on
-  // hover; a no-op when the badge has no per-check breakdown. The badge itself is a
-  // link to runbot, so the popover is purely the on-hover info.
-  showCiMenu(ev, checks) {
-    if (!checks || !checks.length) return;
-    const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
-  }
-  // ask the popover to close (it lingers briefly so the mouse can move into it)
-  hideCiMenu() {
-    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
-  }
-  // aggregate mergebot badge for a target: one entry per present PR row that has a
-  // scraped state. Links to the first PR's mergebot page; the badge label/color is
-  // the most-blocking state (so a single blocked PR surfaces), and `rows` drives
-  // the per-repo hover popover. Returns null when no row has a state yet.
-  mbBadge(tgt) {
-    const rows = [];
-    for (const row of this.rows(tgt)) {
-      const state = this.mbState(row);
-      if (!state) continue;
-      rows.push({
-        repo: row.repo,
-        state,
-        detail: this.mbDetail(row),
-        cls: this.mbClass(row),
-        url: this.code.mergebotUrl(row.github, row.pr.number)
-      });
-    }
-    if (!rows.length) return null;
-    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
-    const worst = rows.reduce((a, b) => RANK[a.cls] <= RANK[b.cls] ? a : b);
-    return { cls: worst.cls, label: worst.state, url: rows[0].url, rows };
-  }
-  // open the mergebot per-repo breakdown popover on hover (no-op with no rows)
-  showMbMenu(ev, rows) {
-    if (!rows || !rows.length) return;
-    const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(new CustomEvent("mb-menu", { detail: { rect, rows } }));
-  }
-  // ask the mergebot popover to close (it lingers briefly, like the CI one)
-  hideMbMenu() {
-    appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
-  }
-  get stamp() {
-    if (this.code.loading()) return "refreshing\u2026";
-    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
-  }
-  get errors() {
-    return this.code.groups().errors;
-  }
-  // favorite targets only, in the order defined in the Targets tab
-  get targets() {
-    return this.config.config.targets.filter((t2) => t2.favorite);
-  }
-  // repoId -> { current, dirty, branches: Map(name -> branch) }
-  get repoMap() {
-    const map = {};
-    for (const repo of this.code.branchRepos()) {
-      map[repo.id] = {
-        current: repo.current,
-        dirty: repo.dirty,
-        branches: new Map((repo.branches || []).map((b) => [b.name, b]))
-      };
-    }
-    return map;
-  }
-  // one row per repo:branch in the target's config, with its local + remote state
-  rows(tgt) {
-    const repos = this.repoMap;
-    const groups = this.code.groups();
-    return (tgt.checkouts || []).map(({ repo, branch }) => {
-      const r = repos[repo];
-      const b = r && r.branches.get(branch);
-      return {
-        repo,
-        branch,
-        path: groups.pathByRepo[repo] || "",
-        github: groups.githubByRepo[repo] || "",
-        present: !!b,
-        remote: !!b && b.remote,
-        synced: !!b && b.synced,
-        // local tip is exactly what's on the remote ref
-        date: b ? b.date : "",
-        subject: b ? b.subject || "" : "",
-        pr: groups.prIndex[`${repo}:${branch}`] || null
-      };
-    });
-  }
-  // every repo in the target's config is checked out on the target's branch
-  _checkedOut(tgt) {
-    const repos = this.repoMap;
-    const cfg = tgt.checkouts || [];
-    return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
-  }
-  // the active target is the explicit one (set on Activate / Start) — and only
-  // while its branches are still checked out. The id check disambiguates
-  // overlapping targets (e.g. master vs master(e), whose branches are a subset)
-  isActive(tgt) {
-    return tgt.id === this.server.lastTarget() && this._checkedOut(tgt);
-  }
-  // can't switch branches with uncommitted work, or to branches not present
-  _targetDirty(tgt) {
-    const repos = this.repoMap;
-    return (tgt.checkouts || []).some(({ repo }) => repos[repo]?.dirty);
-  }
-  _targetPresent(tgt) {
-    const repos = this.repoMap;
-    return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
-  }
-  canActivate(tgt) {
-    if (this.worktree.isWorktree(tgt)) return false;
-    return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
-  }
-  activateTitle(tgt) {
-    if (this._targetDirty(tgt)) return "commit or stash changes first \u2014 the working tree is dirty";
-    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
-    return "stop the server, switch to this target and check out its branches";
-  }
-  // tooltip for the clickable target name — clicking an inactive, applyable target
-  // applies it (replaces the old "Apply" button); otherwise say why it can't be
-  nameTitle(tgt) {
-    if (this.worktree.isWorktree(tgt))
-      return "worktree target \u2014 manage it from the Worktrees screen";
-    if (this.isActive(tgt)) return "this target is active";
-    if (this.canActivate(tgt)) return "click to apply \u2014 " + this.activateTitle(tgt);
-    return this.activateTitle(tgt);
-  }
-  // stop the server, switch to this target, check out its branches — the action lives
-  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
-  async activate(tgt) {
-    if (!this.canActivate(tgt)) return;
-    await this.config.target(tgt.id)?.activate();
-  }
-  // the canonical base branch a branch derives from: master-owl-update -> master,
-  // 19.0-some-fix -> 19.0 (defaults to master)
-  _baseBranch(branch) {
-    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
-  }
-  // create a target's missing branch locally, off its base branch
-  createTargetBranch(row) {
-    const path = this.code.groups().pathByRepo[row.repo];
-    if (path) this.code.createBranch(path, row.branch, this._baseBranch(row.branch));
-  }
-  // show the last commits for a target row's repo:branch (the commit title in a card)
-  openRowCommits(row) {
-    if (!row.path) return;
-    this.dialogs.openComponent(CommitsDialog, {
-      path: row.path,
-      ref: row.branch || "",
-      label: `${row.repo} \xB7 ${row.branch || "?"}`,
-      github: row.github || ""
-    });
-  }
-  // ── starred PRs ──────────────────────────────────────────────────────────
-  // The branch groups the user starred in the PRs tab, surfaced below the target
-  // cards. Favorites are keyed by branch name (shared across Mine/Reviewing), so
-  // we gather every PR on a starred branch from both the authored list (code) and
-  // the reviewed list (review), dedupe by repo#number, group by branch and sort
-  // each branch's PRs in config repo order — the same shape the PRs tab renders.
-  // friendly repo id for a github slug ("odoo/enterprise" -> "enterprise"),
-  // falling back to the slug for repos not in config
-  get _slugToId() {
-    return Object.fromEntries(
-      (this.config.config.repos || []).filter((r) => r.github).map((r) => [r.github, r.id])
-    );
-  }
-  starredGroups() {
-    const favs = new Set(this.review.favorites());
-    if (!favs.size) return [];
-    const slugToId = this._slugToId;
-    const seen = /* @__PURE__ */ new Set();
-    const byBranch = /* @__PURE__ */ new Map();
-    const add = (pr) => {
-      if (!pr.branch || !favs.has(pr.branch)) return;
-      const key = `${pr.github}#${pr.number}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      (byBranch.get(pr.branch) || byBranch.set(pr.branch, []).get(pr.branch)).push(pr);
-    };
-    for (const repo of this.code.prRepos()) {
-      if (repo.error) continue;
-      for (const pr of repo.prs) add({ ...pr, repoLabel: repo.id });
-    }
-    for (const pr of this.review.prs()) add({ ...pr, repoLabel: slugToId[pr.github] || pr.github });
-    const ts = (r) => Date.parse(this.prDate(r)) || 0;
-    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
-    const rank = (r) => {
-      const i = repoOrder.indexOf(r.github);
-      return i === -1 ? repoOrder.length : i;
-    };
-    return [...byBranch.entries()].map(([branch, prs]) => ({
-      branch,
-      prs: prs.slice().sort((a, b) => rank(a) - rank(b) || a.github.localeCompare(b.github) || ts(b) - ts(a)),
-      updated: Math.max(...prs.map(ts))
-    })).sort((a, b) => b.updated - a.updated);
-  }
-  // the starred PRs as one flat list (each carries its own branch) — branches are
-  // sorted most-recently-updated first, with a branch's PRs kept adjacent
-  starredPrs() {
-    return this.starredGroups().flatMap((g) => g.prs);
-  }
-  // unstar from a row — favorites are by branch (see ReviewPlugin), so this drops
-  // every PR on that branch from the list (the section hides once none are left)
-  toggleStar(pr) {
-    this.review.toggleFavorite(pr.branch);
-  }
-  // open, non-external starred PRs in mergebot's {github, number} shape (terminal
-  // and external PRs never get a useful scrape — same filter the target cards use)
-  _starredMbPrs() {
-    return this.starredPrs().filter((pr) => pr.state === "open" && !this.code.isExternalRepo(pr.github)).map((pr) => ({ github: pr.github, number: pr.number }));
-  }
-  // mergebot helpers for the starred rows — same code.mergebot() store the target
-  // cards read (we load these PRs' state alongside), keyed by the PR's own slug/number
-  prMb(pr) {
-    return this.code.mergebot()[`${pr.github}#${pr.number}`] || "";
-  }
-  prMbDetail(pr) {
-    return this.code.mbDetails()[`${pr.github}#${pr.number}`] || "";
-  }
-  prMbClass(pr) {
-    return mbCategory(this.prMb(pr));
-  }
-  prState(pr) {
-    return pr.draft && pr.state === "open" ? "draft" : pr.state;
-  }
-  // the date shown for a starred row: your own PRs show when they were opened
-  // (createdAt); reviewed PRs show updatedAt (no createdAt on those)
-  prDate(pr) {
-    return pr.createdAt || pr.updatedAt;
-  }
-  cell(date) {
+  when(date) {
     return timeAgo(date);
   }
-};
-var CodeScreen = class extends Component {
-  static components = { DirtyBadge };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Code</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <span class="dash-subtitle">Manage the main repository checkouts — switch branches, rebase, push and open them.</span>
-        </div>
-      </div>
-      <div class="content">
-        <div t-att-class="{busy: this.code.busy()}">
-          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-          <div class="dash-layout">
-          <!-- repositories sync strip: the repo list collapses to one row of chips,
-               each carrying its sync health (up to date / N behind). Per-repo actions
-               live in the chip's menu. -->
-          <div t-if="this.favRepos.length" class="dash-repos">
-            <div class="dash-repos-label">
-              <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
-              <span>Repos</span>
-            </div>
-            <div class="dash-repos-chips">
-              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
-                <span class="dash-chip-name" t-out="r.id"/>
-                <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
-                <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
-                <span class="dash-chip-div"/>
-                <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
-                <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
-                <div class="dash-kebab-wrap">
-                  <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
-                  <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
-                    <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
-                    <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.code.openEditor(r.path, r.id)">Open with editor</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
-                    <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
-                    <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="dash-repos-actions">
-              <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
-                <t t-out="this.codeIcon"/>Edit
-              </button>
-              <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
-              </button>
-            </div>
-          </div>
-          <div t-elif="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-else="" class="dim">No repositories — mark repos as favorite in the Configuration tab to manage them here.</div>
-          </div><!-- /.dash-layout -->
-        </div>
-      </div>
-    </section>`;
-  code = plugin(CodePlugin);
-  config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
-  refreshIcon = m(ICONS.refresh);
-  addonsIcon = m(ICONS.addons);
-  // "Repos" sync-strip label icon
-  codeIcon = m(ICONS.code);
-  // "Edit" (open all repos in the editor)
-  chevronIcon = m(ICONS.chevron);
-  // the repo chip's dropdown caret
-  menuId = signal("");
-  // id of the repo chip whose action menu is open ("" = none)
-  setup() {
-    this._load(false);
-    const closeMenu = () => this.menuId() && this.menuId.set("");
-    onMounted(() => document.addEventListener("click", closeMenu));
-    onWillUnmount(() => document.removeEventListener("click", closeMenu));
+  fullDate(date) {
+    const d = new Date(date);
+    return isNaN(d) ? date : d.toLocaleString();
   }
-  toggleMenu(id) {
-    this.menuId.set(this.menuId() === id ? "" : id);
+  toggle(sha) {
+    const s = new Set(this.expanded());
+    if (s.has(sha)) s.delete(sha);
+    else s.add(sha);
+    this.expanded.set(s);
   }
-  get stamp() {
-    if (this.code.loading()) return "refreshing\u2026";
-    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+  isExpanded(sha) {
+    return this.expanded().has(sha);
   }
-  get errors() {
-    return this.code.groups().errors;
+  // full commit message (subject + body) shown when a row is expanded
+  message(c) {
+    return c.body ? `${c.subject}
+
+${c.body}` : c.subject;
   }
-  // repo ids shown by the strip — favorite repos plus the current target's repos.
-  // Narrow both the branch and PR fetch to these (the only repos this screen shows).
-  _repoIds() {
-    const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
-    for (const c of current?.checkouts || []) ids.add(c.repo);
-    return ids;
+  // the commit on GitHub (only linked when the repo has a github slug)
+  commitUrl(c) {
+    return `https://github.com/${this.props.github}/commit/${c.sha}`;
   }
-  _load(force) {
-    const ids = this._repoIds();
-    this.code.load(force, ids, ids);
-  }
-  // repositories shown in the strip: union of the active target's repos and the
-  // favorite repositories, in config order
-  get favRepos() {
-    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
-    const groups = this.code.groups();
-    const currentTarget = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
-    const visibleIds = /* @__PURE__ */ new Set([
-      ...(currentTarget?.checkouts || []).map((c) => c.repo),
-      ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id)
-    ]);
-    return this.config.config.repos.filter((r) => visibleIds.has(r.id)).map((r) => {
-      const b = byId[r.id] || {};
-      const current = b.current || "";
-      const github = groups.githubByRepo[r.id] || "";
-      const pr = groups.prIndex[`${r.id}:${current}`] || null;
-      return {
-        id: r.id,
-        current,
-        dirty: !!b.dirty,
-        subject: b.head_subject || "",
-        remote: !!b.head_remote,
-        // the current branch has a remote-tracking ref
-        date: b.head_date || "",
-        ahead: b.ahead || 0,
-        // commits ahead of the base (target) branch
-        behind: b.behind || 0,
-        // commits behind the base (target) branch
-        base: this._baseBranch(current),
-        error: b.error || "",
-        github,
-        path: groups.pathByRepo[r.id] || "",
-        pr,
-        // a work branch that's pushed and PR-less can have a PR opened for it
-        canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
-      };
-    });
-  }
-  // the canonical base branch a branch derives from: master-owl-update -> master,
-  // 19.0-some-fix -> 19.0 (defaults to master)
-  _baseBranch(branch) {
-    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
-  }
-  // commit tooltip: the last-commit date before the title
-  commitTip(row) {
-    const subject = row.subject || "\u2014";
-    return row.date ? `${timeAgo(row.date)} \xB7 ${subject}` : subject;
-  }
-  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
-  // base) is the headline; missing/unreadable repos read as an error, and a repo we
-  // have no branch data for yet stays neutral rather than claiming "up to date".
-  chipClass(r) {
-    if (r.error) return "chip-err";
-    if (!r.current) return "chip-unknown";
-    return r.behind ? "chip-behind" : "chip-ok";
-  }
-  syncText(r) {
-    if (r.error) return "error";
-    if (!r.current) return "\u2014";
-    return r.behind ? `${r.behind} behind` : "up to date";
-  }
-  syncTitle(r) {
-    if (r.error) return r.error;
-    if (!r.current) return "branch state not loaded yet";
-    if (r.behind) {
-      const ahead = r.ahead ? ` \xB7 ${r.ahead} ahead` : "";
-      return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
-    }
-    return `up to date with ${r.base}`;
-  }
-  // fetch+rebase a single repo's current branch onto its canonical base branch
-  canRebaseRepo(r) {
-    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
-  }
-  rebaseRepoTitle(r) {
-    if (r.error) return r.error;
-    if (r.dirty) return "commit or stash changes first \u2014 the working tree is dirty";
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
-  }
-  async rebaseRepo(r) {
-    if (!this.canRebaseRepo(r)) return;
-    await this.code.rebase([
-      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
-    ]);
-  }
-  // push a single repo's current branch to the dev remote
-  canPushRepo(r) {
-    return !!r.current && !r.error && !!r.github && !!r.path;
-  }
-  pushRepoTitle(r) {
-    if (r.error) return r.error;
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `push ${r.current} to the dev remote (odoo-dev)`;
-  }
-  pushRepo(r) {
-    if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Push "${r.current}"?`,
-      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`
-    });
-  }
-  pushForceRepo(r) {
-    if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Force-push "${r.current}"?`,
-      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
-      force: true
-    });
-  }
-  // every shown repository whose current branch can be fetched + rebased
-  get rebasableRepos() {
-    return this.favRepos.filter((r) => this.canRebaseRepo(r));
-  }
-  canRebaseAll() {
-    return this.rebasableRepos.length > 0;
-  }
-  rebaseAllTitle() {
-    const n = this.rebasableRepos.length;
-    if (!n)
-      return "nothing to rebase \u2014 repositories are dirty, missing, or have no canonical remote";
-    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
-  }
-  // fetch + rebase every shown repo's current branch onto its base, in one call
-  async rebaseAll() {
-    const repos = this.rebasableRepos.map((r) => ({
-      repo: r.id,
-      base: this._baseBranch(r.current),
-      github: r.github,
-      path: r.path
-    }));
-    if (repos.length) await this.code.rebase(repos);
-  }
-  // local checkout folders of every shown repo, for "Edit" (open them all at once)
-  get editorPaths() {
-    return this.favRepos.map((r) => r.path).filter(Boolean);
-  }
-  editAllTitle() {
-    const n = this.editorPaths.length;
-    if (!n) return "no local repository folders to open";
-    const editor = (this.config.config.editor || "code").trim();
-    return `open ${n} repositor${n === 1 ? "y" : "ies"} in ${editor}`;
-  }
-  // open every shown repo's folder in the configured editor, all in one window
-  openAllEditors() {
-    const paths = this.editorPaths;
-    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
-  }
-  // open a modal bash terminal in this repo's directory
-  openTerminal(r) {
-    if (!r.path) return;
-    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
-  }
-  // show the last commits on this repo's current branch
-  openCommits(r) {
-    if (!r.path) return;
-    this.dialogs.openComponent(CommitsDialog, {
-      path: r.path,
-      ref: r.current || "",
-      label: `${r.id} \xB7 ${r.current || "?"}`,
-      github: r.github || ""
-    });
-  }
-  // open GitHub's PR-creation page for this repo's current branch
-  openPr(r) {
-    this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
-    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
+  done(result) {
+    this.props.done(result);
   }
 };
-var ServerScreen = class extends Component {
-  static components = { LogConsole };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top">
-          <div class="server-head">
-            <h1>Server</h1>
-            <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
-            <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
-          </div>
-          <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
-        </div>
-        <div class="panel-actions">
-          <button class="pbtn primary dash-start" t-att-disabled="!this.stopped or this.busy" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/><t t-out="this.startLabel"/></button>
-          <button class="pbtn stop" t-att-disabled="!this.canStop or this.busy" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-          <button class="pbtn" t-att-disabled="!this.active or this.busy" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
-          <button class="pbtn pbtn-icon" t-att-class="{active: this.term.open()}" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
-          <span t-if="this.transient" class="run-state" t-out="this.transient"/>
-          <div t-if="this.showLogs" class="log-controls">
-            <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
-            <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
-          </div>
-        </div>
-      </div>
-      <div class="content" t-att-class="{ flush: !this.stopped }">
-        <div t-if="this.disconnected" class="offline">server is offline</div>
-        <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
-        <div t-else="" class="launch-form">
-          <div class="launch-field">
-            <label>Target</label>
-            <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
-              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
-            </select>
-          </div>
-          <div class="launch-field">
-            <label>Extra arguments</label>
-            <input type="text" t-att-value="this.extraArgs()" t-on-input="ev => this.extraArgs.set(ev.target.value)" placeholder="e.g. --dev all"/>
-          </div>
-          <div class="launch-field">
-            <label>Command</label>
-            <div class="cmd">
-              <span class="label">launch</span>
-              <div class="code" t-out="this.cmdPreviewMarkup"/>
-              <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>`;
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  term = plugin(TerminalPlugin);
-  copyIcon = m(ICONS.copy);
-  clearIcon = m(ICONS.clear);
-  termIcon = m(ICONS.terminal);
-  copyLbl = signal("Copy");
-  target = signal(this._initialTarget());
-  extraArgs = signal(this.config.config.start.other_args || "");
-  command = signal("");
-  setup() {
-    let timer;
-    useEffect(() => {
-      const tgt = this.target();
-      const args = this.extraArgs();
-      clearTimeout(timer);
-      timer = setTimeout(
-        () => this.server.previewCommand(tgt, args).then((c) => this.command.set(c)),
-        200
-      );
-    });
-  }
-  get targets() {
-    return this.config.config.targets;
-  }
-  // last used target id if it still exists, else the first one
-  _initialTarget() {
-    const ids = this.targets.map((t2) => t2.id);
-    const last = this.server.lastTarget();
-    return ids.includes(last) ? last : ids[0] || "";
-  }
-  status() {
-    return this.server.status();
-  }
-  get stopped() {
-    return this.status().state === "stopped";
-  }
-  // an optimistic start/stop/restart is in flight (between the click and the
-  // first real status event) — disable the controls so it can't be double-fired
-  get busy() {
-    return !!this.server.pending();
-  }
-  get startLabel() {
-    return this.server.pending() === "start" || this.status().state === "starting" ? "Starting\u2026" : "Start";
-  }
-  get disconnected() {
-    return this.status().state === "disconnected";
-  }
-  get transient() {
-    const s = this.status().state;
-    return s === "starting" ? "starting\u2026" : s === "stopping" ? "stopping\u2026" : null;
-  }
-  // logs are visible (so their controls belong in the panel) whenever we're not
-  // showing the launch form or the offline message
-  get showLogs() {
-    return !this.stopped && !this.disconnected;
-  }
-  toggleAuto() {
-    const b = this.server.output;
-    b.autoScroll.set(!b.autoScroll());
-    if (b.autoScroll()) b.toBottom();
-  }
-  get active() {
-    return this.status().state === "starting" || this.status().state === "running";
-  }
-  get canStop() {
-    return this.active || this.stopped && this.status().odoo_port_busy;
-  }
-  get cmdPreviewMarkup() {
-    return m(tintCmd(this.command() || ""));
-  }
-  get info() {
-    const s = this.status();
-    if (s.db) {
-      let html = `database: <b>${s.db}</b>`;
-      if (s.odoo_version) {
-        html += `<span class="sep">\xB7</span>odoo: <b>${s.odoo_version}</b>`;
-        if (s.enterprise) html += ` (enterprise)`;
-      }
-      return m(html);
-    }
-    const tgt = this.targets.find((t2) => t2.id === this.target());
-    return tgt && tgt.db ? m(`database: <b>${tgt.db}</b>`) : null;
-  }
-  get hint() {
-    const s = this.status();
-    const hints = [];
-    if (s.exited_unexpectedly) hints.push(`odoo exited unexpectedly (code ${s.returncode})`);
-    if (s.state === "stopped" && s.odoo_port_busy)
-      hints.push("port 8069 is busy (external odoo?) \u2014 Stop will kill it");
-    return hints.join(" \u2014 ") || null;
-  }
-  get uptime() {
-    const s = this.status();
-    if (s.state !== "starting" && s.state !== "running" || !s.started_at) return null;
-    const secs = Math.max(0, Math.floor(this.server.now() / 1e3 - s.started_at));
-    const h = Math.floor(secs / 3600), mn = Math.floor(secs % 3600 / 60), sec = secs % 60;
-    return h ? `${h}h ${mn}m` : mn ? `${mn}m ${sec}s` : `${sec}s`;
-  }
-  copy() {
-    if (!this.command()) return;
-    navigator.clipboard?.writeText(this.command());
-    this.copyLbl.set("Copied");
-    setTimeout(() => this.copyLbl.set("Copy"), 1400);
-  }
-};
-var ClaudeChat = class extends Component {
-  static template = xml`
-    <div class="cchat">
-      <div class="cchat-msgs" t-ref="this.scroll">
-        <div t-if="!this.items.length" class="cchat-hint dim">
-          Send a task to Claude. It runs in this worktree's checkout with full autonomy —
-          it can edit files and run commands here without touching your main tree.
-        </div>
-        <t t-foreach="this.items" t-as="m" t-key="m_index">
-          <div t-if="m.role === 'user'" class="cmsg cmsg-user"><div class="cmsg-body" t-out="m.text"/></div>
-          <div t-elif="m.role === 'assistant'" class="cmsg cmsg-asst"><div class="cmsg-body" t-out="m.text"/></div>
-          <div t-elif="m.role === 'tool'" class="cmsg-tool">
-            <span class="cmsg-tool-name" t-out="m.tool"/>
-            <span t-if="m.text" class="cmsg-tool-text" t-out="m.text"/>
-          </div>
-          <div t-elif="m.role === 'error'" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.text"/></div>
-        </t>
-        <div t-if="this.running" class="cchat-working"><span class="spin"/>Claude is working…</div>
-      </div>
-      <div class="cchat-input">
-        <div class="cchat-toolbar">
-          <span class="cchat-model-label dim">Model</span>
-          <select class="cchat-model" t-on-change="(ev) => this.claude.setModel(ev.target.value)">
-            <option t-foreach="this.claude.models" t-as="opt" t-key="opt.value"
-                    t-att-value="opt.value" t-att-selected="opt.value === this.claude.model()" t-out="opt.label"/>
-          </select>
-        </div>
-        <div class="cchat-row">
-          <textarea t-ref="this.ta" class="cchat-ta" rows="2"
-                    placeholder="Describe a task —  Enter to send, Shift+Enter for a newline"
-                    t-att-disabled="this.running" t-on-keydown="(ev) => this.onKey(ev)"/>
-          <button t-if="!this.running" class="pbtn primary cchat-send" t-on-click="() => this.send()">Send</button>
-          <button t-else="" class="pbtn stop cchat-send" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
-        </div>
-      </div>
-    </div>`;
-  props = props({ target: t.any() });
-  claude = plugin(ClaudePlugin);
-  scroll = signal.ref(HTMLElement);
-  ta = signal.ref(HTMLElement);
-  setup() {
-    onMounted(() => this.claude.prime(this.props.target.id));
-    useEffect(
-      () => {
-        const el = this.scroll();
-        if (el) el.scrollTop = el.scrollHeight;
-      },
-      () => [this.items.length, this.running]
-    );
-  }
-  get items() {
-    return this.claude.items(this.props.target.id);
-  }
-  get running() {
-    return this.claude.running(this.props.target.id);
-  }
-  onKey(ev) {
-    if (ev.key === "Enter" && !ev.shiftKey) {
-      ev.preventDefault();
-      this.send();
-    }
-  }
-  send() {
-    const el = this.ta();
-    const text = el ? el.value : "";
-    if (!text.trim() || this.running) return;
-    this.claude.send(this.props.target, text);
-    if (el) el.value = "";
-  }
-  stop() {
-    this.claude.stop(this.props.target);
-  }
-};
-var WorktreeScreen = class extends Component {
-  static components = { LogConsole, ClaudeChat };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Worktrees</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <button class="pbtn primary" t-on-click="() => this.create()">Create Worktree</button>
-          <span class="dash-subtitle">Run a branch in its own checkout, database and server — alongside the main one.</span>
-        </div>
-      </div>
-      <div class="content wt-content">
-        <div class="wt-list">
-          <div t-if="!this.list.length" class="wt-empty dim">No worktrees yet. Create one to get started.</div>
-          <button t-foreach="this.list" t-as="tgt" t-key="tgt.id" class="wt-item"
-                  t-att-class="{selected: tgt.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(tgt.id)">
-            <span class="wt-dot" t-att-class="this.dotClass(tgt)"/>
-            <span class="wt-item-main">
-              <span class="wt-item-name" t-out="tgt.name"/>
-              <span class="wt-item-sub"><t t-out="this.branchOf(tgt)"/> · <t t-out="tgt.db"/></span>
-            </span>
-            <span t-if="this.wt.port(tgt)" class="wt-item-port" t-out="':' + this.wt.port(tgt)"/>
-          </button>
-        </div>
-        <div class="wt-detail" t-if="this.list.length">
-          <t t-if="this.sel">
-            <div class="wt-detail-head">
-              <h2 t-out="this.sel.name"/>
-              <div class="wt-meta">
-                <span>branch <b t-out="this.branchOf(this.sel)"/></span>
-                <span>db <b t-out="this.sel.db"/></span>
-                <span t-if="this.wt.port(this.sel)">port <b t-out="this.wt.port(this.sel)"/></span>
-                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.wt.serverState(this.sel)"/>
-              </div>
-            </div>
-            <div class="wt-detail-actions">
-              <button class="pbtn primary" t-att-disabled="this.wt.running(this.sel)" t-on-click="() => this.wt.startServer(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-              <button class="pbtn stop" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.stopServer(this.sel)"><span class="ic square"/>Stop</button>
-              <button class="pbtn" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.restartServer(this.sel)"><span class="restart"/>Restart</button>
-              <span class="wt-sp"/>
-              <button class="pbtn" title="open the worktree's repos in the editor" t-on-click="() => this.wt.openEditor(this.sel)"><t t-out="this.codeIcon"/>Edit</button>
-              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.wt.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.wt.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-              <span class="wt-sp"/>
-              <button class="pbtn danger" t-att-disabled="this.wt.running(this.sel)" title="remove the worktree" t-on-click="() => this.wt.remove(this.sel)">Remove</button>
-            </div>
-            <div class="wt-panes">
-              <div class="wt-tabs">
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')">Server log</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')">Claude</button>
-              </div>
-              <div class="wt-pane" t-if="this.pane() === 'log'">
-                <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
-              </div>
-              <div class="wt-pane" t-else="">
-                <ClaudeChat t-key="this.sel.id" target="this.sel"/>
-              </div>
-            </div>
-          </t>
-          <div t-else="" class="wt-detail-empty dim">Select a worktree on the left, or create one.</div>
-        </div>
-      </div>
-    </section>`;
-  wt = plugin(WorktreePlugin);
-  config = plugin(ConfigPlugin);
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
-  externalIcon = m(ICONS.external);
-  codeIcon = m(ICONS.code);
-  // "Edit" (open the worktree's repos in the editor)
-  pane = signal("log");
-  // which detail pane is shown: "log" | "claude"
-  setup() {
-    this.db.load();
-  }
-  get list() {
-    return this.wt.worktreeTargets();
-  }
-  get sel() {
-    return this.wt.selected();
-  }
-  get isRunning() {
-    return !!this.sel && this.wt.serverState(this.sel) === "running";
-  }
-  get startLabel() {
-    return this.sel && this.wt.serverState(this.sel) === "starting" ? "Starting\u2026" : "Start";
-  }
-  branchOf(tgt) {
-    return tgt.checkouts && tgt.checkouts[0] && tgt.checkouts[0].branch || "";
-  }
-  dotClass(tgt) {
-    return "wt-dot-" + this.wt.serverState(tgt);
-  }
-  open(url) {
-    if (url) window.open(url, "_blank", "noopener");
-  }
-  async create() {
-    const bases = (this.config.config.targets || []).filter((t2) => !this.wt.isWorktree(t2));
-    if (!bases.length)
-      return this.dialogs.open({
-        title: "Create worktree",
-        message: "Define a normal target first \u2014 a worktree forks its branch from one.",
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
-    await this.db.load();
-    const sanitize = (s) => (s || "").trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    const dbNames = this.db.databases().map((d) => d.name);
-    const res = await this.dialogs.open({
-      title: "Create worktree",
-      okLabel: "Create",
-      fields: [
-        {
-          key: "base",
-          type: "select",
-          label: "Base target",
-          value: bases[0].id,
-          placeholder: "\u2014 pick a target \u2014",
-          options: bases.map((t2) => ({ value: t2.id, label: t2.name }))
-        },
-        {
-          key: "branch",
-          type: "text",
-          label: "New branch",
-          placeholder: "e.g. my-feature",
-          onChange: (v) => ({ db: sanitize(v) })
-        },
-        { key: "name", type: "text", label: "Display name (optional)" },
-        { key: "db", type: "text", label: "Database" },
-        {
-          key: "clone",
-          type: "select",
-          label: "Data",
-          value: "",
-          placeholder: "(fresh install)",
-          options: dbNames.map((n) => ({ value: n, label: "clone " + n }))
-        }
-      ],
-      validate: (v) => {
-        if (!v.base) return "pick a base target";
-        if (!sanitize(v.branch)) return "enter a branch name";
-        if (!sanitize(v.db)) return "enter a database name";
-        if (v.clone && dbNames.includes(sanitize(v.db)))
-          return `database "${sanitize(v.db)}" already exists \u2014 pick a new name to clone into`;
-        return "";
-      }
-    });
-    if (!res) return;
-    await this.wt.createWorktree({
-      baseTargetId: res.base,
-      name: (res.name || res.branch).trim(),
-      branch: sanitize(res.branch),
-      dbName: sanitize(res.db),
-      cloneSource: res.clone || ""
-    });
-  }
-};
-var DatabasesScreen = class extends Component {
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Databases</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
-          <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
-      <div class="content br-fill">
-        <div t-att-class="{busy: this.db.dropping()}">
-          <div t-if="this.db.error()" class="dim br-empty" t-out="'Failed to load: ' + this.db.error()"/>
-          <div t-elif="!this.db.databases().length" class="dim br-empty">No databases.</div>
-          <div t-else="" class="br-card">
-            <!-- full-width card = scroll container (scrollbar on the right); the
-                 wrapper sizes the table to its natural width, like the Branches list -->
-            <div class="brg-table">
-            <table class="br-table brg-flat">
-              <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Size</th><th>Created</th><th>Last activity</th><th/></tr>
-              </thead>
-              <tbody>
-                <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active, 'row-sel': this.selected().has(d.name)}">
-                  <td>
-                    <input t-if="!d.active" type="checkbox" class="br-select" t-att-checked="this.selected().has(d.name)" t-on-change="() => this.toggleSelect(d.name)" title="select this database for batch actions"/>
-                  </td>
-                  <td t-att-class="{'active-name': d.active, 'select-toggle': !d.active}"
-                      t-on-click="() => d.active || this.toggleSelect(d.name)">
-                    <span class="br-branch" t-out="d.name"/>
-                    <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
-                  </td>
-                  <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
-                  <td class="br-when" t-att-class="{dim: !d.size}" t-out="d.size || '—'"/>
-                  <td class="br-when" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
-                  <td class="br-when" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
-                  <td>
-                    <div class="br-act">
-                      <button class="dash-kebab" title="database actions"
-                              t-on-click.stop="(ev) => this.openRowMenu(ev, d)"><t t-out="this.kebabIcon"/></button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>`;
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
-  refreshIcon = m(ICONS.refresh);
-  kebabIcon = m(ICONS.kebab);
-  selected = signal(/* @__PURE__ */ new Set());
-  // database names ticked for batch actions
-  // sorted, view-ready rows — recomputed only when the db list / active db change
-  rows = computed(() => {
-    const activeDb = this.db.activeDb;
-    return [...this.db.databases()].sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0)).map((d) => ({
-      name: d.name,
-      active: d.name === activeDb,
-      version: d.odoo_version,
-      enterprise: d.enterprise,
-      created: d.created,
-      createdAgo: d.created && timeAgo(d.created),
-      createdTitle: d.created ? `${d.created} (UTC)` : "",
-      last: d.last_update,
-      lastAgo: d.last_update && timeAgo(d.last_update),
-      lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
-      size: formatBytes(d.size)
-    }));
-  });
-  setup() {
-    this.db.load();
-  }
-  get stamp() {
-    if (this.db.loading()) return "refreshing\u2026";
-    return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
-  }
-  get count() {
-    const n = this.rows().length;
-    return `${n} database${n === 1 ? "" : "s"}`;
-  }
-  toggleSelect(name) {
-    const sel = new Set(this.selected());
-    sel.has(name) ? sel.delete(name) : sel.add(name);
-    this.selected.set(sel);
-  }
-  // per-database actions in the floating kebab menu (shared ActionMenu). Clone,
-  // rename and drop all need the source db to have no active connections. Rename
-  // and drop stay disabled on the active db; Clone is allowed — it stops the
-  // server (releasing connections), clones, then restarts.
-  openRowMenu(ev, d) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    const busyTitle = d.active ? "stop the server first (no active connections allowed)" : "";
-    const actions = [
-      {
-        label: "Clone",
-        title: d.active ? "stops the server to clone, then restarts it" : "",
-        onClick: () => this.cloneDb(d)
-      },
-      {
-        label: "Rename",
-        disabled: d.active,
-        title: busyTitle,
-        onClick: () => this.renameDb(d)
-      },
-      {
-        label: "Drop",
-        danger: true,
-        disabled: d.active,
-        title: d.active ? "in use by the running server" : "",
-        onClick: () => this.dropDb(d)
-      }
-    ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
-  }
-  get _selectableDbs() {
-    return this.rows().filter((d) => !d.active);
-  }
-  get allSelected() {
-    const sel = this.selected();
-    const selectable = this._selectableDbs;
-    return selectable.length > 0 && selectable.every((d) => sel.has(d.name));
-  }
-  toggleSelectAll() {
-    this.selected.set(
-      this.allSelected ? /* @__PURE__ */ new Set() : new Set(this._selectableDbs.map((d) => d.name))
-    );
-  }
-  get selectedCount() {
-    return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
-  }
-  async dropSelected() {
-    const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
-    if (!dbs.length) return;
-    const n = dbs.length;
-    const res = await this.dialogs.open({
-      title: `Drop ${n} database${n === 1 ? "" : "s"}?`,
-      message: "This permanently deletes the selected databases. This cannot be undone.",
-      okLabel: "Drop"
-    });
-    if (!res) return;
-    for (const d of dbs) await this.db.drop(d.name);
-    this.selected.set(/* @__PURE__ */ new Set());
-  }
-  // confirm via the dialog, then drop; report any failure in a dialog too
-  async dropDb(d) {
-    const res = await this.dialogs.open({
-      title: `Drop "${d.name}"?`,
-      message: "This permanently deletes the database. This cannot be undone.",
-      okLabel: "Drop"
-    });
-    if (!res) return;
-    const error = await this.db.drop(d.name);
-    if (error)
-      await this.dialogs.open({
-        title: "Drop failed",
-        message: error,
-        okLabel: "OK",
-        cancelLabel: null
-      });
-  }
-  // valid db name: letters/digits then letters/digits/._- (mirrors the backend)
-  _badName(name) {
-    if (!name) return "a name is required";
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
-      return "use letters, digits, . _ - (not starting with -)";
-    if (this.db.databases().some((x) => x.name === name))
-      return `a database named "${name}" already exists`;
-    return "";
-  }
-  // ask for a target name, then clone; report any failure in a dialog. Cloning the
-  // active db requires exclusive access (postgres createdb -T), so the server is
-  // stopped first and restarted afterwards.
-  async cloneDb(d) {
-    const res = await this.dialogs.open({
-      title: `Clone "${d.name}"`,
-      message: d.active ? "This database is in use by the running server. goo will stop the server to clone it, then restart it." : "",
-      fields: [
-        {
-          key: "target",
-          type: "text",
-          label: "New database name",
-          value: `${d.name}-copy`,
-          placeholder: "new database name"
-        }
-      ],
-      okLabel: "Clone",
-      validate: (v) => this._badName((v.target || "").trim())
-    });
-    if (!res) return;
-    const error = await this.db.cloneStoppingServer(d.name, res.target.trim());
-    if (error)
-      await this.dialogs.open({
-        title: "Clone failed",
-        message: error,
-        okLabel: "OK",
-        cancelLabel: null
-      });
-  }
-  // ask for a new name, then rename; report any failure in a dialog
-  async renameDb(d) {
-    const res = await this.dialogs.open({
-      title: `Rename "${d.name}"`,
-      fields: [
-        {
-          key: "name",
-          type: "text",
-          label: "New name",
-          value: d.name,
-          placeholder: "new database name"
-        }
-      ],
-      okLabel: "Rename",
-      validate: (v) => {
-        const t2 = (v.name || "").trim();
-        if (t2 === d.name) return "choose a different name";
-        return this._badName(t2);
-      }
-    });
-    if (!res) return;
-    const error = await this.db.rename(d.name, res.name.trim());
-    if (error)
-      await this.dialogs.open({
-        title: "Rename failed",
-        message: error,
-        okLabel: "OK",
-        cancelLabel: null
-      });
-  }
-};
+
+// static/src/components/targets.js
 async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
   const existingTargets = config.config.targets;
   const configStr = repos.map((r) => `${r}:${branch}`).join(",");
@@ -6952,6 +5419,15 @@ var TargetsScreen = class extends Component {
     });
   }
 };
+var repoBranchList = {
+  format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
+  parse: (s) => s.split(",").map((x) => x.trim()).filter(Boolean).map((pair) => {
+    const [repo, branch = ""] = pair.split(":").map((p) => p.trim());
+    return { repo, branch };
+  })
+};
+
+// static/src/components/branches.js
 var BranchesScreen = class extends Component {
   static components = { SearchBox, DirtyBadge };
   worktree = plugin(WorktreePlugin);
@@ -7344,810 +5820,450 @@ var BranchesScreen = class extends Component {
     return p.draft && p.state === "open" ? "draft" : p.state;
   }
 };
-var PrsScreen = class extends Component {
-  static components = { SearchBox };
-  worktree = plugin(WorktreePlugin);
-  // "wt" badge on PR branches owned by a worktree
+
+// static/src/plugins/terminal_plugin.js
+var TerminalPlugin = class extends Plugin {
+  open = signal(false);
+  toggle() {
+    this.open.set(!this.open());
+  }
+};
+
+// static/src/components/terminal.js
+var _xtermReady = null;
+function loadXterm() {
+  if (!_xtermReady) {
+    _xtermReady = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/static/lib/xterm/xterm.css";
+      document.head.appendChild(link);
+      const s1 = document.createElement("script");
+      s1.src = "/static/lib/xterm/xterm.js";
+      s1.onload = () => {
+        const s2 = document.createElement("script");
+        s2.src = "/static/lib/xterm/addon-fit.js";
+        s2.onload = resolve;
+        s2.onerror = reject;
+        document.head.appendChild(s2);
+      };
+      s1.onerror = reject;
+      document.head.appendChild(s1);
+    });
+  }
+  return _xtermReady;
+}
+async function attachXterm(el, wsUrl, focusOnOpen = false) {
+  await loadXterm();
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "var(--mono, monospace)"
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(el);
+  await new Promise((r) => requestAnimationFrame(r));
+  fit.fit();
+  if (focusOnOpen) term.focus();
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+  const sendSize = () => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  ws.onopen = sendSize;
+  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+  const onData = term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+  });
+  const ro = new ResizeObserver(() => {
+    fit.fit();
+    sendSize();
+  });
+  ro.observe(el);
+  return () => {
+    ro.disconnect();
+    onData.dispose?.();
+    try {
+      ws.close();
+    } catch {
+    }
+    term.dispose();
+  };
+}
+var TerminalPanel = class extends Component {
+  static template = xml`
+    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title">Terminal</span>
+        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
+      </div>
+      <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+  term = plugin(TerminalPlugin);
+  container = signal.ref(HTMLElement);
+  _dispose = null;
+  _termOpen = false;
+  // guard against double-open on re-renders
+  setup() {
+    this.drag = useDragResize();
+    onWillUnmount(() => this._closeTerminal());
+    useEffect(() => {
+      const el = this.container();
+      if (el) {
+        this._openTerminal(el);
+      } else {
+        this._closeTerminal();
+      }
+    });
+  }
+  async _openTerminal(el) {
+    if (this._termOpen) return;
+    this._termOpen = true;
+    try {
+      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
+      if (this.container() !== el) {
+        dispose();
+        return;
+      }
+      this._dispose = dispose;
+    } catch (e) {
+      this._termOpen = false;
+    }
+  }
+  _closeTerminal() {
+    if (!this._termOpen) return;
+    this._termOpen = false;
+    this._dispose?.();
+    this._dispose = null;
+  }
+};
+var TerminalDialog = class extends Component {
+  static template = xml`
+    <div class="term-panel" t-ref="this.drag.handle">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
+        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
+      </div>
+      <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  container = signal.ref(HTMLElement);
+  _dispose = null;
+  setup() {
+    this.drag = useDragResize();
+    useEffect(() => {
+      const el = this.container();
+      if (!el) return;
+      let live = true;
+      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+      attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
+      return () => {
+        live = false;
+        this._dispose?.();
+        this._dispose = null;
+      };
+    });
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      const el = this.container();
+      if (el && el.contains(document.activeElement)) return;
+      this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+  }
+  get label() {
+    return this.props.label || this.props.path;
+  }
+  done(result) {
+    this.props.done(result);
+  }
+};
+
+// static/src/components/code.js
+var CodeScreen = class extends Component {
+  static components = { DirtyBadge };
   static template = xml`
     <section>
       <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>PRs</h1>
-          <div class="panel-filters">
-            <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
-            <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
-            <SearchBox value="this.search"/>
-            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-              <option value="">All repositories</option>
-              <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-            </select>
-            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
-              <option value="">All</option>
-              <option value="unmerged">All (except merged)</option>
-              <option value="merged">Merged</option>
-              <option value="error">Error</option>
-              <option value="blocked">Blocked</option>
-            </select>
-          </div>
+        <div class="panel-top">
+          <h1>Code</h1>
           <div class="panel-top-right">
             <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
+            <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
           </div>
         </div>
         <div class="panel-actions">
-          <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
-          <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
-          <span class="row-count" t-out="this.count"/>
+          <span class="dash-subtitle">Manage the main repository checkouts — switch branches, rebase, push and open them.</span>
         </div>
       </div>
-      <div class="content br-fill">
-        <div t-att-class="{busy: this.busyNow}">
-          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>
-          <div t-if="this.loadError" class="dim br-empty" t-out="'Failed to load: ' + this.loadError"/>
-          <div t-elif="!this.groups().length" class="dim br-empty" t-out="this.emptyMsg"/>
-          <div t-else="" class="br-card">
-            <!-- full-width card = scroll container (scrollbar on the right); the
-                 wrapper sizes the table to its natural width, like the Branches list.
-                 One tbody per branch: the branch name spans its PRs (rowspan). -->
-            <div class="brg-table">
-            <table class="br-table brg-flat rev-table">
-              <thead>
-                <tr>
-                  <th t-if="this.mode() === 'mine'"><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th>
-                  <th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th t-out="this.dateLabel"/>
-                  <th t-if="this.mode() === 'mine'"/>
-                </tr>
-              </thead>
-              <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
-                <tr t-foreach="g.prs" t-as="row" t-key="row.github + ':' + row.number" t-att-class="{'row-sel': this.mode() === 'mine' and this.selected().has(row.github + ':' + row.number)}">
-                  <td t-if="this.mode() === 'mine'">
-                    <input t-if="row.state === 'open' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.github + ':' + row.number)" t-on-change="() => this.toggleSelect(row.github + ':' + row.number)" title="select this PR for batch actions"/>
-                  </td>
-                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
-                    <span class="br-branch-name" t-att-class="{ 'select-toggle': this.groupSelectable(g) }" t-on-click="() => this.selectGroup(g)" t-out="g.branch || '—'"/>
-                  <span t-if="this.worktree.isWorktreeBranch(g.branch)" class="wt-badge" title="has a worktree">wt</span>
-                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button>
-                  </td>
-                  <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
-                  <td class="br-title" t-att-class="{ 'select-toggle': this.selectable(row) }"
-                      t-att-title="this.selectable(row) ? (row.title || '') + ' — click to select' : row.title"
-                      t-on-click="() => this.selectRow(row)" t-out="row.title || '—'"/>
-                  <td class="dim" t-out="row.repoLabel"/>
-                  <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
-                  <td>
-                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
-                    <span t-else="" class="dim">—</span>
-                  </td>
-                  <td t-att-title="this.prDate(row)" t-out="this.prDate(row) ? this.cell(this.prDate(row)) : '—'"/>
-                  <td t-if="this.mode() === 'mine'">
-                    <div class="br-act">
-                      <button t-if="row.state === 'open' and row.github" class="dash-kebab" title="PR actions"
-                              t-on-click.stop="(ev) => this.openRowMenu(ev, row)"><t t-out="this.kebabIcon"/></button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+      <div class="content">
+        <div t-att-class="{busy: this.code.busy()}">
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
+          <div class="dash-layout">
+          <!-- repositories sync strip: the repo list collapses to one row of chips,
+               each carrying its sync health (up to date / N behind). Per-repo actions
+               live in the chip's menu. -->
+          <div t-if="this.favRepos.length" class="dash-repos">
+            <div class="dash-repos-label">
+              <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
+              <span>Repos</span>
+            </div>
+            <div class="dash-repos-chips">
+              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
+                <span class="dash-chip-name" t-out="r.id"/>
+                <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
+                <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
+                <span class="dash-chip-div"/>
+                <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
+                <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
+                <div class="dash-kebab-wrap">
+                  <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
+                  <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
+                    <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
+                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
+                    <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.code.openEditor(r.path, r.id)">Open with editor</button>
+                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
+                    <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
+                    <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="dash-repos-actions">
+              <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
+                <t t-out="this.codeIcon"/>Edit
+              </button>
+              <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
+              </button>
             </div>
           </div>
+          <div t-elif="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-else="" class="dim">No repositories — mark repos as favorite in the Configuration tab to manage them here.</div>
+          </div><!-- /.dash-layout -->
         </div>
       </div>
     </section>`;
   code = plugin(CodePlugin);
-  review = plugin(ReviewPlugin);
   config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
-  router = plugin(RouterPlugin);
-  refreshIcon = m(ICONS.refresh);
-  kebabIcon = m(ICONS.kebab);
-  // "mine" = PRs I authored (CodePlugin); "reviewing" = PRs I commented on but
-  // didn't author (ReviewPlugin). Seed from the route so a #reviews bookmark opens
-  // on Reviewing with no flash of Mine.
-  mode = signal(this.router.section() === "reviews" ? "reviewing" : "mine");
-  repoFilter = signal("");
-  // "" = all repositories
-  search = signal("");
-  statusFilter = signal("unmerged");
-  // mergebot status; "" = all, "unmerged" = still in flight
-  selected = signal(/* @__PURE__ */ new Set());
-  // "github:number" of PRs ticked for batch close (Mine only)
-  _reviewLoaded = false;
-  // lazy-load guard for the Reviewing segment
-  setup() {
-    this.code.load();
-    if (this.mode() === "reviewing") {
-      this._reviewLoaded = true;
-      this.review.load();
-    }
-    const onHash = () => this.setMode(location.hash.slice(1) === "reviews" ? "reviewing" : "mine");
-    onMounted(() => window.addEventListener("hashchange", onHash));
-    onWillUnmount(() => window.removeEventListener("hashchange", onHash));
-    useEffect(() => {
-      if (this.rows().length) this.review.loadMergebot(this._mbPrs());
-    });
-  }
-  // flip segment; clear the Mine-only selection and lazy-load Reviewing once
-  setMode(m2) {
-    if (this.mode() === m2) return;
-    this.mode.set(m2);
-    this.selected.set(/* @__PURE__ */ new Set());
-    if (m2 === "reviewing" && !this._reviewLoaded) {
-      this._reviewLoaded = true;
-      this.review.load();
-    }
-  }
-  // the open PRs in mergebot's {github, number} shape (github === the slug).
-  // mergebot only tracks the in-flight merge, so terminal PRs (GitHub merged or
-  // closed) never need a scrape — and the authored list is fetched --state all,
-  // so this is most of them. Skipping them avoids hundreds of pointless requests.
-  _mbPrs() {
-    return this.rows().filter((r) => r.state === "open" && !this.code.isExternalRepo(r.github)).map((r) => ({ github: r.github, number: r.number }));
-  }
-  // Refresh: reload the active segment, then re-probe mergebot (merged PRs stay
-  // terminal; unsupported repos get re-checked so a false positive can recover)
-  async refresh() {
-    if (this.mode() === "mine") await this.code.load(true);
-    else await this.review.load(true);
-    this.review.loadMergebot(this._mbPrs(), { refresh: true });
-  }
-  // per-PR actions in the floating kebab menu (shared ActionMenu) — Mine only
-  openRowMenu(ev, row) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    const actions = [
-      {
-        label: "Close PR",
-        danger: true,
-        onClick: () => this.code.closePr(row.github, row.number)
-      }
-    ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
-  }
-  // tick/untick a PR (by "github:number") for batch actions
-  toggleSelect(key) {
-    const sel = new Set(this.selected());
-    sel.has(key) ? sel.delete(key) : sel.add(key);
-    this.selected.set(sel);
-  }
-  // a PR can be selected (and batch-closed) only in Mine mode, while open and on GitHub
-  selectable(row) {
-    return this.mode() === "mine" && row.state === "open" && !!row.github;
-  }
-  // clicking a PR's title toggles its selection, mirroring the row checkbox
-  selectRow(row) {
-    if (this.selectable(row)) this.toggleSelect(`${row.github}:${row.number}`);
-  }
-  // a branch group's selectable PRs (Mine, open, on GitHub)
-  _groupSelectable(g) {
-    return g.prs.filter((r) => this.selectable(r));
-  }
-  // whether clicking the branch name can select anything (drives the clickable cue)
-  groupSelectable(g) {
-    return this._groupSelectable(g).length > 0;
-  }
-  // clicking the branch name toggles selection of all its selectable PRs (a branch
-  // often pairs an odoo + enterprise PR): select them all when any is unselected,
-  // else clear them
-  selectGroup(g) {
-    const keys = this._groupSelectable(g).map((r) => `${r.github}:${r.number}`);
-    if (!keys.length) return;
-    const sel = new Set(this.selected());
-    const allSel = keys.every((k) => sel.has(k));
-    for (const k of keys) allSel ? sel.delete(k) : sel.add(k);
-    this.selected.set(sel);
-  }
-  get _selectablePrs() {
-    return this.rows().filter((r) => this.selectable(r));
-  }
-  get allSelected() {
-    const sel = this.selected();
-    const selectable = this._selectablePrs;
-    return selectable.length > 0 && selectable.every((r) => sel.has(`${r.github}:${r.number}`));
-  }
-  toggleSelectAll() {
-    this.selected.set(
-      this.allSelected ? /* @__PURE__ */ new Set() : new Set(this._selectablePrs.map((r) => `${r.github}:${r.number}`))
-    );
-  }
-  // selected, still-visible, closeable PRs
-  get _selectedPrs() {
-    const sel = this.selected();
-    return this.rows().filter((r) => sel.has(`${r.github}:${r.number}`) && this.selectable(r));
-  }
-  get selectedCount() {
-    return this._selectedPrs.length;
-  }
-  // confirm, then close every selected PR
-  async closeSelected() {
-    const prs = this._selectedPrs;
-    if (!prs.length) return;
-    const res = await this.dialogs.open({
-      title: "Close pull requests",
-      message: `Close ${prs.length} pull request${prs.length === 1 ? "" : "s"}? This cannot be undone here (reopen on GitHub).`,
-      okLabel: "Close",
-      fields: []
-    });
-    if (!res) return;
-    await Promise.all(prs.map((r) => this.code.closePrNoConfirm(r.github, r.number)));
-    this.selected.set(/* @__PURE__ */ new Set());
-  }
-  get stamp() {
-    const [loading, at] = this.mode() === "mine" ? [this.code.loading(), this.code.at()] : [this.review.loading(), this.review.at()];
-    if (loading) return "refreshing\u2026";
-    return at ? `updated ${timeAgo(new Date(at).toISOString())}` : "";
-  }
-  get busyNow() {
-    return this.mode() === "mine" ? this.code.busy() : this.review.loading();
-  }
-  // per-repo load errors (Mine only; Reviewing has a single top-level error)
-  get errors() {
-    return this.mode() === "mine" ? this.code.prRepos().filter((r) => r.error) : [];
-  }
-  get loadError() {
-    return this.mode() === "mine" ? this.code.error() : this.review.error();
-  }
-  get emptyMsg() {
-    return this.mode() === "mine" ? "No pull requests." : "No PRs commented on in the last 14 days.";
-  }
-  // repository labels present in the active segment (for the filter dropdown)
-  get repoOptions() {
-    return [...new Set(this.rows().map((r) => r.repoLabel))].sort();
-  }
-  get count() {
-    const n = this.groups().reduce((sum, g) => sum + g.prs.length, 0);
-    return `${n} PR${n === 1 ? "" : "s"}`;
-  }
-  // friendly short id for a repo's github slug (e.g. "odoo/enterprise" -> "enterprise"),
-  // falling back to the slug for repos not in config
-  get _slugToId() {
-    return Object.fromEntries(
-      (this.config.config.repos || []).filter((r) => r.github).map((r) => [r.github, r.id])
-    );
-  }
-  labelFor(github) {
-    return this._slugToId[github] || github;
-  }
-  // PRs of the active segment, filtered by search + repository. PRs arrive already
-  // normalized (see models.js), so a row is just the PR plus its display repoLabel;
-  // every downstream helper reads the unified fields. Mine rows carry createdAt —
-  // the date column shows it for your own PRs (their updatedAt is noisy: it bumps on
-  // any comment/label long after the work).
-  rows() {
-    const q = this.search().trim().toLowerCase();
-    const repoFilter = this.repoFilter();
-    let list;
-    if (this.mode() === "mine") {
-      list = [];
-      for (const repo of this.code.prRepos()) {
-        if (repo.error) continue;
-        for (const pr of repo.prs) list.push({ ...pr, repoLabel: repo.id });
-      }
-    } else {
-      list = this.review.prs().map((pr) => ({ ...pr, repoLabel: this.labelFor(pr.github) }));
-    }
-    return list.filter((r) => {
-      if (repoFilter && r.repoLabel !== repoFilter) return false;
-      if (q && !`${r.title} ${r.repoLabel} ${r.branch} #${r.number}`.toLowerCase().includes(q))
-        return false;
-      return true;
-    });
-  }
-  // normalized rows grouped by branch name. Within a group, PRs follow the config
-  // repository order (e.g. odoo/odoo before odoo/enterprise); repos not in config
-  // sort last. The same branch often has a PR in odoo and one in enterprise —
-  // grouping keeps that work together. Groups are ordered by their most recent PR,
-  // with starred branches first. The mergebot-status filter is group-level: a group
-  // is kept whole when ANY of its PRs matches.
-  groups() {
-    const byBranch = /* @__PURE__ */ new Map();
-    for (const r of this.rows()) {
-      const key = r.branch || "\u2014";
-      (byBranch.get(key) || byBranch.set(key, []).get(key)).push(r);
-    }
-    const ts = (r) => Date.parse(this.prDate(r)) || 0;
-    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
-    const rank = (r) => {
-      const i = repoOrder.indexOf(r.github);
-      return i === -1 ? repoOrder.length : i;
-    };
-    const status = this.statusFilter();
-    return [...byBranch.entries()].map(([branch, prs]) => ({
-      branch,
-      prs: prs.slice().sort((a, b) => rank(a) - rank(b) || a.github.localeCompare(b.github) || ts(b) - ts(a)),
-      updated: Math.max(...prs.map(ts)),
-      fav: this.review.isFavorite(branch)
-    })).filter((g) => {
-      if (!status) return true;
-      if (status === "unmerged") return g.prs.some((pr) => !this._isMerged(pr));
-      if (status === "merged") return g.prs.some((pr) => this._isMerged(pr));
-      return g.prs.some((pr) => this.mbState(pr) === status);
-    }).sort((a, b) => b.fav - a.fav || b.updated - a.updated);
-  }
-  // "done" for the default filter: mergebot-merged, or a terminal GitHub state
-  // (merged/closed) — so "unmerged" hides finished work in both segments, the way
-  // the old Mine "Open" toggle did
-  _isMerged(row) {
-    return this.mbState(row) === "merged" || row.state === "merged" || row.state === "closed";
-  }
-  // favorite (star) a whole branch group — keyed by branch name (see ReviewPlugin);
-  // starred groups sort first. Shared across both segments (one branch = one star).
-  toggleFav(g) {
-    this.review.toggleFavorite(g.branch);
-  }
-  mbState(row) {
-    return this.review.mergebot()[`${row.github}#${row.number}`] || "";
-  }
-  // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
-  mbDetail(row) {
-    return this.review.mbDetails()[`${row.github}#${row.number}`] || "";
-  }
-  mbClass(row) {
-    return mbCategory(this.mbState(row));
-  }
-  mergebotUrl(row) {
-    return `${MERGEBOT}/${row.github}/pull/${row.number}`;
-  }
-  cell(date) {
-    return timeAgo(date);
-  }
-  // the date shown in the last column: your own PRs show when they were opened
-  // (createdAt); reviewed PRs show GitHub's updatedAt (no createdAt on those rows)
-  prDate(row) {
-    return row.createdAt || row.updatedAt;
-  }
-  // header for that column, matching prDate's source per segment
-  get dateLabel() {
-    return this.mode() === "mine" ? "Created" : "Last update";
-  }
-  prState(row) {
-    return row.draft && row.state === "open" ? "draft" : row.state;
-  }
-};
-var TestsScreen = class extends Component {
-  static components = { LogConsole };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top"><div class="test-title"><h1>Tests</h1><span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/></div></div>
-        <div class="panel-actions">
-          <form class="test-form" t-on-submit.prevent="() => this.run()">
-            <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
-              <option value="" selected="selected" hidden="hidden">Presets</option>
-              <optgroup t-if="this.presets.length" label="Presets">
-                <option t-foreach="this.presets" t-as="p" t-key="p_index" t-att-value="p.tags" t-out="p.tags"/>
-              </optgroup>
-              <optgroup t-if="this.tests.history().length" label="Recent">
-                <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
-              </optgroup>
-            </select>
-            <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
-                   placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
-            <button type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
-                    title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
-                    t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
-            <button type="submit" t-att-disabled="!this.tests.target or this.tests.runActive() or !this.tags().trim()"><span class="play"/>Run</button>
-            <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-            <div class="log-controls">
-              <label class="toggle" t-att-class="{on: this.tests.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
-              <button type="button" class="tool-btn" t-on-click="() => this.tests.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
-            </div>
-          </form>
-        </div>
-      </div>
-      <div class="content flush tests-content">
-        <div t-if="!this.tests.output.count() and !this.tests.runActive()" class="tests-empty">
-          <p class="tests-empty-title">No test output yet</p>
-          <p class="tests-empty-hint">Pick a preset or type <code>--test-tags</code> above, then hit <strong>Run</strong> to launch a test on the active target.</p>
-        </div>
-        <LogConsole title="'Test output'" buffer="this.tests.output" bare="true"/>
-      </div>
-    </section>`;
-  tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  clearIcon = m(ICONS.clear);
-  copyIcon = m(ICONS.copy);
-  tags = signal("");
-  // configured test-tag presets (Configuration tab), non-empty only
-  get presets() {
-    return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
-  }
-  // copy a `goo --test-tags …` command for the current tags (single-quoted so the
-  // shell doesn't mangle globs); an agent can run it to run this test from the CLI
-  copyCommand() {
-    const tags = this.tags().trim();
-    if (!tags) return;
-    navigator.clipboard?.writeText(`goo --test-tags '${tags.replace(/'/g, "'\\''")}'`);
-  }
-  // a compact result chip shown next to the title, replacing the old status text
-  get badge() {
-    const s = this.tests.status();
-    if (s === "passed") return { label: "success", cls: "ok" };
-    if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
-    if (s === "running\u2026" || s === "starting\u2026") return { label: "running", cls: "run" };
-    return null;
-  }
-  run() {
-    this.tests.run(this.tags());
-  }
-  // fill the input from the preset/recent menu, then reset it back to "Presets"
-  onPreset(ev) {
-    const v = ev.target.value;
-    ev.target.value = "";
-    if (v) this.tags.set(v);
-  }
-  toggleAuto() {
-    const b = this.tests.output;
-    b.autoScroll.set(!b.autoScroll());
-    if (b.autoScroll()) b.toBottom();
-  }
-};
-var BundleNode = class extends Component {
-  static template = xml`
-    <div class="bnode">
-      <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
-        <span class="bnode-caret" t-out="this.props.node.children.length ? (this.open() ? '▾' : '▸') : ''"/>
-        <span class="bnode-name" t-out="this.props.node.name"/>
-        <span class="bnode-size" t-out="this.fmt(this.props.node.size)"/>
-      </div>
-      <t t-if="this.open()">
-        <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
-      </t>
-    </div>`;
-  props = props({ node: t.any(), depth: t.any() });
-  open = signal(false);
-  setup() {
-    if (this.props.depth === 0) this.open.set(true);
-  }
-  toggle() {
-    if (this.props.node.children.length) this.open.set(!this.open());
-  }
-  fmt(n) {
-    return formatBytes(n);
-  }
-};
-BundleNode.components = { BundleNode };
-var AssetsScreen = class extends Component {
-  static components = { SearchBox, BundleNode };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Assets</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.search"/>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <select t-att-value="this.assets.selectedDb()" t-on-change="ev => this.assets.selectDb(ev.target.value)" title="database to inspect">
-            <option value="">Select a database…</option>
-            <option t-foreach="this.dbOptions" t-as="d" t-key="d" t-att-value="d" t-out="d"/>
-          </select>
-          <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.generate()">Generate asset bundles</button>
-          <span t-if="this.assets.selectedDb()" class="row-count" t-out="this.count"/>
-        </div>
-      </div>
-      <div class="content br-fill">
-        <t t-if="this.assets.bundleData()">
-          <div class="assets-analysis">
-            <div class="assets-analysis-bar">
-              <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
-              <span class="assets-analysis-title" t-out="this.analysisTitle"/>
-              <span class="meta" t-out="this.analysisTotal"/>
-              <div class="assets-analysis-views">
-                <SearchBox value="this.treeSearch"/>
-                <button class="pbtn" t-att-class="{active: this.view() === 'tree'}" t-on-click="() => this.view.set('tree')">Aggregate</button>
-                <button class="pbtn" t-att-class="{active: this.view() === 'flat'}" t-on-click="() => this.view.set('flat')">Flat</button>
-              </div>
-            </div>
-            <div class="assets-tree">
-              <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing…</div>
-              <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
-              <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
-              <div t-else="" class="assets-tree-inner">
-                <t t-if="this.view() === 'tree'">
-                  <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
-                </t>
-                <t t-else="">
-                  <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
-                    <span class="bnode-name" t-out="f.path"/>
-                    <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
-                  </div>
-                </t>
-              </div>
-            </div>
-          </div>
-        </t>
-        <t t-else="">
-        <div t-att-class="{busy: this.assets.busy()}">
-          <div t-if="!this.assets.selectedDb()" class="dim br-empty">Select a database to list its asset bundles.</div>
-          <div t-elif="this.assets.error()" class="dim br-empty" t-out="'Failed to load: ' + this.assets.error()"/>
-          <div t-elif="this.assets.loading() and !this.rows().length" class="dim br-empty">Loading…</div>
-          <div t-elif="!this.rows().length" class="dim br-empty">No asset bundles in this database.</div>
-          <div t-else="" class="br-card">
-            <div class="brg-table">
-              <table class="br-table brg-flat">
-                <thead>
-                  <tr>
-                    <th class="br-sort" t-on-click="() => this.sort('name')">Bundle<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
-                    <th class="br-sort" t-on-click="() => this.sort('size')">Size<span class="br-arrow" t-out="this.sortArrow('size')"/></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr t-foreach="this.rows()" t-as="b" t-key="b.id">
-                    <td class="addon-name">
-                      <button class="assets-name" t-att-title="'analyze ' + this.bundleBase(b.name) + '.min bundle'" t-on-click="() => this.analyze(b)" t-out="b.name"/>
-                      <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
-                    </td>
-                    <td t-out="this.fmtSize(b.size)"/>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-        </t>
-      </div>
-    </section>`;
-  assets = plugin(AssetsPlugin);
-  db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
-  view = signal("tree");
-  // analysis view: "tree" (aggregate) | "flat"
-  treeSearch = signal("");
-  // filter files within the analysis
-  copiedId = signal(null);
-  // id of the row whose url was just copied (transient label)
-  sortKey = signal("size");
-  // "name" | "size"
-  sortDir = signal("desc");
-  // "asc" | "desc" — default: largest bundle first
-  search = signal("");
-  showJs = signal(true);
-  // include .js bundles
-  showCss = signal(true);
-  // include .css bundles
-  showOther = signal(true);
-  // include non-js/non-css assets (fonts, source maps, xml…)
+  addonsIcon = m(ICONS.addons);
+  // "Repos" sync-strip label icon
+  codeIcon = m(ICONS.code);
+  // "Edit" (open all repos in the editor)
+  chevronIcon = m(ICONS.chevron);
+  // the repo chip's dropdown caret
+  menuId = signal("");
+  // id of the repo chip whose action menu is open ("" = none)
   setup() {
-    this.db.load();
-    if (!this.assets.selectedDb()) {
-      const d = this.assets.defaultDb();
-      if (d) this.assets.selectDb(d);
-    }
+    this._load(false);
+    const closeMenu = () => this.menuId() && this.menuId.set("");
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
   }
-  get dbOptions() {
-    return this.db.databases().map((d) => d.name);
+  toggleMenu(id) {
+    this.menuId.set(this.menuId() === id ? "" : id);
   }
   get stamp() {
-    if (this.assets.generating()) return "generating\u2026";
-    if (this.assets.loading()) return "loading\u2026";
-    return this.assets.at() ? `updated ${timeAgo(new Date(this.assets.at()).toISOString())}` : "";
+    if (this.code.loading()) return "refreshing\u2026";
+    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
   }
-  get count() {
-    const n = this.rows().length;
-    return `${n} bundle${n === 1 ? "" : "s"}`;
+  get errors() {
+    return this.code.groups().errors;
   }
-  // the bundle base name an attachment belongs to, e.g. "web.assets_web.min.js" or
-  // "web.assets_web.css.map" -> "web.assets_web"
-  bundleBase(name) {
-    return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
+  // repo ids shown by the strip — favorite repos plus the current target's repos.
+  // Narrow both the branch and PR fetch to these (the only repos this screen shows).
+  _repoIds() {
+    const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
+    const current = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
+    for (const c of current?.checkouts || []) ids.add(c.repo);
+    return ids;
   }
-  // analyze the bundle this row belongs to (its per-file size breakdown), scoped to
-  // the clicked attachment's kind so the total matches its row size: any .css/.css.map
-  // → css, everything else (.min.js, .js.map, …) → js.
-  analyze(b) {
-    const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
-    this.assets.analyze(this.bundleBase(b.name), kind);
+  _load(force) {
+    const ids = this._repoIds();
+    this.code.load(force, ids, ids);
   }
-  // the analyzed attachment's name, e.g. "web.assets_web.min.js" — the .min asset the
-  // breakdown was scoped to, so it reads as the row that was clicked
-  get analysisTitle() {
-    const d = this.assets.bundleData();
-    if (!d) return "";
-    return `${d.name}.min.${d.kind === "css" ? "css" : "js"}`;
-  }
-  // total minified size across the analyzed bundle's js + css + xml
-  get analysisTotal() {
-    const d = this.assets.bundleData();
-    if (!d) return "";
-    const all = [...d.js || [], ...d.css || [], ...d.xml || []];
-    return `${formatBytes(all.reduce((s, [, n]) => s + n, 0))} minified`;
-  }
-  // the analyzed bundle's files as a flat list ({path, bytes}), search-filtered,
-  // largest first. Same path can occur more than once (e.g. a template and its
-  // registerTemplateExtension share their base template's name) — merge those into
-  // one row (sizes summed), matching how the tree view aggregates by path already.
-  get flat() {
-    const d = this.assets.bundleData();
-    if (!d) return [];
-    const q = this.treeSearch().trim().toLowerCase();
-    const byPath = /* @__PURE__ */ new Map();
-    for (const [path, bytes] of [...d.js || [], ...d.css || [], ...d.xml || []]) {
-      byPath.set(path, (byPath.get(path) || 0) + bytes);
-    }
-    return [...byPath.entries()].map(([path, bytes]) => ({ path, bytes })).filter((f) => !q || f.path.toLowerCase().includes(q)).sort((a, b) => b.bytes - a.bytes);
-  }
-  // the analyzed bundle aggregated into a tree: top level is js/css/xml, then each
-  // path segment, sizes summed up the tree; children sorted largest first
-  get tree() {
-    const d = this.assets.bundleData();
-    if (!d) return [];
-    const q = this.treeSearch().trim().toLowerCase();
-    const top = [];
-    for (const [label, files] of [
-      ["js", d.js],
-      ["css", d.css],
-      ["xml", d.xml]
-    ]) {
-      const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
-      if (!matched.length) continue;
-      const root = { name: label, size: 0, children: {} };
-      for (const [path, bytes] of matched) {
-        root.size += bytes;
-        let node = root;
-        for (const part of path.split("/").filter(Boolean)) {
-          node.children[part] = node.children[part] || { name: part, size: 0, children: {} };
-          node = node.children[part];
-          node.size += bytes;
-        }
-      }
-      top.push(root);
-    }
-    const finalize = (n) => ({
-      name: n.name,
-      size: n.size,
-      children: Object.values(n.children).map(finalize).sort((a, b) => b.size - a.size)
-    });
-    return top.map(finalize).sort((a, b) => b.size - a.size);
-  }
-  // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)
-  // and everything that isn't plain js/css (fonts, xml, …) count as "other".
-  kind(b) {
-    if (/\.map$/i.test(b.name)) return "other";
-    if (/\.css$/i.test(b.name)) return "css";
-    if (/\.js$/i.test(b.name)) return "js";
-    return "other";
-  }
-  // search- and kind-filtered bundles, sorted by the active column
-  rows() {
-    const q = this.search().trim().toLowerCase();
-    const showJs = this.showJs();
-    const showCss = this.showCss();
-    const showOther = this.showOther();
-    const dir = this.sortDir() === "asc" ? 1 : -1;
-    const bySize = this.sortKey() === "size";
-    return this.assets.bundles().filter((b) => {
-      const k = this.kind(b);
-      if (k === "js" && !showJs) return false;
-      if (k === "css" && !showCss) return false;
-      if (k === "other" && !showOther) return false;
-      return !q || b.name.toLowerCase().includes(q) || b.url.toLowerCase().includes(q);
-    }).sort(
-      (a, b) => bySize ? dir * ((a.size || 0) - (b.size || 0)) : dir * a.name.localeCompare(b.name)
-    );
-  }
-  // toggle direction when re-clicking the active column, else switch column with a
-  // sensible default (names ascending A→Z, sizes descending largest-first)
-  sort(key) {
-    if (this.sortKey() === key) {
-      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
-    } else {
-      this.sortKey.set(key);
-      this.sortDir.set(key === "size" ? "desc" : "asc");
-    }
-  }
-  // " ▲" / " ▼" for the active sort column, else ""
-  sortArrow(key) {
-    if (this.sortKey() !== key) return "";
-    return this.sortDir() === "asc" ? " \u25B2" : " \u25BC";
-  }
-  // copy a bundle's /web/assets/… path to the clipboard, flipping its link to
-  // "copied" for a moment
-  copyUrl(b) {
-    navigator.clipboard?.writeText(b.url);
-    this.copiedId.set(b.id);
-    setTimeout(() => {
-      if (this.copiedId() === b.id) this.copiedId.set(null);
-    }, 1400);
-  }
-  fmtSize(n) {
-    return formatBytes(n || 0);
-  }
-};
-var AddonsScreen = class extends Component {
-  static components = { LogConsole, SearchBox };
-  static template = xml`
-    <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Addons</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.addons.filter"/>
-            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
-            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
-            <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.addons.status()"/>
-            <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
-          <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
-          <span t-if="this.addons.targetDb()" class="row-count" t-out="this.count"/>
-        </div>
-      </div>
-      <div class="content addons-content">
-        <div t-if="!this.addons.targetDb()" class="dim addons-empty">No active target — start a server to browse its addons.</div>
-        <t t-else="">
-          <div class="addons-grid-wrap">
-            <div t-if="this.addons.loading()" class="dim addons-msg">Loading…</div>
-            <div t-elif="this.addons.error()" class="dim addons-msg" t-out="'Failed to load: ' + this.addons.error()"/>
-            <div t-elif="!this.view.total" class="dim addons-msg">No modules match.</div>
-            <t t-else="">
-              <div class="brg-table">
-                <table class="br-table brg-flat">
-                  <thead>
-                    <tr><th>Module</th><th>Summary</th><th>Repository</th><th>State</th><th/></tr>
-                  </thead>
-                  <tbody>
-                    <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
-                      <td class="addon-name" t-att-title="mod.summary" t-out="mod.name"/>
-                      <td class="dim"><div class="br-ellip" t-att-title="mod.summary" t-out="mod.summary || '—'"/></td>
-                      <td class="dim" t-out="mod.repo"/>
-                      <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
-                      <td>
-                        <div class="br-act">
-                          <button class="addon-btn" t-att-disabled="this.addons.runActive() or mod.installable === false"
-                                  t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name)"
-                                  t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
-                        </div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
-                   t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
-            </t>
-          </div>
-          <LogConsole t-if="this.addons.runActive() or this.addons.running" title="'Install / upgrade output'" buffer="this.addons.output" extraClass="'addons-console'"/>
-        </t>
-      </div>
-    </section>`;
-  addons = plugin(AddonsPlugin);
-  refreshIcon = m(ICONS.refresh);
-  setup() {
-    useEffect(() => {
-      const db = this.addons.targetDb();
-      if (db && db !== this.addons.loadedDb() && db !== this.addons.erroredDb() && !this.addons.loading())
-        this.addons.load();
+  // repositories shown in the strip: union of the active target's repos and the
+  // favorite repositories, in config order
+  get favRepos() {
+    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    const groups = this.code.groups();
+    const currentTarget = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
+    const visibleIds = /* @__PURE__ */ new Set([
+      ...(currentTarget?.checkouts || []).map((c) => c.repo),
+      ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id)
+    ]);
+    return this.config.config.repos.filter((r) => visibleIds.has(r.id)).map((r) => {
+      const b = byId[r.id] || {};
+      const current = b.current || "";
+      const github = groups.githubByRepo[r.id] || "";
+      const pr = groups.prIndex[`${r.id}:${current}`] || null;
+      return {
+        id: r.id,
+        current,
+        dirty: !!b.dirty,
+        subject: b.head_subject || "",
+        remote: !!b.head_remote,
+        // the current branch has a remote-tracking ref
+        date: b.head_date || "",
+        ahead: b.ahead || 0,
+        // commits ahead of the base (target) branch
+        behind: b.behind || 0,
+        // commits behind the base (target) branch
+        base: this._baseBranch(current),
+        error: b.error || "",
+        github,
+        path: groups.pathByRepo[r.id] || "",
+        pr,
+        // a work branch that's pushed and PR-less can have a PR opened for it
+        canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
+      };
     });
   }
-  get view() {
-    return this.addons.filtered();
+  // the canonical base branch a branch derives from: master-owl-update -> master,
+  // 19.0-some-fix -> 19.0 (defaults to master)
+  _baseBranch(branch) {
+    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
   }
-  get count() {
-    const n = this.view.total;
-    return `${n} module${n === 1 ? "" : "s"}`;
+  // commit tooltip: the last-commit date before the title
+  commitTip(row) {
+    const subject = row.subject || "\u2014";
+    return row.date ? `${timeAgo(row.date)} \xB7 ${subject}` : subject;
   }
-  get targetLabel() {
-    return `${this.addons.targetName()} \xB7 ${this.addons.targetDb()}`;
+  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
+  // base) is the headline; missing/unreadable repos read as an error, and a repo we
+  // have no branch data for yet stays neutral rather than claiming "up to date".
+  chipClass(r) {
+    if (r.error) return "chip-err";
+    if (!r.current) return "chip-unknown";
+    return r.behind ? "chip-behind" : "chip-ok";
   }
-  toggleState(value) {
-    this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
+  syncText(r) {
+    if (r.error) return "error";
+    if (!r.current) return "\u2014";
+    return r.behind ? `${r.behind} behind` : "up to date";
   }
-  stateClass(mod) {
-    return (mod.state || "none").replace(/\s+/g, "-");
+  syncTitle(r) {
+    if (r.error) return r.error;
+    if (!r.current) return "branch state not loaded yet";
+    if (r.behind) {
+      const ahead = r.ahead ? ` \xB7 ${r.ahead} ahead` : "";
+      return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
+    }
+    return `up to date with ${r.base}`;
+  }
+  // fetch+rebase a single repo's current branch onto its canonical base branch
+  canRebaseRepo(r) {
+    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
+  }
+  rebaseRepoTitle(r) {
+    if (r.error) return r.error;
+    if (r.dirty) return "commit or stash changes first \u2014 the working tree is dirty";
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
+  }
+  async rebaseRepo(r) {
+    if (!this.canRebaseRepo(r)) return;
+    await this.code.rebase([
+      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
+    ]);
+  }
+  // push a single repo's current branch to the dev remote
+  canPushRepo(r) {
+    return !!r.current && !r.error && !!r.github && !!r.path;
+  }
+  pushRepoTitle(r) {
+    if (r.error) return r.error;
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `push ${r.current} to the dev remote (odoo-dev)`;
+  }
+  pushRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Push "${r.current}"?`,
+      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`
+    });
+  }
+  pushForceRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Force-push "${r.current}"?`,
+      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+      force: true
+    });
+  }
+  // every shown repository whose current branch can be fetched + rebased
+  get rebasableRepos() {
+    return this.favRepos.filter((r) => this.canRebaseRepo(r));
+  }
+  canRebaseAll() {
+    return this.rebasableRepos.length > 0;
+  }
+  rebaseAllTitle() {
+    const n = this.rebasableRepos.length;
+    if (!n)
+      return "nothing to rebase \u2014 repositories are dirty, missing, or have no canonical remote";
+    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
+  }
+  // fetch + rebase every shown repo's current branch onto its base, in one call
+  async rebaseAll() {
+    const repos = this.rebasableRepos.map((r) => ({
+      repo: r.id,
+      base: this._baseBranch(r.current),
+      github: r.github,
+      path: r.path
+    }));
+    if (repos.length) await this.code.rebase(repos);
+  }
+  // local checkout folders of every shown repo, for "Edit" (open them all at once)
+  get editorPaths() {
+    return this.favRepos.map((r) => r.path).filter(Boolean);
+  }
+  editAllTitle() {
+    const n = this.editorPaths.length;
+    if (!n) return "no local repository folders to open";
+    const editor = (this.config.config.editor || "code").trim();
+    return `open ${n} repositor${n === 1 ? "y" : "ies"} in ${editor}`;
+  }
+  // open every shown repo's folder in the configured editor, all in one window
+  openAllEditors() {
+    const paths = this.editorPaths;
+    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
+  }
+  // open a modal bash terminal in this repo's directory
+  openTerminal(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
+  }
+  // show the last commits on this repo's current branch
+  openCommits(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: r.path,
+      ref: r.current || "",
+      label: `${r.id} \xB7 ${r.current || "?"}`,
+      github: r.github || ""
+    });
+  }
+  // open GitHub's PR-creation page for this repo's current branch
+  openPr(r) {
+    this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
+    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
 };
+
+// static/src/components/config.js
 var ListEditor = class extends Component {
   static template = xml`
     <div class="config-block">
@@ -8751,614 +6867,1206 @@ var ConfigScreen = class extends Component {
     }
   }
 };
-var ActionMenu = class extends Component {
-  static template = xml`
-    <div class="dash-menu action-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
-      <button t-foreach="this.actions()" t-as="a" t-key="a_index" class="dash-menu-item"
-              t-att-class="{danger: a.danger}" t-att-disabled="a.disabled" t-att-title="a.title || ''"
-              t-on-click="() => this.select(a)" t-out="a.label"/>
-    </div>`;
-  open = signal(false);
-  actions = signal([]);
-  _el = null;
-  setup() {
-    onMounted(() => {
-      this._el = document.querySelector(".action-menu");
-      appBus.addEventListener("action-menu", (e) => this.openMenu(e.detail));
-      document.addEventListener("click", () => this.open.set(false));
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.open.set(false);
-      });
-    });
-  }
-  async openMenu({ rect, actions }) {
-    this.actions.set(actions);
-    this.open.set(true);
-    await Promise.resolve();
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
-    let top = rect.bottom + 4;
-    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
-  }
-  select(a) {
-    if (a.disabled) return;
-    this.open.set(false);
-    a.onClick?.();
-  }
-};
-var CiMenu = class extends Component {
-  static template = xml`
-    <div class="dash-menu ci-menu" t-att-class="{hidden: !this.open()}"
-         t-on-mouseenter="() => this.cancelClose()" t-on-mouseleave="() => this.scheduleClose()">
-      <a t-foreach="this.checks()" t-as="c" t-key="c_index" class="ci-menu-item" t-att-class="c.state || 'unknown'"
-         t-att-href="c.url || undefined" t-att-target="c.url ? '_blank' : undefined">
-        <span class="ci-menu-dot"/>
-        <span class="ci-menu-ctx" t-out="c.context"/>
-        <span class="ci-menu-state" t-out="this.stateLabel(c.state)"/>
-      </a>
-    </div>`;
-  open = signal(false);
-  checks = signal([]);
-  _el = null;
-  _closeTimer = null;
-  setup() {
-    onMounted(() => {
-      this._el = document.querySelector(".ci-menu");
-      appBus.addEventListener("ci-menu", (e) => this.openMenu(e.detail));
-      appBus.addEventListener("ci-menu-hide", () => this.scheduleClose());
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.close();
-      });
-    });
-  }
-  cancelClose() {
-    if (this._closeTimer) {
-      clearTimeout(this._closeTimer);
-      this._closeTimer = null;
+var SPECS = {
+  repos: {
+    key: "repos",
+    title: "Repositories",
+    itemName: "repository",
+    fields: [
+      { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
+      {
+        key: "path",
+        name: "path",
+        placeholder: "path (e.g. ~/work/community)",
+        className: "w-flex"
+      },
+      {
+        key: "github",
+        name: "github repo",
+        placeholder: "github (e.g. odoo/odoo)",
+        className: "w-name",
+        optional: true
+      },
+      { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
+      {
+        key: "external",
+        name: "external",
+        type: "checkbox",
+        optional: true,
+        title: "a repo outside the odoo CI ecosystem (e.g. odoo/owl) \u2014 skip its mergebot/runbot lookups"
+      },
+      {
+        key: "favorite",
+        name: "favorite",
+        type: "checkbox",
+        optional: true,
+        title: "favorite repositories appear in the dashboard summary"
+      }
+    ],
+    validate(repos, config) {
+      if (!repos.find((r) => r.id === "community"))
+        return 'a "community" repository is required (odoo-bin lives there)';
+      const ids = new Set(repos.map((r) => r.id));
+      for (const t2 of config.targets) {
+        const used = (t2.checkouts || []).find((c) => !ids.has(c.repo));
+        if (used) return `repository "${used.repo}" is still used by target "${t2.name}"`;
+      }
+      return null;
+    }
+  },
+  testPresets: {
+    key: "test_presets",
+    title: "Test presets",
+    itemName: "preset",
+    reorderable: true,
+    // drag the handle to reorder how presets appear in the Tests selector
+    fields: [
+      {
+        key: "tags",
+        name: "test tags",
+        placeholder: "--test-tags, e.g. /web:WebSuite[@web]",
+        className: "w-flex"
+      }
+    ],
+    validate() {
+      return null;
     }
   }
-  scheduleClose() {
-    this.cancelClose();
-    this._closeTimer = setTimeout(() => this.open.set(false), 180);
-  }
-  close() {
-    this.cancelClose();
-    this.open.set(false);
-  }
-  async openMenu({ rect, checks }) {
-    this.cancelClose();
-    this.checks.set(checks);
-    this.open.set(true);
-    await Promise.resolve();
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
-    let top = rect.bottom + 4;
-    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
-  }
-  stateLabel(state) {
-    return { success: "ok", failure: "ko", pending: "running" }[state] || "\u2014";
-  }
 };
-var MbMenu = class extends Component {
-  static template = xml`
-    <div class="dash-menu mb-menu" t-att-class="{hidden: !this.open()}"
-         t-on-mouseenter="() => this.cancelClose()" t-on-mouseleave="() => this.scheduleClose()">
-      <a t-foreach="this.rows()" t-as="r" t-key="r_index" class="ci-menu-item mb-menu-item" t-att-class="r.cls"
-         t-att-href="r.url || undefined" t-att-target="r.url ? '_blank' : undefined">
-        <span class="ci-menu-dot"/>
-        <span class="ci-menu-ctx" t-out="r.repo"/>
-        <span class="ci-menu-state" t-out="this.label(r)"/>
-      </a>
-    </div>`;
-  open = signal(false);
-  rows = signal([]);
-  _el = null;
-  _closeTimer = null;
-  setup() {
-    onMounted(() => {
-      this._el = document.querySelector(".mb-menu");
-      appBus.addEventListener("mb-menu", (e) => this.openMenu(e.detail));
-      appBus.addEventListener("mb-menu-hide", () => this.scheduleClose());
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.close();
-      });
-    });
-  }
-  cancelClose() {
-    if (this._closeTimer) {
-      clearTimeout(this._closeTimer);
-      this._closeTimer = null;
-    }
-  }
-  scheduleClose() {
-    this.cancelClose();
-    this._closeTimer = setTimeout(() => this.open.set(false), 180);
-  }
-  close() {
-    this.cancelClose();
-    this.open.set(false);
-  }
-  async openMenu({ rect, rows }) {
-    this.cancelClose();
-    this.rows.set(rows);
-    this.open.set(true);
-    await Promise.resolve();
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
-    let top = rect.bottom + 4;
-    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
-  }
-  // "blocked · Review, CI" — the state word, plus the unmet requirements when present
-  label(r) {
-    return r.detail ? `${r.state} \xB7 ${r.detail}` : r.state;
-  }
-};
-var RemoteBranchDialog = class extends Component {
-  static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
-      <div class="dialog rbd" t-on-click.stop="() => {}">
-        <h2 class="dialog-title">Target from remote branch</h2>
-        <div class="dialog-body">
-          <div class="dialog-field">
-            <label>Branch name</label>
-            <input type="text" class="rbd-input" t-ref="this.inputEl"
-                   placeholder="type to search across all repos…"
-                   t-on-input="(ev) => this.onInput(ev.target.value)"
-                   t-on-keydown="(ev) => this.onKey(ev)"/>
-          </div>
-          <div class="rbd-results">
-            <div t-if="this.loading()" class="rbd-status">Searching…</div>
-            <div t-elif="this.searched() and !this.rows().length" class="rbd-status">No matching branches found.</div>
-            <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
-                 class="rbd-row" t-att-class="{selected: this.sel() === r.branch}"
-                 t-on-click="() => this.sel.set(r.branch)">
-              <span class="rbd-branch" t-out="r.branch"/>
-              <span class="rbd-repos" t-out="r.repos.join(', ')"/>
-            </div>
-          </div>
-        </div>
-        <div class="dialog-foot">
-          <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Create target</button>
-          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-  props = props({ done: t.function() });
+
+// static/src/plugins/review_plugin.js
+var mbKey = (p) => `${p.github}#${p.number}`;
+var ReviewPlugin = class extends Plugin {
+  static sequence = 5;
   config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin);
+  // the shared observed store
+  prs = signal([]);
+  // view state; freshness is the server's job
+  at = signal(0);
   loading = signal(false);
-  searched = signal(false);
-  rows = signal([]);
-  sel = signal("");
-  inputEl = signal.ref(HTMLElement);
-  _timer = null;
-  setup() {
-    onMounted(() => this.inputEl()?.focus());
-    const onKey = (e) => {
-      if (e.key === "Escape") this.done(null);
-    };
-    document.addEventListener("keydown", onKey);
-    onWillUnmount(() => {
-      document.removeEventListener("keydown", onKey);
-      clearTimeout(this._timer);
-    });
-  }
-  done(result) {
-    this.props.done(result);
-  }
-  onInput(val) {
-    this.sel.set("");
-    clearTimeout(this._timer);
-    if (!val.trim()) {
-      this.loading.set(false);
-      this.searched.set(false);
-      this.rows.set([]);
-      return;
-    }
-    this.loading.set(true);
-    this._timer = setTimeout(() => this._search(val.trim()), 300);
-  }
-  async _search(query) {
-    const repos = this.config.config.repos.filter((r) => r.github).map((r) => ({ id: r.id, github: r.github }));
-    try {
-      const res = await fetch("/api/code/remote-branches/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repos, query })
-      });
-      const data = await res.json();
-      if (!data.ok) return;
-      const byBranch = {};
-      for (const { repo, branch } of data.results) {
-        if (!byBranch[branch]) byBranch[branch] = [];
-        byBranch[branch].push(repo);
-      }
-      this.rows.set(Object.entries(byBranch).map(([branch, repos2]) => ({ branch, repos: repos2 })));
-    } finally {
-      this.loading.set(false);
-      this.searched.set(true);
-    }
-  }
-  onKey(ev) {
-    if (ev.key === "Enter" && this.sel()) this.ok();
-  }
-  ok() {
-    if (!this.sel()) return;
-    const branch = this.sel();
-    const repos = this.rows().find((r) => r.branch === branch)?.repos || [];
-    this.done({ branch, repos });
-  }
-};
-var _xtermReady = null;
-function loadXterm() {
-  if (!_xtermReady) {
-    _xtermReady = new Promise((resolve, reject) => {
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = "/static/lib/xterm/xterm.css";
-      document.head.appendChild(link);
-      const s1 = document.createElement("script");
-      s1.src = "/static/lib/xterm/xterm.js";
-      s1.onload = () => {
-        const s2 = document.createElement("script");
-        s2.src = "/static/lib/xterm/addon-fit.js";
-        s2.onload = resolve;
-        s2.onerror = reject;
-        document.head.appendChild(s2);
-      };
-      s1.onerror = reject;
-      document.head.appendChild(s1);
-    });
-  }
-  return _xtermReady;
-}
-function loadScript(src, isLoaded) {
-  return new Promise((resolve, reject) => {
-    if (isLoaded()) return resolve();
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error(`failed to load ${src}`));
-    document.head.appendChild(s);
-  });
-}
-var _chartJsReady = null;
-function loadChartJs() {
-  if (!_chartJsReady) {
-    _chartJsReady = loadScript("/static/lib/chart/chart.umd.min.js", () => window.Chart).then(
-      () => loadScript("/static/lib/chart/chartjs-plugin-zoom.min.js", () => window.ChartZoom)
-    ).then(() => window.Chart.register(window.ChartZoom)).catch((e) => {
-      _chartJsReady = null;
-      throw e;
-    });
-  }
-  return _chartJsReady;
-}
-var CHART_ZOOM_OPTIONS = {
-  pan: { enabled: true, mode: "x" },
-  zoom: {
-    wheel: { enabled: true },
-    drag: { enabled: true, modifierKey: "shift" },
-    mode: "x"
-  }
-};
-var CHART_COLORS = [
-  "#4e79a7",
-  "#f28e2b",
-  "#e15759",
-  "#76b7b2",
-  "#59a14f",
-  "#edc948",
-  "#b07aa1",
-  "#ff9da7",
-  "#9c755f",
-  "#bab0ac"
-];
-async function attachXterm(el, wsUrl, focusOnOpen = false) {
-  await loadXterm();
-  const term = new Terminal({
-    cursorBlink: true,
-    fontSize: 13,
-    fontFamily: "var(--mono, monospace)"
-  });
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
-  term.open(el);
-  await new Promise((r) => requestAnimationFrame(r));
-  fit.fit();
-  if (focusOnOpen) term.focus();
-  const ws = new WebSocket(wsUrl);
-  ws.binaryType = "arraybuffer";
-  const sendSize = () => {
-    if (ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-  };
-  ws.onopen = sendSize;
-  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
-  const onData = term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
-  });
-  const ro = new ResizeObserver(() => {
-    fit.fit();
-    sendSize();
-  });
-  ro.observe(el);
-  return () => {
-    ro.disconnect();
-    onData.dispose?.();
-    try {
-      ws.close();
-    } catch {
-    }
-    term.dispose();
-  };
-}
-function useDragResize({ w = 780, h = 440, place = null } = {}) {
-  const handle = signal.ref(HTMLElement);
-  let x = 0;
-  let y = 0;
-  let width = w;
-  let height = h;
-  let placed = false;
-  let dragging = false;
-  let resizing = false;
-  let offX = 0;
-  let offY = 0;
-  let startX = 0;
-  let startY = 0;
-  let startW = 0;
-  let startH = 0;
-  const apply = () => {
-    const el = handle();
-    if (!el) return;
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
-    el.style.width = `${width}px`;
-    el.style.height = `${height}px`;
-  };
-  const onMouseMove = (e) => {
-    if (dragging) {
-      x = Math.max(0, e.clientX - offX);
-      y = Math.max(0, e.clientY - offY);
-      apply();
-    } else if (resizing) {
-      width = Math.max(300, startW + e.clientX - startX);
-      height = Math.max(200, startH + e.clientY - startY);
-      apply();
-    }
-  };
-  const onMouseUp = () => {
-    dragging = false;
-    resizing = false;
-  };
-  onMounted(() => {
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  });
-  onWillUnmount(() => {
-    document.removeEventListener("mousemove", onMouseMove);
-    document.removeEventListener("mouseup", onMouseUp);
-  });
-  useEffect(() => {
-    const el = handle();
-    if (!el) return;
-    if (!placed) {
-      const p = place ? place(width, height) : null;
-      x = p ? p.x : Math.max(0, Math.floor((window.innerWidth - width) / 2));
-      y = p ? p.y : Math.max(0, Math.floor((window.innerHeight - height) / 2));
-      placed = true;
-    }
-    apply();
-  });
-  return {
-    handle,
-    onDragStart: (e) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      offX = e.clientX - x;
-      offY = e.clientY - y;
-      e.preventDefault();
-    },
-    onResizeStart: (e) => {
-      if (e.button !== 0) return;
-      resizing = true;
-      startX = e.clientX;
-      startY = e.clientY;
-      startW = width;
-      startH = height;
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  };
-}
-var TerminalPanel = class extends Component {
-  static template = xml`
-    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title">Terminal</span>
-        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  term = plugin(TerminalPlugin);
-  container = signal.ref(HTMLElement);
-  _dispose = null;
-  _termOpen = false;
-  // guard against double-open on re-renders
-  setup() {
-    this.drag = useDragResize();
-    onWillUnmount(() => this._closeTerminal());
-    useEffect(() => {
-      const el = this.container();
-      if (el) {
-        this._openTerminal(el);
-      } else {
-        this._closeTerminal();
-      }
-    });
-  }
-  async _openTerminal(el) {
-    if (this._termOpen) return;
-    this._termOpen = true;
-    try {
-      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
-      if (this.container() !== el) {
-        dispose();
-        return;
-      }
-      this._dispose = dispose;
-    } catch (e) {
-      this._termOpen = false;
-    }
-  }
-  _closeTerminal() {
-    if (!this._termOpen) return;
-    this._termOpen = false;
-    this._dispose?.();
-    this._dispose = null;
-  }
-};
-var TerminalDialog = class extends Component {
-  static template = xml`
-    <div class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
-        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  props = props({ done: t.function(), path: t.string(), label: t.string() });
-  container = signal.ref(HTMLElement);
-  _dispose = null;
-  setup() {
-    this.drag = useDragResize();
-    useEffect(() => {
-      const el = this.container();
-      if (!el) return;
-      let live = true;
-      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
-      attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
-      return () => {
-        live = false;
-        this._dispose?.();
-        this._dispose = null;
-      };
-    });
-    const onKey = (e) => {
-      if (e.key !== "Escape") return;
-      const el = this.container();
-      if (el && el.contains(document.activeElement)) return;
-      this.done(null);
-    };
-    document.addEventListener("keydown", onKey);
-    onWillUnmount(() => document.removeEventListener("keydown", onKey));
-  }
-  get label() {
-    return this.props.label || this.props.path;
-  }
-  done(result) {
-    this.props.done(result);
-  }
-};
-var CommitsDialog = class extends Component {
-  static template = xml`
-    <div class="term-panel commits-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.props.label"/>
-        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
-      </div>
-      <div class="commits-body">
-        <div t-if="this.loading()" class="commits-empty">loading…</div>
-        <div t-elif="this.error()" class="commits-empty" t-out="this.error()"/>
-        <div t-elif="!this.commits().length" class="commits-empty">no commits</div>
-        <t t-else="">
-          <t t-foreach="this.commits()" t-as="c" t-key="c.sha">
-            <div class="commit-row" t-att-class="{expanded: this.isExpanded(c.sha)}" t-on-click="() => this.toggle(c.sha)">
-              <span class="commit-when" t-att-title="c.date" t-out="this.when(c.date)"/>
-              <span class="commit-subject" t-att-title="c.subject" t-out="c.subject"/>
-              <span class="commit-author" t-out="c.author"/>
-            </div>
-            <div t-if="this.isExpanded(c.sha)" class="commit-detail">
-              <div class="commit-detail-meta">
-                <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
-                <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
-                <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
-              </div>
-              <pre class="commit-body" t-out="this.message(c)"/>
-            </div>
-          </t>
-        </t>
-      </div>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  props = props({
-    done: t.function(),
-    path: t.string(),
-    label: t.string(),
-    ref: t.string(),
-    github: t.string().optional()
-  });
-  code = plugin(CodePlugin);
-  externalIcon = m(ICONS.external);
-  commits = signal([]);
-  loading = signal(true);
   error = signal("");
-  expanded = signal(/* @__PURE__ */ new Set());
-  setup() {
-    this.drag = useDragResize({ w: 620, h: 460 });
-    onMounted(() => this.load());
-    const onKey = (e) => {
-      if (e.key === "Escape") this.done(null);
-    };
-    document.addEventListener("keydown", onKey);
-    onWillUnmount(() => document.removeEventListener("keydown", onKey));
-  }
-  async load() {
+  // mergebot state is one shared map: the Code screen reads and writes the same one,
+  // so a PR scraped on either screen shows its badge on both (dedup via store.mbPending)
+  mergebot = this.store.mergebot;
+  // "github#number" -> mergebot state (or "" / "merged")
+  mbDetails = this.store.mbDetails;
+  // "github#number" -> blocked-reason detail
+  favorites = signal(this._readArr("reviews_favorites"));
+  // [branch, …] (starred groups, sorted first)
+  _merged = new Set(this._readArr("reviews_merged"));
+  // terminal merged PRs
+  _noMergebot = new Set(this._readArr("reviews_no_mergebot"));
+  // repos without mergebot
+  // fetch the commented-on PRs (the server caches them). `force` (manual Refresh)
+  // adds ?refresh=1 so the backend re-queries instead of serving its cache.
+  async load(force = false) {
+    this.loading.set(true);
+    this.error.set("");
     try {
-      this.commits.set(await this.code.commits(this.props.path, this.props.ref));
+      const resp = await fetch(force ? "/api/reviews?refresh=1" : "/api/reviews");
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || "failed");
+      this.prs.set((data.prs || []).map(PullRequest.from));
+      this.at.set(Date.now());
     } catch (e) {
       this.error.set(e.message);
     } finally {
       this.loading.set(false);
     }
   }
-  when(date) {
-    return timeAgo(date);
+  // starred branch groups (by branch name), persisted; sorted first in the Reviews screen
+  isFavorite(key) {
+    return this.favorites().includes(key);
   }
-  fullDate(date) {
-    const d = new Date(date);
-    return isNaN(d) ? date : d.toLocaleString();
+  toggleFavorite(key) {
+    const favs = this.favorites();
+    const next = favs.includes(key) ? favs.filter((k) => k !== key) : [...favs, key];
+    this.favorites.set(next);
+    this.config.setState("reviews_favorites", next);
   }
-  toggle(sha) {
-    const s = new Set(this.expanded());
-    if (s.has(sha)) s.delete(sha);
-    else s.add(sha);
-    this.expanded.set(s);
+  // load mergebot states for `prs` ([{github, number}]). Skips PRs already known
+  // merged and (on normal loads) repos known to lack mergebot, so only the unknown
+  // ones hit the network. Pass {refresh:true} to re-probe (bypasses caches; still
+  // never re-fetches merged PRs).
+  async loadMergebot(prs, { refresh = false } = {}) {
+    const seeded = {};
+    for (const p of prs) {
+      const k = mbKey(p);
+      if (this._merged.has(k) && this.mergebot()[k] !== "merged") seeded[k] = "merged";
+    }
+    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null);
+    const have = this.mergebot();
+    const todo = prs.filter((p) => {
+      const k = mbKey(p);
+      if (this._merged.has(k)) return false;
+      if (this._noMergebot.has(p.github) && !refresh) return false;
+      return refresh || !(k in have) && !this.store.mbPending.has(k);
+    });
+    if (!todo.length) return;
+    const keys = todo.map(mbKey);
+    keys.forEach((k) => this.store.mbPending.add(k));
+    try {
+      const res = await postJSON("/api/mergebot", { prs: todo, refresh });
+      this.store.mergeMergebot(res.states, res.details || {});
+      this._record(todo, res);
+    } catch {
+    } finally {
+      keys.forEach((k) => this.store.mbPending.delete(k));
+    }
   }
-  isExpanded(sha) {
-    return this.expanded().has(sha);
+  // fold a /api/mergebot response into the persisted sets: newly-merged PRs become
+  // terminal; repos the backend flags unsupported are remembered; repos we re-probed
+  // that came back supported recover (dropped from the skip list).
+  _record(requested, res) {
+    let changed = false;
+    for (const [k, state] of Object.entries(res.states || {})) {
+      if (state === "merged" && !this._merged.has(k)) {
+        this._merged.add(k);
+        changed = true;
+      }
+    }
+    const unsupported = new Set(res.unsupported || []);
+    for (const repo of new Set(requested.map((p) => p.github))) {
+      if (!unsupported.has(repo) && this._noMergebot.delete(repo)) changed = true;
+    }
+    for (const repo of unsupported) {
+      if (!this._noMergebot.has(repo)) {
+        this._noMergebot.add(repo);
+        changed = true;
+      }
+    }
+    if (changed) this._persist();
   }
-  // full commit message (subject + body) shown when a row is expanded
-  message(c) {
-    return c.body ? `${c.subject}
-
-${c.body}` : c.subject;
+  _persist() {
+    this.config.setState("reviews_merged", [...this._merged]);
+    this.config.setState("reviews_no_mergebot", [...this._noMergebot]);
   }
-  // the commit on GitHub (only linked when the repo has a github slug)
-  commitUrl(c) {
-    return `https://github.com/${this.props.github}/commit/${c.sha}`;
-  }
-  done(result) {
-    this.props.done(result);
+  _readArr(field) {
+    const v = this.config.getState(field, []);
+    return Array.isArray(v) ? v : [];
   }
 };
+
+// static/src/components/dashboard.js
+var DashboardScreen = class extends Component {
+  static components = { DirtyBadge };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top">
+          <h1>Dashboard</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
+          <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
+        </div>
+      </div>
+      <div class="content">
+        <div t-att-class="{busy: this.code.busy()}">
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
+
+          <div class="dash-layout">
+          <!-- build targets — a responsive grid, one self-contained card per target -->
+          <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
+          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
+          <section t-else="" class="dash-tgts-sec">
+            <div class="dash-tgts">
+              <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
+                <div class="dash-tgt-head">
+                  <div class="dash-tgt-title">
+                    <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
+                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.activate(tgt)" t-out="tgt.name"/>
+                    <!-- one runbot/CI badge per target (the build is per bundle, the same
+                         across the target's repos): a link to the runbot bundle that, when
+                         there's a per-check CI breakdown, opens the breakdown popover on
+                         hover (info on hover, the runbot link on click) -->
+                    <t t-set="brow" t-value="this.bundleRow(tgt)"/>
+                    <t t-if="brow">
+                      <t t-set="ci" t-value="this.ciBadge(brow)"/>
+                      <t t-set="rbUrl" t-value="this.runbotUrl(tgt)"/>
+                      <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                        <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                      </a>
+                      <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                        <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                        <span t-if="ci.running" class="dash-ci-run" title="tests still running"/>
+                      </span>
+                    </t>
+                    <!-- one mergebot badge per target, aggregating its PRs' mergebot
+                         states (the most-blocking is shown). A link to the first PR's
+                         mergebot page; the per-repo breakdown opens in a popover on hover. -->
+                    <t t-set="mb" t-value="this.mbBadge(tgt)"/>
+                    <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
+                      <span class="dash-ci-dot"/><t t-out="mb.label"/>
+                    </a>
+                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Worktree screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
+                  </div>
+                  <div class="dash-tgt-actions">
+                    <div class="dash-kebab-wrap">
+                      <button class="dash-kebab" t-att-class="{open: this.menuId() === tgt.id}" title="more actions" t-on-click.stop="() => this.toggleMenu(tgt.id)"><t t-out="this.kebabIcon"/></button>
+                      <div t-if="this.menuId() === tgt.id" class="dash-menu" t-on-click.stop="">
+                        <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
+                        <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
+                        <button class="dash-menu-item danger" t-att-disabled="!this.targetDbExists(tgt)" t-att-title="this.dropDbTitle(tgt)" t-on-click="() => this.menuDropDb(tgt)">Drop database</button>
+                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="dash-tgt-body">
+                  <div t-foreach="this.rows(tgt)" t-as="row" t-key="row.repo" class="dash-trow">
+                    <div class="dash-trow-repo">
+                      <div class="dash-row-name" t-out="row.repo"/>
+                      <a t-if="row.remote and row.github" class="dash-row-branch branch-link" target="_blank" t-att-href="this.code.remoteBranchUrl(row.github, row.branch)" t-att-title="row.branch" t-out="row.branch"/>
+                      <div t-else="" class="dash-row-branch" t-att-title="row.branch" t-out="row.branch"/>
+                    </div>
+                    <t t-if="row.present">
+                      <!-- commit title + PR link share one cell: the title fills the
+                           space (truncating), the PR number aligns at the end; with no
+                           PR the title gets the full width -->
+                      <div class="dash-trow-cm">
+                        <span class="dash-trow-commit commit-open" t-att-class="{disabled: !row.path}" t-att-title="this.commitTip(row)" t-on-click="() => this.openRowCommits(row)" t-out="row.subject || '—'"/>
+                        <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                      </div>
+                      <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
+                    </t>
+                    <div t-else="" class="dash-row-missing">
+                      <span>no local branch</span>
+                      <button class="dash-create" t-on-click="() => this.createTargetBranch(row)">create it</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- starred PRs — the PRs whose branch you starred in the PRs tab (Mine +
+               Reviewing), one per line, so the PRs you're tracking sit below your
+               targets. Hidden until something is starred. -->
+          <section t-if="this.starredPrs().length" class="dash-stars-sec">
+            <div class="dash-stars-head">
+              <h2 class="dash-stars-title">Starred PRs</h2>
+            </div>
+            <div class="dash-stars">
+              <div t-foreach="this.starredPrs()" t-as="pr" t-key="pr.github + ':' + pr.number" class="dash-star-row">
+                <button class="dash-star-fav" title="unstar — removes this branch from Starred PRs" t-on-click="() => this.toggleStar(pr)">★</button>
+                <a class="dash-pr-num" target="_blank" t-att-href="pr.url" t-att-title="'open #' + pr.number + ' on GitHub'" t-out="'#' + pr.number"/>
+                <span class="dash-star-branch" t-att-title="pr.branch" t-out="pr.branch || '—'"/>
+                <span class="dash-star-repo" t-out="pr.repoLabel"/>
+                <span class="dash-star-title" t-att-title="pr.title" t-out="pr.title || '—'"/>
+                <span class="pr-state" t-att-class="this.prState(pr)" t-out="this.prState(pr)"/>
+                <a t-if="this.prMb(pr)" class="dash-pr-state" t-att-class="this.prMbClass(pr)" target="_blank" t-att-href="this.code.mergebotUrl(pr.github, pr.number)" t-att-title="'mergebot: ' + this.prMb(pr) + (this.prMbDetail(pr) ? ' — missing: ' + this.prMbDetail(pr) : '')" t-out="this.prMb(pr)"/>
+                <span t-else="" class="dash-star-nomb">—</span>
+                <span class="dash-star-when" t-att-title="this.prDate(pr)" t-out="this.prDate(pr) ? this.cell(this.prDate(pr)) : '—'"/>
+              </div>
+            </div>
+          </section>
+          </div><!-- /.dash-layout -->
+        </div>
+      </div>
+    </section>`;
+  code = plugin(CodePlugin);
+  config = plugin(ConfigPlugin);
+  server = plugin(ServerPlugin);
+  db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
+  review = plugin(ReviewPlugin);
+  // starred branch groups + their reviewed PRs
+  worktree = plugin(WorktreePlugin);
+  // "wt" badge on worktree targets
+  router = plugin(RouterPlugin);
+  refreshIcon = m(ICONS.refresh);
+  kebabIcon = m(ICONS.kebab);
+  pushIcon = m(ICONS.push);
+  terminalIcon = m(ICONS.terminal);
+  historyIcon = m(ICONS.history);
+  prIcon = m(ICONS.pr);
+  menuId = signal("");
+  // id of the card whose kebab menu is open ("" = none)
+  openWorktree(tgt) {
+    this.worktree.select(tgt.id);
+    this.router.go("worktree");
+  }
+  startCreate() {
+    return startCreateTarget(
+      this.config,
+      this.eventLog,
+      this.code,
+      this.dialogs,
+      this.db,
+      this.server
+    );
+  }
+  toggleMenu(id) {
+    this.menuId.set(this.menuId() === id ? "" : id);
+  }
+  // the "current" target: the one being worked on (last activated), regardless
+  // of whether its branches are still checked out
+  isCurrent(tgt) {
+    return tgt.id === this.server.lastTarget();
+  }
+  async menuDelete(tgt) {
+    this.menuId.set("");
+    if (this.isCurrent(tgt)) return;
+    await this.deleteTarget(tgt);
+  }
+  deleteTarget(tgt) {
+    return deleteTargetDialog(tgt, {
+      config: this.config,
+      code: this.code,
+      db: this.db,
+      eventLog: this.eventLog,
+      repoMap: this.repoMap,
+      dialogs: this.dialogs,
+      isActive: this.isActive(tgt)
+    });
+  }
+  // the target's work branches that exist locally and have a canonical repo on
+  // GitHub (base branches like master are never pushed to the dev fork)
+  _pushableBranches(tgt) {
+    const groups = this.code.groups();
+    const repoMap = this.repoMap;
+    return (tgt.checkouts || []).filter(
+      ({ repo, branch }) => !BASE_BRANCH_RE.test(branch) && repoMap[repo]?.branches.has(branch)
+    ).map(({ repo, branch }) => ({
+      branch,
+      path: groups.pathByRepo[repo],
+      github: groups.githubByRepo[repo]
+    })).filter((x) => x.path && x.github);
+  }
+  canPushTarget(tgt) {
+    return this._pushableBranches(tgt).length > 0;
+  }
+  menuPush(tgt) {
+    this.menuId.set("");
+    const branches = this._pushableBranches(tgt);
+    if (!branches.length) return;
+    const n = branches.length;
+    return pushBranchesDialog(this.code, this.dialogs, branches, {
+      title: `Push ${n} branch${n === 1 ? "" : "es"}?`,
+      message: `Push ${n} branch${n === 1 ? "" : "es"} of "${tgt.name}" to the dev remote (odoo-dev)?`
+    });
+  }
+  menuRemoveFavorite(tgt) {
+    this.menuId.set("");
+    const targets = this.config.config.targets.map(
+      (t2) => t2.id === tgt.id ? { ...t2, favorite: false } : t2
+    );
+    this.config.updateConfig({ targets });
+  }
+  // whether the target's configured database actually exists (so there's something
+  // to drop) — drives the "Drop database" item's enabled state
+  targetDbExists(tgt) {
+    return !!tgt.db && this.db.databases().some((d) => d.name === tgt.db);
+  }
+  dropDbTitle(tgt) {
+    if (!tgt.db) return "no database set for this target";
+    if (!this.targetDbExists(tgt)) return `database "${tgt.db}" does not exist`;
+    return `drop database "${tgt.db}"`;
+  }
+  // drop the target's database, stopping the server first when it's running on it
+  // (the db is about to vanish, so the server stays stopped)
+  async menuDropDb(tgt) {
+    this.menuId.set("");
+    if (!this.targetDbExists(tgt)) return;
+    const stopping = this.db.activeDb === tgt.db && this.server.status().state !== "stopped";
+    const res = await this.dialogs.open({
+      title: `Drop "${tgt.db}"?`,
+      message: stopping ? `This permanently deletes the database and stops the server (it's running on "${tgt.db}"). This cannot be undone.` : "This permanently deletes the database. This cannot be undone.",
+      okLabel: "Drop"
+    });
+    if (!res) return;
+    const error = await this.db.dropStoppingServer(tgt.db);
+    if (error)
+      await this.dialogs.open({
+        title: "Drop failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null
+      });
+  }
+  setup() {
+    this._dashLoad(false);
+    this.db.load();
+    if (this.review.favorites().length) this.review.load();
+    const closeMenu = () => this.menuId() && this.menuId.set("");
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
+    useEffect(() => {
+      const branches = this._runbotBranches();
+      if (branches.length) this.code.loadRunbot(branches);
+      const prs = this._prs();
+      if (prs.length) this.code.loadMergebot(prs);
+      const starred = this._starredMbPrs();
+      if (starred.length) this.code.loadMergebot(starred);
+    });
+  }
+  // branches that still need the scraped runbot fallback: shown on the dashboard,
+  // backed by a real bundle of ours, and NOT already covered by a PR's GitHub CI
+  // rollup (that comes free with the PR list, so there's no point scraping). A
+  // feature branch only has a bundle once its local tip is actually pushed (`synced`)
+  // — otherwise runbot name-matches an unrelated, often ancient bundle that merely
+  // shares the name (e.g. a fresh local `master-test` vs a 1.5y-old `master-test`
+  // bundle from a long-gone same-named ref). Base branches (master, 19.0, saas-x.y)
+  // always have a canonical bundle, synced or not.
+  _runbotBranches() {
+    const seen = /* @__PURE__ */ new Set();
+    for (const tgt of this.targets)
+      for (const row of this.rows(tgt)) {
+        if (!row.present) continue;
+        if (this.code.isExternalRepo(row.github)) continue;
+        if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
+        const ci = row.pr && row.pr.ci;
+        if (ci && ci.checks && ci.checks.length) continue;
+        seen.add(row.branch);
+      }
+    return [...seen];
+  }
+  // repo ids the dashboard actually shows PRs for — favorite repos, the current
+  // target's repos, and every favorite target's repos. PRs for any other repo
+  // (e.g. tutorials/owl when neither favorited nor targeted) aren't displayed, so
+  // load() skips fetching them. Returns a Set of repo ids.
+  _dashRepoIds() {
+    const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
+    const current = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
+    for (const c of current?.checkouts || []) ids.add(c.repo);
+    for (const tgt of this.targets) for (const c of tgt.checkouts || []) ids.add(c.repo);
+    return ids;
+  }
+  // the dashboard shows only this subset of repos, so narrow both the PR and the
+  // branch fetch to it (same ids for both) — no point reading branches/PRs for repos
+  // that appear nowhere on this screen. Other tabs call code.load() unnarrowed.
+  _dashLoad(force) {
+    const ids = this._dashRepoIds();
+    this.code.load(force, ids, ids);
+  }
+  // the unique {github, number} of every PR shown on the dashboard (for mergebot)
+  _prs() {
+    const seen = /* @__PURE__ */ new Set();
+    const prs = [];
+    for (const tgt of this.targets) {
+      for (const row of this.rows(tgt)) {
+        if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
+        const key = `${row.github}#${row.pr.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        prs.push({ github: row.github, number: row.pr.number });
+      }
+    }
+    return prs;
+  }
+  // the scraped mergebot state for a row's PR ("" if unknown / not fetched yet)
+  mbState(row) {
+    if (!row.pr || !row.github) return "";
+    return this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
+  }
+  // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
+  mbDetail(row) {
+    if (!row.pr || !row.github) return "";
+    return this.code.mbDetails()[`${row.github}#${row.pr.number}`] || "";
+  }
+  // color category for a mergebot state
+  mbClass(row) {
+    return mbCategory(this.mbState(row));
+  }
+  // the runbot bundle branch for a target: a bundle is per branch name and a
+  // target's repos share one, so prefer its feature (non-base) branch, else the
+  // shared base branch ("" if the target has no branches)
+  bundleBranch(tgt) {
+    const branches = (tgt.checkouts || []).map((c) => c.branch).filter(Boolean);
+    return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
+  }
+  // a present row representing the target's bundle (the bundle-branch row, else the
+  // first present row) — drives the single runbot/CI badge in the target header
+  bundleRow(tgt) {
+    const present = this.rows(tgt).filter((r) => r.present);
+    const branch = this.bundleBranch(tgt);
+    return present.find((r) => r.branch === branch) || present[0] || null;
+  }
+  // the fetched runbot status for a row's branch ({result, running} or null)
+  rbState(row) {
+    return this.code.runbot()[row.branch] || null;
+  }
+  // commit tooltip: the last-commit date (no longer shown inline) before the title
+  commitTip(row) {
+    const subject = row.subject || "\u2014";
+    return row.date ? `${this.cell(row.date)} \xB7 ${subject}` : subject;
+  }
+  // CI badge model for a card row. Prefer the PR's GitHub status rollup (runbot
+  // + every other CI check, fetched alongside the PR list); fall back to the
+  // scraped runbot bundle for branches that have no PR. `running` adds a "still
+  // running" indicator next to a verdict; `checks` (when set) drives the
+  // click-through breakdown popover.
+  ciBadge(row) {
+    const ci = row.pr && row.pr.ci;
+    if (ci && ci.checks && ci.checks.length) {
+      const pending = ci.checks.some((c) => c.state === "pending");
+      let badge2;
+      if (ci.overall === "failure")
+        badge2 = { cls: "fail", label: "ko", title: "a CI check failed" };
+      else if (ci.overall === "success")
+        badge2 = { cls: "pass", label: "ok", title: "all CI checks passing" };
+      else if (ci.overall === "pending" || pending)
+        badge2 = { cls: "run", label: "running", title: "CI running" };
+      else badge2 = { cls: "unknown", label: "\u2014", title: "no CI status" };
+      badge2.running = pending && (ci.overall === "success" || ci.overall === "failure");
+      badge2.checks = ci.checks;
+      return badge2;
+    }
+    const s = this.rbState(row);
+    const result = s && s.result || "";
+    const running = !!(s && s.running);
+    let badge;
+    if (result === "success") badge = { cls: "pass", label: "ok", title: "passing" };
+    else if (result === "failure") badge = { cls: "fail", label: "ko", title: "failing" };
+    else if (running) badge = { cls: "run", label: "running", title: "running" };
+    else badge = { cls: "unknown", label: "\u2014", title: "unknown" };
+    badge.running = running && !!result;
+    if (badge.running) badge.title += " \u2014 still running";
+    return badge;
+  }
+  // the runbot URL for a target's bundle badge. The backend resolves the branch
+  // *name* to its canonical bundle URL (and only when a bundle actually exists — a
+  // never-pushed branch has none), so link to that rather than building
+  // /runbot/bundle/<branch>, which runbot would mis-resolve to a foreign bundle when
+  // the branch ends in a number. When the branch has a PR, its runbot scrape is
+  // skipped (the GitHub CI rollup already covers it), so fall back to the ci/runbot
+  // check's URL from that rollup. "" only when neither source has a runbot link yet.
+  runbotUrl(tgt) {
+    const branch = this.bundleBranch(tgt);
+    const scraped = branch && this.code.runbot()[branch]?.url;
+    if (scraped) return scraped;
+    const checks = this.bundleRow(tgt)?.pr?.ci?.checks || [];
+    return checks.find((c) => c.context === "ci/runbot")?.url || "";
+  }
+  // open the CI breakdown popover (full per-check status) anchored to the badge on
+  // hover; a no-op when the badge has no per-check breakdown. The badge itself is a
+  // link to runbot, so the popover is purely the on-hover info.
+  showCiMenu(ev, checks) {
+    if (!checks || !checks.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
+  }
+  // ask the popover to close (it lingers briefly so the mouse can move into it)
+  hideCiMenu() {
+    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
+  }
+  // aggregate mergebot badge for a target: one entry per present PR row that has a
+  // scraped state. Links to the first PR's mergebot page; the badge label/color is
+  // the most-blocking state (so a single blocked PR surfaces), and `rows` drives
+  // the per-repo hover popover. Returns null when no row has a state yet.
+  mbBadge(tgt) {
+    const rows = [];
+    for (const row of this.rows(tgt)) {
+      const state = this.mbState(row);
+      if (!state) continue;
+      rows.push({
+        repo: row.repo,
+        state,
+        detail: this.mbDetail(row),
+        cls: this.mbClass(row),
+        url: this.code.mergebotUrl(row.github, row.pr.number)
+      });
+    }
+    if (!rows.length) return null;
+    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+    const worst = rows.reduce((a, b) => RANK[a.cls] <= RANK[b.cls] ? a : b);
+    return { cls: worst.cls, label: worst.state, url: rows[0].url, rows };
+  }
+  // open the mergebot per-repo breakdown popover on hover (no-op with no rows)
+  showMbMenu(ev, rows) {
+    if (!rows || !rows.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("mb-menu", { detail: { rect, rows } }));
+  }
+  // ask the mergebot popover to close (it lingers briefly, like the CI one)
+  hideMbMenu() {
+    appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
+  }
+  get stamp() {
+    if (this.code.loading()) return "refreshing\u2026";
+    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
+  }
+  get errors() {
+    return this.code.groups().errors;
+  }
+  // favorite targets only, in the order defined in the Targets tab
+  get targets() {
+    return this.config.config.targets.filter((t2) => t2.favorite);
+  }
+  // repoId -> { current, dirty, branches: Map(name -> branch) }
+  get repoMap() {
+    const map = {};
+    for (const repo of this.code.branchRepos()) {
+      map[repo.id] = {
+        current: repo.current,
+        dirty: repo.dirty,
+        branches: new Map((repo.branches || []).map((b) => [b.name, b]))
+      };
+    }
+    return map;
+  }
+  // one row per repo:branch in the target's config, with its local + remote state
+  rows(tgt) {
+    const repos = this.repoMap;
+    const groups = this.code.groups();
+    return (tgt.checkouts || []).map(({ repo, branch }) => {
+      const r = repos[repo];
+      const b = r && r.branches.get(branch);
+      return {
+        repo,
+        branch,
+        path: groups.pathByRepo[repo] || "",
+        github: groups.githubByRepo[repo] || "",
+        present: !!b,
+        remote: !!b && b.remote,
+        synced: !!b && b.synced,
+        // local tip is exactly what's on the remote ref
+        date: b ? b.date : "",
+        subject: b ? b.subject || "" : "",
+        pr: groups.prIndex[`${repo}:${branch}`] || null
+      };
+    });
+  }
+  // every repo in the target's config is checked out on the target's branch
+  _checkedOut(tgt) {
+    const repos = this.repoMap;
+    const cfg = tgt.checkouts || [];
+    return cfg.length > 0 && cfg.every(({ repo, branch }) => repos[repo]?.current === branch);
+  }
+  // the active target is the explicit one (set on Activate / Start) — and only
+  // while its branches are still checked out. The id check disambiguates
+  // overlapping targets (e.g. master vs master(e), whose branches are a subset)
+  isActive(tgt) {
+    return tgt.id === this.server.lastTarget() && this._checkedOut(tgt);
+  }
+  // can't switch branches with uncommitted work, or to branches not present
+  _targetDirty(tgt) {
+    const repos = this.repoMap;
+    return (tgt.checkouts || []).some(({ repo }) => repos[repo]?.dirty);
+  }
+  _targetPresent(tgt) {
+    const repos = this.repoMap;
+    return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
+  }
+  canActivate(tgt) {
+    if (this.worktree.isWorktree(tgt)) return false;
+    return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
+  }
+  activateTitle(tgt) {
+    if (this._targetDirty(tgt)) return "commit or stash changes first \u2014 the working tree is dirty";
+    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
+    return "stop the server, switch to this target and check out its branches";
+  }
+  // tooltip for the clickable target name — clicking an inactive, applyable target
+  // applies it (replaces the old "Apply" button); otherwise say why it can't be
+  nameTitle(tgt) {
+    if (this.worktree.isWorktree(tgt))
+      return "worktree target \u2014 manage it from the Worktrees screen";
+    if (this.isActive(tgt)) return "this target is active";
+    if (this.canActivate(tgt)) return "click to apply \u2014 " + this.activateTitle(tgt);
+    return this.activateTitle(tgt);
+  }
+  // stop the server, switch to this target, check out its branches — the action lives
+  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
+  async activate(tgt) {
+    if (!this.canActivate(tgt)) return;
+    await this.config.target(tgt.id)?.activate();
+  }
+  // the canonical base branch a branch derives from: master-owl-update -> master,
+  // 19.0-some-fix -> 19.0 (defaults to master)
+  _baseBranch(branch) {
+    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+  }
+  // create a target's missing branch locally, off its base branch
+  createTargetBranch(row) {
+    const path = this.code.groups().pathByRepo[row.repo];
+    if (path) this.code.createBranch(path, row.branch, this._baseBranch(row.branch));
+  }
+  // show the last commits for a target row's repo:branch (the commit title in a card)
+  openRowCommits(row) {
+    if (!row.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: row.path,
+      ref: row.branch || "",
+      label: `${row.repo} \xB7 ${row.branch || "?"}`,
+      github: row.github || ""
+    });
+  }
+  // ── starred PRs ──────────────────────────────────────────────────────────
+  // The branch groups the user starred in the PRs tab, surfaced below the target
+  // cards. Favorites are keyed by branch name (shared across Mine/Reviewing), so
+  // we gather every PR on a starred branch from both the authored list (code) and
+  // the reviewed list (review), dedupe by repo#number, group by branch and sort
+  // each branch's PRs in config repo order — the same shape the PRs tab renders.
+  // friendly repo id for a github slug ("odoo/enterprise" -> "enterprise"),
+  // falling back to the slug for repos not in config
+  get _slugToId() {
+    return Object.fromEntries(
+      (this.config.config.repos || []).filter((r) => r.github).map((r) => [r.github, r.id])
+    );
+  }
+  starredGroups() {
+    const favs = new Set(this.review.favorites());
+    if (!favs.size) return [];
+    const slugToId = this._slugToId;
+    const seen = /* @__PURE__ */ new Set();
+    const byBranch = /* @__PURE__ */ new Map();
+    const add = (pr) => {
+      if (!pr.branch || !favs.has(pr.branch)) return;
+      const key = `${pr.github}#${pr.number}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      (byBranch.get(pr.branch) || byBranch.set(pr.branch, []).get(pr.branch)).push(pr);
+    };
+    for (const repo of this.code.prRepos()) {
+      if (repo.error) continue;
+      for (const pr of repo.prs) add({ ...pr, repoLabel: repo.id });
+    }
+    for (const pr of this.review.prs()) add({ ...pr, repoLabel: slugToId[pr.github] || pr.github });
+    const ts = (r) => Date.parse(this.prDate(r)) || 0;
+    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
+    const rank = (r) => {
+      const i = repoOrder.indexOf(r.github);
+      return i === -1 ? repoOrder.length : i;
+    };
+    return [...byBranch.entries()].map(([branch, prs]) => ({
+      branch,
+      prs: prs.slice().sort((a, b) => rank(a) - rank(b) || a.github.localeCompare(b.github) || ts(b) - ts(a)),
+      updated: Math.max(...prs.map(ts))
+    })).sort((a, b) => b.updated - a.updated);
+  }
+  // the starred PRs as one flat list (each carries its own branch) — branches are
+  // sorted most-recently-updated first, with a branch's PRs kept adjacent
+  starredPrs() {
+    return this.starredGroups().flatMap((g) => g.prs);
+  }
+  // unstar from a row — favorites are by branch (see ReviewPlugin), so this drops
+  // every PR on that branch from the list (the section hides once none are left)
+  toggleStar(pr) {
+    this.review.toggleFavorite(pr.branch);
+  }
+  // open, non-external starred PRs in mergebot's {github, number} shape (terminal
+  // and external PRs never get a useful scrape — same filter the target cards use)
+  _starredMbPrs() {
+    return this.starredPrs().filter((pr) => pr.state === "open" && !this.code.isExternalRepo(pr.github)).map((pr) => ({ github: pr.github, number: pr.number }));
+  }
+  // mergebot helpers for the starred rows — same code.mergebot() store the target
+  // cards read (we load these PRs' state alongside), keyed by the PR's own slug/number
+  prMb(pr) {
+    return this.code.mergebot()[`${pr.github}#${pr.number}`] || "";
+  }
+  prMbDetail(pr) {
+    return this.code.mbDetails()[`${pr.github}#${pr.number}`] || "";
+  }
+  prMbClass(pr) {
+    return mbCategory(this.prMb(pr));
+  }
+  prState(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
+  }
+  // the date shown for a starred row: your own PRs show when they were opened
+  // (createdAt); reviewed PRs show updatedAt (no createdAt on those)
+  prDate(pr) {
+    return pr.createdAt || pr.updatedAt;
+  }
+  cell(date) {
+    return timeAgo(date);
+  }
+};
+
+// static/src/components/databases.js
+var DatabasesScreen = class extends Component {
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top">
+          <h1>Databases</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
+          <span class="row-count" t-out="this.count"/>
+        </div>
+      </div>
+      <div class="content br-fill">
+        <div t-att-class="{busy: this.db.dropping()}">
+          <div t-if="this.db.error()" class="dim br-empty" t-out="'Failed to load: ' + this.db.error()"/>
+          <div t-elif="!this.db.databases().length" class="dim br-empty">No databases.</div>
+          <div t-else="" class="br-card">
+            <!-- full-width card = scroll container (scrollbar on the right); the
+                 wrapper sizes the table to its natural width, like the Branches list -->
+            <div class="brg-table">
+            <table class="br-table brg-flat">
+              <thead>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Size</th><th>Created</th><th>Last activity</th><th/></tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active, 'row-sel': this.selected().has(d.name)}">
+                  <td>
+                    <input t-if="!d.active" type="checkbox" class="br-select" t-att-checked="this.selected().has(d.name)" t-on-change="() => this.toggleSelect(d.name)" title="select this database for batch actions"/>
+                  </td>
+                  <td t-att-class="{'active-name': d.active, 'select-toggle': !d.active}"
+                      t-on-click="() => d.active || this.toggleSelect(d.name)">
+                    <span class="br-branch" t-out="d.name"/>
+                    <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
+                  </td>
+                  <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
+                  <td class="br-when" t-att-class="{dim: !d.size}" t-out="d.size || '—'"/>
+                  <td class="br-when" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
+                  <td class="br-when" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
+                  <td>
+                    <div class="br-act">
+                      <button class="dash-kebab" title="database actions"
+                              t-on-click.stop="(ev) => this.openRowMenu(ev, d)"><t t-out="this.kebabIcon"/></button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+  db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
+  refreshIcon = m(ICONS.refresh);
+  kebabIcon = m(ICONS.kebab);
+  selected = signal(/* @__PURE__ */ new Set());
+  // database names ticked for batch actions
+  // sorted, view-ready rows — recomputed only when the db list / active db change
+  rows = computed(() => {
+    const activeDb = this.db.activeDb;
+    return [...this.db.databases()].sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0)).map((d) => ({
+      name: d.name,
+      active: d.name === activeDb,
+      version: d.odoo_version,
+      enterprise: d.enterprise,
+      created: d.created,
+      createdAgo: d.created && timeAgo(d.created),
+      createdTitle: d.created ? `${d.created} (UTC)` : "",
+      last: d.last_update,
+      lastAgo: d.last_update && timeAgo(d.last_update),
+      lastTitle: d.last_update ? `${d.last_update} (UTC)` : "",
+      size: formatBytes(d.size)
+    }));
+  });
+  setup() {
+    this.db.load();
+  }
+  get stamp() {
+    if (this.db.loading()) return "refreshing\u2026";
+    return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
+  }
+  get count() {
+    const n = this.rows().length;
+    return `${n} database${n === 1 ? "" : "s"}`;
+  }
+  toggleSelect(name) {
+    const sel = new Set(this.selected());
+    sel.has(name) ? sel.delete(name) : sel.add(name);
+    this.selected.set(sel);
+  }
+  // per-database actions in the floating kebab menu (shared ActionMenu). Clone,
+  // rename and drop all need the source db to have no active connections. Rename
+  // and drop stay disabled on the active db; Clone is allowed — it stops the
+  // server (releasing connections), clones, then restarts.
+  openRowMenu(ev, d) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const busyTitle = d.active ? "stop the server first (no active connections allowed)" : "";
+    const actions = [
+      {
+        label: "Clone",
+        title: d.active ? "stops the server to clone, then restarts it" : "",
+        onClick: () => this.cloneDb(d)
+      },
+      {
+        label: "Rename",
+        disabled: d.active,
+        title: busyTitle,
+        onClick: () => this.renameDb(d)
+      },
+      {
+        label: "Drop",
+        danger: true,
+        disabled: d.active,
+        title: d.active ? "in use by the running server" : "",
+        onClick: () => this.dropDb(d)
+      }
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+  }
+  get _selectableDbs() {
+    return this.rows().filter((d) => !d.active);
+  }
+  get allSelected() {
+    const sel = this.selected();
+    const selectable = this._selectableDbs;
+    return selectable.length > 0 && selectable.every((d) => sel.has(d.name));
+  }
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected ? /* @__PURE__ */ new Set() : new Set(this._selectableDbs.map((d) => d.name))
+    );
+  }
+  get selectedCount() {
+    return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
+  }
+  async dropSelected() {
+    const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
+    if (!dbs.length) return;
+    const n = dbs.length;
+    const res = await this.dialogs.open({
+      title: `Drop ${n} database${n === 1 ? "" : "s"}?`,
+      message: "This permanently deletes the selected databases. This cannot be undone.",
+      okLabel: "Drop"
+    });
+    if (!res) return;
+    for (const d of dbs) await this.db.drop(d.name);
+    this.selected.set(/* @__PURE__ */ new Set());
+  }
+  // confirm via the dialog, then drop; report any failure in a dialog too
+  async dropDb(d) {
+    const res = await this.dialogs.open({
+      title: `Drop "${d.name}"?`,
+      message: "This permanently deletes the database. This cannot be undone.",
+      okLabel: "Drop"
+    });
+    if (!res) return;
+    const error = await this.db.drop(d.name);
+    if (error)
+      await this.dialogs.open({
+        title: "Drop failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null
+      });
+  }
+  // valid db name: letters/digits then letters/digits/._- (mirrors the backend)
+  _badName(name) {
+    if (!name) return "a name is required";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
+      return "use letters, digits, . _ - (not starting with -)";
+    if (this.db.databases().some((x) => x.name === name))
+      return `a database named "${name}" already exists`;
+    return "";
+  }
+  // ask for a target name, then clone; report any failure in a dialog. Cloning the
+  // active db requires exclusive access (postgres createdb -T), so the server is
+  // stopped first and restarted afterwards.
+  async cloneDb(d) {
+    const res = await this.dialogs.open({
+      title: `Clone "${d.name}"`,
+      message: d.active ? "This database is in use by the running server. goo will stop the server to clone it, then restart it." : "",
+      fields: [
+        {
+          key: "target",
+          type: "text",
+          label: "New database name",
+          value: `${d.name}-copy`,
+          placeholder: "new database name"
+        }
+      ],
+      okLabel: "Clone",
+      validate: (v) => this._badName((v.target || "").trim())
+    });
+    if (!res) return;
+    const error = await this.db.cloneStoppingServer(d.name, res.target.trim());
+    if (error)
+      await this.dialogs.open({
+        title: "Clone failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null
+      });
+  }
+  // ask for a new name, then rename; report any failure in a dialog
+  async renameDb(d) {
+    const res = await this.dialogs.open({
+      title: `Rename "${d.name}"`,
+      fields: [
+        {
+          key: "name",
+          type: "text",
+          label: "New name",
+          value: d.name,
+          placeholder: "new database name"
+        }
+      ],
+      okLabel: "Rename",
+      validate: (v) => {
+        const t2 = (v.name || "").trim();
+        if (t2 === d.name) return "choose a different name";
+        return this._badName(t2);
+      }
+    });
+    if (!res) return;
+    const error = await this.db.rename(d.name, res.name.trim());
+    if (error)
+      await this.dialogs.open({
+        title: "Rename failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null
+      });
+  }
+};
+
+// static/src/plugins/tests_plugin.js
+var HISTORY_MAX = 10;
+var TestsPlugin = class extends Plugin {
+  static sequence = 3;
+  config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin);
+  // one-shot runs live in the shared store's runs map
+  server = plugin(ServerPlugin);
+  eventLog = plugin(EventLogPlugin);
+  output = new LogBuffer();
+  status = signal("");
+  history = signal(this._readHistory());
+  // last test tags run, most recent first
+  _pending = signal(false);
+  // optimistic "run starting", until the backend's "run" event lands
+  _capturing = false;
+  // whether server lines are currently mirrored to the test console
+  _finished = false;
+  // guard: "test suite finished" is logged once per run
+  _tags = "";
+  // current run's tags (for the deferred "running tests" log)
+  _cutOnChrome = false;
+  // WebSuite runs end the console window at the chrome teardown
+  _result = "";
+  // "success" | "fail" — derived from the HOOT result lines
+  _failSeq = 0;
+  // monotonic id source for failure-row anchors (never reset)
+  _announced = null;
+  // run id we've logged "running tests" for (once per run)
+  _finishedRun = null;
+  // run id we've finalized (once per run)
+  _readHistory() {
+    const h = this.config.getState("test_history", []);
+    return Array.isArray(h) ? h : [];
+  }
+  // record a run's tag at the front, deduped, capped at HISTORY_MAX
+  _pushHistory(tag) {
+    tag = tag.trim();
+    if (!tag) return;
+    const h = [tag, ...this.history().filter((t2) => t2 !== tag)].slice(0, HISTORY_MAX);
+    this.history.set(h);
+    this.config.setState("test_history", h);
+  }
+  // the target id tests run against: the running/starting server's target, else the
+  // last-used one, else the first configured target. Tests are a one-shot run against
+  // the target's db, so they work even with the server down; the run endpoint resolves
+  // the launch config from this id server-side.
+  get target() {
+    const targets = this.config.config.targets;
+    const candidate = this.server.status().target || this.server.lastTarget();
+    if (targets.some((t2) => t2.id === candidate)) return candidate;
+    return targets[0]?.id || "";
+  }
+  // the current/last test run (backend-minted, from the shared store)
+  currentRun() {
+    return this.store.latestRunOfKind("test");
+  }
+  // a test run is active — optimistically true between clicking Run and the backend's
+  // first "run" event, then driven by the run's state (a method: components call it)
+  runActive() {
+    return this._pending() || this.currentRun()?.state === "running";
+  }
+  setup() {
+    useEffect(() => this._onRun(this.currentRun()));
+    this.server.onLine((line) => {
+      if (!this.runActive()) return;
+      if (!this._capturing && line.includes("[goo] starting odoo:")) this._capturing = true;
+      if (!this._capturing) return;
+      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
+      const anchor = failed ? `test-fail-${++this._failSeq}` : "";
+      this.output.append(line, anchor);
+      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
+      if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
+      else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
+        this._result = "fail";
+      if (this._cutOnChrome && line.includes("Terminating chrome headless with pid"))
+        this._finishRun();
+    });
+  }
+  // react to the backend-minted test Run moving running → done/failed. Resume-after
+  // (bringing back a server the run interrupted) is owned by the backend now, so this
+  // just drives the console + event log. Announce/finalize once per run id.
+  _onRun(run) {
+    if (!run) return;
+    if (run.state === "running") {
+      this._pending.set(false);
+      if (this._announced !== run.id) {
+        this._announced = run.id;
+        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? this._tags})`);
+        this._capturing = true;
+      }
+      this.status.set("running\u2026");
+    } else if (this._finishedRun !== run.id) {
+      this._finishedRun = run.id;
+      if (this._announced !== run.id) return;
+      const stopped = run.returncode === null;
+      this.status.set(
+        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "passed"
+      );
+      const byExit = stopped ? "" : run.returncode ? "fail" : "success";
+      this._finishRun(this._result || byExit);
+    }
+  }
+  // close the test-tab log window and log the finish event (once per run)
+  _finishRun(result = this._result) {
+    this._capturing = false;
+    if (this._finished) return;
+    this._finished = true;
+    const failed = result && String(result).includes("fail");
+    this.eventLog.add(
+      `test run finished${result ? ` (${result})` : ""}`,
+      "",
+      failed ? "error" : ""
+    );
+  }
+  get running() {
+    return this.currentRun()?.state === "running";
+  }
+  async run(tags) {
+    if (!tags.trim()) return;
+    const targetId = this.target;
+    if (!targetId) return this.server.log(`[goo] no valid target to test`);
+    const s = this.server.status();
+    const serverWasUp = (s.state === "running" || s.state === "starting") && s.mode === "server";
+    this._pushHistory(tags);
+    this._tags = tags.trim();
+    this._cutOnChrome = this._tags.includes("web:WebSuite");
+    this._result = "";
+    if (serverWasUp) this.eventLog.add("stopping server to run tests");
+    this.output.clear();
+    this._capturing = false;
+    this._finished = false;
+    this._pending.set(true);
+    this.status.set("starting\u2026");
+    try {
+      await postJSON("/api/tests/run", { target: targetId, overrides: { test_tags: this._tags } });
+    } catch (e) {
+      this._pending.set(false);
+      this.status.set(`failed to start: ${e.message}`);
+    }
+  }
+};
+
+// static/src/components/event_log.js
 var EventLog = class extends Component {
   static template = xml`
     <div t-if="this.log.open()" class="event-log" t-ref="this.drag.handle">
@@ -9460,6 +8168,174 @@ var EventLog = class extends Component {
     });
   }
 };
+
+// static/src/plugins/memory_plugin.js
+var STORAGE_KEY = "oo-memory-builds";
+var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
+var MemoryPlugin = class extends Plugin {
+  static sequence = 4;
+  builds = signal(this._loadBuilds());
+  data = signal([]);
+  loading = signal(false);
+  error = signal("");
+  withMobile = signal(false);
+  batchUrl = signal(localStorage.getItem(STORAGE_KEY_BATCH_URL) || "");
+  batchLoading = signal(false);
+  batchError = signal("");
+  _loadBuilds() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return Array.isArray(parsed) && parsed.length ? parsed : [{ label: "", url: "" }];
+    } catch {
+      return [{ label: "", url: "" }];
+    }
+  }
+  _saveBuilds(builds) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(builds));
+    } catch {
+    }
+  }
+  setBuilds(builds) {
+    this.builds.set(builds);
+    this._saveBuilds(builds);
+  }
+  addBuild() {
+    this.setBuilds([...this.builds(), { label: "", url: "" }]);
+  }
+  removeBuild(idx) {
+    const next = this.builds().filter((_, i) => i !== idx);
+    this.setBuilds(next.length ? next : [{ label: "", url: "" }]);
+    this.data.set([]);
+  }
+  updateBuild(idx, key, value) {
+    const next = this.builds().map((b, i) => i === idx ? { ...b, [key]: value } : b);
+    this.setBuilds(next);
+  }
+  setBatchUrl(url) {
+    this.batchUrl.set(url);
+    try {
+      localStorage.setItem(STORAGE_KEY_BATCH_URL, url);
+    } catch {
+    }
+  }
+  async fetchBatch() {
+    const url = this.batchUrl().trim();
+    if (!url || this.batchLoading()) return;
+    this.batchLoading.set(true);
+    this.batchError.set("");
+    try {
+      const res = await postJSON("/api/memory/batch", { url });
+      if (!res.builds || !res.builds.length) {
+        this.batchError.set("No builds found at that URL.");
+      } else {
+        const existing = this.builds().filter((b) => b.label.trim() || b.url.trim());
+        this.setBuilds([...existing, ...res.builds]);
+      }
+    } catch (e) {
+      this.batchError.set(e.message || "failed to fetch batch builds");
+    } finally {
+      this.batchLoading.set(false);
+    }
+  }
+  async load() {
+    const builds = this.builds().filter((b) => b.url.trim());
+    if (!builds.length || this.loading()) return;
+    this.loading.set(true);
+    this.error.set("");
+    try {
+      const res = await postJSON("/api/memory/fetch", {
+        builds,
+        with_mobile: this.withMobile()
+      });
+      this.data.set(res.data || []);
+    } catch (e) {
+      this.error.set(e.message || "failed to load memory data");
+    } finally {
+      this.loading.set(false);
+    }
+  }
+};
+
+// static/src/plugins/nightly_plugin.js
+var NightlyPlugin = class extends Plugin {
+  static sequence = 4;
+  versions = signal([]);
+  nights = signal([]);
+  loading = signal(false);
+  error = signal("");
+  at = signal(0);
+  _maxNights = 0;
+  // how many nights the backend last fetched, this session
+  _errorsCache = /* @__PURE__ */ new Map();
+  // build url -> { errors, metrics } (session-only memo)
+  timeoutUrls = signal(/* @__PURE__ */ new Set());
+  // URLs whose builds contain a timeout error
+  async fetchErrors(url) {
+    if (this._errorsCache.has(url)) return this._errorsCache.get(url);
+    const res = await postJSON("/api/nightly/errors", { url });
+    const result = { errors: res.errors || [], metrics: res.metrics || {} };
+    this._errorsCache.set(url, result);
+    if (result.errors.some((e) => e.timeout)) {
+      const s = new Set(this.timeoutUrls());
+      s.add(url);
+      this.timeoutUrls.set(s);
+    }
+    return result;
+  }
+  async load(force = false, maxNights = 7) {
+    if (this.loading()) return;
+    if (!force && this.at() && this._maxNights >= maxNights) return;
+    this.loading.set(true);
+    this.error.set("");
+    try {
+      const res = await postJSON("/api/nightly", { refresh: !!force, max_nights: maxNights });
+      this.versions.set(res.versions || []);
+      this.nights.set(res.nights || []);
+      this._maxNights = maxNights;
+      this.at.set(Date.now());
+    } catch (e) {
+      this.error.set(e.message);
+    } finally {
+      this.loading.set(false);
+    }
+  }
+};
+
+// static/src/components/nightly.js
+var _chartJsReady = null;
+function loadChartJs() {
+  if (!_chartJsReady) {
+    _chartJsReady = loadScript("/static/lib/chart/chart.umd.min.js", () => window.Chart).then(
+      () => loadScript("/static/lib/chart/chartjs-plugin-zoom.min.js", () => window.ChartZoom)
+    ).then(() => window.Chart.register(window.ChartZoom)).catch((e) => {
+      _chartJsReady = null;
+      throw e;
+    });
+  }
+  return _chartJsReady;
+}
+var CHART_ZOOM_OPTIONS = {
+  pan: { enabled: true, mode: "x" },
+  zoom: {
+    wheel: { enabled: true },
+    drag: { enabled: true, modifierKey: "shift" },
+    mode: "x"
+  }
+};
+var CHART_COLORS = [
+  "#4e79a7",
+  "#f28e2b",
+  "#e15759",
+  "#76b7b2",
+  "#59a14f",
+  "#edc948",
+  "#b07aa1",
+  "#ff9da7",
+  "#9c755f",
+  "#bab0ac"
+];
 var GRAPH_METRICS = [
   { id: "ok", label: "Passing builds", fmt: (v) => String(Math.round(v)) },
   { id: "warning", label: "Warning builds", fmt: (v) => String(Math.round(v)) },
@@ -10039,6 +8915,8 @@ var NightlyScreen = class extends Component {
     };
   }
 };
+
+// static/src/components/memory.js
 var MemoryScreen = class extends Component {
   static template = xml`
     <section class="mem-screen">
@@ -10190,6 +9068,1239 @@ var MemoryScreen = class extends Component {
     this._chart?.resetZoom();
   }
 };
+
+// static/src/components/menus.js
+var ActionMenu = class extends Component {
+  static template = xml`
+    <div class="dash-menu action-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button t-foreach="this.actions()" t-as="a" t-key="a_index" class="dash-menu-item"
+              t-att-class="{danger: a.danger}" t-att-disabled="a.disabled" t-att-title="a.title || ''"
+              t-on-click="() => this.select(a)" t-out="a.label"/>
+    </div>`;
+  open = signal(false);
+  actions = signal([]);
+  _el = null;
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".action-menu");
+      appBus.addEventListener("action-menu", (e) => this.openMenu(e.detail));
+      document.addEventListener("click", () => this.open.set(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.open.set(false);
+      });
+    });
+  }
+  async openMenu({ rect, actions }) {
+    this.actions.set(actions);
+    this.open.set(true);
+    await Promise.resolve();
+    const w = this._el.offsetWidth;
+    const h = this._el.offsetHeight;
+    let top = rect.bottom + 4;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
+    this._el.style.top = `${top}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
+  }
+  select(a) {
+    if (a.disabled) return;
+    this.open.set(false);
+    a.onClick?.();
+  }
+};
+var CiMenu = class extends Component {
+  static template = xml`
+    <div class="dash-menu ci-menu" t-att-class="{hidden: !this.open()}"
+         t-on-mouseenter="() => this.cancelClose()" t-on-mouseleave="() => this.scheduleClose()">
+      <a t-foreach="this.checks()" t-as="c" t-key="c_index" class="ci-menu-item" t-att-class="c.state || 'unknown'"
+         t-att-href="c.url || undefined" t-att-target="c.url ? '_blank' : undefined">
+        <span class="ci-menu-dot"/>
+        <span class="ci-menu-ctx" t-out="c.context"/>
+        <span class="ci-menu-state" t-out="this.stateLabel(c.state)"/>
+      </a>
+    </div>`;
+  open = signal(false);
+  checks = signal([]);
+  _el = null;
+  _closeTimer = null;
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".ci-menu");
+      appBus.addEventListener("ci-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener("ci-menu-hide", () => this.scheduleClose());
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.close();
+      });
+    });
+  }
+  cancelClose() {
+    if (this._closeTimer) {
+      clearTimeout(this._closeTimer);
+      this._closeTimer = null;
+    }
+  }
+  scheduleClose() {
+    this.cancelClose();
+    this._closeTimer = setTimeout(() => this.open.set(false), 180);
+  }
+  close() {
+    this.cancelClose();
+    this.open.set(false);
+  }
+  async openMenu({ rect, checks }) {
+    this.cancelClose();
+    this.checks.set(checks);
+    this.open.set(true);
+    await Promise.resolve();
+    const w = this._el.offsetWidth;
+    const h = this._el.offsetHeight;
+    let top = rect.bottom + 4;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
+    this._el.style.top = `${top}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+  }
+  stateLabel(state) {
+    return { success: "ok", failure: "ko", pending: "running" }[state] || "\u2014";
+  }
+};
+var MbMenu = class extends Component {
+  static template = xml`
+    <div class="dash-menu mb-menu" t-att-class="{hidden: !this.open()}"
+         t-on-mouseenter="() => this.cancelClose()" t-on-mouseleave="() => this.scheduleClose()">
+      <a t-foreach="this.rows()" t-as="r" t-key="r_index" class="ci-menu-item mb-menu-item" t-att-class="r.cls"
+         t-att-href="r.url || undefined" t-att-target="r.url ? '_blank' : undefined">
+        <span class="ci-menu-dot"/>
+        <span class="ci-menu-ctx" t-out="r.repo"/>
+        <span class="ci-menu-state" t-out="this.label(r)"/>
+      </a>
+    </div>`;
+  open = signal(false);
+  rows = signal([]);
+  _el = null;
+  _closeTimer = null;
+  setup() {
+    onMounted(() => {
+      this._el = document.querySelector(".mb-menu");
+      appBus.addEventListener("mb-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener("mb-menu-hide", () => this.scheduleClose());
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") this.close();
+      });
+    });
+  }
+  cancelClose() {
+    if (this._closeTimer) {
+      clearTimeout(this._closeTimer);
+      this._closeTimer = null;
+    }
+  }
+  scheduleClose() {
+    this.cancelClose();
+    this._closeTimer = setTimeout(() => this.open.set(false), 180);
+  }
+  close() {
+    this.cancelClose();
+    this.open.set(false);
+  }
+  async openMenu({ rect, rows }) {
+    this.cancelClose();
+    this.rows.set(rows);
+    this.open.set(true);
+    await Promise.resolve();
+    const w = this._el.offsetWidth;
+    const h = this._el.offsetHeight;
+    let top = rect.bottom + 4;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
+    this._el.style.top = `${top}px`;
+    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+  }
+  // "blocked · Review, CI" — the state word, plus the unmet requirements when present
+  label(r) {
+    return r.detail ? `${r.state} \xB7 ${r.detail}` : r.state;
+  }
+};
+
+// static/src/components/prs.js
+var PrsScreen = class extends Component {
+  static components = { SearchBox };
+  worktree = plugin(WorktreePlugin);
+  // "wt" badge on PR branches owned by a worktree
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top has-filters">
+          <h1>PRs</h1>
+          <div class="panel-filters">
+            <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
+            <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
+            <SearchBox value="this.search"/>
+            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+              <option value="">All repositories</option>
+              <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+            </select>
+            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
+              <option value="">All</option>
+              <option value="unmerged">All (except merged)</option>
+              <option value="merged">Merged</option>
+              <option value="error">Error</option>
+              <option value="blocked">Blocked</option>
+            </select>
+          </div>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.stamp"/>
+            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
+          <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
+          <span class="row-count" t-out="this.count"/>
+        </div>
+      </div>
+      <div class="content br-fill">
+        <div t-att-class="{busy: this.busyNow}">
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>
+          <div t-if="this.loadError" class="dim br-empty" t-out="'Failed to load: ' + this.loadError"/>
+          <div t-elif="!this.groups().length" class="dim br-empty" t-out="this.emptyMsg"/>
+          <div t-else="" class="br-card">
+            <!-- full-width card = scroll container (scrollbar on the right); the
+                 wrapper sizes the table to its natural width, like the Branches list.
+                 One tbody per branch: the branch name spans its PRs (rowspan). -->
+            <div class="brg-table">
+            <table class="br-table brg-flat rev-table">
+              <thead>
+                <tr>
+                  <th t-if="this.mode() === 'mine'"><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all open pull requests"/></th>
+                  <th>Branch</th><th>PR</th><th>Title</th><th>Repository</th><th>State</th><th>Mergebot</th><th t-out="this.dateLabel"/>
+                  <th t-if="this.mode() === 'mine'"/>
+                </tr>
+              </thead>
+              <tbody t-foreach="this.groups()" t-as="g" t-key="g.branch" class="rev-group">
+                <tr t-foreach="g.prs" t-as="row" t-key="row.github + ':' + row.number" t-att-class="{'row-sel': this.mode() === 'mine' and this.selected().has(row.github + ':' + row.number)}">
+                  <td t-if="this.mode() === 'mine'">
+                    <input t-if="row.state === 'open' and row.github" type="checkbox" class="br-select" t-att-checked="this.selected().has(row.github + ':' + row.number)" t-on-change="() => this.toggleSelect(row.github + ':' + row.number)" title="select this PR for batch actions"/>
+                  </td>
+                  <td t-if="row_index === 0" class="br-name br-branch" t-att-rowspan="g.prs.length" t-att-title="g.branch">
+                    <span class="br-branch-name" t-att-class="{ 'select-toggle': this.groupSelectable(g) }" t-on-click="() => this.selectGroup(g)" t-out="g.branch || '—'"/>
+                  <span t-if="this.worktree.isWorktreeBranch(g.branch)" class="wt-badge" title="has a worktree">wt</span>
+                    <button class="rev-star" t-att-class="{on: g.fav}" t-att-title="g.fav ? 'unfavorite branch' : 'favorite branch'" t-on-click="() => this.toggleFav(g)">★</button>
+                  </td>
+                  <td><a class="pr-link" target="_blank" t-att-href="row.url" t-out="'#' + row.number"/></td>
+                  <td class="br-title" t-att-class="{ 'select-toggle': this.selectable(row) }"
+                      t-att-title="this.selectable(row) ? (row.title || '') + ' — click to select' : row.title"
+                      t-on-click="() => this.selectRow(row)" t-out="row.title || '—'"/>
+                  <td class="dim" t-out="row.repoLabel"/>
+                  <td><span class="pr-state" t-att-class="this.prState(row)" t-out="this.prState(row)"/></td>
+                  <td>
+                    <a t-if="this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.mergebotUrl(row)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
+                    <span t-else="" class="dim">—</span>
+                  </td>
+                  <td t-att-title="this.prDate(row)" t-out="this.prDate(row) ? this.cell(this.prDate(row)) : '—'"/>
+                  <td t-if="this.mode() === 'mine'">
+                    <div class="br-act">
+                      <button t-if="row.state === 'open' and row.github" class="dash-kebab" title="PR actions"
+                              t-on-click.stop="(ev) => this.openRowMenu(ev, row)"><t t-out="this.kebabIcon"/></button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+  code = plugin(CodePlugin);
+  review = plugin(ReviewPlugin);
+  config = plugin(ConfigPlugin);
+  dialogs = plugin(DialogPlugin);
+  router = plugin(RouterPlugin);
+  refreshIcon = m(ICONS.refresh);
+  kebabIcon = m(ICONS.kebab);
+  // "mine" = PRs I authored (CodePlugin); "reviewing" = PRs I commented on but
+  // didn't author (ReviewPlugin). Seed from the route so a #reviews bookmark opens
+  // on Reviewing with no flash of Mine.
+  mode = signal(this.router.section() === "reviews" ? "reviewing" : "mine");
+  repoFilter = signal("");
+  // "" = all repositories
+  search = signal("");
+  statusFilter = signal("unmerged");
+  // mergebot status; "" = all, "unmerged" = still in flight
+  selected = signal(/* @__PURE__ */ new Set());
+  // "github:number" of PRs ticked for batch close (Mine only)
+  _reviewLoaded = false;
+  // lazy-load guard for the Reviewing segment
+  setup() {
+    this.code.load();
+    if (this.mode() === "reviewing") {
+      this._reviewLoaded = true;
+      this.review.load();
+    }
+    const onHash = () => this.setMode(location.hash.slice(1) === "reviews" ? "reviewing" : "mine");
+    onMounted(() => window.addEventListener("hashchange", onHash));
+    onWillUnmount(() => window.removeEventListener("hashchange", onHash));
+    useEffect(() => {
+      if (this.rows().length) this.review.loadMergebot(this._mbPrs());
+    });
+  }
+  // flip segment; clear the Mine-only selection and lazy-load Reviewing once
+  setMode(m2) {
+    if (this.mode() === m2) return;
+    this.mode.set(m2);
+    this.selected.set(/* @__PURE__ */ new Set());
+    if (m2 === "reviewing" && !this._reviewLoaded) {
+      this._reviewLoaded = true;
+      this.review.load();
+    }
+  }
+  // the open PRs in mergebot's {github, number} shape (github === the slug).
+  // mergebot only tracks the in-flight merge, so terminal PRs (GitHub merged or
+  // closed) never need a scrape — and the authored list is fetched --state all,
+  // so this is most of them. Skipping them avoids hundreds of pointless requests.
+  _mbPrs() {
+    return this.rows().filter((r) => r.state === "open" && !this.code.isExternalRepo(r.github)).map((r) => ({ github: r.github, number: r.number }));
+  }
+  // Refresh: reload the active segment, then re-probe mergebot (merged PRs stay
+  // terminal; unsupported repos get re-checked so a false positive can recover)
+  async refresh() {
+    if (this.mode() === "mine") await this.code.load(true);
+    else await this.review.load(true);
+    this.review.loadMergebot(this._mbPrs(), { refresh: true });
+  }
+  // per-PR actions in the floating kebab menu (shared ActionMenu) — Mine only
+  openRowMenu(ev, row) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const actions = [
+      {
+        label: "Close PR",
+        danger: true,
+        onClick: () => this.code.closePr(row.github, row.number)
+      }
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+  }
+  // tick/untick a PR (by "github:number") for batch actions
+  toggleSelect(key) {
+    const sel = new Set(this.selected());
+    sel.has(key) ? sel.delete(key) : sel.add(key);
+    this.selected.set(sel);
+  }
+  // a PR can be selected (and batch-closed) only in Mine mode, while open and on GitHub
+  selectable(row) {
+    return this.mode() === "mine" && row.state === "open" && !!row.github;
+  }
+  // clicking a PR's title toggles its selection, mirroring the row checkbox
+  selectRow(row) {
+    if (this.selectable(row)) this.toggleSelect(`${row.github}:${row.number}`);
+  }
+  // a branch group's selectable PRs (Mine, open, on GitHub)
+  _groupSelectable(g) {
+    return g.prs.filter((r) => this.selectable(r));
+  }
+  // whether clicking the branch name can select anything (drives the clickable cue)
+  groupSelectable(g) {
+    return this._groupSelectable(g).length > 0;
+  }
+  // clicking the branch name toggles selection of all its selectable PRs (a branch
+  // often pairs an odoo + enterprise PR): select them all when any is unselected,
+  // else clear them
+  selectGroup(g) {
+    const keys = this._groupSelectable(g).map((r) => `${r.github}:${r.number}`);
+    if (!keys.length) return;
+    const sel = new Set(this.selected());
+    const allSel = keys.every((k) => sel.has(k));
+    for (const k of keys) allSel ? sel.delete(k) : sel.add(k);
+    this.selected.set(sel);
+  }
+  get _selectablePrs() {
+    return this.rows().filter((r) => this.selectable(r));
+  }
+  get allSelected() {
+    const sel = this.selected();
+    const selectable = this._selectablePrs;
+    return selectable.length > 0 && selectable.every((r) => sel.has(`${r.github}:${r.number}`));
+  }
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected ? /* @__PURE__ */ new Set() : new Set(this._selectablePrs.map((r) => `${r.github}:${r.number}`))
+    );
+  }
+  // selected, still-visible, closeable PRs
+  get _selectedPrs() {
+    const sel = this.selected();
+    return this.rows().filter((r) => sel.has(`${r.github}:${r.number}`) && this.selectable(r));
+  }
+  get selectedCount() {
+    return this._selectedPrs.length;
+  }
+  // confirm, then close every selected PR
+  async closeSelected() {
+    const prs = this._selectedPrs;
+    if (!prs.length) return;
+    const res = await this.dialogs.open({
+      title: "Close pull requests",
+      message: `Close ${prs.length} pull request${prs.length === 1 ? "" : "s"}? This cannot be undone here (reopen on GitHub).`,
+      okLabel: "Close",
+      fields: []
+    });
+    if (!res) return;
+    await Promise.all(prs.map((r) => this.code.closePrNoConfirm(r.github, r.number)));
+    this.selected.set(/* @__PURE__ */ new Set());
+  }
+  get stamp() {
+    const [loading, at] = this.mode() === "mine" ? [this.code.loading(), this.code.at()] : [this.review.loading(), this.review.at()];
+    if (loading) return "refreshing\u2026";
+    return at ? `updated ${timeAgo(new Date(at).toISOString())}` : "";
+  }
+  get busyNow() {
+    return this.mode() === "mine" ? this.code.busy() : this.review.loading();
+  }
+  // per-repo load errors (Mine only; Reviewing has a single top-level error)
+  get errors() {
+    return this.mode() === "mine" ? this.code.prRepos().filter((r) => r.error) : [];
+  }
+  get loadError() {
+    return this.mode() === "mine" ? this.code.error() : this.review.error();
+  }
+  get emptyMsg() {
+    return this.mode() === "mine" ? "No pull requests." : "No PRs commented on in the last 14 days.";
+  }
+  // repository labels present in the active segment (for the filter dropdown)
+  get repoOptions() {
+    return [...new Set(this.rows().map((r) => r.repoLabel))].sort();
+  }
+  get count() {
+    const n = this.groups().reduce((sum, g) => sum + g.prs.length, 0);
+    return `${n} PR${n === 1 ? "" : "s"}`;
+  }
+  // friendly short id for a repo's github slug (e.g. "odoo/enterprise" -> "enterprise"),
+  // falling back to the slug for repos not in config
+  get _slugToId() {
+    return Object.fromEntries(
+      (this.config.config.repos || []).filter((r) => r.github).map((r) => [r.github, r.id])
+    );
+  }
+  labelFor(github) {
+    return this._slugToId[github] || github;
+  }
+  // PRs of the active segment, filtered by search + repository. PRs arrive already
+  // normalized (see models.js), so a row is just the PR plus its display repoLabel;
+  // every downstream helper reads the unified fields. Mine rows carry createdAt —
+  // the date column shows it for your own PRs (their updatedAt is noisy: it bumps on
+  // any comment/label long after the work).
+  rows() {
+    const q = this.search().trim().toLowerCase();
+    const repoFilter = this.repoFilter();
+    let list;
+    if (this.mode() === "mine") {
+      list = [];
+      for (const repo of this.code.prRepos()) {
+        if (repo.error) continue;
+        for (const pr of repo.prs) list.push({ ...pr, repoLabel: repo.id });
+      }
+    } else {
+      list = this.review.prs().map((pr) => ({ ...pr, repoLabel: this.labelFor(pr.github) }));
+    }
+    return list.filter((r) => {
+      if (repoFilter && r.repoLabel !== repoFilter) return false;
+      if (q && !`${r.title} ${r.repoLabel} ${r.branch} #${r.number}`.toLowerCase().includes(q))
+        return false;
+      return true;
+    });
+  }
+  // normalized rows grouped by branch name. Within a group, PRs follow the config
+  // repository order (e.g. odoo/odoo before odoo/enterprise); repos not in config
+  // sort last. The same branch often has a PR in odoo and one in enterprise —
+  // grouping keeps that work together. Groups are ordered by their most recent PR,
+  // with starred branches first. The mergebot-status filter is group-level: a group
+  // is kept whole when ANY of its PRs matches.
+  groups() {
+    const byBranch = /* @__PURE__ */ new Map();
+    for (const r of this.rows()) {
+      const key = r.branch || "\u2014";
+      (byBranch.get(key) || byBranch.set(key, []).get(key)).push(r);
+    }
+    const ts = (r) => Date.parse(this.prDate(r)) || 0;
+    const repoOrder = (this.config.config.repos || []).map((r) => r.github);
+    const rank = (r) => {
+      const i = repoOrder.indexOf(r.github);
+      return i === -1 ? repoOrder.length : i;
+    };
+    const status = this.statusFilter();
+    return [...byBranch.entries()].map(([branch, prs]) => ({
+      branch,
+      prs: prs.slice().sort((a, b) => rank(a) - rank(b) || a.github.localeCompare(b.github) || ts(b) - ts(a)),
+      updated: Math.max(...prs.map(ts)),
+      fav: this.review.isFavorite(branch)
+    })).filter((g) => {
+      if (!status) return true;
+      if (status === "unmerged") return g.prs.some((pr) => !this._isMerged(pr));
+      if (status === "merged") return g.prs.some((pr) => this._isMerged(pr));
+      return g.prs.some((pr) => this.mbState(pr) === status);
+    }).sort((a, b) => b.fav - a.fav || b.updated - a.updated);
+  }
+  // "done" for the default filter: mergebot-merged, or a terminal GitHub state
+  // (merged/closed) — so "unmerged" hides finished work in both segments, the way
+  // the old Mine "Open" toggle did
+  _isMerged(row) {
+    return this.mbState(row) === "merged" || row.state === "merged" || row.state === "closed";
+  }
+  // favorite (star) a whole branch group — keyed by branch name (see ReviewPlugin);
+  // starred groups sort first. Shared across both segments (one branch = one star).
+  toggleFav(g) {
+    this.review.toggleFavorite(g.branch);
+  }
+  mbState(row) {
+    return this.review.mergebot()[`${row.github}#${row.number}`] || "";
+  }
+  // the unmet merge requirements behind a blocked state, e.g. "Review, CI" ("" if none)
+  mbDetail(row) {
+    return this.review.mbDetails()[`${row.github}#${row.number}`] || "";
+  }
+  mbClass(row) {
+    return mbCategory(this.mbState(row));
+  }
+  mergebotUrl(row) {
+    return `${MERGEBOT}/${row.github}/pull/${row.number}`;
+  }
+  cell(date) {
+    return timeAgo(date);
+  }
+  // the date shown in the last column: your own PRs show when they were opened
+  // (createdAt); reviewed PRs show GitHub's updatedAt (no createdAt on those rows)
+  prDate(row) {
+    return row.createdAt || row.updatedAt;
+  }
+  // header for that column, matching prDate's source per segment
+  get dateLabel() {
+    return this.mode() === "mine" ? "Created" : "Last update";
+  }
+  prState(row) {
+    return row.draft && row.state === "open" ? "draft" : row.state;
+  }
+};
+
+// static/src/components/server.js
+var ServerScreen = class extends Component {
+  static components = { LogConsole };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top">
+          <div class="server-head">
+            <h1>Server</h1>
+            <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
+            <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
+          </div>
+          <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
+        </div>
+        <div class="panel-actions">
+          <button class="pbtn primary dash-start" t-att-disabled="!this.stopped or this.busy" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/><t t-out="this.startLabel"/></button>
+          <button class="pbtn stop" t-att-disabled="!this.canStop or this.busy" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
+          <button class="pbtn" t-att-disabled="!this.active or this.busy" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
+          <button class="pbtn pbtn-icon" t-att-class="{active: this.term.open()}" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
+          <span t-if="this.transient" class="run-state" t-out="this.transient"/>
+          <div t-if="this.showLogs" class="log-controls">
+            <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+            <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
+          </div>
+        </div>
+      </div>
+      <div class="content" t-att-class="{ flush: !this.stopped }">
+        <div t-if="this.disconnected" class="offline">server is offline</div>
+        <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
+        <div t-else="" class="launch-form">
+          <div class="launch-field">
+            <label>Target</label>
+            <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
+              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
+            </select>
+          </div>
+          <div class="launch-field">
+            <label>Extra arguments</label>
+            <input type="text" t-att-value="this.extraArgs()" t-on-input="ev => this.extraArgs.set(ev.target.value)" placeholder="e.g. --dev all"/>
+          </div>
+          <div class="launch-field">
+            <label>Command</label>
+            <div class="cmd">
+              <span class="label">launch</span>
+              <div class="code" t-out="this.cmdPreviewMarkup"/>
+              <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  term = plugin(TerminalPlugin);
+  copyIcon = m(ICONS.copy);
+  clearIcon = m(ICONS.clear);
+  termIcon = m(ICONS.terminal);
+  copyLbl = signal("Copy");
+  target = signal(this._initialTarget());
+  extraArgs = signal(this.config.config.start.other_args || "");
+  command = signal("");
+  setup() {
+    let timer;
+    useEffect(() => {
+      const tgt = this.target();
+      const args = this.extraArgs();
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => this.server.previewCommand(tgt, args).then((c) => this.command.set(c)),
+        200
+      );
+    });
+  }
+  get targets() {
+    return this.config.config.targets;
+  }
+  // last used target id if it still exists, else the first one
+  _initialTarget() {
+    const ids = this.targets.map((t2) => t2.id);
+    const last = this.server.lastTarget();
+    return ids.includes(last) ? last : ids[0] || "";
+  }
+  status() {
+    return this.server.status();
+  }
+  get stopped() {
+    return this.status().state === "stopped";
+  }
+  // an optimistic start/stop/restart is in flight (between the click and the
+  // first real status event) — disable the controls so it can't be double-fired
+  get busy() {
+    return !!this.server.pending();
+  }
+  get startLabel() {
+    return this.server.pending() === "start" || this.status().state === "starting" ? "Starting\u2026" : "Start";
+  }
+  get disconnected() {
+    return this.status().state === "disconnected";
+  }
+  get transient() {
+    const s = this.status().state;
+    return s === "starting" ? "starting\u2026" : s === "stopping" ? "stopping\u2026" : null;
+  }
+  // logs are visible (so their controls belong in the panel) whenever we're not
+  // showing the launch form or the offline message
+  get showLogs() {
+    return !this.stopped && !this.disconnected;
+  }
+  toggleAuto() {
+    const b = this.server.output;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
+  }
+  get active() {
+    return this.status().state === "starting" || this.status().state === "running";
+  }
+  get canStop() {
+    return this.active || this.stopped && this.status().odoo_port_busy;
+  }
+  get cmdPreviewMarkup() {
+    return m(tintCmd(this.command() || ""));
+  }
+  get info() {
+    const s = this.status();
+    if (s.db) {
+      let html = `database: <b>${s.db}</b>`;
+      if (s.odoo_version) {
+        html += `<span class="sep">\xB7</span>odoo: <b>${s.odoo_version}</b>`;
+        if (s.enterprise) html += ` (enterprise)`;
+      }
+      return m(html);
+    }
+    const tgt = this.targets.find((t2) => t2.id === this.target());
+    return tgt && tgt.db ? m(`database: <b>${tgt.db}</b>`) : null;
+  }
+  get hint() {
+    const s = this.status();
+    const hints = [];
+    if (s.exited_unexpectedly) hints.push(`odoo exited unexpectedly (code ${s.returncode})`);
+    if (s.state === "stopped" && s.odoo_port_busy)
+      hints.push("port 8069 is busy (external odoo?) \u2014 Stop will kill it");
+    return hints.join(" \u2014 ") || null;
+  }
+  get uptime() {
+    const s = this.status();
+    if (s.state !== "starting" && s.state !== "running" || !s.started_at) return null;
+    const secs = Math.max(0, Math.floor(this.server.now() / 1e3 - s.started_at));
+    const h = Math.floor(secs / 3600), mn = Math.floor(secs % 3600 / 60), sec = secs % 60;
+    return h ? `${h}h ${mn}m` : mn ? `${mn}m ${sec}s` : `${sec}s`;
+  }
+  copy() {
+    if (!this.command()) return;
+    navigator.clipboard?.writeText(this.command());
+    this.copyLbl.set("Copied");
+    setTimeout(() => this.copyLbl.set("Copy"), 1400);
+  }
+};
+
+// static/src/components/tests.js
+var TestsScreen = class extends Component {
+  static components = { LogConsole };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top"><div class="test-title"><h1>Tests</h1><span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/></div></div>
+        <div class="panel-actions">
+          <form class="test-form" t-on-submit.prevent="() => this.run()">
+            <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
+              <option value="" selected="selected" hidden="hidden">Presets</option>
+              <optgroup t-if="this.presets.length" label="Presets">
+                <option t-foreach="this.presets" t-as="p" t-key="p_index" t-att-value="p.tags" t-out="p.tags"/>
+              </optgroup>
+              <optgroup t-if="this.tests.history().length" label="Recent">
+                <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
+              </optgroup>
+            </select>
+            <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
+                   placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
+            <button type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
+                    title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
+                    t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
+            <button type="submit" t-att-disabled="!this.tests.target or this.tests.runActive() or !this.tags().trim()"><span class="play"/>Run</button>
+            <button type="button" class="stop" t-att-disabled="!this.tests.running" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
+            <div class="log-controls">
+              <label class="toggle" t-att-class="{on: this.tests.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+              <button type="button" class="tool-btn" t-on-click="() => this.tests.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
+            </div>
+          </form>
+        </div>
+      </div>
+      <div class="content flush tests-content">
+        <div t-if="!this.tests.output.count() and !this.tests.runActive()" class="tests-empty">
+          <p class="tests-empty-title">No test output yet</p>
+          <p class="tests-empty-hint">Pick a preset or type <code>--test-tags</code> above, then hit <strong>Run</strong> to launch a test on the active target.</p>
+        </div>
+        <LogConsole title="'Test output'" buffer="this.tests.output" bare="true"/>
+      </div>
+    </section>`;
+  tests = plugin(TestsPlugin);
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  clearIcon = m(ICONS.clear);
+  copyIcon = m(ICONS.copy);
+  tags = signal("");
+  // configured test-tag presets (Configuration tab), non-empty only
+  get presets() {
+    return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
+  }
+  // copy a `goo --test-tags …` command for the current tags (single-quoted so the
+  // shell doesn't mangle globs); an agent can run it to run this test from the CLI
+  copyCommand() {
+    const tags = this.tags().trim();
+    if (!tags) return;
+    navigator.clipboard?.writeText(`goo --test-tags '${tags.replace(/'/g, "'\\''")}'`);
+  }
+  // a compact result chip shown next to the title, replacing the old status text
+  get badge() {
+    const s = this.tests.status();
+    if (s === "passed") return { label: "success", cls: "ok" };
+    if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
+    if (s === "running\u2026" || s === "starting\u2026") return { label: "running", cls: "run" };
+    return null;
+  }
+  run() {
+    this.tests.run(this.tags());
+  }
+  // fill the input from the preset/recent menu, then reset it back to "Presets"
+  onPreset(ev) {
+    const v = ev.target.value;
+    ev.target.value = "";
+    if (v) this.tags.set(v);
+  }
+  toggleAuto() {
+    const b = this.tests.output;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
+  }
+};
+
+// static/src/plugins/claude_plugin.js
+var CLAUDE_MODELS = [
+  { value: "", label: "Default model" },
+  { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
+  { value: "opus", label: "Opus 4.8" },
+  { value: "sonnet", label: "Sonnet 5" },
+  { value: "haiku", label: "Haiku 4.5" }
+];
+var ClaudePlugin = class extends Plugin {
+  static sequence = 6;
+  // after WorktreePlugin (5), whose wtRepos() it reuses
+  config = plugin(ConfigPlugin);
+  server = plugin(ServerPlugin);
+  worktree = plugin(WorktreePlugin);
+  eventLog = plugin(EventLogPlugin);
+  dialogs = plugin(DialogPlugin);
+  convos = signal({});
+  // targetId -> { items: [...], state: "idle"|"running" }
+  models = CLAUDE_MODELS;
+  model = signal(this.config.getState("claude_model", ""));
+  // chosen model, persisted
+  _primed = /* @__PURE__ */ new Set();
+  // targets whose transcript we've fetched from the backend
+  setup() {
+    this.server.onClaude((d) => this.apply(d));
+  }
+  setModel(v) {
+    this.model.set(v || "");
+    this.config.setState("claude_model", v || "");
+  }
+  _get(id) {
+    return this.convos()[id] || { items: [], state: "idle" };
+  }
+  _set(id, next) {
+    this.convos.set({ ...this.convos(), [id]: next });
+  }
+  _append(id, item) {
+    const c = this._get(id);
+    this._set(id, { ...c, items: [...c.items, item] });
+  }
+  items(id) {
+    return this._get(id).items;
+  }
+  running(id) {
+    return this._get(id).state === "running";
+  }
+  // a live chat item pushed from the backend (assistant text, tool activity, result,
+  // or error). The final "result" ends the turn — flip back to idle.
+  apply(d) {
+    if (!d || !d.target) return;
+    const id = d.target;
+    if (d.role === "result") {
+      const c = this._get(id);
+      if (!d.ok && d.error) this._set(id, { ...c, items: [...c.items, d], state: "idle" });
+      else this._set(id, { ...c, state: "idle" });
+      return;
+    }
+    this._append(id, d);
+  }
+  // fetch the transcript once per target (after a reload the backend still holds it);
+  // skip if we already have live items so an in-flight turn isn't clobbered
+  async prime(id) {
+    if (!id || this._primed.has(id)) return;
+    this._primed.add(id);
+    if (this._get(id).items.length) return;
+    try {
+      const res = await postJSON("/api/worktree/claude/history", { target: id });
+      this._set(id, { items: res.items || [], state: res.state || "idle" });
+    } catch {
+    }
+  }
+  // send a task to Claude for <tgt>, running in its worktree's community checkout with
+  // the target's other repos added as extra allowed dirs
+  async send(tgt, prompt) {
+    const text = (prompt || "").trim();
+    if (!text || this.running(tgt.id)) return;
+    const repos = this.worktree.wtRepos(tgt);
+    const community = repos.find((r) => r.repo === "community");
+    if (!community) {
+      this._error("Cannot run Claude", "this worktree has no community repo");
+      return;
+    }
+    const addDirs = repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath);
+    this._append(tgt.id, { role: "user", text });
+    this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
+    try {
+      await postJSON("/api/worktree/claude", {
+        target: tgt.id,
+        prompt: text,
+        cwd: community.worktreePath,
+        addDirs,
+        model: this.model() || void 0
+      });
+    } catch (e) {
+      this._append(tgt.id, { role: "error", text: e.message });
+      this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
+    }
+  }
+  async stop(tgt) {
+    try {
+      await postJSON("/api/worktree/claude/stop", { target: tgt.id });
+    } catch {
+    }
+    this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
+  }
+  _error(title, message) {
+    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+  }
+};
+
+// static/src/components/worktree.js
+var ClaudeChat = class extends Component {
+  static template = xml`
+    <div class="cchat">
+      <div class="cchat-msgs" t-ref="this.scroll">
+        <div t-if="!this.items.length" class="cchat-hint dim">
+          Send a task to Claude. It runs in this worktree's checkout with full autonomy —
+          it can edit files and run commands here without touching your main tree.
+        </div>
+        <t t-foreach="this.items" t-as="m" t-key="m_index">
+          <div t-if="m.role === 'user'" class="cmsg cmsg-user"><div class="cmsg-body" t-out="m.text"/></div>
+          <div t-elif="m.role === 'assistant'" class="cmsg cmsg-asst"><div class="cmsg-body" t-out="m.text"/></div>
+          <div t-elif="m.role === 'tool'" class="cmsg-tool">
+            <span class="cmsg-tool-name" t-out="m.tool"/>
+            <span t-if="m.text" class="cmsg-tool-text" t-out="m.text"/>
+          </div>
+          <div t-elif="m.role === 'error'" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.text"/></div>
+        </t>
+        <div t-if="this.running" class="cchat-working"><span class="spin"/>Claude is working…</div>
+      </div>
+      <div class="cchat-input">
+        <div class="cchat-toolbar">
+          <span class="cchat-model-label dim">Model</span>
+          <select class="cchat-model" t-on-change="(ev) => this.claude.setModel(ev.target.value)">
+            <option t-foreach="this.claude.models" t-as="opt" t-key="opt.value"
+                    t-att-value="opt.value" t-att-selected="opt.value === this.claude.model()" t-out="opt.label"/>
+          </select>
+        </div>
+        <div class="cchat-row">
+          <textarea t-ref="this.ta" class="cchat-ta" rows="2"
+                    placeholder="Describe a task —  Enter to send, Shift+Enter for a newline"
+                    t-att-disabled="this.running" t-on-keydown="(ev) => this.onKey(ev)"/>
+          <button t-if="!this.running" class="pbtn primary cchat-send" t-on-click="() => this.send()">Send</button>
+          <button t-else="" class="pbtn stop cchat-send" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
+        </div>
+      </div>
+    </div>`;
+  props = props({ target: t.any() });
+  claude = plugin(ClaudePlugin);
+  scroll = signal.ref(HTMLElement);
+  ta = signal.ref(HTMLElement);
+  setup() {
+    onMounted(() => this.claude.prime(this.props.target.id));
+    useEffect(
+      () => {
+        const el = this.scroll();
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+      () => [this.items.length, this.running]
+    );
+  }
+  get items() {
+    return this.claude.items(this.props.target.id);
+  }
+  get running() {
+    return this.claude.running(this.props.target.id);
+  }
+  onKey(ev) {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      this.send();
+    }
+  }
+  send() {
+    const el = this.ta();
+    const text = el ? el.value : "";
+    if (!text.trim() || this.running) return;
+    this.claude.send(this.props.target, text);
+    if (el) el.value = "";
+  }
+  stop() {
+    this.claude.stop(this.props.target);
+  }
+};
+var WorktreeScreen = class extends Component {
+  static components = { LogConsole, ClaudeChat };
+  static template = xml`
+    <section>
+      <div class="panel">
+        <div class="panel-top">
+          <h1>Worktrees</h1>
+          <div class="panel-top-right">
+            <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
+          </div>
+        </div>
+        <div class="panel-actions">
+          <button class="pbtn primary" t-on-click="() => this.create()">Create Worktree</button>
+          <span class="dash-subtitle">Run a branch in its own checkout, database and server — alongside the main one.</span>
+        </div>
+      </div>
+      <div class="content wt-content">
+        <div class="wt-list">
+          <div t-if="!this.list.length" class="wt-empty dim">No worktrees yet. Create one to get started.</div>
+          <button t-foreach="this.list" t-as="tgt" t-key="tgt.id" class="wt-item"
+                  t-att-class="{selected: tgt.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(tgt.id)">
+            <span class="wt-dot" t-att-class="this.dotClass(tgt)"/>
+            <span class="wt-item-main">
+              <span class="wt-item-name" t-out="tgt.name"/>
+              <span class="wt-item-sub"><t t-out="this.branchOf(tgt)"/> · <t t-out="tgt.db"/></span>
+            </span>
+            <span t-if="this.wt.port(tgt)" class="wt-item-port" t-out="':' + this.wt.port(tgt)"/>
+          </button>
+        </div>
+        <div class="wt-detail" t-if="this.list.length">
+          <t t-if="this.sel">
+            <div class="wt-detail-head">
+              <h2 t-out="this.sel.name"/>
+              <div class="wt-meta">
+                <span>branch <b t-out="this.branchOf(this.sel)"/></span>
+                <span>db <b t-out="this.sel.db"/></span>
+                <span t-if="this.wt.port(this.sel)">port <b t-out="this.wt.port(this.sel)"/></span>
+                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.wt.serverState(this.sel)"/>
+              </div>
+            </div>
+            <div class="wt-detail-actions">
+              <button class="pbtn primary" t-att-disabled="this.wt.running(this.sel)" t-on-click="() => this.wt.startServer(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+              <button class="pbtn stop" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.stopServer(this.sel)"><span class="ic square"/>Stop</button>
+              <button class="pbtn" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.restartServer(this.sel)"><span class="restart"/>Restart</button>
+              <span class="wt-sp"/>
+              <button class="pbtn" title="open the worktree's repos in the editor" t-on-click="() => this.wt.openEditor(this.sel)"><t t-out="this.codeIcon"/>Edit</button>
+              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.wt.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.wt.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <span class="wt-sp"/>
+              <button class="pbtn danger" t-att-disabled="this.wt.running(this.sel)" title="remove the worktree" t-on-click="() => this.wt.remove(this.sel)">Remove</button>
+            </div>
+            <div class="wt-panes">
+              <div class="wt-tabs">
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')">Server log</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')">Claude</button>
+              </div>
+              <div class="wt-pane" t-if="this.pane() === 'log'">
+                <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
+              </div>
+              <div class="wt-pane" t-else="">
+                <ClaudeChat t-key="this.sel.id" target="this.sel"/>
+              </div>
+            </div>
+          </t>
+          <div t-else="" class="wt-detail-empty dim">Select a worktree on the left, or create one.</div>
+        </div>
+      </div>
+    </section>`;
+  wt = plugin(WorktreePlugin);
+  config = plugin(ConfigPlugin);
+  db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
+  externalIcon = m(ICONS.external);
+  codeIcon = m(ICONS.code);
+  // "Edit" (open the worktree's repos in the editor)
+  pane = signal("log");
+  // which detail pane is shown: "log" | "claude"
+  setup() {
+    this.db.load();
+  }
+  get list() {
+    return this.wt.worktreeTargets();
+  }
+  get sel() {
+    return this.wt.selected();
+  }
+  get isRunning() {
+    return !!this.sel && this.wt.serverState(this.sel) === "running";
+  }
+  get startLabel() {
+    return this.sel && this.wt.serverState(this.sel) === "starting" ? "Starting\u2026" : "Start";
+  }
+  branchOf(tgt) {
+    return tgt.checkouts && tgt.checkouts[0] && tgt.checkouts[0].branch || "";
+  }
+  dotClass(tgt) {
+    return "wt-dot-" + this.wt.serverState(tgt);
+  }
+  open(url) {
+    if (url) window.open(url, "_blank", "noopener");
+  }
+  async create() {
+    const bases = (this.config.config.targets || []).filter((t2) => !this.wt.isWorktree(t2));
+    if (!bases.length)
+      return this.dialogs.open({
+        title: "Create worktree",
+        message: "Define a normal target first \u2014 a worktree forks its branch from one.",
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    await this.db.load();
+    const sanitize = (s) => (s || "").trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    const dbNames = this.db.databases().map((d) => d.name);
+    const res = await this.dialogs.open({
+      title: "Create worktree",
+      okLabel: "Create",
+      fields: [
+        {
+          key: "base",
+          type: "select",
+          label: "Base target",
+          value: bases[0].id,
+          placeholder: "\u2014 pick a target \u2014",
+          options: bases.map((t2) => ({ value: t2.id, label: t2.name }))
+        },
+        {
+          key: "branch",
+          type: "text",
+          label: "New branch",
+          placeholder: "e.g. my-feature",
+          onChange: (v) => ({ db: sanitize(v) })
+        },
+        { key: "name", type: "text", label: "Display name (optional)" },
+        { key: "db", type: "text", label: "Database" },
+        {
+          key: "clone",
+          type: "select",
+          label: "Data",
+          value: "",
+          placeholder: "(fresh install)",
+          options: dbNames.map((n) => ({ value: n, label: "clone " + n }))
+        }
+      ],
+      validate: (v) => {
+        if (!v.base) return "pick a base target";
+        if (!sanitize(v.branch)) return "enter a branch name";
+        if (!sanitize(v.db)) return "enter a database name";
+        if (v.clone && dbNames.includes(sanitize(v.db)))
+          return `database "${sanitize(v.db)}" already exists \u2014 pick a new name to clone into`;
+        return "";
+      }
+    });
+    if (!res) return;
+    await this.wt.createWorktree({
+      baseTargetId: res.base,
+      name: (res.name || res.branch).trim(),
+      branch: sanitize(res.branch),
+      dbName: sanitize(res.db),
+      cloneSource: res.clone || ""
+    });
+  }
+};
+
+// static/src/components/app.js
+var Topbar = class extends Component {
+  static template = xml`
+    <header class="topbar">
+      <div class="top-left">
+        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/><button t-if="this.updateAvailable" class="nav-update" t-att-title="this.updateTip" t-on-click="() => this.update.promptUpdate()">↑ update</button></div>
+      </div>
+      <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
+        <span class="nt-name">
+          <span class="dot"/>
+          <span class="t-name" t-out="this.target"/>
+        </span>
+        <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
+      </div>
+      <div class="top-right">
+        <t t-foreach="this.routes" t-as="r" t-key="r_index">
+          <a t-if="!this.isMenu(r)" class="route" t-att-href="r.href" target="_blank" t-out="r.label"/>
+          <div t-elif="r.children.length" class="route-menu">
+            <span class="route route-menu-label"><t t-out="r.label"/><span class="route-caret">▾</span></span>
+            <div class="route-menu-drop">
+              <a t-foreach="r.children" t-as="c" t-key="c_index" class="route-menu-item" t-att-href="c.href" target="_blank" t-out="c.label"/>
+            </div>
+          </div>
+        </t>
+        <button class="nav-events" t-att-class="{active: this.eventLog.open()}" t-on-click="() => this.eventLog.toggle()" t-att-title="this.eventsTip">
+          <t t-out="this.journalIcon"/>
+          <span t-if="this.eventLog.unread()" class="nav-events-badge" t-out="this.eventLog.unread()"/>
+        </button>
+      </div>
+    </header>`;
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  update = plugin(UpdatePlugin);
+  eventLog = plugin(EventLogPlugin);
+  journalIcon = m(ICONS.journal);
+  version = `v${VERSION}`;
+  // event-log toggle tooltip, surfacing the unread count when there is one
+  get eventsTip() {
+    const n = this.eventLog.unread();
+    return n ? `${n} new event${n === 1 ? "" : "s"} \u2014 toggle the event log` : "toggle the event log";
+  }
+  // user-configurable navbar links (/odoo + /web/tests included — they go through
+  // the autologin addon and only resolve while the server is up). An entry with a
+  // `children` array is a menu, rendered as a dropdown of links.
+  get routes() {
+    return this.config.config.links;
+  }
+  isMenu(r) {
+    return Array.isArray(r.children);
+  }
+  // goo's own checkout is behind origin/master (see UpdatePlugin)
+  get updateAvailable() {
+    return (this.update.info()?.behind || 0) > 0;
+  }
+  get updateTip() {
+    const u = this.update.info() || {};
+    let tip = `${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
+    if (u.ahead) tip += `, ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} ahead`;
+    if (u.dirty) tip += ", working tree dirty";
+    return tip;
+  }
+  get active() {
+    const s = this.server.status().state;
+    return s === "running" || s === "starting";
+  }
+  // the active target id: the running one while up, else the last-used one
+  get activeId() {
+    const s = this.server.status();
+    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+  }
+  // the active target's display name (dimmed when the server is stopped)
+  get target() {
+    const tgt = this.config.config.targets.find((t2) => t2.id === this.activeId);
+    return tgt ? tgt.name : this.activeId || "";
+  }
+  get stateClass() {
+    const s = this.server.displayState();
+    return s === "running" ? "live" : s === "starting" ? "starting" : "idle";
+  }
+  get tooltip() {
+    return this.active ? `current target (${this.server.status().state})` : "last target \u2014 server stopped";
+  }
+  // the Start/Stop control on the right of the badge. "Starting…" spans the whole
+  // launch — from the optimistic click (pending) through the backend's "starting"
+  // phase — flipping to "Stop" only once the server reports running. An optimistic
+  // `pending` likewise drives the stopping side before the first status lands.
+  get toggle() {
+    const pending = this.server.pending();
+    const s = this.server.status().state;
+    if (pending === "start" || s === "starting")
+      return { label: "Starting\u2026", cls: "start", disabled: true, title: "starting the server\u2026" };
+    if (pending === "stop" || pending === "restart" || s === "stopping")
+      return { label: "Stopping\u2026", cls: "stop", disabled: true, title: "stopping the server\u2026" };
+    if (s === "running")
+      return { label: "Stop", cls: "stop", disabled: false, title: "stop the server" };
+    if (s === "disconnected")
+      return { label: "Start", cls: "start", disabled: true, title: "server unreachable" };
+    return { label: "Start", cls: "start", disabled: false, title: "start the active target" };
+  }
+  onToggle() {
+    const s = this.server.status().state;
+    if (s === "running" || s === "starting") this.server.stop();
+    else if (s === "stopped") this.server.start(this.activeId);
+  }
+};
+var Sidebar = class extends Component {
+  static template = xml`
+    <nav class="sidebar">
+      <button t-foreach="this.nav" t-as="item" t-key="item.id" class="nav-item"
+              t-att-class="{active: this.router.section() === item.id}"
+              t-on-click="() => this.router.go(item.id)">
+        <t t-out="this.icon(item.icon)"/>
+        <t t-out="item.label"/>
+      </button>
+    </nav>`;
+  router = plugin(RouterPlugin);
+  config = plugin(ConfigPlugin);
+  // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
+  // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from
+  // config slot in at their natural position (see mergedTabIds); Config is always
+  // kept, hidden tabs are filtered out.
+  get nav() {
+    const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
+    const configured = this.config.config.tabs;
+    const cfg = Object.fromEntries((configured || []).map((t2) => [t2.id, t2]));
+    const shown = (id) => id === "config" || (cfg[id] ? cfg[id].visible !== false : !meta[id].optIn);
+    if (!configured || !configured.length) return NAV.filter((n) => shown(n.id));
+    const out = mergedTabIds(configured).filter((id) => shown(id)).map((id) => meta[id]);
+    if (!out.some((n) => n.id === "config")) out.push(meta.config);
+    return out;
+  }
+  icon(s) {
+    return m(s);
+  }
+};
 var SCREENS = {
   dashboard: DashboardScreen,
   code: CodeScreen,
@@ -10279,79 +10390,6 @@ var App = class extends Component {
     if (win && !win.closed) {
       if (ok) win.location.href = url;
       else win.close();
-    }
-  }
-};
-var repoBranchList = {
-  format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
-  parse: (s) => s.split(",").map((x) => x.trim()).filter(Boolean).map((pair) => {
-    const [repo, branch = ""] = pair.split(":").map((p) => p.trim());
-    return { repo, branch };
-  })
-};
-var SPECS = {
-  repos: {
-    key: "repos",
-    title: "Repositories",
-    itemName: "repository",
-    fields: [
-      { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
-      {
-        key: "path",
-        name: "path",
-        placeholder: "path (e.g. ~/work/community)",
-        className: "w-flex"
-      },
-      {
-        key: "github",
-        name: "github repo",
-        placeholder: "github (e.g. odoo/odoo)",
-        className: "w-name",
-        optional: true
-      },
-      { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
-      {
-        key: "external",
-        name: "external",
-        type: "checkbox",
-        optional: true,
-        title: "a repo outside the odoo CI ecosystem (e.g. odoo/owl) \u2014 skip its mergebot/runbot lookups"
-      },
-      {
-        key: "favorite",
-        name: "favorite",
-        type: "checkbox",
-        optional: true,
-        title: "favorite repositories appear in the dashboard summary"
-      }
-    ],
-    validate(repos, config) {
-      if (!repos.find((r) => r.id === "community"))
-        return 'a "community" repository is required (odoo-bin lives there)';
-      const ids = new Set(repos.map((r) => r.id));
-      for (const t2 of config.targets) {
-        const used = (t2.checkouts || []).find((c) => !ids.has(c.repo));
-        if (used) return `repository "${used.repo}" is still used by target "${t2.name}"`;
-      }
-      return null;
-    }
-  },
-  testPresets: {
-    key: "test_presets",
-    title: "Test presets",
-    itemName: "preset",
-    reorderable: true,
-    // drag the handle to reorder how presets appear in the Tests selector
-    fields: [
-      {
-        key: "tags",
-        name: "test tags",
-        placeholder: "--test-tags, e.g. /web:WebSuite[@web]",
-        className: "w-flex"
-      }
-    ],
-    validate() {
-      return null;
     }
   }
 };

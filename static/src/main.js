@@ -1,7 +1,7 @@
 // Bootstrap: hydrate from the server-side data file (if configured) so plugins
 // read up-to-date localStorage, then mount the Owl app with all plugins.
 import { mount } from "@odoo/owl";
-import { App } from "./components.js";
+import { App } from "./components/app.js";
 import { TerminalPlugin } from "./plugins/terminal_plugin.js";
 import { ConfigPlugin, loadServerConfig } from "./plugins/config_plugin.js";
 import { StorePlugin } from "./plugins/store_plugin.js";

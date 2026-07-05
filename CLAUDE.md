@@ -48,7 +48,19 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   integration-proven, not unit-tested — abstracting it buys little).
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path
-- `static/src/` — the Owl 3 frontend application (ES modules; `main.js` is the entry).
+- `static/src/` — the Owl 3 frontend application (ES modules; `main.js` is the entry),
+  organized into folders by kind:
+  - `plugins/` — the state/action layer (`*_plugin.js`, one owl `Plugin` each).
+  - `models/` — the owl-orm models (`config_models.js`, `observed_models.js`,
+    `runtime_models.js`) + the wire normalizers (`models.js`).
+  - `components/` — the Owl UI, one file per screen (`dashboard.js`, `targets.js`, …) plus
+    shared modules: `common.js` (the substrate — `appBus`, `ICONS`, `m`, `NAV` + reusable
+    widgets), `menus.js`, `dialogs.js`, `terminal.js`, `recordset.js`, and `app.js`
+    (`Topbar`/`Sidebar`/`App` + the `SCREENS` registry; `main.js` imports `App` from here).
+    `appBus` is a single shared `EventBus` exported from `common.js` — import it, never
+    re-instantiate.
+  - Root of `static/src/`: shared leaf libs `config.js`, `utils.js`, `presets.js`,
+    `log_buffer.js`, and `main.js`.
 - `static/dist/app.js` — the committed esbuild bundle of `static/src/` (the file the
   page actually loads). Generated — never hand-edit; rebuild with `npm run build`.
 - `vendor/owl-orm/` — pinned `@odoo/owl-orm` source (`index.ts`/`orm.ts`) + `owl-global.js`,
