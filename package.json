@@ -10,7 +10,8 @@
     "format:check": "prettier --check \"static/**/*.{js,css,html}\" \"*.md\"",
     "lint": "eslint static/src",
     "lint:fix": "eslint static/src --fix",
-    "build:owlx": "esbuild vendor/owl-orm/index.ts --bundle --format=esm --alias:@odoo/owl=./vendor/owl-orm/owl-global.js --outfile=static/lib/owlx.js"
+    "build": "esbuild static/src/main.js --bundle --format=esm --alias:@odoo/owl=./vendor/owl-orm/owl-global.js --outfile=static/dist/app.js",
+    "watch": "npm run build -- --watch"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

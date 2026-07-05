@@ -10,7 +10,7 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, useEffect, signal, computed } = owl;
+import { Plugin, plugin, useEffect, signal, computed } from "@odoo/owl";
 
 export class AddonsPlugin extends Plugin {
   static sequence = 4;

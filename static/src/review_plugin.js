@@ -13,7 +13,7 @@ import { PullRequest } from "./models.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
 
-const { Plugin, plugin, signal } = owl;
+import { Plugin, plugin, signal } from "@odoo/owl";
 
 const mbKey = (p) => `${p.github}#${p.number}`;
 

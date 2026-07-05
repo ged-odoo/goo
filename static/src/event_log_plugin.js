@@ -4,7 +4,7 @@
 
 import { postJSON } from "./utils.js";
 
-const { Plugin, signal } = owl;
+import { Plugin, signal } from "@odoo/owl";
 
 const MAX = 500; // keep the most recent N entries
 

@@ -1,5 +1,6 @@
 // The config family as owl-orm models — the first real conversion of goo's state
-// onto the client ORM (static/lib/owlx.js, sharing goo's window.owl reactivity).
+// onto the client ORM (vendor/owl-orm, bundled into the app, sharing goo's window.owl
+// reactivity).
 //
 // ConfigPlugin (config_plugin.js) is the adapter that owns an ORM seeded from these
 // models and keeps its flat `config` / `getState` / `setState` / `updateConfig` API,
@@ -16,7 +17,7 @@
 // Settings for round-trip fidelity; promoting Link/TestPreset to their own models is
 // a later refinement. The relational spine — Target → Checkout → Repository — is real.
 
-import { Model, ORM, fields } from "../lib/owlx.js";
+import { Model, ORM, fields } from "../../vendor/owl-orm/index.ts";
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
 import { worktreeDirFor } from "./utils.js";
 // Plugin classes are imported for the models' action methods to resolve via plugin().
@@ -27,7 +28,7 @@ import { ServerPlugin } from "./server_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 
-const { plugin } = owl;
+import { plugin } from "@odoo/owl";
 
 export { ORM };
 

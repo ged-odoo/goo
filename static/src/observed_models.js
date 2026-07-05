@@ -8,7 +8,7 @@
 // to their own models (so branchGroups becomes a computed over records) rides the
 // later generic-components pass.
 
-import { Model, ORM, fields } from "../lib/owlx.js";
+import { Model, ORM, fields } from "../../vendor/owl-orm/index.ts";
 
 export { ORM };
 

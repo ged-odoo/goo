@@ -6,7 +6,7 @@
 
 import { postJSON } from "./utils.js";
 
-const { Plugin, signal } = owl;
+import { Plugin, signal } from "@odoo/owl";
 
 export class NightlyPlugin extends Plugin {
   static sequence = 4;

@@ -5,7 +5,7 @@
 // `.add(Component, props)` (or the `.open(spec)` / `.openComponent(C, props)`
 // promise-based conveniences).
 
-const {
+import {
   Plugin,
   Component,
   xml,
@@ -17,7 +17,7 @@ const {
   onWillUnmount,
   props,
   t,
-} = owl;
+} from "@odoo/owl";
 
 let _seq = 0;
 

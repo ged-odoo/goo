@@ -6,7 +6,7 @@
 
 import { postJSON } from "./utils.js";
 
-const { Plugin, signal } = owl;
+import { Plugin, signal } from "@odoo/owl";
 
 const STORAGE_KEY = "oo-memory-builds";
 const STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";

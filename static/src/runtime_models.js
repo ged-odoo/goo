@@ -11,7 +11,7 @@
 // (OdooServer → Target) is deferred: Target lives in ConfigPlugin's ORM, and this
 // runtime ORM is StorePlugin's own; unifying them + real fields rides a later pass.
 
-import { Model, ORM, fields } from "../lib/owlx.js";
+import { Model, ORM, fields } from "../../vendor/owl-orm/index.ts";
 
 export { ORM };
 

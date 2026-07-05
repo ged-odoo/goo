@@ -10,7 +10,7 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
 import { PullRequest, branchKey } from "./models.js";
 
-const { Plugin, plugin, signal, computed } = owl;
+import { Plugin, plugin, signal, computed } from "@odoo/owl";
 
 const PRS_CACHE_KEY = "oo-prs-cache";
 

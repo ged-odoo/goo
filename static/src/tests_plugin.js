@@ -7,7 +7,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, useEffect, signal } = owl;
+import { Plugin, plugin, useEffect, signal } from "@odoo/owl";
 
 const HISTORY_MAX = 10;
 

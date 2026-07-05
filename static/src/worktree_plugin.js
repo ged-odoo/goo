@@ -15,7 +15,7 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON, worktreeDirFor } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+import { Plugin, plugin, signal } from "@odoo/owl";
 
 export class WorktreePlugin extends Plugin {
   static sequence = 5;

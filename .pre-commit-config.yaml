@@ -20,7 +20,7 @@ repos:
         entry: npx --yes prettier@3 --write
         language: system
         files: \.(js|css|html|json|md)$
-        exclude: ^static/lib/
+        exclude: ^static/(lib|dist)/
       - id: eslint
         name: eslint
         entry: npx --yes eslint --fix

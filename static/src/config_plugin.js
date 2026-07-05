@@ -27,7 +27,7 @@ import {
   applyPatch,
 } from "./config_models.js";
 
-const { Plugin, signal, computed } = owl;
+import { Plugin, signal, computed } from "@odoo/owl";
 
 // old localStorage keys → their field in the server `state` blob. Used to adopt an
 // upgrading user's browser data on first boot, and to translate config presets.
@@ -118,7 +118,7 @@ function merge(config) {
 // Fetch the server config before mount. If the server has none yet (first run), adopt
 // this browser's existing localStorage (an upgrading user) or DEFAULT_CONFIG (fresh),
 // migrate it, and seed the server. Always resolves — on any failure the UI still boots
-// from the migrated/default data in memory. Called from main.js before owl.mount.
+// from the migrated/default data in memory. Called from main.js before mount().
 export async function loadServerConfig() {
   let payload = null;
   try {

@@ -9,7 +9,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+import { Plugin, plugin, signal } from "@odoo/owl";
 
 export class AssetsPlugin extends Plugin {
   static sequence = 6;

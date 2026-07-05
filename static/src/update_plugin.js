@@ -8,7 +8,7 @@ import { ServerPlugin } from "./server_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+import { Plugin, plugin, signal } from "@odoo/owl";
 
 export class UpdatePlugin extends Plugin {
   server = plugin(ServerPlugin);

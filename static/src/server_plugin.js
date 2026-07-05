@@ -8,7 +8,7 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-const { Plugin, plugin, signal } = owl;
+import { Plugin, plugin, signal } from "@odoo/owl";
 
 export class ServerPlugin extends Plugin {
   static sequence = 2;

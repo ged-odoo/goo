@@ -1,4 +1,4 @@
-const { Plugin, signal } = owl;
+import { Plugin, signal } from "@odoo/owl";
 
 export class TerminalPlugin extends Plugin {
   open = signal(false);

@@ -2,7 +2,7 @@
 
 import { SECTIONS } from "./config.js";
 
-const { Plugin, signal } = owl;
+import { Plugin, signal } from "@odoo/owl";
 
 export class RouterPlugin extends Plugin {
   static sequence = 1;

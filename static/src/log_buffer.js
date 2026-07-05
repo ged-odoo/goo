@@ -5,7 +5,7 @@
 
 import { buildLogRow } from "./utils.js";
 
-const { signal } = owl;
+import { signal } from "@odoo/owl";
 
 const MAX_LINES = 2000;
 

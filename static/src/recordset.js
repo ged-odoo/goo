@@ -18,7 +18,7 @@
 // the production screens — and promoting the observed/runtime json payloads to real
 // fields so their screens render through here — is the follow-on.
 
-const { Component, xml, props, t } = owl;
+import { Component, xml, props, t } from "@odoo/owl";
 
 // ── adapters ──────────────────────────────────────────────────────────────────
 

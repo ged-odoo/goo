@@ -16,7 +16,7 @@
 import { ORM, RepoStatus, PrRepo, MergebotStatus, RunbotStatus } from "./observed_models.js";
 import { OdooServer, Run } from "./runtime_models.js";
 
-const { Plugin, computed } = owl;
+import { Plugin, computed } from "@odoo/owl";
 
 export class StorePlugin extends Plugin {
   static sequence = 0; // the shared store — set up before every plugin that reads it

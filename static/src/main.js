@@ -1,5 +1,6 @@
 // Bootstrap: hydrate from the server-side data file (if configured) so plugins
 // read up-to-date localStorage, then mount the Owl app with all plugins.
+import { mount } from "@odoo/owl";
 import { App } from "./components.js";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { ConfigPlugin, loadServerConfig } from "./config_plugin.js";
@@ -44,7 +45,7 @@ const PLUGINS = [
 async function boot() {
   // load the server-owned config before mount, so ConfigPlugin seeds from it
   await loadServerConfig();
-  owl.mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });
+  mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });
 }
 
 boot();
