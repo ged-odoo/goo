@@ -26,3 +26,13 @@ repos:
         entry: npx --yes eslint --fix
         language: system
         files: ^static/src/.*\.js$
+      # Keep the committed bundle in step with source: whenever static/src/ or
+      # vendor/owl-orm/ change, rebuild static/dist/app.js and stage it, so a stale
+      # bundle can never be committed. Runs once (not per-file); fails the commit if
+      # the build errors. Runs after prettier/eslint so it bundles the fixed source.
+      - id: build-bundle
+        name: build frontend bundle (static/dist/app.js)
+        entry: bash -c 'npm run build && git add static/dist/app.js'
+        language: system
+        files: ^(static/src/|vendor/owl-orm/)
+        pass_filenames: false
