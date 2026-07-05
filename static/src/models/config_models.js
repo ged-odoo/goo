@@ -17,16 +17,16 @@
 // Settings for round-trip fidelity; promoting Link/TestPreset to their own models is
 // a later refinement. The relational spine — Target → Checkout → Repository — is real.
 
-import { Model, ORM, fields } from "../../vendor/owl-orm/index.ts";
-import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
-import { worktreeDirFor } from "./utils.js";
+import { Model, ORM, fields } from "../../../vendor/owl-orm/index.ts";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "../config.js";
+import { worktreeDirFor } from "../utils.js";
 // Plugin classes are imported for the models' action methods to resolve via plugin().
 // This makes config_models ↔ config_plugin / code_plugin a cycle, but every use is
 // call-time (inside a method), so the bindings are live by the time any method runs.
-import { ConfigPlugin } from "./config_plugin.js";
-import { ServerPlugin } from "./server_plugin.js";
-import { CodePlugin } from "./code_plugin.js";
-import { EventLogPlugin } from "./event_log_plugin.js";
+import { ConfigPlugin } from "../plugins/config_plugin.js";
+import { ServerPlugin } from "../plugins/server_plugin.js";
+import { CodePlugin } from "../plugins/code_plugin.js";
+import { EventLogPlugin } from "../plugins/event_log_plugin.js";
 
 import { plugin } from "@odoo/owl";
 

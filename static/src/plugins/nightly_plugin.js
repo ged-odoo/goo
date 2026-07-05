@@ -4,7 +4,7 @@
 // this plugin just holds the current view + an in-memory (session-only) memo
 // of per-build errors/metrics so re-opening a popover doesn't need to await.
 
-import { postJSON } from "./utils.js";
+import { postJSON } from "../utils.js";
 
 import { Plugin, signal } from "@odoo/owl";
 

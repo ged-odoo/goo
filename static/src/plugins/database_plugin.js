@@ -4,7 +4,7 @@
 import { ServerPlugin } from "./server_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { ConfigPlugin } from "./config_plugin.js";
-import { postJSON } from "./utils.js";
+import { postJSON } from "../utils.js";
 
 import { Plugin, plugin, signal, useEffect } from "@odoo/owl";
 

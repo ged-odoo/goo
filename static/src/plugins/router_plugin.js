@@ -1,6 +1,6 @@
 // Hash-based section routing.
 
-import { SECTIONS } from "./config.js";
+import { SECTIONS } from "../config.js";
 
 import { Plugin, signal } from "@odoo/owl";
 

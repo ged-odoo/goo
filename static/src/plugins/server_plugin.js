@@ -5,8 +5,8 @@ import { StorePlugin } from "./store_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
-import { LogBuffer } from "./log_buffer.js";
-import { postJSON } from "./utils.js";
+import { LogBuffer } from "../log_buffer.js";
+import { postJSON } from "../utils.js";
 
 import { Plugin, plugin, signal } from "@odoo/owl";
 

@@ -13,8 +13,14 @@
 //     derived join. (Real fields + the OdooServer→Target twin ride a later pass — the
 //     config models live in ConfigPlugin's ORM, this runtime state in StorePlugin's.)
 
-import { ORM, RepoStatus, PrRepo, MergebotStatus, RunbotStatus } from "./observed_models.js";
-import { OdooServer, Run } from "./runtime_models.js";
+import {
+  ORM,
+  RepoStatus,
+  PrRepo,
+  MergebotStatus,
+  RunbotStatus,
+} from "../models/observed_models.js";
+import { OdooServer, Run } from "../models/runtime_models.js";
 
 import { Plugin, computed } from "@odoo/owl";
 

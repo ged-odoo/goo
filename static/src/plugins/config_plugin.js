@@ -12,9 +12,9 @@
 //            mirror it, and DEFAULT_CONFIG is merged in at read for new keys)
 //   state  = app-recorded: active_target, test_history, reviews_*, claude_model
 
-import { DEFAULT_CONFIG } from "./config.js";
-import { PRESETS } from "./presets.js";
-import { worktreeDirFor } from "./utils.js";
+import { DEFAULT_CONFIG } from "../config.js";
+import { PRESETS } from "../presets.js";
+import { worktreeDirFor } from "../utils.js";
 import {
   ORM,
   AppState,
@@ -25,7 +25,7 @@ import {
   toConfig,
   toState,
   applyPatch,
-} from "./config_models.js";
+} from "../models/config_models.js";
 
 import { Plugin, signal, computed } from "@odoo/owl";
 

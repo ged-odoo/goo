@@ -1,14 +1,14 @@
 // Branches & PRs across repos: grouped view model and the per-branch actions
 // (delete, close PR, push).
 
-import { DEFAULT_CONFIG, BASE_BRANCH_RE } from "./config.js";
-import { repoUrls } from "./config_models.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE } from "../config.js";
+import { repoUrls } from "../models/config_models.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
-import { postJSON } from "./utils.js";
-import { PullRequest, branchKey } from "./models.js";
+import { postJSON } from "../utils.js";
+import { PullRequest, branchKey } from "../models/models.js";
 
 import { Plugin, plugin, signal, computed } from "@odoo/owl";
 

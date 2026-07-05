@@ -8,8 +8,8 @@
 //   - a repo with no mergebot page (404) is remembered and skipped on normal loads
 //     (re-probed on a manual Refresh so a false positive can recover).
 
-import { postJSON } from "./utils.js";
-import { PullRequest } from "./models.js";
+import { postJSON } from "../utils.js";
+import { PullRequest } from "../models/models.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
 

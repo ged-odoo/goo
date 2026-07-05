@@ -4,7 +4,7 @@
 // them explicitly; the build-row/batch-url fields below are just persisted
 // form input, not a data cache.
 
-import { postJSON } from "./utils.js";
+import { postJSON } from "../utils.js";
 
 import { Plugin, signal } from "@odoo/owl";
 

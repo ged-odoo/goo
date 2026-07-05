@@ -7,7 +7,7 @@ import { ServerPlugin } from "./server_plugin.js";
 import { DatabasePlugin } from "./database_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
-import { postJSON } from "./utils.js";
+import { postJSON } from "../utils.js";
 
 import { Plugin, plugin, signal } from "@odoo/owl";
 

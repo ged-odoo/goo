@@ -2,7 +2,7 @@
 // runs, …), shown in a toggleable overlay panel. Any plugin or component can
 // add() a line. It has no dependencies, so every other plugin may use it.
 
-import { postJSON } from "./utils.js";
+import { postJSON } from "../utils.js";
 
 import { Plugin, signal } from "@odoo/owl";
 

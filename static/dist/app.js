@@ -1098,7 +1098,7 @@ var ORM = class _ORM {
   }
 };
 
-// static/src/observed_models.js
+// static/src/models/observed_models.js
 var RepoStatus = class extends Model {
   static id = "repostatus";
   // id = repo id ("community")
@@ -1136,7 +1136,7 @@ var RunbotStatus = class extends Model {
   // runbot status value
 };
 
-// static/src/runtime_models.js
+// static/src/models/runtime_models.js
 var OdooServer = class extends Model {
   static id = "odooserver";
   // id = "main" | target id
@@ -1150,7 +1150,7 @@ var Run = class extends Model {
   // the RunSnapshot object
 };
 
-// static/src/store_plugin.js
+// static/src/plugins/store_plugin.js
 var StorePlugin = class extends Plugin {
   static sequence = 0;
   // the shared store — set up before every plugin that reads it
@@ -1372,7 +1372,7 @@ var StorePlugin = class extends Plugin {
   }
 };
 
-// static/src/event_log_plugin.js
+// static/src/plugins/event_log_plugin.js
 var MAX = 500;
 var EventLogPlugin = class extends Plugin {
   static sequence = 1;
@@ -1459,7 +1459,7 @@ var EventLogPlugin = class extends Plugin {
   }
 };
 
-// static/src/dialog_plugin.js
+// static/src/plugins/dialog_plugin.js
 var _seq = 0;
 var DialogPlugin = class extends Plugin {
   dialogs = signal.Array([]);
@@ -1620,7 +1620,7 @@ var Dialog = class extends Component {
   }
 };
 
-// static/src/models.js
+// static/src/models/models.js
 var prKey = (github, number) => `${github}#${number}`;
 var branchKey = (repo, name) => `${repo}:${name}`;
 var PullRequest = {
@@ -1644,7 +1644,7 @@ var PullRequest = {
   }
 };
 
-// static/src/code_plugin.js
+// static/src/plugins/code_plugin.js
 var PRS_CACHE_KEY = "oo-prs-cache";
 var CodePlugin = class extends Plugin {
   static sequence = 3;
@@ -2208,7 +2208,7 @@ var LogBuffer = class {
   }
 };
 
-// static/src/server_plugin.js
+// static/src/plugins/server_plugin.js
 var ServerPlugin = class extends Plugin {
   static sequence = 2;
   config = plugin(ConfigPlugin);
@@ -2486,7 +2486,7 @@ Start with the current branches anyway?`,
   }
 };
 
-// static/src/config_models.js
+// static/src/models/config_models.js
 function withScope(rec, fn) {
   const ctx = rec.orm._ctx;
   return ctx ? ctx.run(fn) : fn();
@@ -2844,7 +2844,7 @@ function reconcileCheckouts(orm, t2) {
   for (const [id, rec] of have) if (!keep.has(id)) orm.delete(rec);
 }
 
-// static/src/config_plugin.js
+// static/src/plugins/config_plugin.js
 var STATE_KEYS = {
   "oo-last-target": "active_target",
   "oo-test-history": "test_history",
@@ -3114,7 +3114,7 @@ var ConfigPlugin = class extends Plugin {
   }
 };
 
-// static/src/router_plugin.js
+// static/src/plugins/router_plugin.js
 var RouterPlugin = class extends Plugin {
   static sequence = 1;
   section = signal(this._fromHash());
@@ -3130,7 +3130,7 @@ var RouterPlugin = class extends Plugin {
   }
 };
 
-// static/src/database_plugin.js
+// static/src/plugins/database_plugin.js
 var DatabasePlugin = class extends Plugin {
   static sequence = 3;
   server = plugin(ServerPlugin);
@@ -3248,7 +3248,7 @@ var DatabasePlugin = class extends Plugin {
   }
 };
 
-// static/src/tests_plugin.js
+// static/src/plugins/tests_plugin.js
 var HISTORY_MAX = 10;
 var TestsPlugin = class extends Plugin {
   static sequence = 3;
@@ -3391,7 +3391,7 @@ var TestsPlugin = class extends Plugin {
   }
 };
 
-// static/src/addons_plugin.js
+// static/src/plugins/addons_plugin.js
 var AddonsPlugin = class _AddonsPlugin extends Plugin {
   static sequence = 4;
   static MAX_ROWS = 200;
@@ -3543,7 +3543,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   }
 };
 
-// static/src/assets_plugin.js
+// static/src/plugins/assets_plugin.js
 var AssetsPlugin = class extends Plugin {
   static sequence = 6;
   config = plugin(ConfigPlugin);
@@ -3654,7 +3654,7 @@ var AssetsPlugin = class extends Plugin {
   }
 };
 
-// static/src/review_plugin.js
+// static/src/plugins/review_plugin.js
 var mbKey = (p) => `${p.github}#${p.number}`;
 var ReviewPlugin = class extends Plugin {
   static sequence = 5;
@@ -3768,7 +3768,7 @@ var ReviewPlugin = class extends Plugin {
   }
 };
 
-// static/src/terminal_plugin.js
+// static/src/plugins/terminal_plugin.js
 var TerminalPlugin = class extends Plugin {
   open = signal(false);
   toggle() {
@@ -3776,7 +3776,7 @@ var TerminalPlugin = class extends Plugin {
   }
 };
 
-// static/src/update_plugin.js
+// static/src/plugins/update_plugin.js
 var UpdatePlugin = class extends Plugin {
   server = plugin(ServerPlugin);
   dialogs = plugin(DialogPlugin);
@@ -3884,7 +3884,7 @@ var UpdatePlugin = class extends Plugin {
   }
 };
 
-// static/src/worktree_plugin.js
+// static/src/plugins/worktree_plugin.js
 var WorktreePlugin = class extends Plugin {
   static sequence = 5;
   config = plugin(ConfigPlugin);
@@ -4177,7 +4177,7 @@ var WorktreePlugin = class extends Plugin {
   }
 };
 
-// static/src/claude_plugin.js
+// static/src/plugins/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
   { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
@@ -4287,7 +4287,7 @@ var ClaudePlugin = class extends Plugin {
   }
 };
 
-// static/src/nightly_plugin.js
+// static/src/plugins/nightly_plugin.js
 var NightlyPlugin = class extends Plugin {
   static sequence = 4;
   versions = signal([]);
@@ -4332,7 +4332,7 @@ var NightlyPlugin = class extends Plugin {
   }
 };
 
-// static/src/memory_plugin.js
+// static/src/plugins/memory_plugin.js
 var STORAGE_KEY = "oo-memory-builds";
 var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
 var MemoryPlugin = class extends Plugin {
