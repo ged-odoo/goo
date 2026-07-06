@@ -1028,11 +1028,12 @@ class DatabaseService:
                 "name": n,
                 "odoo_version": v,
                 "enterprise": e,
+                "demo_data": d,
                 "last_update": u,
                 "created": created.get(n),
                 "size": sizes.get(n),
             }
-            for n, (v, e, u) in zip(names, infos, strict=False)
+            for n, (v, e, d, u) in zip(names, infos, strict=False)
         ]
 
     # ── filestore: an Odoo database's attachments live in <filestore>/<dbname>.
@@ -1141,9 +1142,12 @@ class DatabaseService:
         return r.stdout.strip() == "1"
 
     def odoo_info(self, db):
-        """(version, is_enterprise, last_update) of the odoo in a database, or
-        (None, False, None) if it holds no odoo. last_update is the UTC timestamp
-        of the last detectable activity (cron writes, login rows)."""
+        """(version, is_enterprise, has_demo_data, last_update) of the odoo in a
+        database, or (None, False, False, None) if it holds no odoo. has_demo_data
+        reflects ir_module_module.demo — set per-module by odoo itself when that
+        module's demo data was actually loaded (i.e. not `--without-demo all`).
+        last_update is the UTC timestamp of the last detectable activity (cron
+        writes, login rows)."""
         try:
             r = self.io.run(
                 [
@@ -1154,6 +1158,7 @@ class DatabaseService:
                     "SELECT (SELECT latest_version FROM ir_module_module WHERE name = 'base'),"
                     " EXISTS (SELECT 1 FROM ir_module_module"
                     " WHERE name = 'web_enterprise' AND state = 'installed'),"
+                    " EXISTS (SELECT 1 FROM ir_module_module WHERE demo),"
                     " GREATEST((SELECT max(write_date) FROM ir_cron),"
                     " (SELECT max(create_date) FROM res_users_log))",
                 ],
@@ -1161,12 +1166,12 @@ class DatabaseService:
                 quiet=True,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return None, False, None
+            return None, False, False, None
         line = r.stdout.strip()
         if r.returncode != 0 or not line:
-            return None, False, None  # no odoo tables: not an odoo database
-        version, enterprise, last_update = line.split("|", 2)
-        return version or None, enterprise == "t", last_update or None
+            return None, False, False, None  # no odoo tables: not an odoo database
+        version, enterprise, demo_data, last_update = line.split("|", 3)
+        return version or None, enterprise == "t", demo_data == "t", last_update or None
 
     def installed_modules(self, db):
         """Map of module name -> state for a database (empty if unreadable)."""

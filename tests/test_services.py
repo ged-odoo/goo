@@ -676,7 +676,7 @@ class DatabaseServiceTest(unittest.TestCase):
             "ORDER BY datname": completed(stdout="alpha\nbeta\n"),  # the db list
             "pg_stat_file": completed(stdout="alpha|2024-01-01 00:00:00\n"),  # creation times
             "pg_database_size": completed(stdout="alpha|1048576\n"),  # sizes (bytes)
-            "latest_version": completed(stdout="17.0|f|2024-06-20T10:00:00\n"),  # odoo_info
+            "latest_version": completed(stdout="17.0|f|t|2024-06-20T10:00:00\n"),  # odoo_info
         }
         runs.update(extra)
         return FakeIO(runs=runs, dirs=dirs, fs_fail=fs_fail)
@@ -686,6 +686,7 @@ class DatabaseServiceTest(unittest.TestCase):
         dbs = svc.databases()
         self.assertEqual([d["name"] for d in dbs], ["alpha", "beta"])
         self.assertEqual(dbs[0]["odoo_version"], "17.0")
+        self.assertTrue(dbs[0]["demo_data"])
         self.assertEqual(dbs[0]["created"], "2024-01-01 00:00:00")
         self.assertIsNone(dbs[1]["created"])  # only alpha had a creation time
         self.assertEqual(dbs[0]["size"], 1048576)

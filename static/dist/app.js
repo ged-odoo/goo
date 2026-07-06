@@ -7737,7 +7737,7 @@ var DatabasesScreen = class extends Component {
             <div class="brg-table">
             <table class="br-table brg-flat">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Size</th><th>Created</th><th>Last activity</th><th/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all databases"/></th><th>Name</th><th>Odoo version</th><th>Demo data</th><th>Size</th><th>Created</th><th>Last activity</th><th/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.rows()" t-as="d" t-key="d.name" t-att-class="{active: d.active, 'row-sel': this.selected().has(d.name)}">
@@ -7750,6 +7750,7 @@ var DatabasesScreen = class extends Component {
                     <span t-if="d.active" class="db-badge"><span class="pulse"/>Active</span>
                   </td>
                   <td t-att-class="{dim: !d.version}"><t t-out="d.version || '—'"/><t t-if="d.enterprise"> (ent)</t></td>
+                  <td class="br-when" t-att-title="d.version ? (d.demoData ? 'demo data installed' : 'no demo data') : ''" t-out="d.version ? (d.demoData ? '✓' : '✕') : '—'"/>
                   <td class="br-when" t-att-class="{dim: !d.size}" t-out="d.size || '—'"/>
                   <td class="br-when" t-att-title="d.createdTitle" t-out="d.created ? d.createdAgo : '—'"/>
                   <td class="br-when" t-att-title="d.lastTitle" t-out="d.last ? d.lastAgo : '—'"/>
@@ -7781,6 +7782,7 @@ var DatabasesScreen = class extends Component {
       active: d.name === activeDb,
       version: d.odoo_version,
       enterprise: d.enterprise,
+      demoData: d.demo_data,
       created: d.created,
       createdAgo: d.created && timeAgo(d.created),
       createdTitle: d.created ? `${d.created} (UTC)` : "",

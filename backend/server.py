@@ -729,7 +729,7 @@ class OdooManager:
         status = asdict(snap)
         status["odoo_port_busy"] = port_busy(ODOO_PORT)
         if status["db"]:
-            version, enterprise, _ = DATABASE.odoo_info(status["db"])
+            version, enterprise, _demo_data, _ = DATABASE.odoo_info(status["db"])
             status["odoo_version"] = version
             status["enterprise"] = enterprise
         return status
