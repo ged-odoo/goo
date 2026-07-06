@@ -1319,6 +1319,12 @@ class BuildStartConfigTest(unittest.TestCase):
                 "worktree": {"base": "t1", "dir": "/wt/feature-x"},
                 "checkouts": [{"repo": "community", "branch": "feat"}],
             },
+            {
+                "id": "t2",
+                "db": "db2",
+                "demo_data": False,
+                "checkouts": [{"repo": "community", "branch": "master"}],
+            },
         ],
         "start": {"other_args": "--dev all"},
     }
@@ -1330,8 +1336,13 @@ class BuildStartConfigTest(unittest.TestCase):
         self.assertEqual(cfg["start"]["db"], "db1")
         self.assertEqual(cfg["start"]["on_create_args"], "-i sale")
         self.assertEqual(cfg["start"]["other_args"], "--dev all")  # from config.start
+        self.assertTrue(cfg["start"]["demo_data"])  # defaults on when unset
         self.assertEqual(cfg["venv_activate"], "src activate")  # scalars spread through
         self.assertEqual(cfg["repos"], self.CFG["repos"])  # plain: real repo paths untouched
+
+    def test_demo_data_false_propagates(self):
+        cfg = services.build_start_config(self.CFG, "t2")
+        self.assertFalse(cfg["start"]["demo_data"])
 
     def test_overrides(self):
         cfg = services.build_start_config(
@@ -1354,6 +1365,36 @@ class BuildStartConfigTest(unittest.TestCase):
 
     def test_unknown_target_is_none(self):
         self.assertIsNone(services.build_start_config(self.CFG, "nope"))
+
+
+class BuildOdooCmdTest(unittest.TestCase):
+    """--without-demo mirrors the target's demo_data flag (config_models.js
+    Target.demo_data): dfc6299c hardcoded it off for every start, this makes it
+    per-target, defaulting on."""
+
+    def _cmd(self, demo_data=None):
+        from backend import server
+
+        start = {"repos": ["community"], "db": "db1"}
+        if demo_data is not None:
+            start["demo_data"] = demo_data
+        config = {"repos": [{"id": "community", "path": "/repo/community"}], "start": start}
+        orig = server.DATABASE.db_initialized
+        server.DATABASE.db_initialized = lambda db: True  # skip the real psql probe
+        try:
+            cmd, _db, _is_new = server.build_odoo_cmd(config)
+        finally:
+            server.DATABASE.db_initialized = orig
+        return cmd
+
+    def test_demo_data_defaults_on(self):
+        self.assertIn("--without-demo false", self._cmd())
+
+    def test_demo_data_explicit_on(self):
+        self.assertIn("--without-demo false", self._cmd(demo_data=True))
+
+    def test_demo_data_off(self):
+        self.assertIn("--without-demo all", self._cmd(demo_data=False))
 
 
 class ServerSnapshotTest(unittest.TestCase):

@@ -490,9 +490,10 @@ def build_odoo_cmd(config):
     rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
     parts.append(f"cd {community_path} && {rust}{server_path}")
     cmd = " && ".join(parts)
+    without_demo = "false" if start.get("demo_data", True) else "all"
     cmd += (
         f" -r {db_user} -w {db_password} -d {db} "
-        f"--database {db} --no-database-list --without-demo all "
+        f"--database {db} --no-database-list --without-demo {without_demo} "
         f"--addons-path {addons_path}"
     )
 

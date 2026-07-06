@@ -34,6 +34,7 @@ export async function createTargetFromRemoteBranch(config, eventLog, dialogs, br
       },
       { key: "db", type: "text", label: "Database", value: branch, placeholder: "database name" },
       { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
     ],
   });
@@ -46,6 +47,7 @@ export async function createTargetFromRemoteBranch(config, eventLog, dialogs, br
     checkouts: repoBranchList.parse(res.config.trim()),
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
+    demo_data: !!res.demoData,
   };
   eventLog.add(`creating target ${target.name} from remote branch ${branch}`);
   config.updateConfig({ targets: [...config.config.targets, target] });
@@ -107,6 +109,7 @@ export async function startCreateTarget(config, eventLog, code, dialogs, db, ser
             config: repoBranchList.format(tpl.checkouts),
             db: tpl.db || "",
             args: tpl.on_create_args || "",
+            demoData: tpl.demo_data ?? true,
             fav: !!tpl.favorite,
           };
         },
@@ -148,6 +151,7 @@ export async function startCreateTarget(config, eventLog, code, dialogs, db, ser
           return dbOptions[0]?.value || "";
         },
       },
+      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
       { key: "fav", type: "checkbox", label: "Favorite", value: false },
       { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
       { key: "activate", type: "checkbox", label: "Activate it", value: true },
@@ -162,6 +166,7 @@ export async function startCreateTarget(config, eventLog, code, dialogs, db, ser
     checkouts: repoBranchList.parse(res.config.trim()),
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
+    demo_data: !!res.demoData,
   };
   eventLog.add(`creating target ${target.name}`);
   config.updateConfig({ targets: [...config.config.targets, target] });
@@ -313,7 +318,7 @@ export class TargetsScreen extends Component {
             <div class="brg-table">
             <table class="br-table brg-flat">
               <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th/></tr>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th>Demo data</th><th/></tr>
               </thead>
               <tbody>
                 <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id), dragging: this.dragId() === tgt.id, 'drag-over': this.dragOverId() === tgt.id}" t-on-dragover="ev => this.onDragOver(ev, tgt)" t-on-drop="ev => this.onDrop(ev, tgt)">
@@ -326,6 +331,7 @@ export class TargetsScreen extends Component {
                     <td><input type="text" class="cell-input wide" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
                     <td><input type="text" class="cell-input" t-att-value="this.draftDb()" placeholder="database" t-on-input="ev => this.draftDb.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
                     <td><input type="text" class="cell-input" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="checkbox" class="br-select" t-att-checked="tgt.demo_data" t-on-change="() => this.toggleDemoData(tgt.id)" title="load demo data when this target creates its database"/></td>
                     <td>
                       <div class="br-act">
                         <button class="drop-btn pr-close" t-on-click="() => this.saveEdit()">Save</button>
@@ -339,6 +345,7 @@ export class TargetsScreen extends Component {
                     <td class="dim"><div class="br-ellip" t-att-title="this.fmtConfig(tgt)" t-out="this.fmtConfig(tgt)"/></td>
                     <td t-out="tgt.db"/>
                     <td class="dim"><div class="br-ellip" t-att-title="tgt.on_create_args" t-out="tgt.on_create_args || '—'"/></td>
+                    <td><input type="checkbox" class="br-select" t-att-checked="tgt.demo_data" t-on-change="() => this.toggleDemoData(tgt.id)" title="load demo data when this target creates its database"/></td>
                     <td>
                       <div class="br-act">
                         <button class="dash-kebab" title="target actions"
@@ -501,6 +508,10 @@ export class TargetsScreen extends Component {
 
   toggleFavorite(id) {
     this.config.target(id)?.toggleFavorite(); // logic + persistence live on the Target model
+  }
+
+  toggleDemoData(id) {
+    this.config.target(id)?.toggleDemoData();
   }
 
   toggleSelect(id) {
@@ -765,6 +776,7 @@ export class TargetsScreen extends Component {
       checkouts: (tgt.checkouts || []).map((c) => ({ repo: c.repo, branch: b })),
       db: b, // default the database to the branch name
       on_create_args: tgt.on_create_args || "",
+      demo_data: tgt.demo_data ?? true,
     };
     this.eventLog.add(`creating target ${copy.name}`);
     this.config.updateConfig({ targets: [...this.config.config.targets, copy] });

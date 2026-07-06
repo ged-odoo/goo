@@ -143,6 +143,7 @@ export class Target extends Model {
   favorite = fields.bool();
   db = fields.char();
   on_create_args = fields.char();
+  demo_data = fields.bool({ defaultValue: true });
   kind = fields.char({ defaultValue: "plain" });
   worktree = fields.json(); // { base, dir } | null — only worktree targets
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "target" });
@@ -189,7 +190,13 @@ export class Target extends Model {
     this._configPlugin().touch();
   }
 
-  // commit an inline edit onto the target (favorite untouched — toggled via the star).
+  toggleDemoData() {
+    this.demo_data.set(!this.demo_data());
+    this._configPlugin().touch();
+  }
+
+  // commit an inline edit onto the target (favorite/demo_data untouched — each is
+  // toggled directly via its own checkbox).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
   applyEdit({ name, checkouts, db, on_create_args }) {
     this.name.set(name);
@@ -301,6 +308,7 @@ function targetData(t) {
     favorite: !!t.favorite,
     db: t.db ?? "",
     on_create_args: t.on_create_args ?? "",
+    demo_data: t.demo_data ?? true,
     kind: t.kind || "plain",
     worktree: t.worktree ?? null,
   };
@@ -345,6 +353,7 @@ export function toConfig(orm) {
       favorite: t.favorite(),
       db: t.db(),
       on_create_args: t.on_create_args(),
+      demo_data: t.demo_data(),
       kind: t.kind(),
       checkouts: t.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
     };
@@ -414,7 +423,15 @@ function reconcileTargets(orm, targets) {
     (t) => t.id,
     (rec, t) => {
       const d = targetData(t);
-      for (const k of ["name", "favorite", "db", "on_create_args", "kind", "worktree"]) {
+      for (const k of [
+        "name",
+        "favorite",
+        "db",
+        "on_create_args",
+        "demo_data",
+        "kind",
+        "worktree",
+      ]) {
         rec[k].set(d[k]);
       }
       reconcileCheckouts(orm, t);

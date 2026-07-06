@@ -202,6 +202,7 @@ export class WorktreePlugin extends Plugin {
       checkouts: (base.checkouts || []).map((c) => ({ repo: c.repo, branch })),
       db: dbName,
       on_create_args: base.on_create_args || "",
+      demo_data: base.demo_data ?? true,
       worktree: { base: baseTargetId },
     };
     // per-repo: create the NEW branch <branch> forked from the base's branch

@@ -2107,6 +2107,7 @@ def build_start_config(config, target_id, overrides=None):
         "db": target.get("db"),
         "on_create_args": target.get("on_create_args") or "",
         "other_args": overrides.get("other_args", start_cfg.get("other_args", "")),
+        "demo_data": target.get("demo_data", True),
     }
     for key in ("test_tags", "install", "upgrade"):
         if overrides.get(key):
