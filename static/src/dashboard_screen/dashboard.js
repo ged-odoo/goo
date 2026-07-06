@@ -10,7 +10,7 @@ import { ReviewPlugin } from "../core/review_plugin.js";
 import { RouterPlugin } from "../core/router_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
-import { DirtyBadge, ICONS, appBus, m, mbCategory } from "../core/common.js";
+import { DirtyBadge, ICONS, Panel, appBus, m, mbCategory } from "../core/common.js";
 import { CommitsDialog } from "../core/dialogs.js";
 
 import {
@@ -20,22 +20,19 @@ import {
 } from "../targets_screen/targets.js";
 
 export class DashboardScreen extends Component {
-  static components = { DirtyBadge };
+  static components = { DirtyBadge, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Dashboard</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Dashboard'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>

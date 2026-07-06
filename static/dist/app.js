@@ -3533,6 +3533,24 @@ var SearchBox = class extends Component {
     </div>`;
   props = props({ value: t.any() });
 };
+var Panel = class extends Component {
+  static template = xml`
+    <div class="panel">
+      <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
+        <h1 t-out="this.props.title"/>
+        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
+        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
+      </div>
+      <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
+        <t t-slot="bottom-left"/>
+        <t t-slot="bottom-right"/>
+      </div>
+    </div>`;
+  props = props({ title: t.string(), slots: t.any().optional() });
+  hasSlot(name) {
+    return name in (this.props.slots || {});
+  }
+};
 var DirtyBadge = class extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
@@ -7078,22 +7096,19 @@ var ReviewPlugin = class extends Plugin {
 
 // static/src/dashboard_screen/dashboard.js
 var DashboardScreen = class extends Component {
-  static components = { DirtyBadge };
+  static components = { DirtyBadge, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Dashboard</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Dashboard'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
           <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
