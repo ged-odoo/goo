@@ -3,6 +3,7 @@ import { formatBytes, timeAgo } from "../core/utils.js";
 import { AssetsPlugin } from "./assets_plugin.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { ICONS, SearchBox, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class BundleNode extends Component {
   static template = xml`
@@ -39,32 +40,31 @@ BundleNode.components = { BundleNode };
 // bundle's per-file size breakdown (click a bundle name).
 
 export class AssetsScreen extends Component {
-  static components = { SearchBox, BundleNode };
+  static components = { SearchBox, BundleNode, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Assets</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.search"/>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Assets'">
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.search"/>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <select t-att-value="this.assets.selectedDb()" t-on-change="ev => this.assets.selectDb(ev.target.value)" title="database to inspect">
             <option value="">Select a database…</option>
             <option t-foreach="this.dbOptions" t-as="d" t-key="d" t-att-value="d" t-out="d"/>
           </select>
           <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.generate()">Generate asset bundles</button>
+        </t>
+        <t t-set-slot="bottom-right">
           <span t-if="this.assets.selectedDb()" class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <t t-if="this.assets.bundleData()">
           <div class="assets-analysis">

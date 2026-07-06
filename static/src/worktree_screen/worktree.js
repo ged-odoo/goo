@@ -5,6 +5,7 @@ import { DatabasePlugin } from "../core/database_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { ICONS, LogConsole, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class ClaudeChat extends Component {
   static template = xml`
@@ -96,21 +97,18 @@ export class ClaudeChat extends Component {
 // Claude chat that runs tasks in the worktree.
 
 export class WorktreeScreen extends Component {
-  static components = { LogConsole, ClaudeChat };
+  static components = { LogConsole, ClaudeChat, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Worktrees</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Worktrees'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
+        </t>
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-on-click="() => this.create()">Create Worktree</button>
           <span class="dash-subtitle">Run a branch in its own checkout, database and server — alongside the main one.</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content wt-content">
         <div class="wt-list">
           <div t-if="!this.list.length" class="wt-empty dim">No worktrees yet. Create one to get started.</div>

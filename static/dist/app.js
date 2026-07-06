@@ -3674,30 +3674,57 @@ function useDragResize({ w = 780, h = 440, place = null } = {}) {
   };
 }
 
+// static/src/core/panel.js
+var Panel = class extends Component {
+  static template = xml`
+    <div class="panel">
+      <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
+        <h1 t-out="this.props.title"/>
+        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
+        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
+      </div>
+      <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
+        <t t-slot="bottom-left"/>
+        <t t-slot="bottom-right"/>
+      </div>
+    </div>`;
+  props = props({
+    title: t.string(),
+    slots: t.object({
+      "top-middle": t.any().optional(),
+      "top-right": t.any().optional(),
+      "bottom-left": t.any().optional(),
+      "bottom-right": t.any().optional()
+    }).optional()
+  });
+  hasSlot(name) {
+    return name in (this.props.slots || {});
+  }
+};
+
 // static/src/addons_screen/addons.js
 var AddonsScreen = class extends Component {
-  static components = { LogConsole, SearchBox };
+  static components = { LogConsole, SearchBox, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Addons</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.addons.filter"/>
-            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
-            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
-            <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.addons.status()"/>
-            <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Addons'">
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.addons.filter"/>
+          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
+          <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.addons.status()"/>
+          <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
+        </t>
+        <t t-set-slot="bottom-right">
           <span t-if="this.addons.targetDb()" class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content addons-content">
         <div t-if="!this.addons.targetDb()" class="dim addons-empty">No active target — start a server to browse its addons.</div>
         <t t-else="">
@@ -4019,32 +4046,31 @@ var BundleNode = class extends Component {
 };
 BundleNode.components = { BundleNode };
 var AssetsScreen = class extends Component {
-  static components = { SearchBox, BundleNode };
+  static components = { SearchBox, BundleNode, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Assets</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.search"/>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
-            <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Assets'">
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.search"/>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <select t-att-value="this.assets.selectedDb()" t-on-change="ev => this.assets.selectDb(ev.target.value)" title="database to inspect">
             <option value="">Select a database…</option>
             <option t-foreach="this.dbOptions" t-as="d" t-key="d" t-att-value="d" t-out="d"/>
           </select>
           <button class="pbtn" t-att-disabled="!this.assets.selectedDb() or this.assets.busy()" t-on-click="() => this.assets.generate()">Generate asset bundles</button>
+        </t>
+        <t t-set-slot="bottom-right">
           <span t-if="this.assets.selectedDb()" class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <t t-if="this.assets.bundleData()">
           <div class="assets-analysis">
@@ -4995,18 +5021,20 @@ async function deleteTargetDialog(tgt, { config, code, db, eventLog, repoMap, is
   config.updateConfig({ targets: config.config.targets.filter((t2) => t2.id !== tgt.id) });
 }
 var TargetsScreen = class extends Component {
+  static components = { Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top"><h1>Targets</h1></div>
-        <div class="panel-actions">
+      <Panel title="'Targets'">
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <button class="pbtn" t-on-click="() => this.targetFromRemoteBranch()">From remote branch</button>
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div>
           <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
@@ -5457,31 +5485,30 @@ var repoBranchList = {
 
 // static/src/branches_screen/branches.js
 var BranchesScreen = class extends Component {
-  static components = { SearchBox, DirtyBadge };
+  static components = { SearchBox, DirtyBadge, Panel };
   worktree = plugin(WorktreePlugin);
   // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Branches</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.search"/>
-            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-              <option value="">All repositories</option>
-              <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-            </select>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Branches'">
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.search"/>
+          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+            <option value="">All repositories</option>
+            <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+          </select>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
@@ -6014,21 +6041,18 @@ var TerminalDialog = class extends Component {
 
 // static/src/code_screen/code.js
 var CodeScreen = class extends Component {
-  static components = { DirtyBadge };
+  static components = { DirtyBadge, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Code</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Code'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <span class="dash-subtitle">Manage the main repository checkouts — switch branches, rebase, push and open them.</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
@@ -6712,17 +6736,16 @@ var SETTINGS_FIELDS = [
   { key: "editor", name: "editor command" }
 ];
 var ConfigScreen = class extends Component {
-  static components = { ListEditor, TabsEditor, LinksEditor };
+  static components = { ListEditor, TabsEditor, LinksEditor, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top"><h1>Configuration</h1></div>
-        <div class="panel-actions">
+      <Panel title="'Configuration'">
+        <t t-set-slot="bottom-left">
           <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
           <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
           <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content">
         <div class="config-block">
           <h2 class="subtitle">Odoo settings</h2>
@@ -7073,34 +7096,6 @@ var ReviewPlugin = class extends Plugin {
   _readArr(field) {
     const v = this.config.getState(field, []);
     return Array.isArray(v) ? v : [];
-  }
-};
-
-// static/src/core/panel.js
-var Panel = class extends Component {
-  static template = xml`
-    <div class="panel">
-      <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
-        <h1 t-out="this.props.title"/>
-        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
-        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
-      </div>
-      <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
-        <t t-slot="bottom-left"/>
-        <t t-slot="bottom-right"/>
-      </div>
-    </div>`;
-  props = props({
-    title: t.string(),
-    slots: t.object({
-      "top-middle": t.any().optional(),
-      "top-right": t.any().optional(),
-      "bottom-left": t.any().optional(),
-      "bottom-right": t.any().optional()
-    }).optional()
-  });
-  hasSlot(name) {
-    return name in (this.props.slots || {});
   }
 };
 
@@ -7738,21 +7733,21 @@ var DashboardScreen = class extends Component {
 
 // static/src/databases_screen/databases.js
 var DatabasesScreen = class extends Component {
+  static components = { Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Databases</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Databases'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.db.dropping()}">
           <div t-if="this.db.error()" class="dim br-empty" t-out="'Failed to load: ' + this.db.error()"/>
@@ -8416,22 +8411,20 @@ var GRAPH_METRICS = [
 ];
 var NB_COUNT_METRICS = /* @__PURE__ */ new Set(["ok", "warning", "failed"]);
 var NightlyScreen = class extends Component {
+  static components = { Panel };
   static template = xml`
     <section class="nb-screen">
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Nightly builds</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-att-class="{active: this.graphMode()}" t-on-click="() => this.toggleGraph()">
-              <t t-out="this.graphIcon"/> Graph
-            </button>
-            <button class="pbtn" t-att-disabled="this.nightly.loading()" t-on-click="() => this.refresh()">
-              <t t-out="this.refreshIcon"/> Refresh
-            </button>
-          </div>
-        </div>
-      </div>
+      <Panel title="'Nightly builds'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-att-class="{active: this.graphMode()}" t-on-click="() => this.toggleGraph()">
+            <t t-out="this.graphIcon"/> Graph
+          </button>
+          <button class="pbtn" t-att-disabled="this.nightly.loading()" t-on-click="() => this.refresh()">
+            <t t-out="this.refreshIcon"/> Refresh
+          </button>
+        </t>
+      </Panel>
       <div class="content nb-content">
         <div t-if="this.nightly.loading() and !this.visibleNights.length" class="dim nb-status">Loading nightly build data…</div>
         <div t-elif="this.nightly.error()" class="dim nb-status">Failed to load: <t t-out="this.nightly.error()"/></div>
@@ -8974,11 +8967,11 @@ var NightlyScreen = class extends Component {
 
 // static/src/memory_screen/memory.js
 var MemoryScreen = class extends Component {
+  static components = { Panel };
   static template = xml`
     <section class="mem-screen">
-      <div class="panel">
-        <div class="panel-top"><h1>Memory</h1></div>
-        <div class="panel-actions">
+      <Panel title="'Memory'">
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
             <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
           </button>
@@ -8986,8 +8979,8 @@ var MemoryScreen = class extends Component {
             <span class="switch"/> With mobile
           </label>
           <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content mem-content">
         <div class="mem-sidebar" t-att-class="{collapsed: this.sidebarCollapsed()}">
           <button class="mem-sidebar-toggle" t-att-class="{collapsed: this.sidebarCollapsed()}"
@@ -9277,41 +9270,40 @@ var MbMenu = class extends Component {
 
 // static/src/prs_screen/prs.js
 var PrsScreen = class extends Component {
-  static components = { SearchBox };
+  static components = { SearchBox, Panel };
   worktree = plugin(WorktreePlugin);
   // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>PRs</h1>
-          <div class="panel-filters">
-            <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
-            <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
-            <SearchBox value="this.search"/>
-            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-              <option value="">All repositories</option>
-              <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-            </select>
-            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
-              <option value="">All</option>
-              <option value="unmerged">All (except merged)</option>
-              <option value="merged">Merged</option>
-              <option value="error">Error</option>
-              <option value="blocked">Blocked</option>
-            </select>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'PRs'">
+        <t t-set-slot="top-middle">
+          <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
+          <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
+          <SearchBox value="this.search"/>
+          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+            <option value="">All repositories</option>
+            <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+          </select>
+          <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
+            <option value="">All</option>
+            <option value="unmerged">All (except merged)</option>
+            <option value="merged">Merged</option>
+            <option value="error">Error</option>
+            <option value="blocked">Blocked</option>
+          </select>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
           <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.busyNow}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>
@@ -10059,21 +10051,18 @@ var ClaudeChat = class extends Component {
   }
 };
 var WorktreeScreen = class extends Component {
-  static components = { LogConsole, ClaudeChat };
+  static components = { LogConsole, ClaudeChat, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Worktrees</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Worktrees'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
+        </t>
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-on-click="() => this.create()">Create Worktree</button>
           <span class="dash-subtitle">Run a branch in its own checkout, database and server — alongside the main one.</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content wt-content">
         <div class="wt-list">
           <div t-if="!this.list.length" class="wt-empty dim">No worktrees yet. Create one to get started.</div>

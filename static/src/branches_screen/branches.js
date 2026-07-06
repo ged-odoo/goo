@@ -7,35 +7,35 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 
 import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { DirtyBadge, ICONS, SearchBox, appBus, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 import { CommitsDialog } from "../core/dialogs.js";
 
 import { pushBranchesDialog } from "../targets_screen/targets.js";
 
 export class BranchesScreen extends Component {
-  static components = { SearchBox, DirtyBadge };
+  static components = { SearchBox, DirtyBadge, Panel };
   worktree = plugin(WorktreePlugin); // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Branches</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.search"/>
-            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-              <option value="">All repositories</option>
-              <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-            </select>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Branches'">
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.search"/>
+          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+            <option value="">All repositories</option>
+            <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+          </select>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>

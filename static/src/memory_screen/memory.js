@@ -1,14 +1,15 @@
 import { Component, onPatched, onWillUnmount, plugin, signal, xml } from "@odoo/owl";
 import { MemoryPlugin } from "./memory_plugin.js";
 import { ICONS, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 import { CHART_COLORS, CHART_ZOOM_OPTIONS, loadChartJs } from "../nightly_screen/nightly.js";
 
 export class MemoryScreen extends Component {
+  static components = { Panel };
   static template = xml`
     <section class="mem-screen">
-      <div class="panel">
-        <div class="panel-top"><h1>Memory</h1></div>
-        <div class="panel-actions">
+      <Panel title="'Memory'">
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
             <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
           </button>
@@ -16,8 +17,8 @@ export class MemoryScreen extends Component {
             <span class="switch"/> With mobile
           </label>
           <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content mem-content">
         <div class="mem-sidebar" t-att-class="{collapsed: this.sidebarCollapsed()}">
           <button class="mem-sidebar-toggle" t-att-class="{collapsed: this.sidebarCollapsed()}"

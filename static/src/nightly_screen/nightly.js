@@ -1,6 +1,7 @@
 import { Component, onWillUnmount, plugin, signal, useEffect, xml } from "@odoo/owl";
 import { NightlyPlugin } from "./nightly_plugin.js";
 import { ICONS, loadScript, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export let _chartJsReady = null;
 
@@ -76,22 +77,20 @@ export const GRAPH_METRICS = [
 export const NB_COUNT_METRICS = new Set(["ok", "warning", "failed"]);
 
 export class NightlyScreen extends Component {
+  static components = { Panel };
   static template = xml`
     <section class="nb-screen">
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Nightly builds</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-att-class="{active: this.graphMode()}" t-on-click="() => this.toggleGraph()">
-              <t t-out="this.graphIcon"/> Graph
-            </button>
-            <button class="pbtn" t-att-disabled="this.nightly.loading()" t-on-click="() => this.refresh()">
-              <t t-out="this.refreshIcon"/> Refresh
-            </button>
-          </div>
-        </div>
-      </div>
+      <Panel title="'Nightly builds'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-att-class="{active: this.graphMode()}" t-on-click="() => this.toggleGraph()">
+            <t t-out="this.graphIcon"/> Graph
+          </button>
+          <button class="pbtn" t-att-disabled="this.nightly.loading()" t-on-click="() => this.refresh()">
+            <t t-out="this.refreshIcon"/> Refresh
+          </button>
+        </t>
+      </Panel>
       <div class="content nb-content">
         <div t-if="this.nightly.loading() and !this.visibleNights.length" class="dim nb-status">Loading nightly build data…</div>
         <div t-elif="this.nightly.error()" class="dim nb-status">Failed to load: <t t-out="this.nightly.error()"/></div>

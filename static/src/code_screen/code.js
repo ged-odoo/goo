@@ -7,26 +7,24 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { DirtyBadge, ICONS, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 import { CommitsDialog } from "../core/dialogs.js";
 import { pushBranchesDialog } from "../targets_screen/targets.js";
 import { TerminalDialog } from "../core/terminal.js";
 
 export class CodeScreen extends Component {
-  static components = { DirtyBadge };
+  static components = { DirtyBadge, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Code</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Code'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <span class="dash-subtitle">Manage the main repository checkouts — switch branches, rebase, push and open them.</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content">
         <div t-att-class="{busy: this.code.busy()}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>

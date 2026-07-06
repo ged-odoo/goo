@@ -3,23 +3,24 @@ import { formatBytes, timeAgo } from "../core/utils.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { ICONS, appBus, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class DatabasesScreen extends Component {
+  static components = { Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <h1>Databases</h1>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Databases'">
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.db.dropping()}">
           <div t-if="this.db.error()" class="dim br-empty" t-out="'Failed to load: ' + this.db.error()"/>

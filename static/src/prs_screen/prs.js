@@ -8,42 +8,42 @@ import { ReviewPlugin } from "../core/review_plugin.js";
 import { RouterPlugin } from "../core/router_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { ICONS, SearchBox, appBus, m, mbCategory } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class PrsScreen extends Component {
-  static components = { SearchBox };
+  static components = { SearchBox, Panel };
   worktree = plugin(WorktreePlugin); // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>PRs</h1>
-          <div class="panel-filters">
-            <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
-            <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
-            <SearchBox value="this.search"/>
-            <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
-              <option value="">All repositories</option>
-              <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
-            </select>
-            <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
-              <option value="">All</option>
-              <option value="unmerged">All (except merged)</option>
-              <option value="merged">Merged</option>
-              <option value="error">Error</option>
-              <option value="blocked">Blocked</option>
-            </select>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.stamp"/>
-            <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'PRs'">
+        <t t-set-slot="top-middle">
+          <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
+          <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
+          <SearchBox value="this.search"/>
+          <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
+            <option value="">All repositories</option>
+            <option t-foreach="this.repoOptions" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
+          </select>
+          <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by mergebot status">
+            <option value="">All</option>
+            <option value="unmerged">All (except merged)</option>
+            <option value="merged">Merged</option>
+            <option value="error">Error</option>
+            <option value="blocked">Blocked</option>
+          </select>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
           <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.busyNow}">
           <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>

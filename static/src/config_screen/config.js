@@ -5,6 +5,7 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { UpdatePlugin } from "../core/update_plugin.js";
 import { ICONS, NAV, m, mergedTabIds } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class ListEditor extends Component {
   static template = xml`
@@ -484,17 +485,16 @@ export const SETTINGS_FIELDS = [
 ];
 
 export class ConfigScreen extends Component {
-  static components = { ListEditor, TabsEditor, LinksEditor };
+  static components = { ListEditor, TabsEditor, LinksEditor, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top"><h1>Configuration</h1></div>
-        <div class="panel-actions">
+      <Panel title="'Configuration'">
+        <t t-set-slot="bottom-left">
           <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
           <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
           <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content">
         <div class="config-block">
           <h2 class="subtitle">Odoo settings</h2>

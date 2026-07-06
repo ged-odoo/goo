@@ -1,30 +1,30 @@
 import { Component, plugin, useEffect, xml } from "@odoo/owl";
 import { AddonsPlugin } from "./addons_plugin.js";
 import { ICONS, LogConsole, SearchBox, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class AddonsScreen extends Component {
-  static components = { LogConsole, SearchBox };
+  static components = { LogConsole, SearchBox, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top has-filters">
-          <h1>Addons</h1>
-          <div class="panel-filters">
-            <SearchBox value="this.addons.filter"/>
-            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
-            <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
-            <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
-          </div>
-          <div class="panel-top-right">
-            <span class="meta" t-out="this.addons.status()"/>
-            <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
-          </div>
-        </div>
-        <div class="panel-actions">
+      <Panel title="'Addons'">
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.addons.filter"/>
+          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+          <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
+          <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-out="this.addons.status()"/>
+          <button class="pbtn" t-att-disabled="!this.addons.targetDb()" t-on-click="() => this.addons.load()"><t t-out="this.refreshIcon"/>Refresh</button>
+        </t>
+        <t t-set-slot="bottom-left">
           <span t-if="this.addons.targetName()" class="addons-target" t-out="this.targetLabel"/>
+        </t>
+        <t t-set-slot="bottom-right">
           <span t-if="this.addons.targetDb()" class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content addons-content">
         <div t-if="!this.addons.targetDb()" class="dim addons-empty">No active target — start a server to browse its addons.</div>
         <t t-else="">

@@ -7,6 +7,7 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { ICONS, appBus, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 
 export async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
@@ -297,18 +298,20 @@ export async function deleteTargetDialog(
 }
 
 export class TargetsScreen extends Component {
+  static components = { Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top"><h1>Targets</h1></div>
-        <div class="panel-actions">
+      <Panel title="'Targets'">
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
           <button class="pbtn" t-on-click="() => this.targetFromRemoteBranch()">From remote branch</button>
           <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
+        </t>
+        <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.count"/>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content br-fill">
         <div>
           <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
