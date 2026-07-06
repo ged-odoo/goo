@@ -8,7 +8,7 @@ import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { DirtyBadge, ICONS, m } from "../core/common.js";
 import { CommitsDialog } from "../core/dialogs.js";
-import { pushBranchesDialog } from "../targets/targets.js";
+import { pushBranchesDialog } from "../targets_screen/targets.js";
 import { TerminalDialog } from "../core/terminal.js";
 
 export class CodeScreen extends Component {

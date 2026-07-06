@@ -13,7 +13,11 @@ import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { DirtyBadge, ICONS, appBus, m, mbCategory } from "../core/common.js";
 import { CommitsDialog } from "../core/dialogs.js";
 
-import { deleteTargetDialog, pushBranchesDialog, startCreateTarget } from "../targets/targets.js";
+import {
+  deleteTargetDialog,
+  pushBranchesDialog,
+  startCreateTarget,
+} from "../targets_screen/targets.js";
 
 export class DashboardScreen extends Component {
   static components = { DirtyBadge };

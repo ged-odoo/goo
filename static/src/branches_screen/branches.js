@@ -9,7 +9,7 @@ import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { DirtyBadge, ICONS, SearchBox, appBus, m } from "../core/common.js";
 import { CommitsDialog } from "../core/dialogs.js";
 
-import { pushBranchesDialog } from "../targets/targets.js";
+import { pushBranchesDialog } from "../targets_screen/targets.js";
 
 export class BranchesScreen extends Component {
   static components = { SearchBox, DirtyBadge };

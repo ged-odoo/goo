@@ -6,24 +6,24 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
-import { AddonsScreen } from "../addons/addons.js";
-import { AssetsScreen } from "../assets/assets.js";
-import { BranchesScreen } from "../branches/branches.js";
-import { CodeScreen } from "../code/code.js";
+import { AddonsScreen } from "../addons_screen/addons.js";
+import { AssetsScreen } from "../assets_screen/assets.js";
+import { BranchesScreen } from "../branches_screen/branches.js";
+import { CodeScreen } from "../code_screen/code.js";
 import { DirtyMenu, ICONS, NAV, m, mergedTabIds } from "./common.js";
-import { ConfigScreen } from "../config/config.js";
-import { DashboardScreen } from "../dashboard/dashboard.js";
-import { DatabasesScreen } from "../databases/databases.js";
+import { ConfigScreen } from "../config_screen/config.js";
+import { DashboardScreen } from "../dashboard_screen/dashboard.js";
+import { DatabasesScreen } from "../databases_screen/databases.js";
 import { EventLog } from "./event_log.js";
-import { MemoryScreen } from "../memory/memory.js";
+import { MemoryScreen } from "../memory_screen/memory.js";
 import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
-import { NightlyScreen } from "../nightly/nightly.js";
-import { PrsScreen } from "../prs/prs.js";
-import { ServerScreen } from "../server/server.js";
-import { TargetsScreen } from "../targets/targets.js";
+import { NightlyScreen } from "../nightly_screen/nightly.js";
+import { PrsScreen } from "../prs_screen/prs.js";
+import { ServerScreen } from "../server_screen/server.js";
+import { TargetsScreen } from "../targets_screen/targets.js";
 import { TerminalPanel } from "./terminal.js";
-import { TestsScreen } from "../tests/tests.js";
-import { WorktreeScreen } from "../worktree/worktree.js";
+import { TestsScreen } from "../tests_screen/tests.js";
+import { WorktreeScreen } from "../worktree_screen/worktree.js";
 
 export class Topbar extends Component {
   static template = xml`

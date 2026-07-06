@@ -3254,7 +3254,7 @@ var UpdatePlugin = class extends Plugin {
   }
 };
 
-// static/src/addons/addons_plugin.js
+// static/src/addons_screen/addons_plugin.js
 var AddonsPlugin = class _AddonsPlugin extends Plugin {
   static sequence = 4;
   static MAX_ROWS = 200;
@@ -3674,7 +3674,7 @@ function useDragResize({ w = 780, h = 440, place = null } = {}) {
   };
 }
 
-// static/src/addons/addons.js
+// static/src/addons_screen/addons.js
 var AddonsScreen = class extends Component {
   static components = { LogConsole, SearchBox };
   static template = xml`
@@ -3881,7 +3881,7 @@ var DatabasePlugin = class extends Plugin {
   }
 };
 
-// static/src/assets/assets_plugin.js
+// static/src/assets_screen/assets_plugin.js
 var AssetsPlugin = class extends Plugin {
   static sequence = 6;
   config = plugin(ConfigPlugin);
@@ -3992,7 +3992,7 @@ var AssetsPlugin = class extends Plugin {
   }
 };
 
-// static/src/assets/assets.js
+// static/src/assets_screen/assets.js
 var BundleNode = class extends Component {
   static template = xml`
     <div class="bnode">
@@ -4757,7 +4757,7 @@ ${c.body}` : c.subject;
   }
 };
 
-// static/src/targets/targets.js
+// static/src/targets_screen/targets.js
 async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
   const existingTargets = config.config.targets;
   const configStr = repos.map((r) => `${r}:${branch}`).join(",");
@@ -5455,7 +5455,7 @@ var repoBranchList = {
   })
 };
 
-// static/src/branches/branches.js
+// static/src/branches_screen/branches.js
 var BranchesScreen = class extends Component {
   static components = { SearchBox, DirtyBadge };
   worktree = plugin(WorktreePlugin);
@@ -6012,7 +6012,7 @@ var TerminalDialog = class extends Component {
   }
 };
 
-// static/src/code/code.js
+// static/src/code_screen/code.js
 var CodeScreen = class extends Component {
   static components = { DirtyBadge };
   static template = xml`
@@ -6291,7 +6291,7 @@ var CodeScreen = class extends Component {
   }
 };
 
-// static/src/config/config.js
+// static/src/config_screen/config.js
 var ListEditor = class extends Component {
   static template = xml`
     <div class="config-block">
@@ -7076,7 +7076,7 @@ var ReviewPlugin = class extends Plugin {
   }
 };
 
-// static/src/dashboard/dashboard.js
+// static/src/dashboard_screen/dashboard.js
 var DashboardScreen = class extends Component {
   static components = { DirtyBadge };
   static template = xml`
@@ -7711,7 +7711,7 @@ var DashboardScreen = class extends Component {
   }
 };
 
-// static/src/databases/databases.js
+// static/src/databases_screen/databases.js
 var DatabasesScreen = class extends Component {
   static template = xml`
     <section>
@@ -8200,7 +8200,7 @@ var EventLog = class extends Component {
   }
 };
 
-// static/src/memory/memory_plugin.js
+// static/src/memory_screen/memory_plugin.js
 var STORAGE_KEY = "oo-memory-builds";
 var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
 var MemoryPlugin = class extends Plugin {
@@ -8289,7 +8289,7 @@ var MemoryPlugin = class extends Plugin {
   }
 };
 
-// static/src/nightly/nightly_plugin.js
+// static/src/nightly_screen/nightly_plugin.js
 var NightlyPlugin = class extends Plugin {
   static sequence = 4;
   versions = signal([]);
@@ -8334,7 +8334,7 @@ var NightlyPlugin = class extends Plugin {
   }
 };
 
-// static/src/nightly/nightly.js
+// static/src/nightly_screen/nightly.js
 var _chartJsReady = null;
 function loadChartJs() {
   if (!_chartJsReady) {
@@ -8947,7 +8947,7 @@ var NightlyScreen = class extends Component {
   }
 };
 
-// static/src/memory/memory.js
+// static/src/memory_screen/memory.js
 var MemoryScreen = class extends Component {
   static template = xml`
     <section class="mem-screen">
@@ -9250,7 +9250,7 @@ var MbMenu = class extends Component {
   }
 };
 
-// static/src/prs/prs.js
+// static/src/prs_screen/prs.js
 var PrsScreen = class extends Component {
   static components = { SearchBox };
   worktree = plugin(WorktreePlugin);
@@ -9610,7 +9610,7 @@ var PrsScreen = class extends Component {
   }
 };
 
-// static/src/server/server.js
+// static/src/server_screen/server.js
 var ServerScreen = class extends Component {
   static components = { LogConsole };
   static template = xml`
@@ -9768,7 +9768,7 @@ var ServerScreen = class extends Component {
   }
 };
 
-// static/src/tests/tests.js
+// static/src/tests_screen/tests.js
 var TestsScreen = class extends Component {
   static components = { LogConsole };
   static template = xml`
@@ -9849,7 +9849,7 @@ var TestsScreen = class extends Component {
   }
 };
 
-// static/src/worktree/claude_plugin.js
+// static/src/worktree_screen/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
   { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
@@ -9959,7 +9959,7 @@ var ClaudePlugin = class extends Plugin {
   }
 };
 
-// static/src/worktree/worktree.js
+// static/src/worktree_screen/worktree.js
 var ClaudeChat = class extends Component {
   static template = xml`
     <div class="cchat">

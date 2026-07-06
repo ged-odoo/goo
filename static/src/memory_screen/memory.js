@@ -1,7 +1,7 @@
 import { Component, onPatched, onWillUnmount, plugin, signal, xml } from "@odoo/owl";
 import { MemoryPlugin } from "./memory_plugin.js";
 import { ICONS, m } from "../core/common.js";
-import { CHART_COLORS, CHART_ZOOM_OPTIONS, loadChartJs } from "../nightly/nightly.js";
+import { CHART_COLORS, CHART_ZOOM_OPTIONS, loadChartJs } from "../nightly_screen/nightly.js";
 
 export class MemoryScreen extends Component {
   static template = xml`

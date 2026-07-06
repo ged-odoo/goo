@@ -11,15 +11,15 @@ import { ServerPlugin } from "./core/server_plugin.js";
 import { DatabasePlugin } from "./core/database_plugin.js";
 import { CodePlugin } from "./core/code_plugin.js";
 import { TestsPlugin } from "./core/tests_plugin.js";
-import { AddonsPlugin } from "./addons/addons_plugin.js";
-import { AssetsPlugin } from "./assets/assets_plugin.js";
+import { AddonsPlugin } from "./addons_screen/addons_plugin.js";
+import { AssetsPlugin } from "./assets_screen/assets_plugin.js";
 import { ReviewPlugin } from "./core/review_plugin.js";
 import { DialogPlugin } from "./core/dialog_plugin.js";
 import { UpdatePlugin } from "./core/update_plugin.js";
 import { WorktreePlugin } from "./core/worktree_plugin.js";
-import { ClaudePlugin } from "./worktree/claude_plugin.js";
-import { NightlyPlugin } from "./nightly/nightly_plugin.js";
-import { MemoryPlugin } from "./memory/memory_plugin.js";
+import { ClaudePlugin } from "./worktree_screen/claude_plugin.js";
+import { NightlyPlugin } from "./nightly_screen/nightly_plugin.js";
+import { MemoryPlugin } from "./memory_screen/memory_plugin.js";
 
 const PLUGINS = [
   StorePlugin,

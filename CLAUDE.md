@@ -60,13 +60,15 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     `App` + the `SCREENS` registry, which `main.js` imports), and the leaf libs `config.js`,
     `utils.js`, `presets.js`, `log_buffer.js`. `appBus` is a single shared `EventBus` exported
     from `core/common.js` — import it, never re-instantiate.
-  - One folder per screen (`dashboard/`, `code/`, `server/`, `worktree/`, `targets/`,
-    `branches/`, `prs/`, `tests/`, `databases/`, `assets/`, `addons/`, `nightly/`, `memory/`,
-    `config/`): each holds its screen component, and the five with a dedicated 1:1 plugin also
-    hold it (`worktree/claude_plugin.js`, `assets/assets_plugin.js`, `addons/addons_plugin.js`,
-    `nightly/nightly_plugin.js`, `memory/memory_plugin.js`). Everything else is shared → `core/`.
-    A screen folder may import from `core/` (and, rarely, another screen — e.g.
-    `dashboard/` reuses `targets/` helpers); `core/` never imports from a screen folder.
+  - One folder per screen, each suffixed `_screen/` (`dashboard_screen/`, `code_screen/`,
+    `server_screen/`, `worktree_screen/`, `targets_screen/`, `branches_screen/`, `prs_screen/`,
+    `tests_screen/`, `databases_screen/`, `assets_screen/`, `addons_screen/`, `nightly_screen/`,
+    `memory_screen/`, `config_screen/`): each holds its screen component, and the five with a
+    dedicated 1:1 plugin also hold it (`worktree_screen/claude_plugin.js`,
+    `assets_screen/assets_plugin.js`, `addons_screen/addons_plugin.js`,
+    `nightly_screen/nightly_plugin.js`, `memory_screen/memory_plugin.js`). Everything else is
+    shared → `core/`. A screen folder may import from `core/` (and, rarely, another screen — e.g.
+    `dashboard_screen/` reuses `targets_screen/` helpers); `core/` never imports from a screen folder.
 - `static/dist/app.js` — the committed esbuild bundle of `static/src/` (the file the
   page actually loads). Generated — never hand-edit; rebuild with `npm run build`.
 - `vendor/owl-orm/` — pinned `@odoo/owl-orm` source (`index.ts`/`orm.ts`) + `owl-global.js`,
