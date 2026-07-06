@@ -5,6 +5,9 @@ git workflows across multiple repositories, test execution, and PR tracking —
 all from the browser, backed by a stdlib Python server (the `backend/` package,
 launched by `goo.py`) with an Owl 3 frontend (`static/`, served as-is, no bundler).
 
+> ⚠️ **Under heavy development.** goo is evolving quickly and is not yet stable —
+> expect breaking changes, rough edges, and the occasional bug.
+
 ## Requirements
 
 - **Python 3.10+** — the server is stdlib only, no pip dependencies.
