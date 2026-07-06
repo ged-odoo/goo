@@ -252,7 +252,12 @@ export class ServerPlugin extends Plugin {
   async _confirmBranches(targetId) {
     const target = this.config.config.targets.find((t) => t.id === targetId);
     if (!target) return true;
-    await this.code.load(); // cache-aware; populates the store's repoStatus
+    // we only need this target's repos' current branch to compare against what it
+    // wants — read just those (local git, a few subprocesses). A full code.load()
+    // would also scan every *other* repo and fetch PRs from GitHub, and since the
+    // launch form stays up until the start request fires (after this await), that
+    // whole scrape was what left the command screen sitting there for seconds.
+    await this.code.loadBranches(new Set((target.checkouts || []).map((c) => c.repo)));
     // the TargetView join computes current/matches per checkout; flag only the repos
     // whose current branch we actually know and which differ from the target's
     const off = this.store

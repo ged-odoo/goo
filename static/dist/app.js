@@ -2415,7 +2415,7 @@ var ServerPlugin = class extends Plugin {
   async _confirmBranches(targetId) {
     const target = this.config.config.targets.find((t2) => t2.id === targetId);
     if (!target) return true;
-    await this.code.load();
+    await this.code.loadBranches(new Set((target.checkouts || []).map((c) => c.repo)));
     const off = this.store.targetView(target).checkouts.filter((c) => c.current !== void 0 && !c.matches);
     if (!off.length) return true;
     const lines = off.map(({ repo, branch, current }) => `${repo}: on "${current}" \u2014 target wants "${branch}"`).join("\n");
