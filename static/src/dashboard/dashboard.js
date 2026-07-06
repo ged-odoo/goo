@@ -99,6 +99,7 @@ export class DashboardScreen extends Component {
                       <div class="dash-trow-cm">
                         <span class="dash-trow-commit commit-open" t-att-class="{disabled: !row.path}" t-att-title="this.commitTip(row)" t-on-click="() => this.openRowCommits(row)" t-out="row.subject || '—'"/>
                         <a t-if="row.pr and row.github" class="dash-pr-num" target="_blank" t-att-href="row.pr.url" t-att-title="'open #' + row.pr.number + ' on GitHub'" t-out="'#' + row.pr.number"/>
+                        <a t-if="row.pr and row.github and this.mbState(row)" class="dash-pr-state" t-att-class="this.mbClass(row)" target="_blank" t-att-href="this.code.mergebotUrl(row.github, row.pr.number)" t-att-title="'mergebot: ' + this.mbState(row) + (this.mbDetail(row) ? ' — missing: ' + this.mbDetail(row) : '')" t-out="this.mbState(row)"/>
                       </div>
                       <span class="dash-trow-when" t-att-title="row.date" t-out="row.date ? this.cell(row.date) : '—'"/>
                     </t>
