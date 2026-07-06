@@ -20,7 +20,7 @@ var useApp = owl.useApp;
 var Plugin = owl.Plugin;
 var plugin = owl.plugin;
 
-// static/src/config.js
+// static/src/core/config.js
 var VERSION = "1.1.0";
 var DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
@@ -141,7 +141,7 @@ var SECTIONS = [
 var MERGEBOT = "https://mergebot.odoo.com";
 var BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
 
-// static/src/presets.js
+// static/src/core/presets.js
 var SIMPLE_TABS = [
   { id: "dashboard", visible: true },
   { id: "targets", visible: true },
@@ -308,7 +308,7 @@ var PRESETS = [
   }
 ];
 
-// static/src/utils.js
+// static/src/core/utils.js
 function timeAgo(ts) {
   const date = ts.includes("T") ? new Date(ts) : /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
   if (isNaN(date)) return ts;
@@ -1098,7 +1098,7 @@ var ORM = class _ORM {
   }
 };
 
-// static/src/models/observed_models.js
+// static/src/core/observed_models.js
 var RepoStatus = class extends Model {
   static id = "repostatus";
   // id = repo id ("community")
@@ -1136,7 +1136,7 @@ var RunbotStatus = class extends Model {
   // runbot status value
 };
 
-// static/src/models/runtime_models.js
+// static/src/core/runtime_models.js
 var OdooServer = class extends Model {
   static id = "odooserver";
   // id = "main" | target id
@@ -1150,7 +1150,7 @@ var Run = class extends Model {
   // the RunSnapshot object
 };
 
-// static/src/plugins/store_plugin.js
+// static/src/core/store_plugin.js
 var StorePlugin = class extends Plugin {
   static sequence = 0;
   // the shared store — set up before every plugin that reads it
@@ -1372,7 +1372,7 @@ var StorePlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/event_log_plugin.js
+// static/src/core/event_log_plugin.js
 var MAX = 500;
 var EventLogPlugin = class extends Plugin {
   static sequence = 1;
@@ -1459,7 +1459,7 @@ var EventLogPlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/dialog_plugin.js
+// static/src/core/dialog_plugin.js
 var _seq = 0;
 var DialogPlugin = class extends Plugin {
   dialogs = signal.Array([]);
@@ -1620,7 +1620,7 @@ var Dialog = class extends Component {
   }
 };
 
-// static/src/models/models.js
+// static/src/core/models.js
 var prKey = (github, number) => `${github}#${number}`;
 var branchKey = (repo, name) => `${repo}:${name}`;
 var PullRequest = {
@@ -1644,7 +1644,7 @@ var PullRequest = {
   }
 };
 
-// static/src/plugins/code_plugin.js
+// static/src/core/code_plugin.js
 var PRS_CACHE_KEY = "oo-prs-cache";
 var CodePlugin = class extends Plugin {
   static sequence = 3;
@@ -2148,7 +2148,7 @@ ${res.remote_error}`,
   }
 };
 
-// static/src/log_buffer.js
+// static/src/core/log_buffer.js
 var MAX_LINES = 2e3;
 var LogBuffer = class {
   constructor() {
@@ -2208,7 +2208,7 @@ var LogBuffer = class {
   }
 };
 
-// static/src/plugins/server_plugin.js
+// static/src/core/server_plugin.js
 var ServerPlugin = class extends Plugin {
   static sequence = 2;
   config = plugin(ConfigPlugin);
@@ -2486,7 +2486,7 @@ Start with the current branches anyway?`,
   }
 };
 
-// static/src/models/config_models.js
+// static/src/core/config_models.js
 function withScope(rec, fn) {
   const ctx = rec.orm._ctx;
   return ctx ? ctx.run(fn) : fn();
@@ -2844,7 +2844,7 @@ function reconcileCheckouts(orm, t2) {
   for (const [id, rec] of have) if (!keep.has(id)) orm.delete(rec);
 }
 
-// static/src/plugins/config_plugin.js
+// static/src/core/config_plugin.js
 var STATE_KEYS = {
   "oo-last-target": "active_target",
   "oo-test-history": "test_history",
@@ -3114,7 +3114,7 @@ var ConfigPlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/router_plugin.js
+// static/src/core/router_plugin.js
 var RouterPlugin = class extends Plugin {
   static sequence = 1;
   section = signal(this._fromHash());
@@ -3130,7 +3130,7 @@ var RouterPlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/update_plugin.js
+// static/src/core/update_plugin.js
 var UpdatePlugin = class extends Plugin {
   server = plugin(ServerPlugin);
   dialogs = plugin(DialogPlugin);
@@ -3238,7 +3238,7 @@ var UpdatePlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/addons_plugin.js
+// static/src/addons/addons_plugin.js
 var AddonsPlugin = class _AddonsPlugin extends Plugin {
   static sequence = 4;
   static MAX_ROWS = 200;
@@ -3390,7 +3390,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   }
 };
 
-// static/src/components/common.js
+// static/src/core/common.js
 var appBus = new EventBus();
 var m = (s) => markup(s);
 function mbCategory(s) {
@@ -3658,7 +3658,7 @@ function useDragResize({ w = 780, h = 440, place = null } = {}) {
   };
 }
 
-// static/src/components/addons.js
+// static/src/addons/addons.js
 var AddonsScreen = class extends Component {
   static components = { LogConsole, SearchBox };
   static template = xml`
@@ -3747,7 +3747,7 @@ var AddonsScreen = class extends Component {
   }
 };
 
-// static/src/plugins/database_plugin.js
+// static/src/core/database_plugin.js
 var DatabasePlugin = class extends Plugin {
   static sequence = 3;
   server = plugin(ServerPlugin);
@@ -3865,7 +3865,7 @@ var DatabasePlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/assets_plugin.js
+// static/src/assets/assets_plugin.js
 var AssetsPlugin = class extends Plugin {
   static sequence = 6;
   config = plugin(ConfigPlugin);
@@ -3976,7 +3976,7 @@ var AssetsPlugin = class extends Plugin {
   }
 };
 
-// static/src/components/assets.js
+// static/src/assets/assets.js
 var BundleNode = class extends Component {
   static template = xml`
     <div class="bnode">
@@ -4258,7 +4258,7 @@ var AssetsScreen = class extends Component {
   }
 };
 
-// static/src/plugins/worktree_plugin.js
+// static/src/core/worktree_plugin.js
 var WorktreePlugin = class extends Plugin {
   static sequence = 5;
   config = plugin(ConfigPlugin);
@@ -4551,7 +4551,7 @@ var WorktreePlugin = class extends Plugin {
   }
 };
 
-// static/src/components/dialogs.js
+// static/src/core/dialogs.js
 var RemoteBranchDialog = class extends Component {
   static template = xml`
     <div class="dialog-backdrop" t-on-click="() => this.done(null)">
@@ -4740,7 +4740,7 @@ ${c.body}` : c.subject;
   }
 };
 
-// static/src/components/targets.js
+// static/src/targets/targets.js
 async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
   const existingTargets = config.config.targets;
   const configStr = repos.map((r) => `${r}:${branch}`).join(",");
@@ -5427,7 +5427,7 @@ var repoBranchList = {
   })
 };
 
-// static/src/components/branches.js
+// static/src/branches/branches.js
 var BranchesScreen = class extends Component {
   static components = { SearchBox, DirtyBadge };
   worktree = plugin(WorktreePlugin);
@@ -5821,7 +5821,7 @@ var BranchesScreen = class extends Component {
   }
 };
 
-// static/src/plugins/terminal_plugin.js
+// static/src/core/terminal_plugin.js
 var TerminalPlugin = class extends Plugin {
   open = signal(false);
   toggle() {
@@ -5829,7 +5829,7 @@ var TerminalPlugin = class extends Plugin {
   }
 };
 
-// static/src/components/terminal.js
+// static/src/core/terminal.js
 var _xtermReady = null;
 function loadXterm() {
   if (!_xtermReady) {
@@ -5984,7 +5984,7 @@ var TerminalDialog = class extends Component {
   }
 };
 
-// static/src/components/code.js
+// static/src/code/code.js
 var CodeScreen = class extends Component {
   static components = { DirtyBadge };
   static template = xml`
@@ -6263,7 +6263,7 @@ var CodeScreen = class extends Component {
   }
 };
 
-// static/src/components/config.js
+// static/src/config/config.js
 var ListEditor = class extends Component {
   static template = xml`
     <div class="config-block">
@@ -6934,7 +6934,7 @@ var SPECS = {
   }
 };
 
-// static/src/plugins/review_plugin.js
+// static/src/core/review_plugin.js
 var mbKey = (p) => `${p.github}#${p.number}`;
 var ReviewPlugin = class extends Plugin {
   static sequence = 5;
@@ -7048,7 +7048,7 @@ var ReviewPlugin = class extends Plugin {
   }
 };
 
-// static/src/components/dashboard.js
+// static/src/dashboard/dashboard.js
 var DashboardScreen = class extends Component {
   static components = { DirtyBadge };
   static template = xml`
@@ -7682,7 +7682,7 @@ var DashboardScreen = class extends Component {
   }
 };
 
-// static/src/components/databases.js
+// static/src/databases/databases.js
 var DatabasesScreen = class extends Component {
   static template = xml`
     <section>
@@ -7923,7 +7923,7 @@ var DatabasesScreen = class extends Component {
   }
 };
 
-// static/src/plugins/tests_plugin.js
+// static/src/core/tests_plugin.js
 var HISTORY_MAX = 10;
 var TestsPlugin = class extends Plugin {
   static sequence = 3;
@@ -8066,7 +8066,7 @@ var TestsPlugin = class extends Plugin {
   }
 };
 
-// static/src/components/event_log.js
+// static/src/core/event_log.js
 var EventLog = class extends Component {
   static template = xml`
     <div t-if="this.log.open()" class="event-log" t-ref="this.drag.handle">
@@ -8169,7 +8169,7 @@ var EventLog = class extends Component {
   }
 };
 
-// static/src/plugins/memory_plugin.js
+// static/src/memory/memory_plugin.js
 var STORAGE_KEY = "oo-memory-builds";
 var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
 var MemoryPlugin = class extends Plugin {
@@ -8258,7 +8258,7 @@ var MemoryPlugin = class extends Plugin {
   }
 };
 
-// static/src/plugins/nightly_plugin.js
+// static/src/nightly/nightly_plugin.js
 var NightlyPlugin = class extends Plugin {
   static sequence = 4;
   versions = signal([]);
@@ -8303,7 +8303,7 @@ var NightlyPlugin = class extends Plugin {
   }
 };
 
-// static/src/components/nightly.js
+// static/src/nightly/nightly.js
 var _chartJsReady = null;
 function loadChartJs() {
   if (!_chartJsReady) {
@@ -8916,7 +8916,7 @@ var NightlyScreen = class extends Component {
   }
 };
 
-// static/src/components/memory.js
+// static/src/memory/memory.js
 var MemoryScreen = class extends Component {
   static template = xml`
     <section class="mem-screen">
@@ -9069,7 +9069,7 @@ var MemoryScreen = class extends Component {
   }
 };
 
-// static/src/components/menus.js
+// static/src/core/menus.js
 var ActionMenu = class extends Component {
   static template = xml`
     <div class="dash-menu action-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
@@ -9219,7 +9219,7 @@ var MbMenu = class extends Component {
   }
 };
 
-// static/src/components/prs.js
+// static/src/prs/prs.js
 var PrsScreen = class extends Component {
   static components = { SearchBox };
   worktree = plugin(WorktreePlugin);
@@ -9579,7 +9579,7 @@ var PrsScreen = class extends Component {
   }
 };
 
-// static/src/components/server.js
+// static/src/server/server.js
 var ServerScreen = class extends Component {
   static components = { LogConsole };
   static template = xml`
@@ -9737,7 +9737,7 @@ var ServerScreen = class extends Component {
   }
 };
 
-// static/src/components/tests.js
+// static/src/tests/tests.js
 var TestsScreen = class extends Component {
   static components = { LogConsole };
   static template = xml`
@@ -9818,7 +9818,7 @@ var TestsScreen = class extends Component {
   }
 };
 
-// static/src/plugins/claude_plugin.js
+// static/src/worktree/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
   { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
@@ -9928,7 +9928,7 @@ var ClaudePlugin = class extends Plugin {
   }
 };
 
-// static/src/components/worktree.js
+// static/src/worktree/worktree.js
 var ClaudeChat = class extends Component {
   static template = xml`
     <div class="cchat">
@@ -10166,7 +10166,7 @@ var WorktreeScreen = class extends Component {
   }
 };
 
-// static/src/components/app.js
+// static/src/core/app.js
 var Topbar = class extends Component {
   static template = xml`
     <header class="topbar">

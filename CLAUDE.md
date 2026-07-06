@@ -48,19 +48,25 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   integration-proven, not unit-tested — abstracting it buys little).
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path
-- `static/src/` — the Owl 3 frontend application (ES modules; `main.js` is the entry),
-  organized into folders by kind:
-  - `plugins/` — the state/action layer (`*_plugin.js`, one owl `Plugin` each).
-  - `models/` — the owl-orm models (`config_models.js`, `observed_models.js`,
-    `runtime_models.js`) + the wire normalizers (`models.js`).
-  - `components/` — the Owl UI, one file per screen (`dashboard.js`, `targets.js`, …) plus
-    shared modules: `common.js` (the substrate — `appBus`, `ICONS`, `m`, `NAV` + reusable
-    widgets), `menus.js`, `dialogs.js`, `terminal.js`, `recordset.js`, and `app.js`
-    (`Topbar`/`Sidebar`/`App` + the `SCREENS` registry; `main.js` imports `App` from here).
-    `appBus` is a single shared `EventBus` exported from `common.js` — import it, never
-    re-instantiate.
-  - Root of `static/src/`: shared leaf libs `config.js`, `utils.js`, `presets.js`,
-    `log_buffer.js`, and `main.js`.
+- `static/src/` — the Owl 3 frontend application (ES modules; `main.js` at the root is the
+  entry). Organized **by feature**: a shared `core/` plus one folder per screen.
+  - `core/` — the application basics everything builds on: the shared plugins (state/action
+    layer — `config_plugin`, `store_plugin`, `server_plugin`, `code_plugin`, `dialog_plugin`,
+    `event_log_plugin`, `router_plugin`, `worktree_plugin`, `database_plugin`, `review_plugin`,
+    `terminal_plugin`, `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
+    `observed_models`, `runtime_models`) + wire normalizers (`models.js`), the shared UI
+    (`common.js` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.js`, `dialogs.js`,
+    `terminal.js`, `recordset.js`, the `event_log.js` panel, and `app.js` = `Topbar`/`Sidebar`/
+    `App` + the `SCREENS` registry, which `main.js` imports), and the leaf libs `config.js`,
+    `utils.js`, `presets.js`, `log_buffer.js`. `appBus` is a single shared `EventBus` exported
+    from `core/common.js` — import it, never re-instantiate.
+  - One folder per screen (`dashboard/`, `code/`, `server/`, `worktree/`, `targets/`,
+    `branches/`, `prs/`, `tests/`, `databases/`, `assets/`, `addons/`, `nightly/`, `memory/`,
+    `config/`): each holds its screen component, and the five with a dedicated 1:1 plugin also
+    hold it (`worktree/claude_plugin.js`, `assets/assets_plugin.js`, `addons/addons_plugin.js`,
+    `nightly/nightly_plugin.js`, `memory/memory_plugin.js`). Everything else is shared → `core/`.
+    A screen folder may import from `core/` (and, rarely, another screen — e.g.
+    `dashboard/` reuses `targets/` helpers); `core/` never imports from a screen folder.
 - `static/dist/app.js` — the committed esbuild bundle of `static/src/` (the file the
   page actually loads). Generated — never hand-edit; rebuild with `npm run build`.
 - `vendor/owl-orm/` — pinned `@odoo/owl-orm` source (`index.ts`/`orm.ts`) + `owl-global.js`,
