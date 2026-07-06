@@ -56,7 +56,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     `terminal_plugin`, `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
     `observed_models`, `runtime_models`) + wire normalizers (`models.js`), the shared UI
     (`common.js` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.js`, `dialogs.js`,
-    `terminal.js`, `recordset.js`, the `event_log.js` panel, and `app.js` = `Topbar`/`Sidebar`/
+    `terminal.js`, `recordset.js`, `panel.js` (the shared screen-header `Panel`, title + four
+    slots), the `event_log.js` panel, and `app.js` = `Topbar`/`Sidebar`/
     `App` + the `SCREENS` registry, which `main.js` imports), and the leaf libs `config.js`,
     `utils.js`, `presets.js`, `log_buffer.js`. `appBus` is a single shared `EventBus` exported
     from `core/common.js` — import it, never re-instantiate.

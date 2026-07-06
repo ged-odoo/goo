@@ -3533,24 +3533,6 @@ var SearchBox = class extends Component {
     </div>`;
   props = props({ value: t.any() });
 };
-var Panel = class extends Component {
-  static template = xml`
-    <div class="panel">
-      <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
-        <h1 t-out="this.props.title"/>
-        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
-        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
-      </div>
-      <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
-        <t t-slot="bottom-left"/>
-        <t t-slot="bottom-right"/>
-      </div>
-    </div>`;
-  props = props({ title: t.string(), slots: t.any().optional() });
-  hasSlot(name) {
-    return name in (this.props.slots || {});
-  }
-};
 var DirtyBadge = class extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
@@ -7091,6 +7073,34 @@ var ReviewPlugin = class extends Plugin {
   _readArr(field) {
     const v = this.config.getState(field, []);
     return Array.isArray(v) ? v : [];
+  }
+};
+
+// static/src/core/panel.js
+var Panel = class extends Component {
+  static template = xml`
+    <div class="panel">
+      <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
+        <h1 t-out="this.props.title"/>
+        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
+        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
+      </div>
+      <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
+        <t t-slot="bottom-left"/>
+        <t t-slot="bottom-right"/>
+      </div>
+    </div>`;
+  props = props({
+    title: t.string(),
+    slots: t.object({
+      "top-middle": t.any().optional(),
+      "top-right": t.any().optional(),
+      "bottom-left": t.any().optional(),
+      "bottom-right": t.any().optional()
+    }).optional()
+  });
+  hasSlot(name) {
+    return name in (this.props.slots || {});
   }
 };
 

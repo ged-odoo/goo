@@ -10,7 +10,8 @@ import { ReviewPlugin } from "../core/review_plugin.js";
 import { RouterPlugin } from "../core/router_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
-import { DirtyBadge, ICONS, Panel, appBus, m, mbCategory } from "../core/common.js";
+import { DirtyBadge, ICONS, appBus, m, mbCategory } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 import { CommitsDialog } from "../core/dialogs.js";
 
 import {
