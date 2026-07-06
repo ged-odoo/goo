@@ -5,21 +5,21 @@ import { ConfigPlugin } from "../core/config_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { TerminalPlugin } from "../core/terminal_plugin.js";
 import { ICONS, LogConsole, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class ServerScreen extends Component {
-  static components = { LogConsole };
+  static components = { LogConsole, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <div class="server-head">
-            <h1>Server</h1>
-            <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
-            <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
-          </div>
+      <Panel title="'Server'">
+        <t t-set-slot="title-extra">
+          <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
+          <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
+        </t>
+        <t t-set-slot="top-right">
           <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
-        </div>
-        <div class="panel-actions">
+        </t>
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary dash-start" t-att-disabled="!this.stopped or this.busy" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/><t t-out="this.startLabel"/></button>
           <button class="pbtn stop" t-att-disabled="!this.canStop or this.busy" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active or this.busy" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
@@ -29,8 +29,8 @@ export class ServerScreen extends Component {
             <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
             <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
           </div>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content" t-att-class="{ flush: !this.stopped }">
         <div t-if="this.disconnected" class="offline">server is offline</div>
         <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>

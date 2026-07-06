@@ -3679,7 +3679,11 @@ var Panel = class extends Component {
   static template = xml`
     <div class="panel">
       <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
-        <h1 t-out="this.props.title"/>
+        <div t-if="this.hasSlot('title-extra')" class="panel-title">
+          <h1 t-out="this.props.title"/>
+          <t t-slot="title-extra"/>
+        </div>
+        <h1 t-else="" t-out="this.props.title"/>
         <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
         <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
       </div>
@@ -3691,6 +3695,7 @@ var Panel = class extends Component {
   props = props({
     title: t.string(),
     slots: t.object({
+      "title-extra": t.any().optional(),
       "top-middle": t.any().optional(),
       "top-right": t.any().optional(),
       "bottom-left": t.any().optional(),
@@ -9629,19 +9634,18 @@ var PrsScreen = class extends Component {
 
 // static/src/server_screen/server.js
 var ServerScreen = class extends Component {
-  static components = { LogConsole };
+  static components = { LogConsole, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top">
-          <div class="server-head">
-            <h1>Server</h1>
-            <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
-            <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
-          </div>
+      <Panel title="'Server'">
+        <t t-set-slot="title-extra">
+          <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
+          <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
+        </t>
+        <t t-set-slot="top-right">
           <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
-        </div>
-        <div class="panel-actions">
+        </t>
+        <t t-set-slot="bottom-left">
           <button class="pbtn primary dash-start" t-att-disabled="!this.stopped or this.busy" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/><t t-out="this.startLabel"/></button>
           <button class="pbtn stop" t-att-disabled="!this.canStop or this.busy" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
           <button class="pbtn" t-att-disabled="!this.active or this.busy" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
@@ -9651,8 +9655,8 @@ var ServerScreen = class extends Component {
             <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
             <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
           </div>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content" t-att-class="{ flush: !this.stopped }">
         <div t-if="this.disconnected" class="offline">server is offline</div>
         <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
@@ -9787,12 +9791,14 @@ var ServerScreen = class extends Component {
 
 // static/src/tests_screen/tests.js
 var TestsScreen = class extends Component {
-  static components = { LogConsole };
+  static components = { LogConsole, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top"><div class="test-title"><h1>Tests</h1><span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/></div></div>
-        <div class="panel-actions">
+      <Panel title="'Tests'">
+        <t t-set-slot="title-extra">
+          <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
+        </t>
+        <t t-set-slot="bottom-left">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
             <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
               <option value="" selected="selected" hidden="hidden">Presets</option>
@@ -9815,8 +9821,8 @@ var TestsScreen = class extends Component {
               <button type="button" class="tool-btn" t-on-click="() => this.tests.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
             </div>
           </form>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content flush tests-content">
         <div t-if="!this.tests.output.count() and !this.tests.runActive()" class="tests-empty">
           <p class="tests-empty-title">No test output yet</p>

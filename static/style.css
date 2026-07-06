@@ -598,24 +598,29 @@ section.hidden {
 .panel-top .sub.hint {
   color: var(--l-amber);
 }
-/* server: title + db/odoo info inline on one row (no wrap, so the panel keeps a
-   fixed height; overflowing info is truncated rather than pushed to a 2nd line) */
-.server-head {
+/* Panel title cluster: the <h1> plus a `title-extra` slot inline on one row —
+   the server's db/odoo info subs, the Tests status badge. No wrap so the panel
+   keeps its fixed height; overflowing text (server info) truncates. */
+.panel-title {
   display: flex;
   align-items: baseline;
   flex-wrap: nowrap;
   gap: 14px;
   min-width: 0;
 }
-.server-head h1 {
+.panel-title h1 {
   flex-shrink: 0;
 }
-.server-head .sub {
+.panel-title .sub {
   margin-top: 0;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* the Tests badge is a pill, not text — center it against the heading */
+.panel-title .test-badge {
+  align-self: center;
 }
 .panel-actions {
   display: flex;
@@ -2122,12 +2127,7 @@ a.dash-ci:hover {
   font-weight: 400;
 }
 
-/* tests tab: result chip beside the title */
-.test-title {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
+/* tests tab: result chip beside the title (in the Panel `.panel-title` cluster) */
 .test-badge {
   font-family: var(--mono);
   font-size: 11px;

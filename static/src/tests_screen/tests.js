@@ -3,14 +3,17 @@ import { ConfigPlugin } from "../core/config_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { TestsPlugin } from "../core/tests_plugin.js";
 import { ICONS, LogConsole, m } from "../core/common.js";
+import { Panel } from "../core/panel.js";
 
 export class TestsScreen extends Component {
-  static components = { LogConsole };
+  static components = { LogConsole, Panel };
   static template = xml`
     <section>
-      <div class="panel">
-        <div class="panel-top"><div class="test-title"><h1>Tests</h1><span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/></div></div>
-        <div class="panel-actions">
+      <Panel title="'Tests'">
+        <t t-set-slot="title-extra">
+          <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
+        </t>
+        <t t-set-slot="bottom-left">
           <form class="test-form" t-on-submit.prevent="() => this.run()">
             <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
               <option value="" selected="selected" hidden="hidden">Presets</option>
@@ -33,8 +36,8 @@ export class TestsScreen extends Component {
               <button type="button" class="tool-btn" t-on-click="() => this.tests.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
             </div>
           </form>
-        </div>
-      </div>
+        </t>
+      </Panel>
       <div class="content flush tests-content">
         <div t-if="!this.tests.output.count() and !this.tests.runActive()" class="tests-empty">
           <p class="tests-empty-title">No test output yet</p>
