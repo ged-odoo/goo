@@ -480,7 +480,7 @@ def build_odoo_cmd(config):
     cmd = " && ".join(parts)
     cmd += (
         f" -r {db_user} -w {db_password} -d {db} "
-        f"--database {db} --no-database-list --with-demo "
+        f"--database {db} --no-database-list --without-demo all "
         f"--addons-path {addons_path}"
     )
 
