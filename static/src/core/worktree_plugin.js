@@ -1,10 +1,11 @@
-// Worktrees as first-class targets. "Create Worktree" forks a NEW branch from a
-// base target into a git worktree at <worktree_dir>/<slug>/<repo>, on its own db,
-// and appends a target carrying a `worktree` metadata object. Such a target runs
-// its own odoo server concurrently with the main server (and other worktrees), on
-// its own port. Per-target state — { exists, state, port } — is kept here and
-// updated live from the backend's "worktree" SSE events (relayed by ServerPlugin),
-// and each worktree's server log streams into its own LogBuffer ("worktree_log").
+// The worktree-workspace action layer. createWorktree materializes a
+// worktree-located workspace — its branches forked into a git worktree at
+// <worktree_dir>/<slug>/<repo>, on its own db — persisted through the canonical
+// `workspaces` config key. Such a workspace runs its own odoo server concurrently
+// with the main server (and other worktrees), on its own stable port. Per-workspace
+// state — { exists, state, port } — lives in the shared servers map, updated live
+// from the backend's "server" SSE events (relayed by ServerPlugin), and each
+// worktree's server log streams into its own LogBuffer ("worktree_log").
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
@@ -56,7 +57,10 @@ export class WorktreePlugin extends Plugin {
 
   select(id) {
     this.selectedId.set(id);
-    if (id) this._primeLogs(id);
+    // only worktree workspaces have a per-server tail to prime (a main-located
+    // workspace's log is the shared main-server buffer)
+    if (id && this.isWorktree(this.config.config.targets.find((t) => t.id === id)))
+      this._primeLogs(id);
   }
 
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)
@@ -187,43 +191,56 @@ export class WorktreePlugin extends Plugin {
     return id;
   }
 
-  // Fork <branch> from <baseTargetId>'s branches into a fresh worktree; optionally
-  // clone <cloneSource> into the worktree's own db first. On success, persist a new
-  // worktree target and select it. spec: {baseTargetId, name, branch, dbName, cloneSource}
-  async createWorktree({ baseTargetId, name, branch, dbName, cloneSource }) {
-    const base = (this.config.config.targets || []).find((t) => t.id === baseTargetId);
-    if (!base) return this._error("Create worktree", "unknown base target");
-    const id = this._newId(name || branch);
-    const tgt = {
+  // Materialize a worktree-located workspace: per repo, create checkout.branch
+  // (forked from startPointByRepo[repo]) as a git worktree under a frozen dir;
+  // optionally clone <cloneSource> into the workspace's own db first. On success,
+  // persist the workspace (canonical `workspaces` write — the create path deals it
+  // the next stable port) and select it.
+  // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
+  //         baseId?, on_create_args?, demo_data?, favorite? }
+  async createWorktree({
+    name,
+    dbName,
+    cloneSource,
+    checkouts,
+    startPointByRepo = {},
+    baseId = "",
+    on_create_args = "",
+    demo_data = true,
+    favorite = false,
+  }) {
+    if (!checkouts || !checkouts.length)
+      return this._error("Create workspace", "the workspace has no checkouts");
+    const id = this._newId(name);
+    const ws = {
       id,
-      name: name || branch,
-      favorite: false,
-      kind: "worktree",
-      checkouts: (base.checkouts || []).map((c) => ({ repo: c.repo, branch })),
+      name,
+      favorite,
       db: dbName,
-      on_create_args: base.on_create_args || "",
-      demo_data: base.demo_data ?? true,
-      worktree: { base: baseTargetId },
+      on_create_args,
+      demo_data,
+      location: "worktree",
+      checkouts,
+      worktree: { base: baseId },
     };
-    // per-repo: create the NEW branch <branch> forked from the base's branch
     const g = this.code.groups();
     // dirPath derives from the name here (no dir stored yet); freeze it onto the
-    // target so a later rename can't orphan the checkout git is about to create.
-    const dir = this.dirPath(tgt);
-    tgt.worktree.dir = dir;
-    const repos = (base.checkouts || [])
-      .map((c) => ({
-        repo: c.repo,
+    // workspace so a later rename can't orphan the checkout git is about to create.
+    const dir = this.dirPath(ws);
+    ws.worktree.dir = dir;
+    const repos = checkouts
+      .map(({ repo, branch }) => ({
+        repo,
         newBranch: branch,
-        startPoint: c.branch,
-        mainPath: g.pathByRepo[c.repo] || "",
-        github: g.githubByRepo[c.repo] || "",
-        worktreePath: `${dir}/${c.repo}`,
+        startPoint: startPointByRepo[repo],
+        mainPath: g.pathByRepo[repo] || "",
+        github: g.githubByRepo[repo] || "",
+        worktreePath: `${dir}/${repo}`,
       }))
       .filter((r) => r.mainPath);
-    if (!repos.length) return this._error("Create worktree", "the base target has no local repos");
+    if (!repos.length) return this._error("Create workspace", "no local repos for the checkouts");
 
-    const eid = this.eventLog.begin(`creating worktree ${tgt.name}`);
+    const eid = this.eventLog.begin(`creating worktree workspace ${ws.name}`);
     try {
       if (cloneSource) {
         await postJSON("/api/databases/clone", {
@@ -239,16 +256,18 @@ export class WorktreePlugin extends Plugin {
           .filter((r) => !r.ok)
           .map((r) => `${r.repo}: ${r.error}`)
           .join("\n");
-        return this._error("Worktree creation failed", msg || "git worktree add failed");
+        return this._error("Workspace creation failed", msg || "git worktree add failed");
       }
-      this.config.updateConfig({ targets: [...this.config.config.targets, tgt] });
+      // canonical write: spread the existing workspaces so their ports survive;
+      // this workspace carries none — the reconcile deals it the next stable port
+      this.config.updateConfig({ workspaces: [...this.config.config.workspaces, ws] });
       this._merge(id, { exists: true, state: "stopped", port: null });
       this.eventLog.finish(eid, "done");
       this.select(id);
       return true;
     } catch (e) {
       this.eventLog.finish(eid, "error");
-      return this._error("Worktree creation failed", e.message);
+      return this._error("Workspace creation failed", e.message);
     }
   }
 
@@ -264,7 +283,9 @@ export class WorktreePlugin extends Plugin {
     this._merge(tgt.id, { state: "starting" });
     try {
       const res = await postJSON("/api/workspace/start", { target: tgt.id });
-      this._merge(tgt.id, { state: "starting", port: res.port });
+      // merge only the port: a fast server's SSE "running" snapshot can beat this
+      // reply, and re-merging "starting" here would clobber it
+      this._merge(tgt.id, { port: res.port });
     } catch (e) {
       delete this._startEids[tgt.id];
       this.eventLog.finish(eid, "error");
@@ -330,9 +351,9 @@ export class WorktreePlugin extends Plugin {
         this._error("Database drop failed", e.message);
       }
     }
-    // drop the target from config + local state
+    // drop the workspace from config (canonical write) + local state
     this.config.updateConfig({
-      targets: (this.config.config.targets || []).filter((t) => t.id !== tgt.id),
+      workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id),
     });
     this.store.dropServer(tgt.id);
     this.logs.delete(tgt.id);

@@ -1,11 +1,19 @@
 import { Component, onMounted, plugin, props, signal, t, useEffect, xml } from "@odoo/owl";
 import { ClaudePlugin } from "./claude_plugin.js";
-import { ConfigPlugin } from "../core/config_plugin.js";
+import { CodePlugin } from "../core/code_plugin.js";
+import { ConfigPlugin, newTargetId } from "../core/config_plugin.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
+import { EventLogPlugin } from "../core/event_log_plugin.js";
+import { ServerPlugin } from "../core/server_plugin.js";
+import { StorePlugin } from "../core/store_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
-import { ICONS, LogConsole, m } from "../core/common.js";
+import { ICONS, LogConsole, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
+import { attachXterm } from "../core/terminal.js";
+import { branchKey } from "../core/models.js";
+import { timeAgo } from "../core/utils.js";
+import { deleteTargetDialog, repoBranchList } from "../targets_screen/targets.js";
 
 export class ClaudeChat extends Component {
   static template = xml`
@@ -89,183 +97,701 @@ export class ClaudeChat extends Component {
   }
 }
 
+// ─────────────────────────── Code pane ───────────────────────────
+
+// The selected workspace's code view: one card per checkout (branch, checked-out
+// badge, last commit, PR) and the deduped list of its pull requests. Data comes
+// from CodePlugin, loaded narrowed to the workspace's repos on selection.
+
+export class CodePane extends Component {
+  static template = xml`
+    <div class="ws-code">
+      <div class="ws-sec">
+        <span>Branches</span>
+        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
+        <button class="pbtn ws-refresh" title="refresh branches + pull requests" t-on-click="() => this.load(true)"><span class="restart"/></button>
+      </div>
+      <div class="ws-card" t-foreach="this.rows" t-as="r" t-key="r.key">
+        <div class="ws-card-main">
+          <div class="ws-card-head">
+            <span class="ws-branch" t-out="r.branch"/>
+            <span class="ws-repo-tag" t-out="r.repo"/>
+            <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
+            <span t-if="r.dirty" class="ws-dirty" title="the working tree has uncommitted changes">dirty</span>
+            <span t-if="r.missing" class="ws-missing dim">branch not found locally</span>
+          </div>
+          <div t-if="r.subject" class="ws-commit dim">
+            <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
+          </div>
+        </div>
+        <div t-if="r.pr" class="ws-pr-row">
+          <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
+          <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
+          <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
+          <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
+                t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+            <span class="dash-ci-dot"/><t t-out="ci.label"/>
+          </span>
+        </div>
+      </div>
+      <div t-if="!this.rows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>
+
+      <div class="ws-sec">
+        <span>Pull requests</span>
+        <span class="dim ws-sec-meta" t-out="this.prsMeta"/>
+      </div>
+      <div t-if="!this.prs.length" class="dim ws-empty-note">No pull requests for this workspace's branches.</div>
+      <div class="ws-card ws-pr-card" t-foreach="this.prs" t-as="pr" t-key="pr.key">
+        <div class="ws-card-main">
+          <div class="ws-card-head">
+            <a class="pr-link" t-att-href="pr.url" target="_blank" t-out="'#' + pr.number"/>
+            <span class="ws-pr-title" t-out="pr.title"/>
+          </div>
+        </div>
+        <div class="ws-pr-row">
+          <span class="pr-state" t-att-class="this.prCls(pr)" t-out="this.prLabel(pr)"/>
+          <t t-set="ci" t-value="this.ciBadge(pr)"/>
+          <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
+                t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+            <span class="dash-ci-dot"/><t t-out="ci.label"/>
+          </span>
+        </div>
+      </div>
+    </div>`;
+
+  props = props({ ws: t.any() });
+  code = plugin(CodePlugin);
+  store = plugin(StorePlugin);
+
+  setup() {
+    // load branches + PRs narrowed to this workspace's repos (merging, so other
+    // repos' cached state is untouched); re-runs when the selection changes
+    useEffect(
+      () => {
+        this.load(false);
+      },
+      () => [this.props.ws.id],
+    );
+  }
+
+  load(force) {
+    const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    if (ids.size) this.code.load(force, ids, ids);
+  }
+
+  // one row per checkout, joined with live git state + its PR
+  get rows() {
+    const view = this.store.targetView(this.props.ws);
+    const byRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
+    const prIndex = this.code.groups().prIndex;
+    return (view.checkouts || []).map((c) => {
+      const repo = byRepo.get(c.repo);
+      const b = (repo?.branches || []).find((x) => x.name === c.branch);
+      return {
+        key: branchKey(c.repo, c.branch),
+        repo: c.repo,
+        branch: c.branch,
+        checkedOut: !!c.matches,
+        dirty: !!(c.matches && c.dirty),
+        missing: !!repo && !b,
+        subject: b?.subject || "",
+        when: b?.date ? timeAgo(b.date) : "",
+        pr: prIndex[branchKey(c.repo, c.branch)] || null,
+      };
+    });
+  }
+
+  get prs() {
+    const seen = new Set();
+    return this.rows.map((r) => r.pr).filter((pr) => pr && !seen.has(pr.key) && seen.add(pr.key));
+  }
+
+  get prsMeta() {
+    const n = this.prs.length;
+    return n ? `${n} pull request${n === 1 ? "" : "s"}` : "";
+  }
+
+  prCls(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
+  }
+
+  prLabel(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
+  }
+
+  // CI badge from the PR's GitHub status rollup (reduction of the dashboard's)
+  ciBadge(pr) {
+    const ci = pr && pr.ci;
+    if (!ci || !ci.checks || !ci.checks.length) return null;
+    const pending = ci.checks.some((c) => c.state === "pending");
+    let badge;
+    if (ci.overall === "failure") badge = { cls: "fail", label: "ko", title: "a CI check failed" };
+    else if (ci.overall === "success")
+      badge = { cls: "pass", label: "ok", title: "all CI checks passing" };
+    else if (ci.overall === "pending" || pending)
+      badge = { cls: "run", label: "running", title: "CI running" };
+    else badge = { cls: "unknown", label: "—", title: "no CI status" };
+    badge.checks = ci.checks;
+    return badge;
+  }
+
+  showCiMenu(ev, checks) {
+    if (!checks || !checks.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
+  }
+
+  hideCiMenu() {
+    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
+  }
+}
+
+// ─────────────────────────── Terminal pane ───────────────────────────
+
+// An xterm attached to a workspace server's PTY (Phase-2 backend:
+// /api/terminal?workspace=<id>). The parent gates the URL — it only renders this
+// component when the target PTY actually belongs to the selected workspace.
+
+export class TerminalPane extends Component {
+  static template = xml`<div class="ws-term" t-ref="this.host"/>`;
+
+  props = props({ url: t.string() });
+  host = signal.ref(HTMLElement);
+  _dispose = null;
+
+  setup() {
+    useEffect(
+      () => {
+        const el = this.host();
+        if (!el) return;
+        let live = true;
+        attachXterm(el, this.props.url, true).then((dispose) =>
+          live ? (this._dispose = dispose) : dispose(),
+        );
+        return () => {
+          live = false;
+          this._dispose?.();
+          this._dispose = null;
+        };
+      },
+      () => [this.props.url],
+    );
+  }
+}
+
 // ─────────────────────────── Workspaces screen ───────────────────────────
 
-// A worktree is a first-class target backed by a git worktree checkout, running
-// its own odoo server. Left: the list of worktree targets; right: the selected
-// one's detail — start/stop/restart, /odoo + /web/tests, its live server log, and a
-// Claude chat that runs tasks in the worktree.
+// The primary work surface: every workspace (main-located and worktree) in one
+// searchable list; the selected one's detail — status, per-location server
+// controls, and the Code / Server logs / Claude / Terminal tabs. A main-located
+// workspace shares the primary checkout (one loaded at a time — Start loads it,
+// i.e. checks out its branches, then starts the main server on :8069); a worktree
+// workspace runs concurrently from its own checkout on its own stable port.
 
 export class WorkspacesScreen extends Component {
-  static components = { LogConsole, ClaudeChat, Panel };
+  static components = { LogConsole, ClaudeChat, CodePane, TerminalPane, Panel, SearchBox };
   static template = xml`
     <section>
-      <Panel title="'Worktrees'">
+      <Panel title="'Workspaces'">
         <t t-set-slot="top-right">
-          <span class="meta" t-out="this.list.length + (this.list.length === 1 ? ' worktree' : ' worktrees')"/>
+          <span class="meta" t-out="this.count"/>
         </t>
         <t t-set-slot="bottom-left">
-          <button class="pbtn primary" t-on-click="() => this.create()">Create Worktree</button>
-          <span class="dash-subtitle">Run a branch in its own checkout, database and server — alongside the main one.</span>
+          <button class="pbtn primary" t-on-click="() => this.create()">New workspace</button>
+          <span class="dash-subtitle">A workspace bundles branches, a database and a server — in the main checkout or its own worktree.</span>
         </t>
       </Panel>
       <div class="content wt-content">
         <div class="wt-list">
-          <div t-if="!this.list.length" class="wt-empty dim">No worktrees yet. Create one to get started.</div>
-          <button t-foreach="this.list" t-as="tgt" t-key="tgt.id" class="wt-item"
-                  t-att-class="{selected: tgt.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(tgt.id)">
-            <span class="wt-dot" t-att-class="this.dotClass(tgt)"/>
+          <SearchBox value="this.query"/>
+          <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
+          <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
+                  t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)">
+            <span class="wt-dot" t-att-class="this.dotClass(ws)"/>
             <span class="wt-item-main">
-              <span class="wt-item-name" t-out="tgt.name"/>
-              <span class="wt-item-sub"><t t-out="this.branchOf(tgt)"/> · <t t-out="tgt.db"/></span>
+              <span class="wt-item-name" t-out="ws.name"/>
+              <span class="wt-item-sub"><t t-out="this.branchOf(ws)"/> · <t t-out="ws.db"/></span>
             </span>
-            <span t-if="this.wt.port(tgt)" class="wt-item-port" t-out="':' + this.wt.port(tgt)"/>
+            <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+            <span t-if="this.portOf(ws)" class="wt-item-port" t-out="':' + this.portOf(ws)"/>
           </button>
         </div>
-        <div class="wt-detail" t-if="this.list.length">
+        <div class="wt-detail">
           <t t-if="this.sel">
             <div class="wt-detail-head">
               <h2 t-out="this.sel.name"/>
               <div class="wt-meta">
                 <span>branch <b t-out="this.branchOf(this.sel)"/></span>
                 <span>db <b t-out="this.sel.db"/></span>
-                <span t-if="this.wt.port(this.sel)">port <b t-out="this.wt.port(this.sel)"/></span>
-                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.wt.serverState(this.sel)"/>
+                <span t-if="this.portOf(this.sel)">port <b t-out="this.portOf(this.sel)"/></span>
+                <span t-if="this.isLoaded(this.sel)" class="ws-loaded-tag" title="this workspace occupies the main checkout">loaded</span>
+                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
               </div>
             </div>
             <div class="wt-detail-actions">
-              <button class="pbtn primary" t-att-disabled="this.wt.running(this.sel)" t-on-click="() => this.wt.startServer(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-              <button class="pbtn stop" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.stopServer(this.sel)"><span class="ic square"/>Stop</button>
-              <button class="pbtn" t-att-disabled="!this.wt.running(this.sel)" t-on-click="() => this.wt.restartServer(this.sel)"><span class="restart"/>Restart</button>
+              <button class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+              <button class="pbtn stop" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+              <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
               <span class="wt-sp"/>
-              <button class="pbtn" title="open the worktree's repos in the editor" t-on-click="() => this.wt.openEditor(this.sel)"><t t-out="this.codeIcon"/>Edit</button>
-              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.wt.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.wt.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <button class="pbtn" title="edit name / branches / database / args" t-on-click="() => this.edit(this.sel)">Edit</button>
+              <button class="pbtn" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
+              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-sp"/>
-              <button class="pbtn danger" t-att-disabled="this.wt.running(this.sel)" title="remove the worktree" t-on-click="() => this.wt.remove(this.sel)">Remove</button>
+              <button class="pbtn danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.remove(this.sel)">Remove</button>
             </div>
             <div class="wt-panes">
               <div class="wt-tabs">
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')">Server log</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')">Claude</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.pane.set('terminal')"><t t-out="this.icons.terminal"/>Terminal</button>
               </div>
-              <div class="wt-pane" t-if="this.pane() === 'log'">
-                <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
+              <div class="wt-pane" t-if="this.pane() === 'code'">
+                <CodePane t-key="this.sel.id" ws="this.sel"/>
               </div>
-              <div class="wt-pane" t-else="">
-                <ClaudeChat t-key="this.sel.id" target="this.sel"/>
+              <div class="wt-pane" t-elif="this.pane() === 'log'">
+                <t t-if="this.isWt(this.sel)">
+                  <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.wt.logBuffer(this.sel.id)" bare="true"/>
+                </t>
+                <t t-elif="this.isLoaded(this.sel)">
+                  <LogConsole t-key="this.sel.id" title="'Server log'" buffer="this.server.output" bare="true"/>
+                </t>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it to see its server log.</div>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'claude'">
+                <ClaudeChat t-if="this.isWt(this.sel)" t-key="this.sel.id" target="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">Claude runs inside a workspace's own worktree checkout — available for worktree workspaces (main-checkout support comes later).</div>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'terminal'">
+                <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
+                <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
             </div>
           </t>
-          <div t-else="" class="wt-detail-empty dim">Select a worktree on the left, or create one.</div>
+          <div t-else="" class="wt-detail-empty dim">Select a workspace on the left, or create one.</div>
         </div>
       </div>
     </section>`;
 
   wt = plugin(WorktreePlugin);
   config = plugin(ConfigPlugin);
+  code = plugin(CodePlugin);
   db = plugin(DatabasePlugin);
   dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
+  server = plugin(ServerPlugin);
+  store = plugin(StorePlugin);
   externalIcon = m(ICONS.external);
-  codeIcon = m(ICONS.code); // "Edit" (open the worktree's repos in the editor)
-  pane = signal("log"); // which detail pane is shown: "log" | "claude"
+  codeIcon = m(ICONS.code);
+  icons = {
+    code: m(ICONS.code),
+    journal: m(ICONS.journal),
+    claude: m(ICONS.claude),
+    terminal: m(ICONS.terminal),
+  };
+
+  pane = signal("code"); // which detail pane is shown: code | log | claude | terminal
+  query = signal(""); // the list search
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+    // keep the selected workspace's git state fresh (drives the Start guard + the
+    // checked-out badges) — a scoped, cheap branch scan per selection change
+    useEffect(
+      () => {
+        const ws = this.sel;
+        if (!ws) return;
+        const ids = new Set((ws.checkouts || []).map((c) => c.repo));
+        if (ids.size) this.code.loadBranches(ids);
+      },
+      () => [this.wt.selectedId()],
+    );
   }
 
+  // ── list / selection ─────────────────────────────────────────────────────────
+  // reads the canonical `workspaces` array — it carries `location` and the stable
+  // `port` (the legacy `targets` view drops both by design)
   get list() {
-    return this.wt.worktreeTargets();
+    const all = this.config.config.workspaces || []; // every workspace, config order
+    const q = this.query().trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((ws) =>
+      `${ws.name} ${this.branchOf(ws)} ${ws.db || ""}`.toLowerCase().includes(q),
+    );
+  }
+
+  get count() {
+    const n = (this.config.config.workspaces || []).length;
+    return `${n} workspace${n === 1 ? "" : "s"}`;
   }
 
   get sel() {
-    return this.wt.selected();
+    return (this.config.config.workspaces || []).find((w) => w.id === this.wt.selectedId()) || null;
+  }
+
+  isWt(ws) {
+    return ws.location === "worktree";
+  }
+
+  branchOf(ws) {
+    return (ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch) || "";
+  }
+
+  // ── per-location server state ────────────────────────────────────────────────
+  // the workspace occupying the main checkout: the running main server's, else the
+  // last activated one (a browser-side fact — see targets_screen isActive)
+  get activeId() {
+    const s = this.server.status();
+    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+  }
+
+  isLoaded(ws) {
+    return !this.isWt(ws) && ws.id === this.activeId;
+  }
+
+  // serverFor: the main slot when it runs this workspace, else its own entry
+  stateOf(ws) {
+    return this.store.serverFor(ws)?.state || "stopped";
+  }
+
+  portOf(ws) {
+    if (this.isWt(ws)) return this.wt.port(ws) || ws.port || null;
+    return this.stateOf(ws) !== "stopped" ? 8069 : null;
+  }
+
+  dotClass(ws) {
+    return "wt-dot-" + this.stateOf(ws);
+  }
+
+  isLive(ws) {
+    const s = this.stateOf(ws);
+    return s === "running" || s === "starting";
   }
 
   get isRunning() {
-    return !!this.sel && this.wt.serverState(this.sel) === "running";
+    return !!this.sel && this.stateOf(this.sel) === "running";
   }
 
   get startLabel() {
-    return this.sel && this.wt.serverState(this.sel) === "starting" ? "Starting…" : "Start";
+    return this.sel && this.stateOf(this.sel) === "starting" ? "Starting…" : "Start";
   }
 
-  branchOf(tgt) {
-    return (tgt.checkouts && tgt.checkouts[0] && tgt.checkouts[0].branch) || "";
+  // repo id -> { current, dirty, branches } from the live git state (Start guard)
+  get repoMap() {
+    const map = {};
+    for (const repo of this.code.branchRepos()) {
+      map[repo.id] = {
+        current: repo.current,
+        dirty: repo.dirty,
+        branches: new Map((repo.branches || []).map((b) => [b.name, b])),
+      };
+    }
+    return map;
   }
 
-  dotClass(tgt) {
-    return "wt-dot-" + this.wt.serverState(tgt);
+  // why Start is blocked for a main-located workspace ("" = it can start). The
+  // loaded workspace can always (re)start; switching to another one requires all
+  // its branches locally + clean working trees (activate() silently no-ops else).
+  _startBlocked(ws) {
+    if (this.isLive(ws)) return "already running";
+    if (this.isWt(ws) || this.isLoaded(ws)) return "";
+    const repos = this.repoMap;
+    const cos = ws.checkouts || [];
+    if (!cos.every(({ repo, branch }) => repos[repo]?.branches.has(branch)))
+      return "some of this workspace's branches are missing locally";
+    if (cos.some(({ repo }) => repos[repo]?.dirty))
+      return "commit or stash changes first — the working tree is dirty";
+    return "";
+  }
+
+  canStart(ws) {
+    return !this._startBlocked(ws);
+  }
+
+  startTitle(ws) {
+    const blocked = this._startBlocked(ws);
+    if (blocked) return blocked;
+    if (this.isWt(ws)) return "start this workspace's server on its own port";
+    return this.isLoaded(ws)
+      ? "start the main server"
+      : "load this workspace (check out its branches) and start the main server";
+  }
+
+  // ── actions ──────────────────────────────────────────────────────────────────
+  async start(ws) {
+    if (!this.canStart(ws)) return;
+    if (this.isWt(ws)) return this.wt.startServer(ws);
+    // loading = today's activate flow: checks out the branches, records the
+    // workspace as active, stopping the previous server if needed (no-op when
+    // this workspace is already the loaded one)
+    await this.config.workspace(ws.id)?.activate();
+    await this.server.start(ws.id);
+  }
+
+  stop(ws) {
+    return this.isWt(ws) ? this.wt.stopServer(ws) : this.server.stop();
+  }
+
+  restart(ws) {
+    return this.isWt(ws) ? this.wt.restartServer(ws) : this.server.restart(ws.id);
+  }
+
+  openEditor(ws) {
+    if (this.isWt(ws)) return this.wt.openEditor(ws);
+    const g = this.code.groups();
+    const paths = (ws.checkouts || []).map((c) => g.pathByRepo[c.repo]).filter(Boolean);
+    if (paths.length) this.code.openEditorPaths(paths, ws.name);
+  }
+
+  odooUrl(ws) {
+    if (this.isWt(ws)) return this.wt.odooUrl(ws);
+    return `http://localhost:8069/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}`;
+  }
+
+  testsUrl(ws) {
+    if (this.isWt(ws)) return this.wt.testsUrl(ws);
+    return `http://localhost:8069/dev/autologin?to=${encodeURIComponent(
+      "/web/tests?debug=assets&timeout=500000&manual=true",
+    )}`;
   }
 
   open(url) {
     if (url) window.open(url, "_blank", "noopener");
   }
 
-  async create() {
-    const bases = (this.config.config.targets || []).filter((t) => !this.wt.isWorktree(t));
-    if (!bases.length)
-      return this.dialogs.open({
-        title: "Create worktree",
-        message: "Define a normal target first — a worktree forks its branch from one.",
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
-    await this.db.load(); // ensure the db list is present for the clone option
-    const sanitize = (s) =>
-      (s || "")
-        .trim()
-        .replace(/[^a-zA-Z0-9._-]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-    const dbNames = this.db.databases().map((d) => d.name);
+  removeBlocked(ws) {
+    if (this.isWt(ws)) return this.isLive(ws);
+    return this.isLoaded(ws);
+  }
+
+  removeTitle(ws) {
+    if (this.isWt(ws))
+      return this.isLive(ws) ? "stop the server first" : "remove the worktree + workspace";
+    return this.isLoaded(ws) ? "the loaded workspace cannot be removed" : "remove the workspace";
+  }
+
+  async remove(ws) {
+    if (this.removeBlocked(ws)) return;
+    if (this.isWt(ws)) return this.wt.remove(ws);
+    // main-located: the Targets screen's delete dialog (branches / PRs / db cleanup)
+    const ids = new Set((ws.checkouts || []).map((c) => c.repo));
+    await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
+    return deleteTargetDialog(ws, {
+      config: this.config,
+      code: this.code,
+      db: this.db,
+      eventLog: this.eventLog,
+      repoMap: this.repoMap,
+      isActive: this.isLoaded(ws),
+      dialogs: this.dialogs,
+    });
+  }
+
+  // ── terminal gating: never show another workspace's server PTY ───────────────
+  get termUrl() {
+    const ws = this.sel;
+    if (!ws) return "";
+    if (this.isWt(ws)) {
+      // the backend entry (and its PTY) exists only once the server has run
+      return this.stateOf(ws) === "stopped"
+        ? ""
+        : `ws://${location.host}/api/terminal?workspace=${encodeURIComponent(ws.id)}`;
+    }
+    return this.isLoaded(ws) ? `ws://${location.host}/api/terminal?workspace=main` : "";
+  }
+
+  get termHint() {
+    if (this.isWt(this.sel)) return "Start this workspace's server to attach a terminal.";
+    return "This workspace isn't loaded — the main terminal belongs to the loaded workspace.";
+  }
+
+  // ── edit dialog (both locations) ─────────────────────────────────────────────
+  async edit(ws) {
     const res = await this.dialogs.open({
-      title: "Create worktree",
-      okLabel: "Create",
-      fields: [
-        {
-          key: "base",
-          type: "select",
-          label: "Base target",
-          value: bases[0].id,
-          placeholder: "— pick a target —",
-          options: bases.map((t) => ({ value: t.id, label: t.name })),
-        },
-        {
-          key: "branch",
-          type: "text",
-          label: "New branch",
-          placeholder: "e.g. my-feature",
-          onChange: (v) => ({ db: sanitize(v) }),
-        },
-        { key: "name", type: "text", label: "Display name (optional)" },
-        { key: "db", type: "text", label: "Database" },
-        {
-          key: "clone",
-          type: "select",
-          label: "Data",
-          value: "",
-          placeholder: "(fresh install)",
-          options: dbNames.map((n) => ({ value: n, label: "clone " + n })),
-        },
-      ],
+      title: `Edit "${ws.name}"`,
+      okLabel: "Save",
       validate: (v) => {
-        if (!v.base) return "pick a base target";
-        if (!sanitize(v.branch)) return "enter a branch name";
-        if (!sanitize(v.db)) return "enter a database name";
-        if (v.clone && dbNames.includes(sanitize(v.db)))
-          return `database "${sanitize(v.db)}" already exists — pick a new name to clone into`;
+        const name = (v.name || "").trim();
+        if (!name) return "a name is required";
+        if ((this.config.config.workspaces || []).some((w) => w.name === name && w.id !== ws.id))
+          return `a workspace named "${name}" already exists`;
+        if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
         return "";
       },
+      fields: [
+        { key: "name", type: "text", label: "Name", value: ws.name },
+        {
+          key: "config",
+          type: "text",
+          label: "Config",
+          value: repoBranchList.format(ws.checkouts),
+          placeholder: "community:master,enterprise:master",
+        },
+        { key: "db", type: "text", label: "Database", value: ws.db || "" },
+        { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" },
+      ],
     });
     if (!res) return;
-    await this.wt.createWorktree({
-      baseTargetId: res.base,
-      name: (res.name || res.branch).trim(),
-      branch: sanitize(res.branch),
-      dbName: sanitize(res.db),
-      cloneSource: res.clone || "",
+    this.config.workspace(ws.id)?.applyEdit({
+      name: res.name.trim(),
+      checkouts: repoBranchList.parse(res.config.trim()),
+      db: (res.db || "").trim(),
+      on_create_args: (res.args || "").trim(),
     });
+  }
+
+  // ── new workspace (unified: template picker + location) ─────────────────────
+  async create() {
+    await this.db.load(); // populate the "Clone db" select
+    const templates = this.config.config.templates || [];
+    const existing = this.config.config.workspaces || [];
+    const dbNames = new Set(this.db.databases().map((d) => d.name));
+    const dbOptions = this.db.databases().map((d) => ({ value: d.name, label: d.name }));
+    const res = await this.dialogs.open({
+      title: "New workspace",
+      okLabel: "Create",
+      validate: (v) => {
+        const name = (v.name || "").trim();
+        if (!name) return "a name is required";
+        if (existing.some((w) => w.name === name))
+          return `a workspace named "${name}" already exists`;
+        if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+        if (v.location === "worktree" && !v.template)
+          return "a worktree workspace needs a template — its branches fork from it";
+        if ((v.cloneDb || "") && !(v.db || "").trim())
+          return "set a database name to clone the selected database into";
+        if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
+          return `database "${(v.db || "").trim()}" already exists — pick a new name to clone into`;
+        return "";
+      },
+      fields: [
+        {
+          key: "template",
+          type: "select",
+          label: "Template",
+          placeholder: "— start blank —",
+          options: templates.map((t) => ({ value: t.id, label: t.name })),
+          value: templates[0]?.id ?? "",
+          onChange: (tplId) => {
+            const tpl = templates.find((t) => t.id === tplId);
+            if (!tpl) return null;
+            const branch =
+              tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
+              tpl.checkouts.find((c) => c.repo === "community")?.branch ||
+              "";
+            return {
+              name: branch,
+              config: repoBranchList.format(tpl.checkouts),
+              db: tpl.db || "",
+              args: tpl.on_create_args || "",
+              demoData: tpl.demo_data ?? true,
+            };
+          },
+        },
+        {
+          key: "location",
+          type: "select",
+          label: "Location",
+          value: "main",
+          options: [
+            { value: "main", label: "Main checkout (one loaded at a time)" },
+            { value: "worktree", label: "Own worktree + port (runs concurrently)" },
+          ],
+        },
+        {
+          key: "name",
+          type: "text",
+          label: "Name",
+          placeholder: "name (e.g. master-mytask)",
+          onChange: (newName, currentValues, oldValues) => {
+            const oldName = oldValues.name;
+            if (!oldName) return null;
+            return {
+              config: (currentValues.config || "").replaceAll(oldName, newName),
+              db: (currentValues.db || "").replaceAll(oldName, newName),
+            };
+          },
+        },
+        {
+          key: "config",
+          type: "text",
+          label: "Config",
+          placeholder: "community:master,enterprise:master",
+        },
+        { key: "db", type: "text", label: "Database", placeholder: "database name" },
+        { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+        {
+          key: "cloneDb",
+          type: "check-select",
+          label: "Clone db",
+          options: dbOptions,
+          value: "",
+          default: (v) => {
+            const tpl = templates.find((t) => t.id === v.template);
+            if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
+            return dbOptions[0]?.value || "";
+          },
+        },
+        { key: "demoData", type: "checkbox", label: "Demo data", value: true },
+        { key: "fav", type: "checkbox", label: "Favorite", value: false },
+        { key: "createBranches", type: "checkbox", label: "Create branches (main)", value: true },
+        { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
+      ],
+    });
+    if (!res) return;
+    const checkouts = repoBranchList.parse(res.config.trim());
+    const tpl = templates.find((t) => t.id === res.template);
+    const startPointByRepo = Object.fromEntries(
+      (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
+    );
+
+    if (res.location === "worktree") {
+      await this.wt.createWorktree({
+        name: res.name.trim(),
+        dbName: (res.db || "").trim(),
+        cloneSource: res.cloneDb || "",
+        checkouts,
+        startPointByRepo,
+        baseId: tpl?.id || "",
+        on_create_args: (res.args || "").trim(),
+        demo_data: !!res.demoData,
+        favorite: !!res.fav,
+      });
+      return;
+    }
+
+    // main-located: persist canonically (the workspaces key — spread the existing
+    // array so stable ports survive), then branches / activation / db clone
+    const ws = {
+      id: newTargetId(),
+      name: res.name.trim(),
+      favorite: !!res.fav,
+      db: (res.db || "").trim(),
+      on_create_args: (res.args || "").trim(),
+      demo_data: !!res.demoData,
+      location: "main",
+      worktree: null,
+      port: null,
+      checkouts,
+    };
+    this.eventLog.add(`creating workspace ${ws.name}`);
+    this.config.updateConfig({ workspaces: [...this.config.config.workspaces, ws] });
+    if (res.createBranches) {
+      const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+      await this.code.createBranches(
+        checkouts.map((c) => ({
+          path: pathByRepo[c.repo],
+          name: c.branch,
+          startPoint: startPointByRepo[c.repo],
+        })),
+      );
+    }
+    if (res.activate) await this.config.workspace(ws.id)?.activate();
+    if (res.cloneDb && ws.db && res.cloneDb !== ws.db) {
+      await this.db.cloneStoppingServer(res.cloneDb, ws.db);
+    }
+    this.wt.select(ws.id);
   }
 }
 
