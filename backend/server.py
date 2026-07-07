@@ -132,7 +132,7 @@ class EventBus:
         """Stream one worktree server's log line to the browser (SSE 'worktree_log',
         {target, line}). Unlike publish_log this does NOT touch the shared backlog
         ring buffer — worktree scrollback is kept per-server in WorktreeManager and
-        primed on selection via /api/worktree/logs."""
+        primed on selection via /api/workspace/logs."""
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
@@ -142,7 +142,7 @@ class EventBus:
         """Stream one Claude chat item for a worktree to the browser (SSE 'claude').
         payload is {target, role, ...}: role 'assistant'/'tool'/'result'/'error' as a
         headless `claude -p` run produces text, tool activity and its final result.
-        Per-target history lives in ClaudeManager and is primed via /api/worktree/
+        Per-target history lives in ClaudeManager and is primed via /api/workspace/
         claude/history — this only pushes the live increments."""
         with self._lock:
             subscribers = list(self._subscribers)
@@ -404,13 +404,12 @@ def goo_fast_forward():
 
 def restart_goo():
     """Restart goo in place (re-exec) so a just-applied update is loaded. Stops the
-    managed odoo process first — execv keeps the same PID but does NOT run atexit
-    handlers, and the new goo starts with a fresh MANAGER that wouldn't know about
-    a leftover child. The listening socket is close-on-exec, so the new process
-    rebinds the port. `--open` is dropped so no extra browser tab opens (the client
-    reloads its existing tab)."""
-    MANAGER.shutdown()
-    WORKTREES.shutdown()
+    managed odoo processes first — execv keeps the same PID but does NOT run atexit
+    handlers, and the new goo starts with a fresh WORKSPACES that wouldn't know
+    about leftover children. The listening socket is close-on-exec, so the new
+    process rebinds the port. `--open` is dropped so no extra browser tab opens
+    (the client reloads its existing tab)."""
+    WORKSPACES.shutdown()
     CLAUDE.shutdown()
     args = [a for a in sys.argv[1:] if a != "--open"]
     os.execv(sys.executable, [sys.executable, os.path.join(GOO_DIR, "goo.py"), *args])
@@ -682,18 +681,21 @@ def _ws_recv_frame(sock):
 
 
 # =============================================================================
-# Odoo process manager
+# Workspace process manager
 # =============================================================================
 
 
-class OdooManager:
-    """Owns the single odoo process. States:
-    stopped -> starting -> running -> stopping -> stopped
-    """
+class _Entry:
+    """The full per-workspace server state — one per workspace id. Every entry has
+    the complete kit: a PTY (terminal channel), a one-shot run slot with
+    resume-after, per-server log scrollback, and its own port bookkeeping ("main"
+    keeps port None — odoo's implicit default)."""
 
-    def __init__(self, bus):
-        self.bus = bus
-        self.lock = threading.Lock()
+    LOG_TAIL = 500  # lines kept per server so a freshly-selected workspace has scrollback
+
+    def __init__(self, wsid):
+        self.id = wsid
+        # process/lifecycle: stopped -> starting -> running -> stopping -> stopped
         self.state = "stopped"
         self.process = None
         self.master_fd = None
@@ -701,39 +703,68 @@ class OdooManager:
         self.db = None
         self.target = None
         self.cmd = None
-        self.mode = "server"  # "server" or "test"
+        self.mode = "server"  # server | test | install | upgrade
         self.started_at = None
         self.exited_unexpectedly = False
         self.returncode = None
+        self.port = None  # None for "main" (odoo default); the bound http port otherwise
+        self.gport = None
         # one-shot Run occupying the slot (test/install/upgrade) — None for a plain
-        # server or when stopped; kept as the last finished snapshot until superseded
+        # server or when stopped; kept as the last finished snapshot until superseded.
+        # resume-after: the config of the server interrupted to run the one-shot.
         self.run = None
-        self._run_seq = 0  # monotonic run-id source
-        # resume-after: the config of the server that was interrupted to run a one-shot
-        # (so we can restart it when the run ends), and the last server config we saw
-        self._server_config = None
-        self._resume_config = None
+        self.server_config = None
+        self.resume_config = None
+        # per-server log tail (worktree screens prime their scrollback from it)
+        self.log = collections.deque(maxlen=self.LOG_TAIL)
         # raw PTY byte ring buffer: replayed to each new terminal WebSocket client
         # so xterm.js can reconstruct the current terminal state on connect
-        self._raw_buf = bytearray()
-        self._raw_lock = threading.Lock()
-        self._ws_clients = set()  # set of queue.Queue, one per terminal WS connection
+        self.raw_buf = bytearray()
+        self.raw_lock = threading.Lock()
+        self.ws_clients = set()  # set of queue.Queue, one per terminal WS connection
+
+
+class WorkspaceManager:
+    """Owns every workspace's odoo server — the permanent "main" entry (the primary
+    checkout's server, on odoo's default port) plus one entry per worktree
+    workspace, each on its own stable port, all running concurrently. Each entry
+    carries a PTY terminal channel, readiness detection, a one-shot run slot with
+    backend-owned resume-after, and per-server log routing (main lines go to the
+    shared log ring buffer; worktree lines to the 'worktree_log' SSE stream + a
+    bounded tail).
+
+    Locking: `self.lock` guards the entries dict and every entry's lifecycle
+    fields; each entry's `raw_lock` guards only its raw_buf/ws_clients (terminal
+    fan-out never contends with lifecycle ops). Lock order: lock -> raw_lock,
+    never the reverse. build_odoo_cmd (psql probe) and status()'s odoo_info are
+    never called under `self.lock`.
+    """
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.lock = threading.Lock()
+        self.entries = {"main": _Entry("main")}  # wsid -> _Entry; entries never removed
+        self._run_seq = 0  # manager-level so run ids stay unique across workspaces
+
+    # ── snapshots ────────────────────────────────────────────────────────────────
 
     def status(self):
+        """The enriched "main" snapshot (GET /api/status + SSE priming)."""
         with self.lock:
-            active = self.state in ("starting", "running")
+            e = self.entries["main"]
+            active = e.state in ("starting", "running")
             snap = ServerSnapshot(
                 id="main",
-                state=self.state,
-                terminal=True,  # the main server owns the PTY/xterm channel
-                pid=self.process.pid if (active and self.process) else None,
-                db=self.db if active else None,
-                target=self.target if active else None,
-                cmd=self.cmd if active else None,
-                mode=self.mode if active else None,
-                started_at=self.started_at if active else None,
-                exited_unexpectedly=self.exited_unexpectedly,
-                returncode=self.returncode if self.exited_unexpectedly else None,
+                state=e.state,
+                terminal=True,  # the main server owns the default PTY/xterm channel
+                pid=e.process.pid if (active and e.process) else None,
+                db=e.db if active else None,
+                target=e.target if active else None,
+                cmd=e.cmd if active else None,
+                mode=e.mode if active else None,
+                started_at=e.started_at if active else None,
+                exited_unexpectedly=e.exited_unexpectedly,
+                returncode=e.returncode if e.exited_unexpectedly else None,
             )
         # asdict → every field present (odoo_version/enterprise/exists = None here),
         # so the client's spread-merge behaves as a full replace for "main"
@@ -745,23 +776,299 @@ class OdooManager:
             status["enterprise"] = enterprise
         return status
 
-    def run_snapshot(self):
-        """The current/last one-shot run (or None) — primed on SSE connect."""
-        with self.lock:
-            return dict(self.run) if self.run else None
+    def _public(self, entry):
+        """The SSE/JSON-safe view of a non-main entry. `exists` is dropped here:
+        it's a client-facing on-disk fact added only by status_for on bootstrap, so
+        the live SSE stream carries just state/port and the client's spread-merge
+        preserves the bootstrapped `exists` rather than clobbering it with null."""
+        snap = asdict(
+            ServerSnapshot(
+                id=entry.id,
+                state=entry.state,
+                terminal=False,
+                target=entry.id,
+                db=entry.db,
+                port=entry.port,
+            )
+        )
+        del snap["exists"]
+        return snap
 
-    def server_config(self):
-        """The config of the last plain-server start, for resume-after."""
-        with self.lock:
-            return self._server_config
+    def _snapshot(self, wsid, public):
+        """The wire snapshot for a publish: main's enriched status() (must run
+        outside self.lock — psql), else the `public` view computed under it."""
+        return self.status() if wsid == "main" else public
 
-    def _finish_run(self, returncode):
-        """Finalize the active run (if any) and return the server config to resume, or
-        None. `returncode` is the process exit code, or None when the run was stopped
-        manually. Publishes the finished run. The caller holds no lock and, if a config
-        is returned, restarts the server via start()."""
+    def public_snapshots(self):
+        """One wire snapshot per known entry, main first — for SSE priming."""
         with self.lock:
-            run = self.run
+            others = [self._public(e) for w, e in self.entries.items() if w != "main"]
+        return [self.status()] + others
+
+    def run_snapshot(self, wsid="main"):
+        """One workspace's current/last one-shot run, or None."""
+        with self.lock:
+            e = self.entries.get(wsid)
+            return dict(e.run) if e and e.run else None
+
+    def run_snapshots(self):
+        """Every workspace's current/last run — primed on SSE connect."""
+        with self.lock:
+            return [dict(e.run) for e in self.entries.values() if e.run]
+
+    def server_config(self, wsid):
+        """The config of a workspace's last plain-server start, for resume-after."""
+        with self.lock:
+            e = self.entries.get(wsid)
+            return e.server_config if e else None
+
+    def entry_for_terminal(self, wsid):
+        """The entry whose PTY a terminal WebSocket attaches to, or None."""
+        with self.lock:
+            return self.entries.get(wsid)
+
+    # ── lifecycle ────────────────────────────────────────────────────────────────
+
+    def _db_conflict(self, wsid, db):
+        """The refusal message when `db` is held by another active workspace, else
+        None (two odoo processes on one db corrupt it). Called under self.lock."""
+        for other, e in self.entries.items():
+            if other == wsid or e.state not in ("starting", "running"):
+                continue
+            if e.db != db:
+                continue
+            if other == "main":
+                return f"database '{db}' is in use by the main server"
+            if wsid == "main":
+                return f"database '{db}' is in use by the '{other}' workspace server"
+            return f"database '{db}' is in use by another worktree server"
+        return None
+
+    def start(self, wsid, config, resume_config=None):
+        """Launch a workspace's odoo process. A one-shot (test/install/upgrade) is
+        minted as a first-class Run occupying the slot; `resume_config` (set by
+        oneshot() when a running server was interrupted) is the server config to
+        restart when the run ends. "main" runs on odoo's default ports; other
+        workspaces on their stable cfg["worktree_port"] when set and free, else an
+        OS-assigned one. Returns (ok, detail): detail is {"cmd", "port"} on
+        success, else an error code."""
+        if not wsid:
+            return False, "missing workspace"
+        main = wsid == "main"
+        # build the command before taking the lock — it runs a psql probe
+        # (db_initialized) that must never stall the other workspaces
+        try:
+            cmd, db, is_new = build_odoo_cmd(config)
+        except ValueError as e:
+            return False, f"invalid_config: {e}"
+        with self.lock:
+            entry = self.entries.get(wsid)
+            if entry is None:
+                entry = self.entries[wsid] = _Entry(wsid)
+            if entry.state != "stopped":
+                return False, "already_running"
+            conflict = self._db_conflict(wsid, db)
+            if conflict:
+                return False, conflict
+
+            entry.exited_unexpectedly = False
+            entry.returncode = None
+            entry.db = db
+            entry.target = config.get("target")
+            s = config.get("start") or {}
+            entry.mode = (
+                "test"
+                if s.get("test_tags")
+                else "install"
+                if s.get("install")
+                else "upgrade"
+                if s.get("upgrade")
+                else "server"
+            )
+            entry.started_at = time.time()
+            if main:
+                entry.port = None
+                entry.gport = None
+                full_cmd = cmd
+            else:
+                wanted = config.get("worktree_port")
+                if wanted and port_is_free(wanted):
+                    port = wanted
+                else:
+                    if wanted:
+                        self.bus.publish_log(
+                            f"{TAG} port {wanted} is busy — falling back to a free port"
+                            f" for worktree {wsid}"
+                        )
+                    port = free_port()
+                entry.port = port
+                entry.gport = free_port()
+                full_cmd = f"{cmd} --http-port {port} --gevent-port {entry.gport}"
+            entry.cmd = full_cmd
+            # a plain server clears any active run and is remembered so a later run can
+            # resume it; a one-shot run is minted as a Run and records its resume config
+            if entry.mode == "server":
+                entry.run = None
+                entry.server_config = config
+                entry.resume_config = None
+            else:
+                self._run_seq += 1
+                spec = (
+                    {"tags": s.get("test_tags")}
+                    if entry.mode == "test"
+                    else {"module": s.get("install") or s.get("upgrade")}
+                )
+                entry.run = asdict(
+                    RunSnapshot(
+                        id=f"run-{self._run_seq}",
+                        kind=entry.mode,
+                        state="running",
+                        server=wsid,
+                        target=entry.target,
+                        db=db,
+                        spec=spec,
+                        resume=bool(resume_config),
+                        started_at=entry.started_at,
+                    )
+                )
+                entry.resume_config = resume_config
+            if main:
+                if is_new:
+                    self.bus.publish_log(
+                        f"{TAG} database '{db}' not initialized, applying on_create_args"
+                    )
+                self.bus.publish_log(f"{TAG} starting odoo: {full_cmd}")
+                warn_if_rust_bundler_missing(config, self.bus)
+            else:
+                self.bus.publish_log(f"{TAG} starting worktree odoo ({wsid}): {full_cmd}")
+                warn_if_rust_bundler_missing(config, self.bus, context=f"worktree {wsid}")
+
+            entry.log.clear()
+            with entry.raw_lock:
+                entry.raw_buf.clear()
+
+            effects.trace("run", full_cmd)
+            master_fd, slave_fd = pty.openpty()
+            entry.process = subprocess.Popen(
+                full_cmd,
+                shell=True,
+                executable="/bin/bash",
+                stdout=slave_fd,
+                stderr=slave_fd,
+                stdin=slave_fd,
+                preexec_fn=os.setsid,
+            )
+            os.close(slave_fd)
+            entry.master_fd = master_fd
+            entry.state = "starting"
+            entry.reader_thread = threading.Thread(
+                target=self._reader,
+                args=(wsid, master_fd, entry.process),
+                daemon=True,
+            )
+            entry.reader_thread.start()
+            run = entry.run
+            port_out = entry.port
+            public = None if main else self._public(entry)
+        self.bus.publish_server(self._snapshot(wsid, public))
+        if run:
+            self.bus.publish_run(dict(run))  # a fresh one-shot run went "running"
+        return True, {"cmd": full_cmd, "port": port_out}
+
+    def stop(self, wsid):
+        """Stop a workspace's server. Idempotent; frees its port (for "main", only
+        as a fallback when something still holds the default odoo port — orphans,
+        external servers)."""
+        main = wsid == "main"
+        with self.lock:
+            entry = self.entries.get(wsid)
+            if not entry:
+                return True, "stopped"  # unknown workspace — nothing to do
+            if entry.state == "stopping":
+                # someone else is finishing the job; main keeps its historical
+                # refusal (the UI disables Stop on it), workspaces stay idempotent
+                return (False, "already_stopping") if main else (True, "stopped")
+            was_active = entry.state in ("starting", "running")
+            process = entry.process
+            reader = entry.reader_thread
+            port = entry.port
+            if was_active:
+                entry.state = "stopping"
+
+        if was_active:
+            if main:
+                self.bus.publish_server(self.status())
+                self.bus.publish_log(f"{TAG} stopping odoo...")
+            else:
+                self.bus.publish_log(f"{TAG} stopping worktree odoo ({wsid})...")
+            # never let an exception leave us stuck in "stopping" (the guard
+            # above would then refuse every future stop until goo restarts)
+            try:
+                terminate_process(process)
+            except Exception as e:
+                if main:
+                    self.bus.publish_log(f"{TAG} error while stopping: {e}")
+                else:
+                    self.bus.publish_log(f"{TAG} error stopping worktree ({wsid}): {e}")
+            # terminate_process already SIGKILLed odoo's whole process group, so the
+            # port is normally free now — the lsof kill is the orphan fallback ("main"
+            # only when something still listens; workspaces always, as before)
+            if main:
+                if port_busy(ODOO_PORT):
+                    kill_port(ODOO_PORT)
+            elif port:
+                kill_port(port)
+            if reader:
+                reader.join(timeout=2)
+            with self.lock:
+                entry.state = "stopped"
+                entry.process = None
+                entry.master_fd = None
+                if main:
+                    entry.db = None
+                    entry.target = None
+                    entry.cmd = None
+                    entry.started_at = None
+                public = None if main else self._public(entry)
+            if main:
+                self.bus.publish_log(f"{TAG} odoo stopped")
+        else:
+            if main and port_busy(ODOO_PORT):
+                kill_port(ODOO_PORT)
+                self.bus.publish_log(f"{TAG} killed process on port {ODOO_PORT}")
+            elif not main and port:
+                kill_port(port)
+            with self.lock:
+                public = None if main else self._public(entry)
+
+        self.bus.publish_server(self._snapshot(wsid, public))
+        return True, "stopped"
+
+    def restart(self, wsid, config):
+        ok, detail = self.stop(wsid)
+        if not ok:
+            return ok, detail
+        return self.start(wsid, config)
+
+    def oneshot(self, wsid, config):
+        """Run a one-shot (tests/install/upgrade) on a workspace's slot: interrupt
+        its plain server if one is running (remembering its config so the run's end
+        restarts it — resume-after, owned server-side), then start the one-shot."""
+        with self.lock:
+            entry = self.entries.get(wsid)
+            active = entry and entry.state in ("starting", "running")
+            resume = entry.server_config if (active and entry.mode == "server") else None
+        self.stop(wsid)
+        return self.start(wsid, config, resume_config=resume)
+
+    def finish_run(self, wsid, returncode):
+        """Finalize a workspace's active run (if any) and return the server config
+        to resume, or None. `returncode` is the process exit code, or None when the
+        run was stopped manually. Publishes the finished run. The caller holds no
+        lock and, if a config is returned, restarts the server via start()."""
+        with self.lock:
+            entry = self.entries.get(wsid)
+            run = entry.run if entry else None
             if not run or run.get("state") != "running":
                 return None
             if returncode is None:  # manually stopped mid-run
@@ -772,178 +1079,36 @@ class OdooManager:
                 run["ok"] = returncode == 0
             run["returncode"] = returncode
             snapshot = dict(run)
-            resume = self._resume_config
-            self._resume_config = None
+            resume = entry.resume_config
+            entry.resume_config = None
         self.bus.publish_run(snapshot)
         return resume
 
-    def start(self, config, resume_config=None):
-        """Launch the odoo process. A one-shot run (test/install/upgrade) is minted as
-        a first-class Run occupying the slot; `resume_config` (set by _action_oneshot
-        when a running server was interrupted) is the server config to restart when the
-        run ends. Returns (ok, detail): detail is the command on success, else an error
-        code."""
-        with self.lock:
-            if self.state != "stopped":
-                return False, "already_running"
-            try:
-                cmd, db, is_new = build_odoo_cmd(config)
-            except ValueError as e:
-                return False, f"invalid_config: {e}"
-
-            self.exited_unexpectedly = False
-            self.returncode = None
-            self.db = db
-            self.target = config.get("target")
-            self.cmd = cmd
-            s = config.get("start") or {}
-            self.mode = (
-                "test"
-                if s.get("test_tags")
-                else "install"
-                if s.get("install")
-                else "upgrade"
-                if s.get("upgrade")
-                else "server"
-            )
-            self.started_at = time.time()
-            # a plain server clears any active run and is remembered so a later run can
-            # resume it; a one-shot run is minted as a Run and records its resume config
-            if self.mode == "server":
-                self.run = None
-                self._server_config = config
-                self._resume_config = None
-            else:
-                self._run_seq += 1
-                spec = (
-                    {"tags": s.get("test_tags")}
-                    if self.mode == "test"
-                    else {"module": s.get("install") or s.get("upgrade")}
-                )
-                self.run = asdict(
-                    RunSnapshot(
-                        id=f"run-{self._run_seq}",
-                        kind=self.mode,
-                        state="running",
-                        target=self.target,
-                        db=db,
-                        spec=spec,
-                        resume=bool(resume_config),
-                        started_at=self.started_at,
-                    )
-                )
-                self._resume_config = resume_config
-            if is_new:
-                self.bus.publish_log(
-                    f"{TAG} database '{db}' not initialized, applying on_create_args"
-                )
-            self.bus.publish_log(f"{TAG} starting odoo: {cmd}")
-            warn_if_rust_bundler_missing(config, self.bus)
-
-            with self._raw_lock:
-                self._raw_buf.clear()
-
-            effects.trace("run", cmd)
-            master_fd, slave_fd = pty.openpty()
-            self.process = subprocess.Popen(
-                cmd,
-                shell=True,
-                executable="/bin/bash",
-                stdout=slave_fd,
-                stderr=slave_fd,
-                stdin=slave_fd,
-                preexec_fn=os.setsid,
-            )
-            os.close(slave_fd)
-            self.master_fd = master_fd
-            self.state = "starting"
-            self.reader_thread = threading.Thread(
-                target=self._reader,
-                args=(master_fd, self.process),
-                daemon=True,
-            )
-            self.reader_thread.start()
-            run = self.run
-        self.bus.publish_server(self.status())
-        if run:
-            self.bus.publish_run(dict(run))  # a fresh one-shot run went "running"
-        return True, cmd
-
-    def stop(self):
-        """Stop the odoo process. Idempotent; when already stopped, still
-        kills whatever holds the odoo port (orphans, external servers)."""
-        with self.lock:
-            if self.state == "stopping":
-                return False, "already_stopping"
-            was_active = self.state in ("starting", "running")
-            process = self.process
-            reader = self.reader_thread
-            if was_active:
-                self.state = "stopping"
-
-        if was_active:
-            self.bus.publish_server(self.status())
-            self.bus.publish_log(f"{TAG} stopping odoo...")
-            # never let an exception leave us stuck in "stopping" (the guard
-            # above would then refuse every future stop until goo restarts)
-            try:
-                self._terminate(process)
-            except Exception as e:
-                self.bus.publish_log(f"{TAG} error while stopping: {e}")
-            # _terminate already SIGKILLed odoo's whole process group, so the port
-            # is normally free now — only fall back to the (subprocess) lsof kill
-            # when something is *still* holding it (a stray orphan / external server)
-            if port_busy(ODOO_PORT):
-                kill_port(ODOO_PORT)
-            if reader:
-                reader.join(timeout=2)
-            with self.lock:
-                self.state = "stopped"
-                self.process = None
-                self.master_fd = None
-                self.db = None
-                self.target = None
-                self.cmd = None
-                self.started_at = None
-            self.bus.publish_log(f"{TAG} odoo stopped")
-        elif port_busy(ODOO_PORT):
-            kill_port(ODOO_PORT)
-            self.bus.publish_log(f"{TAG} killed process on port {ODOO_PORT}")
-
-        self.bus.publish_server(self.status())
-        return True, "stopped"
-
-    def _terminate(self, process):
-        """Signal-escalate the odoo process group until it exits (see the module
-        terminate_process)."""
-        terminate_process(process)
-
-    def restart(self, config):
-        ok, detail = self.stop()
-        if not ok:
-            return ok, detail
-        return self.start(config)
-
     def shutdown(self):
-        """Cleanup on goo exit: stop our own child, but never touch an
-        external odoo we didn't start."""
+        """Cleanup on goo exit/restart: stop every server we started, but never
+        touch an external odoo we didn't start."""
         with self.lock:
-            active = self.state in ("starting", "running")
-        if active:
-            self.stop()
+            active = [w for w, e in self.entries.items() if e.state in ("starting", "running")]
+        for w in active:
+            self.stop(w)
 
-    def _emit_raw(self, data):
-        """Append raw PTY bytes to the ring buffer and fan out to terminal WS clients."""
-        with self._raw_lock:
-            self._raw_buf += data
-            if len(self._raw_buf) > RAW_BUF_MAX:
-                self._raw_buf = self._raw_buf[-RAW_BUF_MAX:]
-            clients = list(self._ws_clients)
+    # ── output plumbing ──────────────────────────────────────────────────────────
+
+    def _emit_raw(self, entry, data):
+        """Append raw PTY bytes to the entry's ring buffer and fan out to its
+        terminal WS clients."""
+        with entry.raw_lock:
+            entry.raw_buf += data
+            if len(entry.raw_buf) > RAW_BUF_MAX:
+                entry.raw_buf = entry.raw_buf[-RAW_BUF_MAX:]
+            clients = list(entry.ws_clients)
         for q in clients:
             q.put(data)
 
-    def _reader(self, fd, process):
-        """Read the PTY, publish lines, detect readiness and unexpected exit."""
+    def _reader(self, wsid, fd, process):
+        """Read a workspace's PTY, fan lines out, detect readiness and unexpected
+        exit. One thread per running entry."""
+        entry = self.entries[wsid]
         buf = b""
         while True:
             try:
@@ -952,236 +1117,85 @@ class OdooManager:
                 break
             if not data:
                 break
-            self._emit_raw(data)
+            self._emit_raw(entry, data)
             buf += data
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
-                self._handle_line(raw.decode("utf-8", errors="replace").rstrip("\r"))
+                self._handle_line(wsid, process, raw.decode("utf-8", errors="replace").rstrip("\r"))
         if buf:
-            self._handle_line(buf.decode("utf-8", errors="replace").rstrip("\r"))
+            self._handle_line(wsid, process, buf.decode("utf-8", errors="replace").rstrip("\r"))
         try:
             os.close(fd)
         except OSError:
             pass
 
         ret = process.wait()
+        main = wsid == "main"
         with self.lock:
             # stop() owns intentional exits; a stale reader (post-restart)
             # must not touch the new process state
-            if self.state == "stopping" or process is not self.process:
+            if entry.state == "stopping" or entry.process is not process:
                 return
-            self.state = "stopped"
-            self.process = None
-            self.master_fd = None
-            self.db = None
-            self.target = None
-            self.cmd = None
-            self.started_at = None
-            self.exited_unexpectedly = True
-            self.returncode = ret
-        self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
-        self.bus.publish_server(self.status())
+            entry.state = "stopped"
+            entry.process = None
+            entry.master_fd = None
+            if main:
+                entry.db = None
+                entry.target = None
+                entry.cmd = None
+                entry.started_at = None
+            entry.exited_unexpectedly = True
+            entry.returncode = ret
+            public = None if main else self._public(entry)
+        if main:
+            self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
+        else:
+            self.bus.publish_event(
+                f"worktree server ({wsid}) exited unexpectedly (code {ret})", level="error"
+            )
+        self.bus.publish_server(self._snapshot(wsid, public))
         # a one-shot run just ended on its own: finalize it and, if it had interrupted
         # a server, bring that server back (resume-after, owned here so it survives a
         # mid-run reload). start() runs a fresh process + reader thread.
-        resume = self._finish_run(ret)
+        resume = self.finish_run(wsid, ret)
         if resume:
-            self.start(resume)
+            self.start(wsid, resume)
 
-    def _handle_line(self, line):
-        self.bus.publish_log(line)
-        if READY_MARKER in line:
-            with self.lock:
-                if self.state != "starting":
-                    return
-                self.state = "running"
-            self.bus.publish_server(self.status())
-
-
-class WorktreeManager:
-    """Owns the per-target worktree odoo servers — one process per target, each on
-    its own port, all running concurrently with the main OdooManager and with each
-    other (so several branches can run at once). Keyed by target id. Lighter than
-    OdooManager: no PTY/terminal — just readiness detection, per-server log
-    streaming (SSE 'worktree_log' + a bounded tail), and a clean stop. State per
-    entry: starting -> running -> stopping -> stopped.
-    """
-
-    LOG_TAIL = 500  # lines kept per server so a freshly-selected worktree has scrollback
-
-    def __init__(self, bus):
-        self.bus = bus
-        self.lock = threading.Lock()
-        self.servers = {}  # target_id -> entry dict
-
-    def _public(self, target, entry):
-        """The SSE/JSON-safe view of one server entry — a ServerSnapshot keyed by the
-        worktree's own target id (no PTY, so terminal=False). `exists` is dropped
-        here: it's a client-facing on-disk fact added only by status_for on bootstrap,
-        so the live SSE stream carries just state/port and the client's spread-merge
-        preserves the bootstrapped `exists` rather than clobbering it with null."""
-        snap = asdict(
-            ServerSnapshot(
-                id=target,
-                state=entry["state"],
-                terminal=False,
-                target=target,
-                db=entry["db"],
-                port=entry["port"],
-            )
-        )
-        del snap["exists"]
-        return snap
-
-    def start(self, target, config):
-        """Launch a worktree odoo server for <target> on its own port — the
-        workspace's stable cfg["worktree_port"] when set and free, else an
-        OS-assigned one. Returns (ok, detail): detail is {"port": N} on success, else
-        an error string. The config must already carry the worktree's repo paths +
-        server_path."""
-        if not target:
-            return False, "missing target"
-        try:
-            cmd, db, _is_new = build_odoo_cmd(config)
-        except ValueError as e:
-            return False, f"invalid_config: {e}"
-        # two odoo processes on one db corrupt it — refuse if the db is already held
-        # by the main server or another worktree server (read main status outside our
-        # lock to avoid holding it during a db query)
-        main = MANAGER.status()
+    def _handle_line(self, wsid, process, line):
+        """Route one output line (main → the shared log ring buffer, workspaces →
+        the per-server tail + 'worktree_log' SSE) and flip starting→running on the
+        ready marker. A stale process's lines are dropped."""
+        entry = self.entries.get(wsid)
+        main = wsid == "main"
         with self.lock:
-            existing = self.servers.get(target)
-            if existing and existing["state"] in ("starting", "running"):
-                return False, "already_running"
-            if main.get("state") in ("starting", "running") and main.get("db") == db:
-                return False, f"database '{db}' is in use by the main server"
-            for t, e in self.servers.items():
-                if t != target and e["state"] in ("starting", "running") and e["db"] == db:
-                    return False, f"database '{db}' is in use by another worktree server"
-            # run on the workspace's stable port when it has one (and it's actually
-            # free — a stale holder must not brick the start), else on free ports, so
-            # the main server (default ports) is undisturbed either way
-            wanted = config.get("worktree_port")
-            if wanted and port_is_free(wanted):
-                port = wanted
-            else:
-                if wanted:
-                    self.bus.publish_log(
-                        f"{TAG} port {wanted} is busy — falling back to a free port"
-                        f" for worktree {target}"
-                    )
-                port = free_port()
-            gport = free_port()
-            wcmd = f"{cmd} --http-port {port} --gevent-port {gport}"
-            self.bus.publish_log(f"{TAG} starting worktree odoo ({target}): {wcmd}")
-            warn_if_rust_bundler_missing(config, self.bus, context=f"worktree {target}")
-            effects.trace("run", wcmd)
-            process = subprocess.Popen(
-                wcmd,
-                shell=True,
-                executable="/bin/bash",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid,
-            )
-            entry = {
-                "state": "starting",
-                "port": port,
-                "gport": gport,
-                "db": db,
-                "process": process,
-                "started_at": time.time(),
-                "exited_unexpectedly": False,
-                "returncode": None,
-                "log": collections.deque(maxlen=self.LOG_TAIL),
-            }
-            self.servers[target] = entry
-            threading.Thread(target=self._reader, args=(target, process), daemon=True).start()
-        self.bus.publish_server(self._public(target, entry))
-        return True, {"port": port}
-
-    def _reader(self, target, process):
-        """Drain the worktree server's output: stream every line to the browser and
-        the per-server tail, flip to running on the ready marker, detect exit."""
-        for line in process.stdout:
-            line = line.rstrip("\r\n")
-            with self.lock:
-                entry = self.servers.get(target)
-                current = bool(entry and entry["process"] is process)
-                if current:
-                    entry["log"].append(line)
-                ready = current and READY_MARKER in line and entry["state"] == "starting"
-                if ready:
-                    entry["state"] = "running"
-                    snap = self._public(target, entry)
-            if current:
-                self.bus.publish_worktree_log(target, line)
-            if ready:
-                self.bus.publish_server(snap)
-        ret = process.wait()
-        with self.lock:
-            entry = self.servers.get(target)
-            # stop() owns intentional exits; a stale reader (post-restart) must not
-            # clobber a freshly-started entry
-            if not entry or entry["process"] is not process or entry["state"] == "stopping":
+            if not entry or entry.process is not process:
                 return
-            entry["state"] = "stopped"
-            entry["exited_unexpectedly"] = True
-            entry["returncode"] = ret
-            entry["process"] = None  # keep the entry so the screen shows "stopped"
-            snap = self._public(target, entry)
-        self.bus.publish_event(
-            f"worktree server ({target}) exited unexpectedly (code {ret})", level="error"
-        )
-        self.bus.publish_server(snap)
+            entry.log.append(line)
+            ready = READY_MARKER in line and entry.state == "starting"
+            if ready:
+                entry.state = "running"
+            public = None if main else self._public(entry)
+        if main:
+            self.bus.publish_log(line)
+        else:
+            self.bus.publish_worktree_log(wsid, line)
+        if ready:
+            self.bus.publish_server(self._snapshot(wsid, public))
 
-    def stop(self, target):
-        """Stop a worktree server. Idempotent; always frees its port."""
-        with self.lock:
-            entry = self.servers.get(target)
-            if not entry:
-                return True, "stopped"
-            port = entry["port"]
-            if entry["state"] in ("starting", "running"):
-                entry["state"] = "stopping"
-                process = entry["process"]
-            else:
-                process = None
-        if process is not None:
-            self.bus.publish_log(f"{TAG} stopping worktree odoo ({target})...")
-            try:
-                terminate_process(process)
-            except Exception as e:
-                self.bus.publish_log(f"{TAG} error stopping worktree ({target}): {e}")
-        if port:
-            kill_port(port)
-        with self.lock:
-            entry = self.servers.get(target)
-            if entry:
-                entry["state"] = "stopped"
-                entry["process"] = None
-                snap = self._public(target, entry)
-            else:
-                snap = asdict(
-                    ServerSnapshot(id=target, state="stopped", terminal=False, target=target)
-                )
-        self.bus.publish_server(snap)
-        return True, "stopped"
+    # ── bootstrap reads ──────────────────────────────────────────────────────────
 
-    def logs_for(self, target):
-        """The buffered log tail (list of lines) for one worktree server, or []."""
+    def logs_for(self, wsid):
+        """The buffered log tail (list of lines) for one workspace server, or []."""
         with self.lock:
-            entry = self.servers.get(target)
-            return list(entry["log"]) if entry else []
+            entry = self.entries.get(wsid)
+            return list(entry.log) if entry else []
 
     def status_for(self, targets):
         """targets: [{"id", "dirPath"}]. Returns {id: ServerSnapshot-dict}, merging
-        each target's on-disk worktree existence with its live server state (or a
-        stopped snapshot when no server is running)."""
+        each workspace's on-disk worktree existence with its live server state (or
+        a stopped snapshot when no server has run yet)."""
         with self.lock:
-            servers = {t: self._public(t, e) for t, e in self.servers.items()}
+            servers = {w: self._public(e) for w, e in self.entries.items() if w != "main"}
         out = {}
         for t in targets:
             tid = t.get("id")
@@ -1193,13 +1207,6 @@ class WorktreeManager:
             snap["exists"] = effects.is_dir(t.get("dirPath", ""))
             out[tid] = snap
         return out
-
-    def shutdown(self):
-        """Stop every worktree server (goo exit / restart)."""
-        with self.lock:
-            targets = list(self.servers.keys())
-        for t in targets:
-            self.stop(t)
 
 
 def _summarize_tool(name, inp):
@@ -1434,8 +1441,7 @@ class ClaudeManager:
 
 
 BUS = EventBus()
-MANAGER = OdooManager(BUS)
-WORKTREES = WorktreeManager(BUS)
+WORKSPACES = WorkspaceManager(BUS)
 CLAUDE = ClaudeManager(BUS)
 # services layer over the IO seam (effects): external state fetched + parsed +
 # cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min, databases 1 min.
@@ -1529,7 +1535,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/") :])
         elif path == "/api/status":
-            self._send_json(200, MANAGER.status())
+            self._send_json(200, WORKSPACES.status())
         elif path == "/api/goo/update":
             self._send_json(200, {**GOO_UPDATE, "boot": BOOT_ID})
         elif path == "/api/databases":
@@ -1564,10 +1570,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_ok():
             return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         path = self.path.split("?", 1)[0]
+        # legacy alias: a still-open tab running the pre-workspace bundle keeps
+        # working across the goo restart (removed in Phase 6)
+        path = path.replace("/api/worktree/", "/api/workspace/", 1)
         if path == "/api/start":
-            self._action_start(MANAGER.start)
+            self._action_start(lambda cfg: WORKSPACES.start("main", cfg))
         elif path == "/api/restart":
-            self._action_start(MANAGER.restart)
+            self._action_start(lambda cfg: WORKSPACES.restart("main", cfg))
         elif path in ("/api/tests/run", "/api/addons/run"):
             self._action_oneshot()
         elif path == "/api/config":
@@ -1587,14 +1596,14 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
         elif path == "/api/stop":
-            ok, detail = MANAGER.stop()
+            ok, detail = WORKSPACES.stop("main")
             # stopping a one-shot run mid-flight finalizes it and, like a natural
             # finish, resumes any server it had interrupted (the reader bailed out
             # because stop() owns the exit, so drive the resume from here)
             if ok:
-                resume = MANAGER._finish_run(None)
+                resume = WORKSPACES.finish_run("main", None)
                 if resume:
-                    MANAGER.start(resume)
+                    WORKSPACES.start("main", resume)
                 self._send_json(200, {"ok": True, "state": "stopped"})
             else:
                 self._send_json(409, {"ok": False, "error": detail})
@@ -1804,7 +1813,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 results = []
             self._send_json(200, {"ok": True, "results": results})
-        elif path == "/api/worktree/create":
+        elif path == "/api/workspace/create":
             # add a git worktree per repo (the frontend computes every path); git
             # creates the parent <worktree_dir>/<target>/ folder on the first add
             body, err = self._read_json()
@@ -1823,7 +1832,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
-        elif path == "/api/worktree/start":
+        elif path == "/api/workspace/start":
             body, err = self._read_json()
             target = (body or {}).get("target")
             if err or not target:
@@ -1831,20 +1840,20 @@ class Handler(BaseHTTPRequestHandler):
             cfg = self._build_launch(body)  # server builds the worktree launch config
             if cfg is None:
                 return self._send_json(400, {"ok": False, "error": "unknown target"})
-            ok, detail = WORKTREES.start(target, cfg)
+            ok, detail = WORKSPACES.start(target, cfg)
             if ok:
                 self._send_json(200, {"ok": True, "port": detail["port"]})
             else:
                 code = 400 if str(detail).startswith("invalid_config") else 409
                 self._send_json(code, {"ok": False, "error": detail})
-        elif path == "/api/worktree/stop":
+        elif path == "/api/workspace/stop":
             body, err = self._read_json()
             target = (body or {}).get("target")
             if err or not target:
                 return self._send_json(400, {"ok": False, "error": "missing target"})
-            ok, detail = WORKTREES.stop(target)
+            ok, detail = WORKSPACES.stop(target)
             self._send_json(200 if ok else 409, {"ok": ok, "error": None if ok else detail})
-        elif path == "/api/worktree/remove":
+        elif path == "/api/workspace/remove":
             body, err = self._read_json()
             repos = (body or {}).get("repos")
             dir_path = (body or {}).get("dirPath")
@@ -1862,19 +1871,19 @@ class Handler(BaseHTTPRequestHandler):
             if target:
                 CLAUDE.forget(target)  # its checkout is gone; drop the chat + any run
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
-        elif path == "/api/worktree/list":
+        elif path == "/api/workspace/list":
             body, err = self._read_json()
             targets = (body or {}).get("targets")
             if err or not isinstance(targets, list):
                 return self._send_json(400, {"ok": False, "error": "missing targets list"})
-            self._send_json(200, {"ok": True, "worktrees": WORKTREES.status_for(targets)})
-        elif path == "/api/worktree/logs":
+            self._send_json(200, {"ok": True, "worktrees": WORKSPACES.status_for(targets)})
+        elif path == "/api/workspace/logs":
             body, err = self._read_json()
             target = (body or {}).get("target")
             if err or not target:
                 return self._send_json(400, {"ok": False, "error": "missing target"})
-            self._send_json(200, {"ok": True, "lines": WORKTREES.logs_for(target)})
-        elif path == "/api/worktree/claude":
+            self._send_json(200, {"ok": True, "lines": WORKSPACES.logs_for(target)})
+        elif path == "/api/workspace/claude":
             body, err = self._read_json()
             target = (body or {}).get("target")
             prompt = (body or {}).get("prompt")
@@ -1889,14 +1898,14 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 code = 409 if detail == "already_running" else 400
                 self._send_json(code, {"ok": False, "error": detail})
-        elif path == "/api/worktree/claude/stop":
+        elif path == "/api/workspace/claude/stop":
             body, err = self._read_json()
             target = (body or {}).get("target")
             if err or not target:
                 return self._send_json(400, {"ok": False, "error": "missing target"})
             ok, detail = CLAUDE.stop(target)
             self._send_json(200, {"ok": ok, "error": None if ok else detail})
-        elif path == "/api/worktree/claude/history":
+        elif path == "/api/workspace/claude/history":
             body, err = self._read_json()
             target = (body or {}).get("target")
             if err or not target:
@@ -2047,32 +2056,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": "unknown target"})
         ok, detail = action(cfg)
         if ok:
-            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
+            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail["cmd"]})
         else:
             code = 400 if detail.startswith("invalid_config") else 409
             self._send_json(code, {"ok": False, "error": detail})
 
     def _action_oneshot(self):
-        """Stop whatever holds the odoo port, then start a one-shot run
-        (tests / install / upgrade). Shares the manager with the server. If a real
-        server is interrupted, its config is handed to the run so the backend restarts
-        it when the run ends (resume-after, owned server-side)."""
+        """Start a one-shot run (tests / install / upgrade) on a workspace's server
+        slot — `body["workspace"]` (default "main"). The slot's own server is stopped
+        first; if a real server was interrupted, its config is handed to the run so
+        the backend restarts it when the run ends (resume-after, owned server-side)."""
         body, err = self._read_json()
         if err:
             return self._send_json(400, {"ok": False, "error": err})
         cfg = self._build_launch(body)
         if cfg is None:
             return self._send_json(400, {"ok": False, "error": "unknown target"})
-        pre = MANAGER.status()
-        resume_config = (
-            MANAGER.server_config()
-            if pre.get("state") in ("starting", "running") and pre.get("mode") == "server"
-            else None
-        )
-        MANAGER.stop()
-        ok, detail = MANAGER.start(cfg, resume_config=resume_config)
+        wsid = (body or {}).get("workspace") or "main"
+        ok, detail = WORKSPACES.oneshot(wsid, cfg)
         if ok:
-            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail})
+            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail["cmd"]})
         else:
             code = 400 if detail.startswith("invalid_config") else 409
             self._send_json(code, {"ok": False, "error": detail})
@@ -2117,10 +2120,16 @@ class Handler(BaseHTTPRequestHandler):
     # --- WebSocket terminal ---
 
     def _handle_terminal(self):
-        """Upgrade to WebSocket, replay the PTY ring buffer, then proxy
-        live PTY bytes to the browser and browser keystrokes to the PTY."""
+        """Upgrade to WebSocket, replay a workspace server's PTY ring buffer, then
+        proxy live PTY bytes to the browser and browser keystrokes to the PTY. The
+        workspace is picked with ?workspace=<id> (default "main")."""
         if not self._origin_ok():
             return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        wsid = (qs.get("workspace") or ["main"])[0]
+        entry = WORKSPACES.entry_for_terminal(wsid)
+        if entry is None:
+            return self._send_json(404, {"ok": False, "error": "unknown workspace"})
         key = self.headers.get("Sec-WebSocket-Key", "")
         if not key:
             return self._send_json(400, {"ok": False, "error": "missing WS key"})
@@ -2136,9 +2145,9 @@ class Handler(BaseHTTPRequestHandler):
         q = queue.Queue()
 
         # snapshot buffer + register atomically so no bytes are lost
-        with MANAGER._raw_lock:
-            replay = bytes(MANAGER._raw_buf)
-            MANAGER._ws_clients.add(q)
+        with entry.raw_lock:
+            replay = bytes(entry.raw_buf)
+            entry.ws_clients.add(q)
 
         try:
             if replay:
@@ -2161,7 +2170,7 @@ class Handler(BaseHTTPRequestHandler):
                 opcode, payload = _ws_recv_frame(sock)
                 if opcode == 8:  # close
                     break
-                fd = MANAGER.master_fd
+                fd = entry.master_fd  # re-read per frame — a restart swaps the PTY
                 if fd is None:
                     continue
                 if opcode == 1:  # text: JSON control message (resize)
@@ -2183,7 +2192,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
         finally:
-            MANAGER._ws_clients.discard(q)
+            entry.ws_clients.discard(q)
             q.put(None)  # stop the sender thread
 
     def _handle_shell(self):
@@ -2291,9 +2300,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()  # no Content-Length: HTTP/1.0 read-until-close
-            self._send_event("server", MANAGER.status())
-            run = MANAGER.run_snapshot()
-            if run:
+            # prime every workspace server (main first, enriched) + every run, so a
+            # fresh tab reflects the whole runtime without extra bootstrap calls
+            for snap in WORKSPACES.public_snapshots():
+                self._send_event("server", snap)
+            for run in WORKSPACES.run_snapshots():
                 self._send_event("run", run)
             self._send_event("config", CONFIG.get())
             for line in backlog:
@@ -2343,7 +2354,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": "missing test_tags"})
         snapshot = CONFIG.get()
         config = snapshot.get("config")
-        active = (snapshot.get("state") or {}).get("active_target")
+        state = snapshot.get("state") or {}
+        # active_workspace is the current key; active_target survives in configs that
+        # never booted the workspace-era frontend
+        active = state.get("active_workspace") or state.get("active_target")
         cfg = (
             services.build_start_config(config, active, {"test_tags": tags})
             if config and active
@@ -2499,8 +2513,7 @@ def main():
         webbrowser.open(url)
 
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
-    atexit.register(MANAGER.shutdown)
-    atexit.register(WORKTREES.shutdown)
+    atexit.register(WORKSPACES.shutdown)
     atexit.register(CLAUDE.shutdown)
     # check whether goo's checkout is behind origin/master — at startup, then hourly
     threading.Thread(target=goo_update_loop, daemon=True).start()
@@ -2509,8 +2522,7 @@ def main():
     except KeyboardInterrupt:
         print(f"\n{TAG} shutting down...")
     finally:
-        MANAGER.shutdown()
-        WORKTREES.shutdown()
+        WORKSPACES.shutdown()
         CLAUDE.shutdown()
     return 0
 

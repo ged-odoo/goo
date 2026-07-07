@@ -9,11 +9,12 @@ import subprocess
 import threading
 import time
 import unittest
+import unittest.mock
 from dataclasses import asdict
 
 from backend import services
 from backend.cache import TTLCache
-from backend.models import ServerSnapshot
+from backend.models import RunSnapshot, ServerSnapshot
 
 
 def completed(stdout="", returncode=0, stderr=""):
@@ -1531,13 +1532,23 @@ class ServerSnapshotTest(unittest.TestCase):
         self.assertEqual((snap["id"], snap["target"], snap["port"]), ("wt-x", "wt-x", 8072))
         self.assertFalse(snap["terminal"])
 
+    def test_run_snapshot_server_key(self):
+        # runs default to the main slot; a workspace one-shot carries its own id
+        self.assertEqual(
+            asdict(RunSnapshot(id="run-1", kind="test", state="running"))["server"], "main"
+        )
+        snap = asdict(RunSnapshot(id="run-2", kind="test", state="running", server="wt-x"))
+        self.assertEqual(snap["server"], "wt-x")
+
 
 class _FakeBus:
-    """Records what an OdooManager would publish, without any SSE plumbing."""
+    """Records what a WorkspaceManager would publish, without any SSE plumbing."""
 
     def __init__(self):
         self.runs = []
         self.servers = []
+        self.worktree_logs = []
+        self.events = []
 
     def publish_run(self, snap):
         self.runs.append(snap)
@@ -1548,56 +1559,170 @@ class _FakeBus:
     def publish_log(self, line):
         pass
 
+    def publish_worktree_log(self, target, line):
+        self.worktree_logs.append((target, line))
 
-class OdooManagerRunTest(unittest.TestCase):
-    """The Run lifecycle + backend-owned resume decision (Step 6), tested at the
-    _finish_run seam — no real process. This is the part that restarts the user's
-    server, so it's unit-covered even though a live run can't run in CI."""
+    def publish_event(self, text, level="", **kw):
+        self.events.append((text, level))
+
+
+class WorkspaceManagerRunTest(unittest.TestCase):
+    """The Run lifecycle + backend-owned resume decision, tested at the finish_run
+    seam — no real process. This is the part that restarts the user's server, so
+    it's unit-covered even though a live run can't run in CI."""
 
     def _manager(self):
         # import here so the module's global singletons aren't disturbed
         from backend import server
 
-        return server.OdooManager(_FakeBus()), server
+        return server.WorkspaceManager(_FakeBus()), server
+
+    def _seed(self, mgr, wsid, run, resume=None):
+        from backend import server
+
+        entry = mgr.entries.get(wsid)
+        if entry is None:
+            entry = mgr.entries[wsid] = server._Entry(wsid)
+        entry.run = run
+        entry.resume_config = resume
+        return entry
 
     def test_finish_run_done_and_resume(self):
         mgr, _ = self._manager()
-        mgr.run = {"id": "run-1", "kind": "test", "state": "running", "returncode": None}
-        mgr._resume_config = {"target": "t1"}
-        resume = mgr._finish_run(0)
+        entry = self._seed(
+            mgr,
+            "main",
+            {"id": "run-1", "kind": "test", "state": "running", "returncode": None},
+            resume={"target": "t1"},
+        )
+        resume = mgr.finish_run("main", 0)
         self.assertEqual(resume, {"target": "t1"})  # a server was interrupted → resume it
-        self.assertEqual(mgr.run["state"], "done")
-        self.assertTrue(mgr.run["ok"])
-        self.assertEqual(mgr.run["returncode"], 0)
-        self.assertIsNone(mgr._resume_config)  # consumed
+        self.assertEqual(entry.run["state"], "done")
+        self.assertTrue(entry.run["ok"])
+        self.assertEqual(entry.run["returncode"], 0)
+        self.assertIsNone(entry.resume_config)  # consumed
         self.assertEqual(mgr.bus.runs[-1]["state"], "done")  # published
 
     def test_finish_run_failed_by_returncode(self):
         mgr, _ = self._manager()
-        mgr.run = {"id": "run-2", "kind": "install", "state": "running", "returncode": None}
-        mgr._resume_config = None
-        self.assertIsNone(mgr._finish_run(1))  # nothing to resume
-        self.assertEqual(mgr.run["state"], "failed")
-        self.assertFalse(mgr.run["ok"])
-        self.assertEqual(mgr.run["returncode"], 1)
+        entry = self._seed(
+            mgr, "main", {"id": "run-2", "kind": "install", "state": "running", "returncode": None}
+        )
+        self.assertIsNone(mgr.finish_run("main", 1))  # nothing to resume
+        self.assertEqual(entry.run["state"], "failed")
+        self.assertFalse(entry.run["ok"])
+        self.assertEqual(entry.run["returncode"], 1)
 
     def test_finish_run_manual_stop(self):
         mgr, _ = self._manager()
-        mgr.run = {"id": "run-3", "kind": "test", "state": "running", "returncode": None}
-        mgr._finish_run(None)  # None returncode = stopped manually
-        self.assertEqual(mgr.run["state"], "failed")
-        self.assertFalse(mgr.run["ok"])
-        self.assertIsNone(mgr.run["returncode"])
+        entry = self._seed(
+            mgr, "main", {"id": "run-3", "kind": "test", "state": "running", "returncode": None}
+        )
+        mgr.finish_run("main", None)  # None returncode = stopped manually
+        self.assertEqual(entry.run["state"], "failed")
+        self.assertFalse(entry.run["ok"])
+        self.assertIsNone(entry.run["returncode"])
 
     def test_finish_run_noop_when_not_running(self):
         mgr, _ = self._manager()
-        mgr.run = None
-        self.assertIsNone(mgr._finish_run(0))
+        self.assertIsNone(mgr.finish_run("main", 0))
         self.assertEqual(mgr.bus.runs, [])
         # an already-finished run isn't finalized twice
-        mgr.run = {"id": "run-4", "kind": "test", "state": "done", "returncode": 0}
-        self.assertIsNone(mgr._finish_run(0))
+        self._seed(mgr, "main", {"id": "run-4", "kind": "test", "state": "done", "returncode": 0})
+        self.assertIsNone(mgr.finish_run("main", 0))
         self.assertEqual(mgr.bus.runs, [])
+        # an unknown workspace is a no-op too
+        self.assertIsNone(mgr.finish_run("nope", 0))
+
+    def test_finish_run_per_workspace_isolation(self):
+        mgr, _ = self._manager()
+        main = self._seed(
+            mgr,
+            "main",
+            {"id": "run-1", "kind": "test", "state": "running", "server": "main"},
+            resume={"target": "t1"},
+        )
+        wt = self._seed(
+            mgr,
+            "wt-x",
+            {"id": "run-2", "kind": "test", "state": "running", "server": "wt-x"},
+            resume={"target": "wt-x"},
+        )
+        # finishing the worktree run leaves main's untouched, and vice versa
+        resume = mgr.finish_run("wt-x", 0)
+        self.assertEqual(resume, {"target": "wt-x"})
+        self.assertEqual(wt.run["state"], "done")
+        self.assertEqual(main.run["state"], "running")
+        self.assertEqual(mgr.bus.runs[-1]["server"], "wt-x")
+        resume = mgr.finish_run("main", 1)
+        self.assertEqual(resume, {"target": "t1"})
+        self.assertEqual(main.run["state"], "failed")
+        self.assertEqual(mgr.bus.runs[-1]["server"], "main")
+
+    def test_run_seq_is_manager_level(self):
+        # run ids must be unique across workspaces — the frontend keys Run records
+        # by id, so per-entry counters would collide
+        mgr, _ = self._manager()
+        mgr._run_seq += 1
+        first = f"run-{mgr._run_seq}"
+        mgr._run_seq += 1
+        second = f"run-{mgr._run_seq}"
+        self.assertNotEqual(first, second)
+
+    def test_run_snapshots_covers_all_entries(self):
+        mgr, _ = self._manager()
+        self._seed(mgr, "main", {"id": "run-1", "state": "done", "server": "main"})
+        self._seed(mgr, "wt-x", {"id": "run-2", "state": "running", "server": "wt-x"})
+        snaps = mgr.run_snapshots()
+        self.assertEqual({s["id"] for s in snaps}, {"run-1", "run-2"})
+
+    def test_public_snapshots_orders_main_first(self):
+        mgr, _ = self._manager()
+        self._seed(mgr, "wt-x", None)
+        with unittest.mock.patch.object(mgr, "status", return_value={"id": "main"}):
+            snaps = mgr.public_snapshots()
+        self.assertEqual([s["id"] for s in snaps], ["main", "wt-x"])
+        self.assertNotIn("exists", snaps[1])  # live stream never carries exists
+
+
+class DbConflictTest(unittest.TestCase):
+    """The uniform two-processes-one-db guard (now covering main too)."""
+
+    def _manager(self):
+        from backend import server
+
+        mgr = server.WorkspaceManager(_FakeBus())
+
+        def seed(wsid, state, db):
+            entry = mgr.entries.get(wsid) or server._Entry(wsid)
+            entry.state, entry.db = state, db
+            mgr.entries[wsid] = entry
+            return entry
+
+        return mgr, seed
+
+    def test_refuses_db_held_by_main(self):
+        mgr, seed = self._manager()
+        seed("main", "running", "shared")
+        self.assertIn("the main server", mgr._db_conflict("wt-x", "shared"))
+
+    def test_refuses_db_held_by_peer_worktree(self):
+        mgr, seed = self._manager()
+        seed("wt-a", "running", "shared")
+        self.assertIn("another worktree server", mgr._db_conflict("wt-b", "shared"))
+
+    def test_main_refused_when_worktree_holds_db(self):
+        mgr, seed = self._manager()
+        seed("wt-a", "starting", "shared")
+        self.assertIn("'wt-a' workspace server", mgr._db_conflict("main", "shared"))
+
+    def test_allows_same_entry_and_stopped_holders(self):
+        mgr, seed = self._manager()
+        seed("wt-a", "running", "shared")
+        self.assertIsNone(mgr._db_conflict("wt-a", "shared"))  # restarting itself
+        seed("wt-a", "stopped", "shared")
+        self.assertIsNone(mgr._db_conflict("wt-b", "shared"))  # holder not active
+        self.assertIsNone(mgr._db_conflict("wt-b", "other"))  # different db
 
 
 class PortIsFreeTest(unittest.TestCase):
