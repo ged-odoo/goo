@@ -226,26 +226,29 @@ export class StorePlugin extends Plugin {
     else this.orm.create(Run, { id: snap.id, data: { ...snap } });
   }
 
-  // the currently-running one-shot on the MAIN slot, or null. Runs carry the
-  // workspace slot they occupy (`server`, "main" unless a workspace one-shot minted
-  // it) — the Tests/Addons screens are main-slot UIs until Phase 4, so a run fired
-  // at a worktree workspace must not light them up.
-  activeRun() {
+  // every run snapshot (reactive — reads each record's data)
+  runs() {
+    return this.orm.records(Run).map((r) => r.data());
+  }
+
+  // the currently-running one-shot on a workspace slot, or null. Runs carry the
+  // slot they occupy (`server`: "main" | a worktree workspace id).
+  activeRun(slot = "main") {
     for (const r of this.orm.records(Run)) {
       const d = r.data();
-      if (d.state === "running" && (d.server ?? "main") === "main") return d;
+      if (d.state === "running" && (d.server ?? "main") === slot) return d;
     }
     return null;
   }
 
-  // the most recent main-slot run of a kind (test | install | upgrade), running or
+  // the most recent run of a kind (test | install | upgrade) on a slot, running or
   // finished — so a screen still shows its last result after a run of another kind
   // occupied the slot
-  latestRunOfKind(kind) {
+  latestRunOfKind(kind, slot = "main") {
     let best = null;
     for (const r of this.orm.records(Run)) {
       const d = r.data();
-      if (d.kind !== kind || (d.server ?? "main") !== "main") continue;
+      if (d.kind !== kind || (d.server ?? "main") !== slot) continue;
       if (!best || (d.started_at || 0) >= (best.started_at || 0)) best = d;
     }
     return best;

@@ -1,14 +1,19 @@
-// Browse the active target's modules and install/upgrade one (via the shared
-// process). The view follows the active target — the running server's target, or
-// the last one used — using its database and its set of repositories.
+// Browse a workspace's modules and install/upgrade one on its server slot.
+// State is PER SLOT ("main" | a worktree workspace id): each slot has its own
+// module list, console and status, so the Workspaces pane can browse a worktree
+// workspace's checkout (its own addons paths + db) while the standalone Addons
+// screen keeps following the active target on the main slot — the old flat
+// public surface (output/modules/status/running/…) aliases the main slot.
 
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
+import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { LogBuffer } from "../core/log_buffer.js";
 import { postJSON } from "../core/utils.js";
+import { slotFor, WT_ECHO_RE } from "../core/tests_plugin.js";
 
 import { Plugin, plugin, useEffect, signal, computed } from "@odoo/owl";
 
@@ -21,46 +26,115 @@ export class AddonsPlugin extends Plugin {
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  output = new LogBuffer();
-  modules = signal([]);
-  loadedDb = signal("");
-  erroredDb = signal(""); // db whose last auto-load failed — don't auto-retry it (avoids a hot loop)
-  loading = signal(false);
-  error = signal("");
+  worktree = plugin(WorktreePlugin); // a worktree slot's addons paths come from its checkout
+  // the text/state filters are global — shared between the standalone screen and
+  // the Workspaces pane (acceptable: one user, one focus at a time)
   filter = signal("");
   stateFilter = signal(""); // "" | "installed" | "uninstalled"
   appOnly = signal(true); // only modules flagged as an application (on by default)
-  status = signal("");
-  _pending = signal(false); // optimistic "run starting", until the backend's "run" event lands
-  _announced = null; // run id we've seen running this session
-  _finishedRun = null; // run id we've finalized (once per run)
-  // filtered + sorted modules — recomputed only when modules/filter change
-  filtered = computed(() => this._filtered());
+  _slots = new Map(); // slotId -> per-slot module/run/console state
+
+  slot(id = "main") {
+    if (!this._slots.has(id)) {
+      const rec = {
+        output: new LogBuffer(),
+        modules: signal([]),
+        loadedDb: signal(""),
+        erroredDb: signal(""), // db whose last auto-load failed — don't auto-retry (hot loop)
+        loading: signal(false),
+        error: signal(""),
+        status: signal(""),
+        pending: signal(false), // optimistic "run starting", until the "run" event lands
+        announced: null, // run id we've seen running this session
+        finishedRun: null, // run id we've finalized (once per run)
+        lastWs: null, // the workspace last loaded into this slot (for the post-run refresh)
+      };
+      // filtered + sorted modules — recomputed only when the slot's modules/filters change
+      rec.filtered = computed(() => this._filtered(rec));
+      this._slots.set(id, rec);
+    }
+    return this._slots.get(id);
+  }
+
+  // ── main-slot aliases (the standalone Addons screen reads these) ─────────────
+  get output() {
+    return this.slot("main").output;
+  }
+
+  get modules() {
+    return this.slot("main").modules;
+  }
+
+  get loadedDb() {
+    return this.slot("main").loadedDb;
+  }
+
+  get erroredDb() {
+    return this.slot("main").erroredDb;
+  }
+
+  get loading() {
+    return this.slot("main").loading;
+  }
+
+  get error() {
+    return this.slot("main").error;
+  }
+
+  get status() {
+    return this.slot("main").status;
+  }
+
+  get filtered() {
+    return this.slot("main").filtered;
+  }
+
+  get running() {
+    return this.currentRun()?.state === "running";
+  }
+
+  runningFor(slotId) {
+    return this.currentRun(slotId)?.state === "running";
+  }
 
   setup() {
-    useEffect(() => this._onRun(this.currentRun()));
+    // per-slot run dispatch on the LATEST install/upgrade run of every slot
+    useEffect(() => {
+      const slots = new Set(
+        this.store
+          .runs()
+          .filter((d) => d.kind === "install" || d.kind === "upgrade")
+          .map((d) => d.server ?? "main"),
+      );
+      for (const s of slots) this._onRun(s, this.currentRun(s));
+    });
+    // both output streams: the main server's log + each worktree server's own
+    // (minus goo's worktree orchestration echoes — another workspace's business)
     this.server.onLine((line) => {
-      if (this.runActive()) this.output.append(line);
+      if (this.runActive("main") && !WT_ECHO_RE.test(line)) this.slot("main").output.append(line);
+    });
+    this.server.onWorktreeLog(({ target, line }) => {
+      if (this._slots.has(target) && this.runActive(target)) this.slot(target).output.append(line);
     });
   }
 
-  // the current/last install-or-upgrade run (backend-minted, from the shared store)
-  currentRun() {
-    const i = this.store.latestRunOfKind("install");
-    const u = this.store.latestRunOfKind("upgrade");
+  // the current/last install-or-upgrade run on a slot
+  currentRun(slotId = "main") {
+    const i = this.store.latestRunOfKind("install", slotId);
+    const u = this.store.latestRunOfKind("upgrade", slotId);
     return (
       [i, u].filter(Boolean).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null
     );
   }
 
-  // a run is active — optimistic between clicking Install/Upgrade and the backend's
-  // first "run" event, then driven by the run's state (a method: components call it)
-  runActive() {
-    return this._pending() || this.currentRun()?.state === "running";
+  // a run is active on a slot — optimistic between clicking Install/Upgrade and the
+  // backend's first "run" event, then driven by the run's state
+  runActive(slotId = "main") {
+    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
   }
 
   // the active target: the running server's target, else the last one used
-  // (both reference a target id)
+  // (the standalone screen's main-slot oracle)
   _activeTarget() {
     const id = this.server.status().target || this.server.lastTarget();
     return this.config.config.targets.find((t) => t.id === id) || null;
@@ -74,10 +148,14 @@ export class AddonsPlugin extends Plugin {
     return this._activeTarget()?.db || "";
   }
 
-  // the active target's repos as {id, path} — the addons-path used to list +
-  // install, so only modules from the target's repos are ever shown
-  _repos() {
-    const target = this._activeTarget();
+  // a workspace's repos as {id, path}: a worktree workspace's own checkout copies,
+  // else the main checkout paths of the workspace's (or active target's) checkouts —
+  // the addons-path used to list + install, so only its modules are ever shown
+  _reposFor(ws) {
+    if (ws && ws.location === "worktree") {
+      return this.worktree.wtRepos(ws).map((r) => ({ id: r.repo, path: r.worktreePath }));
+    }
+    const target = ws || this._activeTarget();
     if (!target) return [];
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
     return (target.checkouts || [])
@@ -85,37 +163,44 @@ export class AddonsPlugin extends Plugin {
       .filter((r) => r.path);
   }
 
-  async load() {
-    const db = this.targetDb();
+  // load a slot's module list: ws omitted = the standalone screen's main path
+  // (active target's db); a workspace loads its own db + repos into its slot
+  async load(ws = null) {
+    const slotId = slotFor(ws);
+    const s = this.slot(slotId);
+    const db = ws ? ws.db : this.targetDb();
+    s.lastWs = ws;
     if (!db) {
-      this.modules.set([]);
-      this.loadedDb.set("");
+      s.modules.set([]);
+      s.loadedDb.set("");
       return;
     }
-    this.loading.set(true);
-    this.error.set("");
-    this.erroredDb.set("");
+    s.loading.set(true);
+    s.error.set("");
+    s.erroredDb.set("");
     try {
-      const data = await postJSON("/api/addons", { repos: this._repos(), db });
-      // latest wins: if the active target's db changed mid-flight, this result is
-      // stale — drop it rather than show one db's modules under another's header.
-      if (this.targetDb() !== db) return;
-      this.modules.set(data.modules);
-      this.loadedDb.set(db);
+      const data = await postJSON("/api/addons", { repos: this._reposFor(ws), db });
+      // latest wins: if the slot's db changed mid-flight, this result is stale —
+      // drop it rather than show one db's modules under another's header.
+      const want = s.lastWs ? s.lastWs.db : this.targetDb();
+      if (want !== db) return;
+      s.modules.set(data.modules);
+      s.loadedDb.set(db);
     } catch (e) {
-      if (this.targetDb() !== db) return;
-      this.error.set(e.message);
-      this.erroredDb.set(db); // remember the failure so the effect doesn't re-fire forever
+      const want = s.lastWs ? s.lastWs.db : this.targetDb();
+      if (want !== db) return;
+      s.error.set(e.message);
+      s.erroredDb.set(db); // remember the failure so the effect doesn't re-fire forever
     } finally {
-      this.loading.set(false);
+      s.loading.set(false);
     }
   }
 
-  _filtered() {
+  _filtered(s) {
     const q = this.filter().trim().toLowerCase();
     const sf = this.stateFilter();
     const appOnly = this.appOnly();
-    const matched = this.modules().filter((mod) => {
+    const matched = s.modules().filter((mod) => {
       const installed = mod.state === "installed";
       if (sf === "installed" && !installed) return false;
       if (sf === "uninstalled" && installed) return false;
@@ -134,53 +219,58 @@ export class AddonsPlugin extends Plugin {
     return { total: matched.length, shown: matched.slice(0, AddonsPlugin.MAX_ROWS) };
   }
 
-  // react to the backend-minted install/upgrade Run moving running → done/failed.
-  // Resume-after is backend-owned now; this just drives the status + reloads module
-  // states when the run ends. Finalize once per run id.
-  _onRun(run) {
+  // react to a slot's backend-minted install/upgrade Run moving running →
+  // done/failed. Resume-after is backend-owned; this drives the status + reloads
+  // module states when the run ends. Finalize once per run id per slot.
+  _onRun(slotId, run) {
     if (!run) return;
+    const s = this.slot(slotId);
     if (run.state === "running") {
-      this._pending.set(false); // the real run is in — drop the optimistic override
-      this._announced = run.id;
-      this.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}…`);
-    } else if (this._finishedRun !== run.id) {
-      this._finishedRun = run.id;
+      s.pending.set(false); // the real run is in — drop the optimistic override
+      s.announced = run.id;
+      s.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}…`);
+    } else if (s.finishedRun !== run.id) {
+      s.finishedRun = run.id;
       // finished before we saw it run this session (e.g. a reload) — skip the reload
-      if (this._announced !== run.id) return;
+      if (s.announced !== run.id) return;
       const stopped = run.returncode === null; // manually stopped mid-run
-      this.status.set(
+      s.status.set(
         stopped ? "stopped" : run.returncode ? `failed — exit ${run.returncode}` : "done",
       );
-      this.load(); // refresh install states (psql reads the db even while stopped)
+      this.load(s.lastWs); // refresh install states (psql reads the db even while stopped)
     }
   }
 
-  get running() {
-    return this.currentRun()?.state === "running";
-  }
-
-  async run(op, name) {
-    const target = this._activeTarget();
-    const db = this.targetDb();
+  // install/upgrade a module: on the main slot (standalone screen, ws omitted) or
+  // a workspace's slot
+  async run(op, name, ws = null) {
+    const slotId = slotFor(ws);
+    const target = ws || this._activeTarget();
+    const db = ws ? ws.db : this.targetDb();
     if (!target || !db) return;
+    const s = this.slot(slotId);
     const verb = op === "upgrade" ? "Upgrade" : "Install";
     const ok = await this.dialogs.open({
       title: `${verb} "${name}" on ${db}?`,
       okLabel: verb,
     });
     if (!ok) return;
-    // if a real server is up the backend stops it for the one-shot run and resumes it
-    // when the run ends (resume-after is backend-owned now — no client flag)
-    this.output.clear();
-    this._pending.set(true);
-    this.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}…`);
+    // if a real server is up on the slot the backend stops it for the one-shot run
+    // and resumes it when the run ends (resume-after is backend-owned)
+    s.output.clear();
+    s.pending.set(true);
+    s.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}…`);
     this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
     try {
       // the server resolves the target's repos + db; overrides carry the module op
-      await postJSON("/api/addons/run", { target: target.id, overrides: { [op]: name } });
+      await postJSON("/api/addons/run", {
+        target: target.id,
+        workspace: slotId,
+        overrides: { [op]: name },
+      });
     } catch (e) {
-      this._pending.set(false);
-      this.status.set(`failed to start: ${e.message}`);
+      s.pending.set(false);
+      s.status.set(`failed to start: ${e.message}`);
     }
   }
 }

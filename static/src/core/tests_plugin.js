@@ -1,4 +1,10 @@
-// Run `odoo-bin --test-tags …` against a target (via the shared process).
+// Run `odoo-bin --test-tags …` against a workspace's server slot. State is kept
+// PER SLOT ("main" | a worktree workspace id): each slot has its own console
+// buffer, status badge and capture window, so a worktree run and a main run can
+// stream concurrently without corrupting each other. The main slot keeps the old
+// flat public surface (output/status/running/…) so the standalone Tests screen
+// and the event log are unchanged; the Workspaces screen's Tests pane passes a
+// workspace to address its slot.
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
@@ -11,6 +17,15 @@ import { Plugin, plugin, useEffect, signal } from "@odoo/owl";
 
 const HISTORY_MAX = 10;
 
+// the server slot a workspace's runs occupy
+export function slotFor(ws) {
+  return ws && ws.location === "worktree" ? ws.id : "main";
+}
+
+// goo's worktree orchestration echoes in the MAIN log (another workspace's server
+// starting/stopping) — kept out of the main-slot test/addons consoles
+export const WT_ECHO_RE = /\[goo\] (starting|stopping|error stopping) worktree/;
+
 export class TestsPlugin extends Plugin {
   static sequence = 3;
 
@@ -18,18 +33,45 @@ export class TestsPlugin extends Plugin {
   store = plugin(StorePlugin); // one-shot runs live in the shared store's runs map
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
-  output = new LogBuffer();
-  status = signal("");
-  history = signal(this._readHistory()); // last test tags run, most recent first
-  _pending = signal(false); // optimistic "run starting", until the backend's "run" event lands
-  _capturing = false; // whether server lines are currently mirrored to the test console
-  _finished = false; // guard: "test suite finished" is logged once per run
-  _tags = ""; // current run's tags (for the deferred "running tests" log)
-  _cutOnChrome = false; // WebSuite runs end the console window at the chrome teardown
-  _result = ""; // "success" | "fail" — derived from the HOOT result lines
-  _failSeq = 0; // monotonic id source for failure-row anchors (never reset)
-  _announced = null; // run id we've logged "running tests" for (once per run)
-  _finishedRun = null; // run id we've finalized (once per run)
+  history = signal(this._readHistory()); // last test tags run, most recent first (global)
+  _failSeq = 0; // monotonic id source for failure-row anchors (global, never reset)
+  _slots = new Map(); // slotId -> per-slot run/console state
+
+  // the per-slot state record, lazily created
+  slot(id = "main") {
+    if (!this._slots.has(id)) {
+      this._slots.set(id, {
+        output: new LogBuffer(),
+        status: signal(""),
+        pending: signal(false), // optimistic "run starting", until the "run" event lands
+        capturing: false, // whether this slot's lines are mirrored to its console
+        finished: false, // guard: "test suite finished" is logged once per run
+        tags: "", // current run's tags (for the deferred "running tests" log)
+        cutOnChrome: false, // WebSuite runs end the console window at chrome teardown
+        result: "", // "success" | "fail" — derived from the HOOT result lines
+        announced: null, // run id we've logged "running tests" for (once per run)
+        finishedRun: null, // run id we've finalized (once per run)
+      });
+    }
+    return this._slots.get(id);
+  }
+
+  // ── main-slot aliases (the standalone Tests screen + event log read these) ────
+  get output() {
+    return this.slot("main").output;
+  }
+
+  get status() {
+    return this.slot("main").status;
+  }
+
+  get running() {
+    return this.currentRun()?.state === "running";
+  }
+
+  runningFor(slotId) {
+    return this.currentRun(slotId)?.state === "running";
+  }
 
   _readHistory() {
     const h = this.config.getState("test_history", []);
@@ -45,10 +87,9 @@ export class TestsPlugin extends Plugin {
     this.config.setState("test_history", h);
   }
 
-  // the target id tests run against: the running/starting server's target, else the
-  // last-used one, else the first configured target. Tests are a one-shot run against
-  // the target's db, so they work even with the server down; the run endpoint resolves
-  // the launch config from this id server-side.
+  // the target id main-slot tests run against: the running/starting server's target,
+  // else the last-used one, else the first configured workspace (the standalone
+  // screen's oracle; the Workspaces pane passes its workspace explicitly)
   get target() {
     const targets = this.config.config.targets;
     const candidate = this.server.status().target || this.server.lastTarget();
@@ -56,80 +97,110 @@ export class TestsPlugin extends Plugin {
     return targets[0]?.id || "";
   }
 
-  // the current/last test run (backend-minted, from the shared store)
-  currentRun() {
-    return this.store.latestRunOfKind("test");
+  // the current/last test run on a slot (backend-minted, from the shared store)
+  currentRun(slotId = "main") {
+    return this.store.latestRunOfKind("test", slotId);
   }
 
-  // a test run is active — optimistically true between clicking Run and the backend's
-  // first "run" event, then driven by the run's state (a method: components call it)
-  runActive() {
-    return this._pending() || this.currentRun()?.state === "running";
+  // a test run is active on a slot — optimistically true between clicking Run and
+  // the backend's first "run" event, then driven by the run's state
+  runActive(slotId = "main") {
+    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
   }
 
   setup() {
-    useEffect(() => this._onRun(this.currentRun()));
-    this.server.onLine((line) => {
-      if (!this.runActive()) return;
-      // open the console window at the launch command line (the one right before the
-      // test server boots) so the exact command used is shown in the tab
-      if (!this._capturing && line.includes("[goo] starting odoo:")) this._capturing = true;
-      if (!this._capturing) return;
-      // a failing HOOT test gets a DOM anchor on its row so the event log entry
-      // can scroll the console straight to it
-      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
-      const anchor = failed ? `test-fail-${++this._failSeq}` : "";
-      this.output.append(line, anchor);
-      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
-      // remember the suite outcome as soon as HOOT reports it
-      if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
-      else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
-        this._result = "fail";
-      // for browser (WebSuite) runs the meaningful window ends when the browser is
-      // torn down; everything after (thread dumps, shutdown noise) stays in the
-      // Server tab only. Other test kinds keep streaming until the process stops.
-      if (this._cutOnChrome && line.includes("Terminating chrome headless with pid"))
-        this._finishRun();
+    // per-slot run dispatch: react to the LATEST test run of every slot that has
+    // one (dispatching per raw record would re-finalize superseded runs — the
+    // finishedRun guard holds one id per slot)
+    useEffect(() => {
+      const slots = new Set(
+        this.store
+          .runs()
+          .filter((d) => d.kind === "test")
+          .map((d) => d.server ?? "main"),
+      );
+      for (const s of slots) this._onRun(s, this.currentRun(s));
     });
+    // both output streams feed the same capture pipeline: the main server's log
+    // lines, and each worktree server's own stream (keyed by workspace id). For a
+    // worktree slot this mirrors lines already going to its Server-logs buffer —
+    // intentionally, like the main test console mirrors the main server log.
+    this.server.onLine((line) => this._capture("main", line));
+    this.server.onWorktreeLog(({ target, line }) => this._capture(target, line));
   }
 
-  // react to the backend-minted test Run moving running → done/failed. Resume-after
-  // (bringing back a server the run interrupted) is owned by the backend now, so this
-  // just drives the console + event log. Announce/finalize once per run id.
-  _onRun(run) {
+  _capture(slotId, line) {
+    if (!this.runActive(slotId)) return;
+    if (slotId === "main" && WT_ECHO_RE.test(line)) return; // another workspace's echo
+    const s = this.slot(slotId);
+    // open the console window at the launch command line (main only — a worktree
+    // run's launch line goes to the main log; its capture opens in _onRun when the
+    // run event lands, which precedes the worktree server's first output)
+    if (!s.capturing && slotId === "main" && line.includes("[goo] starting odoo:"))
+      s.capturing = true;
+    if (!s.capturing) return;
+    // a failing HOOT test gets a DOM anchor on its row so the event log entry can
+    // scroll the console straight to it (main slot only — the [jump] link targets
+    // the standalone Tests screen; worktree failures get a plain error row)
+    const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
+    const anchor = failed && slotId === "main" ? `test-fail-${++this._failSeq}` : "";
+    s.output.append(line, anchor);
+    if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
+    // remember the suite outcome as soon as HOOT reports it
+    if (line.includes("[HOOT] Test suite succeeded")) s.result = "success";
+    else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
+      s.result = "fail";
+    // for browser (WebSuite) runs the meaningful window ends when the browser is
+    // torn down; everything after (thread dumps, shutdown noise) stays in the
+    // server log only. Other test kinds keep streaming until the process stops.
+    if (s.cutOnChrome && line.includes("Terminating chrome headless with pid"))
+      this._finishRun(slotId);
+  }
+
+  // react to a slot's backend-minted test Run moving running → done/failed.
+  // Resume-after (bringing back a server the run interrupted) is owned by the
+  // backend; this just drives the console + event log. Announce/finalize once per
+  // run id per slot.
+  _onRun(slotId, run) {
     if (!run) return;
+    const s = this.slot(slotId);
     if (run.state === "running") {
-      this._pending.set(false); // the real run is in — drop the optimistic override
-      if (this._announced !== run.id) {
-        this._announced = run.id;
-        // usually mirroring already began at the launch-command line (see onLine);
-        // this is the fallback announce if that line wasn't seen
-        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? this._tags})`);
-        this._capturing = true;
+      s.pending.set(false); // the real run is in — drop the optimistic override
+      if (s.announced !== run.id) {
+        s.announced = run.id;
+        // main: mirroring usually began at the launch-command line (see _capture);
+        // this is the fallback announce. Worktree slots START capturing here — and
+        // get the announce line in their console, compensating for the launch echo
+        // that only the main log carries.
+        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? s.tags})`);
+        if (slotId !== "main" && !s.capturing)
+          s.output.append(`[goo] running tests (tags: ${run.spec?.tags ?? s.tags})`);
+        s.capturing = true;
       }
-      this.status.set("running…");
-    } else if (this._finishedRun !== run.id) {
+      s.status.set("running…");
+    } else if (s.finishedRun !== run.id) {
       // done | failed. run.returncode is null when the run was stopped manually.
-      this._finishedRun = run.id;
+      s.finishedRun = run.id;
       // if we never saw it running this session (e.g. it finished before a reload),
       // don't re-announce a stale result — matches the pre-run-model reload behavior
-      if (this._announced !== run.id) return;
+      if (s.announced !== run.id) return;
       const stopped = run.returncode === null;
-      this.status.set(
+      s.status.set(
         stopped ? "stopped" : run.returncode ? `failed — exit ${run.returncode}` : "passed",
       );
       // fallback for non-browser tests (no chrome line): use the exit code if HOOT
       // didn't report an outcome
       const byExit = stopped ? "" : run.returncode ? "fail" : "success";
-      this._finishRun(this._result || byExit);
+      this._finishRun(slotId, s.result || byExit);
     }
   }
 
-  // close the test-tab log window and log the finish event (once per run)
-  _finishRun(result = this._result) {
-    this._capturing = false;
-    if (this._finished) return;
-    this._finished = true;
+  // close a slot's test-log window and log the finish event (once per run)
+  _finishRun(slotId, result = this.slot(slotId).result) {
+    const s = this.slot(slotId);
+    s.capturing = false;
+    if (s.finished) return;
+    s.finished = true;
     const failed = result && String(result).includes("fail");
     this.eventLog.add(
       `test run finished${result ? ` (${result})` : ""}`,
@@ -138,35 +209,45 @@ export class TestsPlugin extends Plugin {
     );
   }
 
-  get running() {
-    return this.currentRun()?.state === "running";
-  }
-
-  async run(tags) {
+  // run tests: against the main slot (standalone screen, ws omitted) or a
+  // workspace's slot (the Workspaces pane passes its workspace)
+  async run(tags, ws = null) {
     if (!tags.trim()) return;
-    const targetId = this.target;
+    const slotId = slotFor(ws);
+    const targetId = ws ? ws.id : this.target;
     if (!targetId) return this.server.log(`[goo] no valid target to test`);
-    // a real server is up; the backend stops it for the one-shot run and resumes it
-    // when the run ends (resume-after is backend-owned now — no client flag)
-    const s = this.server.status();
-    const serverWasUp = (s.state === "running" || s.state === "starting") && s.mode === "server";
+    const s = this.slot(slotId);
+    // a real server is up on the slot; the backend stops it for the one-shot run
+    // and resumes it when the run ends (resume-after is backend-owned)
+    const up =
+      slotId === "main"
+        ? (() => {
+            const st = this.server.status();
+            return (st.state === "running" || st.state === "starting") && st.mode === "server";
+          })()
+        : ["running", "starting"].includes(this.store.server(slotId)?.state);
     this._pushHistory(tags);
-    this._tags = tags.trim(); // logged once the test server is actually up
-    this._cutOnChrome = this._tags.includes("web:WebSuite");
-    this._result = "";
+    s.tags = tags.trim(); // logged once the test server is actually up
+    s.cutOnChrome = s.tags.includes("web:WebSuite");
+    s.result = "";
     // surface the stop as an event, but don't mirror its shutdown logs to the console
-    if (serverWasUp) this.eventLog.add("stopping server to run tests");
-    this.output.clear();
-    this._capturing = false;
-    this._finished = false;
-    this._pending.set(true);
-    this.status.set("starting…");
+    if (up) this.eventLog.add("stopping server to run tests");
+    s.output.clear();
+    s.capturing = false;
+    s.finished = false;
+    s.pending.set(true);
+    s.status.set("starting…");
     try {
-      // the server resolves the launch config from the target + overrides
-      await postJSON("/api/tests/run", { target: targetId, overrides: { test_tags: this._tags } });
+      // the server resolves the launch config from the target + overrides, and
+      // runs it on the given workspace slot
+      await postJSON("/api/tests/run", {
+        target: targetId,
+        workspace: slotId,
+        overrides: { test_tags: s.tags },
+      });
     } catch (e) {
-      this._pending.set(false);
-      this.status.set(`failed to start: ${e.message}`);
+      s.pending.set(false);
+      s.status.set(`failed to start: ${e.message}`);
     }
   }
 }

@@ -4,6 +4,7 @@ var getScope = owl.getScope;
 var Scope = owl.Scope;
 var signal = owl.signal;
 var computed = owl.computed;
+var untrack = owl.untrack;
 var Component = owl.Component;
 var xml = owl.xml;
 var markup = owl.markup;
@@ -1338,25 +1339,27 @@ var StorePlugin = class extends Plugin {
     if (rec) rec.data.set({ ...rec.data(), ...snap });
     else this.orm.create(Run, { id: snap.id, data: { ...snap } });
   }
-  // the currently-running one-shot on the MAIN slot, or null. Runs carry the
-  // workspace slot they occupy (`server`, "main" unless a workspace one-shot minted
-  // it) — the Tests/Addons screens are main-slot UIs until Phase 4, so a run fired
-  // at a worktree workspace must not light them up.
-  activeRun() {
+  // every run snapshot (reactive — reads each record's data)
+  runs() {
+    return this.orm.records(Run).map((r) => r.data());
+  }
+  // the currently-running one-shot on a workspace slot, or null. Runs carry the
+  // slot they occupy (`server`: "main" | a worktree workspace id).
+  activeRun(slot = "main") {
     for (const r of this.orm.records(Run)) {
       const d = r.data();
-      if (d.state === "running" && (d.server ?? "main") === "main") return d;
+      if (d.state === "running" && (d.server ?? "main") === slot) return d;
     }
     return null;
   }
-  // the most recent main-slot run of a kind (test | install | upgrade), running or
+  // the most recent run of a kind (test | install | upgrade) on a slot, running or
   // finished — so a screen still shows its last result after a run of another kind
   // occupied the slot
-  latestRunOfKind(kind) {
+  latestRunOfKind(kind, slot = "main") {
     let best = null;
     for (const r of this.orm.records(Run)) {
       const d = r.data();
-      if (d.kind !== kind || (d.server ?? "main") !== "main") continue;
+      if (d.kind !== kind || (d.server ?? "main") !== slot) continue;
       if (!best || (d.started_at || 0) >= (best.started_at || 0)) best = d;
     }
     return best;
@@ -3442,6 +3445,510 @@ var UpdatePlugin = class extends Plugin {
   }
 };
 
+// static/src/core/worktree_plugin.js
+var WorktreePlugin = class extends Plugin {
+  static sequence = 5;
+  config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin);
+  // worktree servers live in the shared servers map
+  server = plugin(ServerPlugin);
+  code = plugin(CodePlugin);
+  eventLog = plugin(EventLogPlugin);
+  dialogs = plugin(DialogPlugin);
+  selectedId = signal("");
+  // the worktree selected in the Worktree screen
+  logs = /* @__PURE__ */ new Map();
+  // targetId -> LogBuffer (per-server scrollback + live stream)
+  _startEids = {};
+  // targetId -> pending "starting worktree server" timed-event id
+  setup() {
+    this.server.onWorktree((d) => this.applyStatus(d));
+    this.server.onWorktreeLog(({ target, line }) => this.logBuffer(target).append(line));
+    this.load();
+  }
+  // ── which targets are worktrees ──────────────────────────────────────────────
+  // the explicit `kind` marks a worktree; fall back to the presence of the
+  // `worktree` metadata object for any target not yet carrying a kind.
+  isWorktree(tgt) {
+    if (!tgt) return false;
+    const rec = this.config.target(tgt.id);
+    if (rec) return rec.isWorktree();
+    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree";
+  }
+  worktreeTargets() {
+    return (this.config.config.targets || []).filter((t2) => this.isWorktree(t2));
+  }
+  selected() {
+    return this.worktreeTargets().find((t2) => t2.id === this.selectedId()) || null;
+  }
+  select(id) {
+    this.selectedId.set(id);
+    if (id && this.isWorktree(this.config.config.targets.find((t2) => t2.id === id)))
+      this._primeLogs(id);
+  }
+  // branch names owned by a worktree (for the Branches/PRs "wt" badge)
+  worktreeBranches() {
+    const s = /* @__PURE__ */ new Set();
+    for (const t2 of this.worktreeTargets())
+      for (const c of t2.checkouts || []) if (c.branch) s.add(c.branch);
+    return s;
+  }
+  isWorktreeBranch(name) {
+    return !!name && this.worktreeBranches().has(name);
+  }
+  // ── paths ────────────────────────────────────────────────────────────────────
+  // the worktree's checkout directory: the value frozen at creation
+  // (worktree.dir), else derived from the name. Persisting it means a later rename
+  // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
+  dirPath(tgt) {
+    const rec = this.config.target(tgt.id);
+    if (rec) return rec.dirPath();
+    return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt);
+  }
+  hasCommunity(tgt) {
+    const rec = this.config.target(tgt.id);
+    if (rec) return rec.hasCommunity();
+    return (tgt.checkouts || []).some((c) => c.repo === "community");
+  }
+  // per-repo worktree descriptors for an existing worktree target (start / remove)
+  wtRepos(tgt) {
+    const g = this.code.groups();
+    const dir = this.dirPath(tgt);
+    return (tgt.checkouts || []).map(({ repo, branch }) => ({
+      repo,
+      branch,
+      mainPath: g.pathByRepo[repo] || "",
+      github: g.githubByRepo[repo] || "",
+      worktreePath: `${dir}/${repo}`
+    })).filter((r) => r.mainPath);
+  }
+  // ── live state (from the shared servers map, keyed by target id) ─────────────
+  state(tgt) {
+    return this.store.server(tgt.id) || { exists: false, state: "stopped", port: null };
+  }
+  exists(tgt) {
+    return !!this.state(tgt).exists;
+  }
+  serverState(tgt) {
+    return this.state(tgt).state || "stopped";
+  }
+  running(tgt) {
+    const s = this.serverState(tgt);
+    return s === "running" || s === "starting";
+  }
+  port(tgt) {
+    return this.state(tgt).port || null;
+  }
+  _merge(id, patch) {
+    this.store.mergeServer({ id, ...patch });
+  }
+  // resolve a worktree's pending start timed-event on a state transition. The store
+  // merge already happened in ServerPlugin's "server" SSE handler (which relays each
+  // worktree snapshot here); this just drives the event-log row.
+  applyStatus(d) {
+    if (!d || !d.id) return;
+    const eid = this._startEids[d.id];
+    if (eid && (d.state === "running" || d.state === "stopped")) {
+      this.eventLog.finish(eid, d.state === "running" ? "done" : "error");
+      delete this._startEids[d.id];
+    }
+  }
+  // hydrate existence + current server state for every worktree target
+  async load() {
+    const targets = this.worktreeTargets().map((t2) => ({ id: t2.id, dirPath: this.dirPath(t2) }));
+    if (!targets.length) return;
+    try {
+      const res = await postJSON("/api/workspace/list", { targets });
+      for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
+    } catch {
+    }
+  }
+  // ── logs ─────────────────────────────────────────────────────────────────────
+  logBuffer(id) {
+    if (!this.logs.has(id)) this.logs.set(id, new LogBuffer());
+    return this.logs.get(id);
+  }
+  // fill scrollback from the server's tail once, only if we don't already hold the
+  // live stream (e.g. after a page reload while the server was already running)
+  async _primeLogs(id) {
+    const buf = this.logBuffer(id);
+    if (buf.count()) return;
+    try {
+      const res = await postJSON("/api/workspace/logs", { target: id });
+      buf.clear();
+      for (const line of res.lines || []) buf.append(line);
+    } catch {
+    }
+  }
+  // ── create ─────────────────────────────────────────────────────────────────
+  _newId(seed) {
+    const base = "wt-" + (seed || "wt").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
+    const taken = new Set((this.config.config.targets || []).map((t2) => t2.id));
+    let id = base;
+    let n = 2;
+    while (taken.has(id)) id = `${base}-${n++}`;
+    return id;
+  }
+  // Materialize a worktree-located workspace: per repo, create checkout.branch
+  // (forked from startPointByRepo[repo]) as a git worktree under a frozen dir;
+  // optionally clone <cloneSource> into the workspace's own db first. On success,
+  // persist the workspace (canonical `workspaces` write — the create path deals it
+  // the next stable port) and select it.
+  // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
+  //         baseId?, on_create_args?, demo_data?, favorite? }
+  async createWorktree({
+    name,
+    dbName,
+    cloneSource,
+    checkouts,
+    startPointByRepo = {},
+    baseId = "",
+    on_create_args = "",
+    demo_data = true,
+    favorite = false
+  }) {
+    if (!checkouts || !checkouts.length)
+      return this._error("Create workspace", "the workspace has no checkouts");
+    const id = this._newId(name);
+    const ws = {
+      id,
+      name,
+      favorite,
+      db: dbName,
+      on_create_args,
+      demo_data,
+      location: "worktree",
+      checkouts,
+      worktree: { base: baseId }
+    };
+    const g = this.code.groups();
+    const dir = this.dirPath(ws);
+    ws.worktree.dir = dir;
+    const repos = checkouts.map(({ repo, branch }) => ({
+      repo,
+      newBranch: branch,
+      startPoint: startPointByRepo[repo],
+      mainPath: g.pathByRepo[repo] || "",
+      github: g.githubByRepo[repo] || "",
+      worktreePath: `${dir}/${repo}`
+    })).filter((r) => r.mainPath);
+    if (!repos.length) return this._error("Create workspace", "no local repos for the checkouts");
+    const eid = this.eventLog.begin(`creating worktree workspace ${ws.name}`);
+    try {
+      if (cloneSource) {
+        await postJSON("/api/databases/clone", {
+          source: cloneSource,
+          target: dbName,
+          filestore: this.config.config.filestore
+        });
+      }
+      const res = await postJSON("/api/workspace/create", { target: id, repos });
+      if (!res.ok) {
+        this.eventLog.finish(eid, "error");
+        const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
+        return this._error("Workspace creation failed", msg || "git worktree add failed");
+      }
+      this.config.updateConfig({ workspaces: [...this.config.config.workspaces, ws] });
+      this._merge(id, { exists: true, state: "stopped", port: null });
+      this.eventLog.finish(eid, "done");
+      this.select(id);
+      return true;
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      return this._error("Workspace creation failed", e.message);
+    }
+  }
+  // ── server lifecycle ─────────────────────────────────────────────────────────
+  // The backend builds the worktree launch config from the target id (repos pointed
+  // at the worktree copies + the worktree's odoo-bin, from the persisted worktree.dir).
+  async startServer(tgt) {
+    if (this.running(tgt)) return;
+    if (!this.hasCommunity(tgt))
+      return this._error("Cannot start worktree server", "this target has no community repo");
+    const eid = this.eventLog.begin(`starting worktree server (${tgt.name})`);
+    this._startEids[tgt.id] = eid;
+    this._merge(tgt.id, { state: "starting" });
+    try {
+      const res = await postJSON("/api/workspace/start", { target: tgt.id });
+      this._merge(tgt.id, { port: res.port });
+    } catch (e) {
+      delete this._startEids[tgt.id];
+      this.eventLog.finish(eid, "error");
+      this._merge(tgt.id, { state: "stopped" });
+      this._error("Could not start the worktree server", e.message);
+    }
+  }
+  async stopServer(tgt) {
+    this.eventLog.add(`stopping worktree server (${tgt.name})`);
+    this._merge(tgt.id, { state: "stopping" });
+    try {
+      await postJSON("/api/workspace/stop", { target: tgt.id });
+    } catch {
+    }
+  }
+  // stop is synchronous on the backend, so a plain stop-then-start restarts cleanly
+  async restartServer(tgt) {
+    await this.stopServer(tgt);
+    await this.startServer(tgt);
+  }
+  async remove(tgt) {
+    if (this.running(tgt))
+      return this._error("Stop the server first", "Stop the worktree server before removing it.");
+    const res = await this.dialogs.open({
+      title: `Remove worktree "${tgt.name}"?`,
+      message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.`,
+      fields: [
+        { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false }
+      ],
+      okLabel: "Remove"
+    });
+    if (!res) return;
+    const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
+      repo,
+      mainPath,
+      worktreePath
+    }));
+    this.eventLog.add(`removing worktree ${tgt.name}`);
+    try {
+      await postJSON("/api/workspace/remove", {
+        target: tgt.id,
+        dirPath: this.dirPath(tgt),
+        repos
+      });
+    } catch (e) {
+      return this._error("Worktree removal failed", e.message);
+    }
+    if (res.dropDb && tgt.db) {
+      try {
+        await postJSON("/api/databases/drop", {
+          name: tgt.db,
+          filestore: this.config.config.filestore
+        });
+      } catch (e) {
+        this._error("Database drop failed", e.message);
+      }
+    }
+    this.config.updateConfig({
+      workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id)
+    });
+    this.store.dropServer(tgt.id);
+    this.logs.delete(tgt.id);
+    if (this.selectedId() === tgt.id) this.selectedId.set("");
+  }
+  // open the worktree's repo folders in the configured editor (all in one window);
+  // works whether or not the server is running — it's just the checkout on disk
+  openEditor(tgt) {
+    const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
+    if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
+  }
+  // ── autologin URLs against the worktree server's port ("" when not running) ──
+  odooUrl(tgt) {
+    const port = this.port(tgt);
+    return port ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}` : "";
+  }
+  testsUrl(tgt) {
+    const port = this.port(tgt);
+    return port ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent(
+      "/web/tests?debug=assets&timeout=500000&manual=true"
+    )}` : "";
+  }
+  _error(title, message) {
+    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+    return false;
+  }
+};
+
+// static/src/core/tests_plugin.js
+var HISTORY_MAX = 10;
+function slotFor(ws) {
+  return ws && ws.location === "worktree" ? ws.id : "main";
+}
+var WT_ECHO_RE = /\[goo\] (starting|stopping|error stopping) worktree/;
+var TestsPlugin = class extends Plugin {
+  static sequence = 3;
+  config = plugin(ConfigPlugin);
+  store = plugin(StorePlugin);
+  // one-shot runs live in the shared store's runs map
+  server = plugin(ServerPlugin);
+  eventLog = plugin(EventLogPlugin);
+  history = signal(this._readHistory());
+  // last test tags run, most recent first (global)
+  _failSeq = 0;
+  // monotonic id source for failure-row anchors (global, never reset)
+  _slots = /* @__PURE__ */ new Map();
+  // slotId -> per-slot run/console state
+  // the per-slot state record, lazily created
+  slot(id = "main") {
+    if (!this._slots.has(id)) {
+      this._slots.set(id, {
+        output: new LogBuffer(),
+        status: signal(""),
+        pending: signal(false),
+        // optimistic "run starting", until the "run" event lands
+        capturing: false,
+        // whether this slot's lines are mirrored to its console
+        finished: false,
+        // guard: "test suite finished" is logged once per run
+        tags: "",
+        // current run's tags (for the deferred "running tests" log)
+        cutOnChrome: false,
+        // WebSuite runs end the console window at chrome teardown
+        result: "",
+        // "success" | "fail" — derived from the HOOT result lines
+        announced: null,
+        // run id we've logged "running tests" for (once per run)
+        finishedRun: null
+        // run id we've finalized (once per run)
+      });
+    }
+    return this._slots.get(id);
+  }
+  // ── main-slot aliases (the standalone Tests screen + event log read these) ────
+  get output() {
+    return this.slot("main").output;
+  }
+  get status() {
+    return this.slot("main").status;
+  }
+  get running() {
+    return this.currentRun()?.state === "running";
+  }
+  runningFor(slotId) {
+    return this.currentRun(slotId)?.state === "running";
+  }
+  _readHistory() {
+    const h = this.config.getState("test_history", []);
+    return Array.isArray(h) ? h : [];
+  }
+  // record a run's tag at the front, deduped, capped at HISTORY_MAX
+  _pushHistory(tag) {
+    tag = tag.trim();
+    if (!tag) return;
+    const h = [tag, ...this.history().filter((t2) => t2 !== tag)].slice(0, HISTORY_MAX);
+    this.history.set(h);
+    this.config.setState("test_history", h);
+  }
+  // the target id main-slot tests run against: the running/starting server's target,
+  // else the last-used one, else the first configured workspace (the standalone
+  // screen's oracle; the Workspaces pane passes its workspace explicitly)
+  get target() {
+    const targets = this.config.config.targets;
+    const candidate = this.server.status().target || this.server.lastTarget();
+    if (targets.some((t2) => t2.id === candidate)) return candidate;
+    return targets[0]?.id || "";
+  }
+  // the current/last test run on a slot (backend-minted, from the shared store)
+  currentRun(slotId = "main") {
+    return this.store.latestRunOfKind("test", slotId);
+  }
+  // a test run is active on a slot — optimistically true between clicking Run and
+  // the backend's first "run" event, then driven by the run's state
+  runActive(slotId = "main") {
+    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
+  }
+  setup() {
+    useEffect(() => {
+      const slots = new Set(
+        this.store.runs().filter((d) => d.kind === "test").map((d) => d.server ?? "main")
+      );
+      for (const s of slots) this._onRun(s, this.currentRun(s));
+    });
+    this.server.onLine((line) => this._capture("main", line));
+    this.server.onWorktreeLog(({ target, line }) => this._capture(target, line));
+  }
+  _capture(slotId, line) {
+    if (!this.runActive(slotId)) return;
+    if (slotId === "main" && WT_ECHO_RE.test(line)) return;
+    const s = this.slot(slotId);
+    if (!s.capturing && slotId === "main" && line.includes("[goo] starting odoo:"))
+      s.capturing = true;
+    if (!s.capturing) return;
+    const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
+    const anchor = failed && slotId === "main" ? `test-fail-${++this._failSeq}` : "";
+    s.output.append(line, anchor);
+    if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
+    if (line.includes("[HOOT] Test suite succeeded")) s.result = "success";
+    else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
+      s.result = "fail";
+    if (s.cutOnChrome && line.includes("Terminating chrome headless with pid"))
+      this._finishRun(slotId);
+  }
+  // react to a slot's backend-minted test Run moving running → done/failed.
+  // Resume-after (bringing back a server the run interrupted) is owned by the
+  // backend; this just drives the console + event log. Announce/finalize once per
+  // run id per slot.
+  _onRun(slotId, run) {
+    if (!run) return;
+    const s = this.slot(slotId);
+    if (run.state === "running") {
+      s.pending.set(false);
+      if (s.announced !== run.id) {
+        s.announced = run.id;
+        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? s.tags})`);
+        if (slotId !== "main" && !s.capturing)
+          s.output.append(`[goo] running tests (tags: ${run.spec?.tags ?? s.tags})`);
+        s.capturing = true;
+      }
+      s.status.set("running\u2026");
+    } else if (s.finishedRun !== run.id) {
+      s.finishedRun = run.id;
+      if (s.announced !== run.id) return;
+      const stopped = run.returncode === null;
+      s.status.set(
+        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "passed"
+      );
+      const byExit = stopped ? "" : run.returncode ? "fail" : "success";
+      this._finishRun(slotId, s.result || byExit);
+    }
+  }
+  // close a slot's test-log window and log the finish event (once per run)
+  _finishRun(slotId, result = this.slot(slotId).result) {
+    const s = this.slot(slotId);
+    s.capturing = false;
+    if (s.finished) return;
+    s.finished = true;
+    const failed = result && String(result).includes("fail");
+    this.eventLog.add(
+      `test run finished${result ? ` (${result})` : ""}`,
+      "",
+      failed ? "error" : ""
+    );
+  }
+  // run tests: against the main slot (standalone screen, ws omitted) or a
+  // workspace's slot (the Workspaces pane passes its workspace)
+  async run(tags, ws = null) {
+    if (!tags.trim()) return;
+    const slotId = slotFor(ws);
+    const targetId = ws ? ws.id : this.target;
+    if (!targetId) return this.server.log(`[goo] no valid target to test`);
+    const s = this.slot(slotId);
+    const up = slotId === "main" ? (() => {
+      const st = this.server.status();
+      return (st.state === "running" || st.state === "starting") && st.mode === "server";
+    })() : ["running", "starting"].includes(this.store.server(slotId)?.state);
+    this._pushHistory(tags);
+    s.tags = tags.trim();
+    s.cutOnChrome = s.tags.includes("web:WebSuite");
+    s.result = "";
+    if (up) this.eventLog.add("stopping server to run tests");
+    s.output.clear();
+    s.capturing = false;
+    s.finished = false;
+    s.pending.set(true);
+    s.status.set("starting\u2026");
+    try {
+      await postJSON("/api/tests/run", {
+        target: targetId,
+        workspace: slotId,
+        overrides: { test_tags: s.tags }
+      });
+    } catch (e) {
+      s.pending.set(false);
+      s.status.set(`failed to start: ${e.message}`);
+    }
+  }
+};
+
 // static/src/addons_screen/addons_plugin.js
 var AddonsPlugin = class _AddonsPlugin extends Plugin {
   static sequence = 4;
@@ -3452,46 +3959,100 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  output = new LogBuffer();
-  modules = signal([]);
-  loadedDb = signal("");
-  erroredDb = signal("");
-  // db whose last auto-load failed — don't auto-retry it (avoids a hot loop)
-  loading = signal(false);
-  error = signal("");
+  worktree = plugin(WorktreePlugin);
+  // a worktree slot's addons paths come from its checkout
+  // the text/state filters are global — shared between the standalone screen and
+  // the Workspaces pane (acceptable: one user, one focus at a time)
   filter = signal("");
   stateFilter = signal("");
   // "" | "installed" | "uninstalled"
   appOnly = signal(true);
   // only modules flagged as an application (on by default)
-  status = signal("");
-  _pending = signal(false);
-  // optimistic "run starting", until the backend's "run" event lands
-  _announced = null;
-  // run id we've seen running this session
-  _finishedRun = null;
-  // run id we've finalized (once per run)
-  // filtered + sorted modules — recomputed only when modules/filter change
-  filtered = computed(() => this._filtered());
+  _slots = /* @__PURE__ */ new Map();
+  // slotId -> per-slot module/run/console state
+  slot(id = "main") {
+    if (!this._slots.has(id)) {
+      const rec = {
+        output: new LogBuffer(),
+        modules: signal([]),
+        loadedDb: signal(""),
+        erroredDb: signal(""),
+        // db whose last auto-load failed — don't auto-retry (hot loop)
+        loading: signal(false),
+        error: signal(""),
+        status: signal(""),
+        pending: signal(false),
+        // optimistic "run starting", until the "run" event lands
+        announced: null,
+        // run id we've seen running this session
+        finishedRun: null,
+        // run id we've finalized (once per run)
+        lastWs: null
+        // the workspace last loaded into this slot (for the post-run refresh)
+      };
+      rec.filtered = computed(() => this._filtered(rec));
+      this._slots.set(id, rec);
+    }
+    return this._slots.get(id);
+  }
+  // ── main-slot aliases (the standalone Addons screen reads these) ─────────────
+  get output() {
+    return this.slot("main").output;
+  }
+  get modules() {
+    return this.slot("main").modules;
+  }
+  get loadedDb() {
+    return this.slot("main").loadedDb;
+  }
+  get erroredDb() {
+    return this.slot("main").erroredDb;
+  }
+  get loading() {
+    return this.slot("main").loading;
+  }
+  get error() {
+    return this.slot("main").error;
+  }
+  get status() {
+    return this.slot("main").status;
+  }
+  get filtered() {
+    return this.slot("main").filtered;
+  }
+  get running() {
+    return this.currentRun()?.state === "running";
+  }
+  runningFor(slotId) {
+    return this.currentRun(slotId)?.state === "running";
+  }
   setup() {
-    useEffect(() => this._onRun(this.currentRun()));
+    useEffect(() => {
+      const slots = new Set(
+        this.store.runs().filter((d) => d.kind === "install" || d.kind === "upgrade").map((d) => d.server ?? "main")
+      );
+      for (const s of slots) this._onRun(s, this.currentRun(s));
+    });
     this.server.onLine((line) => {
-      if (this.runActive()) this.output.append(line);
+      if (this.runActive("main") && !WT_ECHO_RE.test(line)) this.slot("main").output.append(line);
+    });
+    this.server.onWorktreeLog(({ target, line }) => {
+      if (this._slots.has(target) && this.runActive(target)) this.slot(target).output.append(line);
     });
   }
-  // the current/last install-or-upgrade run (backend-minted, from the shared store)
-  currentRun() {
-    const i = this.store.latestRunOfKind("install");
-    const u = this.store.latestRunOfKind("upgrade");
+  // the current/last install-or-upgrade run on a slot
+  currentRun(slotId = "main") {
+    const i = this.store.latestRunOfKind("install", slotId);
+    const u = this.store.latestRunOfKind("upgrade", slotId);
     return [i, u].filter(Boolean).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null;
   }
-  // a run is active — optimistic between clicking Install/Upgrade and the backend's
-  // first "run" event, then driven by the run's state (a method: components call it)
-  runActive() {
-    return this._pending() || this.currentRun()?.state === "running";
+  // a run is active on a slot — optimistic between clicking Install/Upgrade and the
+  // backend's first "run" event, then driven by the run's state
+  runActive(slotId = "main") {
+    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
   }
   // the active target: the running server's target, else the last one used
-  // (both reference a target id)
+  // (the standalone screen's main-slot oracle)
   _activeTarget() {
     const id = this.server.status().target || this.server.lastTarget();
     return this.config.config.targets.find((t2) => t2.id === id) || null;
@@ -3502,42 +4063,53 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   targetDb() {
     return this._activeTarget()?.db || "";
   }
-  // the active target's repos as {id, path} — the addons-path used to list +
-  // install, so only modules from the target's repos are ever shown
-  _repos() {
-    const target = this._activeTarget();
+  // a workspace's repos as {id, path}: a worktree workspace's own checkout copies,
+  // else the main checkout paths of the workspace's (or active target's) checkouts —
+  // the addons-path used to list + install, so only its modules are ever shown
+  _reposFor(ws) {
+    if (ws && ws.location === "worktree") {
+      return this.worktree.wtRepos(ws).map((r) => ({ id: r.repo, path: r.worktreePath }));
+    }
+    const target = ws || this._activeTarget();
     if (!target) return [];
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
     return (target.checkouts || []).map((c) => ({ id: c.repo, path: pathById[c.repo] })).filter((r) => r.path);
   }
-  async load() {
-    const db = this.targetDb();
+  // load a slot's module list: ws omitted = the standalone screen's main path
+  // (active target's db); a workspace loads its own db + repos into its slot
+  async load(ws = null) {
+    const slotId = slotFor(ws);
+    const s = this.slot(slotId);
+    const db = ws ? ws.db : this.targetDb();
+    s.lastWs = ws;
     if (!db) {
-      this.modules.set([]);
-      this.loadedDb.set("");
+      s.modules.set([]);
+      s.loadedDb.set("");
       return;
     }
-    this.loading.set(true);
-    this.error.set("");
-    this.erroredDb.set("");
+    s.loading.set(true);
+    s.error.set("");
+    s.erroredDb.set("");
     try {
-      const data = await postJSON("/api/addons", { repos: this._repos(), db });
-      if (this.targetDb() !== db) return;
-      this.modules.set(data.modules);
-      this.loadedDb.set(db);
+      const data = await postJSON("/api/addons", { repos: this._reposFor(ws), db });
+      const want = s.lastWs ? s.lastWs.db : this.targetDb();
+      if (want !== db) return;
+      s.modules.set(data.modules);
+      s.loadedDb.set(db);
     } catch (e) {
-      if (this.targetDb() !== db) return;
-      this.error.set(e.message);
-      this.erroredDb.set(db);
+      const want = s.lastWs ? s.lastWs.db : this.targetDb();
+      if (want !== db) return;
+      s.error.set(e.message);
+      s.erroredDb.set(db);
     } finally {
-      this.loading.set(false);
+      s.loading.set(false);
     }
   }
-  _filtered() {
+  _filtered(s) {
     const q = this.filter().trim().toLowerCase();
     const sf = this.stateFilter();
     const appOnly = this.appOnly();
-    const matched = this.modules().filter((mod) => {
+    const matched = s.modules().filter((mod) => {
       const installed = mod.state === "installed";
       if (sf === "installed" && !installed) return false;
       if (sf === "uninstalled" && installed) return false;
@@ -3549,47 +4121,53 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
     );
     return { total: matched.length, shown: matched.slice(0, _AddonsPlugin.MAX_ROWS) };
   }
-  // react to the backend-minted install/upgrade Run moving running → done/failed.
-  // Resume-after is backend-owned now; this just drives the status + reloads module
-  // states when the run ends. Finalize once per run id.
-  _onRun(run) {
+  // react to a slot's backend-minted install/upgrade Run moving running →
+  // done/failed. Resume-after is backend-owned; this drives the status + reloads
+  // module states when the run ends. Finalize once per run id per slot.
+  _onRun(slotId, run) {
     if (!run) return;
+    const s = this.slot(slotId);
     if (run.state === "running") {
-      this._pending.set(false);
-      this._announced = run.id;
-      this.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}\u2026`);
-    } else if (this._finishedRun !== run.id) {
-      this._finishedRun = run.id;
-      if (this._announced !== run.id) return;
+      s.pending.set(false);
+      s.announced = run.id;
+      s.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}\u2026`);
+    } else if (s.finishedRun !== run.id) {
+      s.finishedRun = run.id;
+      if (s.announced !== run.id) return;
       const stopped = run.returncode === null;
-      this.status.set(
+      s.status.set(
         stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "done"
       );
-      this.load();
+      this.load(s.lastWs);
     }
   }
-  get running() {
-    return this.currentRun()?.state === "running";
-  }
-  async run(op, name) {
-    const target = this._activeTarget();
-    const db = this.targetDb();
+  // install/upgrade a module: on the main slot (standalone screen, ws omitted) or
+  // a workspace's slot
+  async run(op, name, ws = null) {
+    const slotId = slotFor(ws);
+    const target = ws || this._activeTarget();
+    const db = ws ? ws.db : this.targetDb();
     if (!target || !db) return;
+    const s = this.slot(slotId);
     const verb = op === "upgrade" ? "Upgrade" : "Install";
     const ok = await this.dialogs.open({
       title: `${verb} "${name}" on ${db}?`,
       okLabel: verb
     });
     if (!ok) return;
-    this.output.clear();
-    this._pending.set(true);
-    this.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}\u2026`);
+    s.output.clear();
+    s.pending.set(true);
+    s.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}\u2026`);
     this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
     try {
-      await postJSON("/api/addons/run", { target: target.id, overrides: { [op]: name } });
+      await postJSON("/api/addons/run", {
+        target: target.id,
+        workspace: slotId,
+        overrides: { [op]: name }
+      });
     } catch (e) {
-      this._pending.set(false);
-      this.status.set(`failed to start: ${e.message}`);
+      s.pending.set(false);
+      s.status.set(`failed to start: ${e.message}`);
     }
   }
 };
@@ -4162,15 +4740,17 @@ var AssetsPlugin = class extends Plugin {
     }
   }
   // force a pregeneration of the bundles (odoo-bin shell), then reload the list.
-  // The server builds the addons-path + venv prefix from its own config — just the db.
-  async generate() {
+  // The server builds the addons-path + venv prefix from its own config — just the
+  // db, plus an optional workspace so a worktree workspace's bundles are generated
+  // with ITS checkout's code (the Workspaces pane passes it).
+  async generate(ws = null) {
     const db = this.selectedDb();
     if (!db) return;
     this.generating.set(true);
     this.error.set("");
     const eid = this.eventLog.begin(`generating asset bundles in ${db}\u2026`);
     try {
-      await postJSON("/api/assets/generate", { db });
+      await postJSON("/api/assets/generate", { db, ...ws ? { workspace: ws.id } : {} });
       this.eventLog.finish(eid, "done");
       await this.load(true);
     } catch (e) {
@@ -4491,319 +5071,6 @@ var AssetsScreen = class extends Component {
   }
   fmtSize(n) {
     return formatBytes(n || 0);
-  }
-};
-
-// static/src/core/worktree_plugin.js
-var WorktreePlugin = class extends Plugin {
-  static sequence = 5;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
-  // worktree servers live in the shared servers map
-  server = plugin(ServerPlugin);
-  code = plugin(CodePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
-  selectedId = signal("");
-  // the worktree selected in the Worktree screen
-  logs = /* @__PURE__ */ new Map();
-  // targetId -> LogBuffer (per-server scrollback + live stream)
-  _startEids = {};
-  // targetId -> pending "starting worktree server" timed-event id
-  setup() {
-    this.server.onWorktree((d) => this.applyStatus(d));
-    this.server.onWorktreeLog(({ target, line }) => this.logBuffer(target).append(line));
-    this.load();
-  }
-  // ── which targets are worktrees ──────────────────────────────────────────────
-  // the explicit `kind` marks a worktree; fall back to the presence of the
-  // `worktree` metadata object for any target not yet carrying a kind.
-  isWorktree(tgt) {
-    if (!tgt) return false;
-    const rec = this.config.target(tgt.id);
-    if (rec) return rec.isWorktree();
-    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree";
-  }
-  worktreeTargets() {
-    return (this.config.config.targets || []).filter((t2) => this.isWorktree(t2));
-  }
-  selected() {
-    return this.worktreeTargets().find((t2) => t2.id === this.selectedId()) || null;
-  }
-  select(id) {
-    this.selectedId.set(id);
-    if (id && this.isWorktree(this.config.config.targets.find((t2) => t2.id === id)))
-      this._primeLogs(id);
-  }
-  // branch names owned by a worktree (for the Branches/PRs "wt" badge)
-  worktreeBranches() {
-    const s = /* @__PURE__ */ new Set();
-    for (const t2 of this.worktreeTargets())
-      for (const c of t2.checkouts || []) if (c.branch) s.add(c.branch);
-    return s;
-  }
-  isWorktreeBranch(name) {
-    return !!name && this.worktreeBranches().has(name);
-  }
-  // ── paths ────────────────────────────────────────────────────────────────────
-  // the worktree's checkout directory: the value frozen at creation
-  // (worktree.dir), else derived from the name. Persisting it means a later rename
-  // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
-  dirPath(tgt) {
-    const rec = this.config.target(tgt.id);
-    if (rec) return rec.dirPath();
-    return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt);
-  }
-  hasCommunity(tgt) {
-    const rec = this.config.target(tgt.id);
-    if (rec) return rec.hasCommunity();
-    return (tgt.checkouts || []).some((c) => c.repo === "community");
-  }
-  // per-repo worktree descriptors for an existing worktree target (start / remove)
-  wtRepos(tgt) {
-    const g = this.code.groups();
-    const dir = this.dirPath(tgt);
-    return (tgt.checkouts || []).map(({ repo, branch }) => ({
-      repo,
-      branch,
-      mainPath: g.pathByRepo[repo] || "",
-      github: g.githubByRepo[repo] || "",
-      worktreePath: `${dir}/${repo}`
-    })).filter((r) => r.mainPath);
-  }
-  // ── live state (from the shared servers map, keyed by target id) ─────────────
-  state(tgt) {
-    return this.store.server(tgt.id) || { exists: false, state: "stopped", port: null };
-  }
-  exists(tgt) {
-    return !!this.state(tgt).exists;
-  }
-  serverState(tgt) {
-    return this.state(tgt).state || "stopped";
-  }
-  running(tgt) {
-    const s = this.serverState(tgt);
-    return s === "running" || s === "starting";
-  }
-  port(tgt) {
-    return this.state(tgt).port || null;
-  }
-  _merge(id, patch) {
-    this.store.mergeServer({ id, ...patch });
-  }
-  // resolve a worktree's pending start timed-event on a state transition. The store
-  // merge already happened in ServerPlugin's "server" SSE handler (which relays each
-  // worktree snapshot here); this just drives the event-log row.
-  applyStatus(d) {
-    if (!d || !d.id) return;
-    const eid = this._startEids[d.id];
-    if (eid && (d.state === "running" || d.state === "stopped")) {
-      this.eventLog.finish(eid, d.state === "running" ? "done" : "error");
-      delete this._startEids[d.id];
-    }
-  }
-  // hydrate existence + current server state for every worktree target
-  async load() {
-    const targets = this.worktreeTargets().map((t2) => ({ id: t2.id, dirPath: this.dirPath(t2) }));
-    if (!targets.length) return;
-    try {
-      const res = await postJSON("/api/workspace/list", { targets });
-      for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
-    } catch {
-    }
-  }
-  // ── logs ─────────────────────────────────────────────────────────────────────
-  logBuffer(id) {
-    if (!this.logs.has(id)) this.logs.set(id, new LogBuffer());
-    return this.logs.get(id);
-  }
-  // fill scrollback from the server's tail once, only if we don't already hold the
-  // live stream (e.g. after a page reload while the server was already running)
-  async _primeLogs(id) {
-    const buf = this.logBuffer(id);
-    if (buf.count()) return;
-    try {
-      const res = await postJSON("/api/workspace/logs", { target: id });
-      buf.clear();
-      for (const line of res.lines || []) buf.append(line);
-    } catch {
-    }
-  }
-  // ── create ─────────────────────────────────────────────────────────────────
-  _newId(seed) {
-    const base = "wt-" + (seed || "wt").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
-    const taken = new Set((this.config.config.targets || []).map((t2) => t2.id));
-    let id = base;
-    let n = 2;
-    while (taken.has(id)) id = `${base}-${n++}`;
-    return id;
-  }
-  // Materialize a worktree-located workspace: per repo, create checkout.branch
-  // (forked from startPointByRepo[repo]) as a git worktree under a frozen dir;
-  // optionally clone <cloneSource> into the workspace's own db first. On success,
-  // persist the workspace (canonical `workspaces` write — the create path deals it
-  // the next stable port) and select it.
-  // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
-  //         baseId?, on_create_args?, demo_data?, favorite? }
-  async createWorktree({
-    name,
-    dbName,
-    cloneSource,
-    checkouts,
-    startPointByRepo = {},
-    baseId = "",
-    on_create_args = "",
-    demo_data = true,
-    favorite = false
-  }) {
-    if (!checkouts || !checkouts.length)
-      return this._error("Create workspace", "the workspace has no checkouts");
-    const id = this._newId(name);
-    const ws = {
-      id,
-      name,
-      favorite,
-      db: dbName,
-      on_create_args,
-      demo_data,
-      location: "worktree",
-      checkouts,
-      worktree: { base: baseId }
-    };
-    const g = this.code.groups();
-    const dir = this.dirPath(ws);
-    ws.worktree.dir = dir;
-    const repos = checkouts.map(({ repo, branch }) => ({
-      repo,
-      newBranch: branch,
-      startPoint: startPointByRepo[repo],
-      mainPath: g.pathByRepo[repo] || "",
-      github: g.githubByRepo[repo] || "",
-      worktreePath: `${dir}/${repo}`
-    })).filter((r) => r.mainPath);
-    if (!repos.length) return this._error("Create workspace", "no local repos for the checkouts");
-    const eid = this.eventLog.begin(`creating worktree workspace ${ws.name}`);
-    try {
-      if (cloneSource) {
-        await postJSON("/api/databases/clone", {
-          source: cloneSource,
-          target: dbName,
-          filestore: this.config.config.filestore
-        });
-      }
-      const res = await postJSON("/api/workspace/create", { target: id, repos });
-      if (!res.ok) {
-        this.eventLog.finish(eid, "error");
-        const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
-        return this._error("Workspace creation failed", msg || "git worktree add failed");
-      }
-      this.config.updateConfig({ workspaces: [...this.config.config.workspaces, ws] });
-      this._merge(id, { exists: true, state: "stopped", port: null });
-      this.eventLog.finish(eid, "done");
-      this.select(id);
-      return true;
-    } catch (e) {
-      this.eventLog.finish(eid, "error");
-      return this._error("Workspace creation failed", e.message);
-    }
-  }
-  // ── server lifecycle ─────────────────────────────────────────────────────────
-  // The backend builds the worktree launch config from the target id (repos pointed
-  // at the worktree copies + the worktree's odoo-bin, from the persisted worktree.dir).
-  async startServer(tgt) {
-    if (this.running(tgt)) return;
-    if (!this.hasCommunity(tgt))
-      return this._error("Cannot start worktree server", "this target has no community repo");
-    const eid = this.eventLog.begin(`starting worktree server (${tgt.name})`);
-    this._startEids[tgt.id] = eid;
-    this._merge(tgt.id, { state: "starting" });
-    try {
-      const res = await postJSON("/api/workspace/start", { target: tgt.id });
-      this._merge(tgt.id, { port: res.port });
-    } catch (e) {
-      delete this._startEids[tgt.id];
-      this.eventLog.finish(eid, "error");
-      this._merge(tgt.id, { state: "stopped" });
-      this._error("Could not start the worktree server", e.message);
-    }
-  }
-  async stopServer(tgt) {
-    this.eventLog.add(`stopping worktree server (${tgt.name})`);
-    try {
-      await postJSON("/api/workspace/stop", { target: tgt.id });
-      this._merge(tgt.id, { state: "stopped" });
-    } catch {
-    }
-  }
-  // stop is synchronous on the backend, so a plain stop-then-start restarts cleanly
-  async restartServer(tgt) {
-    await this.stopServer(tgt);
-    await this.startServer(tgt);
-  }
-  async remove(tgt) {
-    if (this.running(tgt))
-      return this._error("Stop the server first", "Stop the worktree server before removing it.");
-    const res = await this.dialogs.open({
-      title: `Remove worktree "${tgt.name}"?`,
-      message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.`,
-      fields: [
-        { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false }
-      ],
-      okLabel: "Remove"
-    });
-    if (!res) return;
-    const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
-      repo,
-      mainPath,
-      worktreePath
-    }));
-    this.eventLog.add(`removing worktree ${tgt.name}`);
-    try {
-      await postJSON("/api/workspace/remove", {
-        target: tgt.id,
-        dirPath: this.dirPath(tgt),
-        repos
-      });
-    } catch (e) {
-      return this._error("Worktree removal failed", e.message);
-    }
-    if (res.dropDb && tgt.db) {
-      try {
-        await postJSON("/api/databases/drop", {
-          name: tgt.db,
-          filestore: this.config.config.filestore
-        });
-      } catch (e) {
-        this._error("Database drop failed", e.message);
-      }
-    }
-    this.config.updateConfig({
-      workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id)
-    });
-    this.store.dropServer(tgt.id);
-    this.logs.delete(tgt.id);
-    if (this.selectedId() === tgt.id) this.selectedId.set("");
-  }
-  // open the worktree's repo folders in the configured editor (all in one window);
-  // works whether or not the server is running — it's just the checkout on disk
-  openEditor(tgt) {
-    const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
-    if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
-  }
-  // ── autologin URLs against the worktree server's port ("" when not running) ──
-  odooUrl(tgt) {
-    const port = this.port(tgt);
-    return port ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}` : "";
-  }
-  testsUrl(tgt) {
-    const port = this.port(tgt);
-    return port ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent(
-      "/web/tests?debug=assets&timeout=500000&manual=true"
-    )}` : "";
-  }
-  _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
-    return false;
   }
 };
 
@@ -8187,149 +8454,6 @@ var DatabasesScreen = class extends Component {
   }
 };
 
-// static/src/core/tests_plugin.js
-var HISTORY_MAX = 10;
-var TestsPlugin = class extends Plugin {
-  static sequence = 3;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
-  // one-shot runs live in the shared store's runs map
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  output = new LogBuffer();
-  status = signal("");
-  history = signal(this._readHistory());
-  // last test tags run, most recent first
-  _pending = signal(false);
-  // optimistic "run starting", until the backend's "run" event lands
-  _capturing = false;
-  // whether server lines are currently mirrored to the test console
-  _finished = false;
-  // guard: "test suite finished" is logged once per run
-  _tags = "";
-  // current run's tags (for the deferred "running tests" log)
-  _cutOnChrome = false;
-  // WebSuite runs end the console window at the chrome teardown
-  _result = "";
-  // "success" | "fail" — derived from the HOOT result lines
-  _failSeq = 0;
-  // monotonic id source for failure-row anchors (never reset)
-  _announced = null;
-  // run id we've logged "running tests" for (once per run)
-  _finishedRun = null;
-  // run id we've finalized (once per run)
-  _readHistory() {
-    const h = this.config.getState("test_history", []);
-    return Array.isArray(h) ? h : [];
-  }
-  // record a run's tag at the front, deduped, capped at HISTORY_MAX
-  _pushHistory(tag) {
-    tag = tag.trim();
-    if (!tag) return;
-    const h = [tag, ...this.history().filter((t2) => t2 !== tag)].slice(0, HISTORY_MAX);
-    this.history.set(h);
-    this.config.setState("test_history", h);
-  }
-  // the target id tests run against: the running/starting server's target, else the
-  // last-used one, else the first configured target. Tests are a one-shot run against
-  // the target's db, so they work even with the server down; the run endpoint resolves
-  // the launch config from this id server-side.
-  get target() {
-    const targets = this.config.config.targets;
-    const candidate = this.server.status().target || this.server.lastTarget();
-    if (targets.some((t2) => t2.id === candidate)) return candidate;
-    return targets[0]?.id || "";
-  }
-  // the current/last test run (backend-minted, from the shared store)
-  currentRun() {
-    return this.store.latestRunOfKind("test");
-  }
-  // a test run is active — optimistically true between clicking Run and the backend's
-  // first "run" event, then driven by the run's state (a method: components call it)
-  runActive() {
-    return this._pending() || this.currentRun()?.state === "running";
-  }
-  setup() {
-    useEffect(() => this._onRun(this.currentRun()));
-    this.server.onLine((line) => {
-      if (!this.runActive()) return;
-      if (!this._capturing && line.includes("[goo] starting odoo:")) this._capturing = true;
-      if (!this._capturing) return;
-      const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
-      const anchor = failed ? `test-fail-${++this._failSeq}` : "";
-      this.output.append(line, anchor);
-      if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
-      if (line.includes("[HOOT] Test suite succeeded")) this._result = "success";
-      else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
-        this._result = "fail";
-      if (this._cutOnChrome && line.includes("Terminating chrome headless with pid"))
-        this._finishRun();
-    });
-  }
-  // react to the backend-minted test Run moving running → done/failed. Resume-after
-  // (bringing back a server the run interrupted) is owned by the backend now, so this
-  // just drives the console + event log. Announce/finalize once per run id.
-  _onRun(run) {
-    if (!run) return;
-    if (run.state === "running") {
-      this._pending.set(false);
-      if (this._announced !== run.id) {
-        this._announced = run.id;
-        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? this._tags})`);
-        this._capturing = true;
-      }
-      this.status.set("running\u2026");
-    } else if (this._finishedRun !== run.id) {
-      this._finishedRun = run.id;
-      if (this._announced !== run.id) return;
-      const stopped = run.returncode === null;
-      this.status.set(
-        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "passed"
-      );
-      const byExit = stopped ? "" : run.returncode ? "fail" : "success";
-      this._finishRun(this._result || byExit);
-    }
-  }
-  // close the test-tab log window and log the finish event (once per run)
-  _finishRun(result = this._result) {
-    this._capturing = false;
-    if (this._finished) return;
-    this._finished = true;
-    const failed = result && String(result).includes("fail");
-    this.eventLog.add(
-      `test run finished${result ? ` (${result})` : ""}`,
-      "",
-      failed ? "error" : ""
-    );
-  }
-  get running() {
-    return this.currentRun()?.state === "running";
-  }
-  async run(tags) {
-    if (!tags.trim()) return;
-    const targetId = this.target;
-    if (!targetId) return this.server.log(`[goo] no valid target to test`);
-    const s = this.server.status();
-    const serverWasUp = (s.state === "running" || s.state === "starting") && s.mode === "server";
-    this._pushHistory(tags);
-    this._tags = tags.trim();
-    this._cutOnChrome = this._tags.includes("web:WebSuite");
-    this._result = "";
-    if (serverWasUp) this.eventLog.add("stopping server to run tests");
-    this.output.clear();
-    this._capturing = false;
-    this._finished = false;
-    this._pending.set(true);
-    this.status.set("starting\u2026");
-    try {
-      await postJSON("/api/tests/run", { target: targetId, overrides: { test_tags: this._tags } });
-    } catch (e) {
-      this._pending.set(false);
-      this.status.set(`failed to start: ${e.message}`);
-    }
-  }
-};
-
 // static/src/core/event_log.js
 var EventLog = class extends Component {
   static template = xml`
@@ -10151,26 +10275,49 @@ var ClaudePlugin = class extends Plugin {
     } catch {
     }
   }
-  // send a task to Claude for <tgt>, running in its worktree's community checkout with
-  // the target's other repos added as extra allowed dirs
+  // where Claude works for <tgt>: a worktree workspace's own checkout copies, or —
+  // for a main-located workspace (the screen only offers it when loaded) — the REAL
+  // main checkout paths. Returns { cwd, addDirs } or null (error already shown).
+  // Note: removing a main-located workspace never CLAUDE.forgets its transcript
+  // (only /api/workspace/remove does) — a harmless stale in-memory convo.
+  _dirsFor(tgt) {
+    if (this.worktree.isWorktree(tgt)) {
+      const repos = this.worktree.wtRepos(tgt);
+      const community = repos.find((r) => r.repo === "community");
+      if (!community) {
+        this._error("Cannot run Claude", "this worktree has no community repo");
+        return null;
+      }
+      return {
+        cwd: community.worktreePath,
+        addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath)
+      };
+    }
+    const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+    const cwd = pathById["community"];
+    if (!cwd) {
+      this._error("Cannot run Claude", "no community repo configured");
+      return null;
+    }
+    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== "community").map((c) => pathById[c.repo]).filter(Boolean);
+    return { cwd, addDirs };
+  }
+  // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
+  // the main checkout for a loaded main-located workspace) with the workspace's
+  // other repos added as extra allowed dirs
   async send(tgt, prompt) {
     const text = (prompt || "").trim();
     if (!text || this.running(tgt.id)) return;
-    const repos = this.worktree.wtRepos(tgt);
-    const community = repos.find((r) => r.repo === "community");
-    if (!community) {
-      this._error("Cannot run Claude", "this worktree has no community repo");
-      return;
-    }
-    const addDirs = repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath);
+    const dirs = this._dirsFor(tgt);
+    if (!dirs) return;
     this._append(tgt.id, { role: "user", text });
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
       await postJSON("/api/workspace/claude", {
         target: tgt.id,
         prompt: text,
-        cwd: community.worktreePath,
-        addDirs,
+        cwd: dirs.cwd,
+        addDirs: dirs.addDirs,
         model: this.model() || void 0
       });
     } catch (e) {
@@ -10190,14 +10337,220 @@ var ClaudePlugin = class extends Plugin {
   }
 };
 
+// static/src/workspaces_screen/panes.js
+var TestsPane = class extends Component {
+  static components = { LogConsole };
+  static template = xml`
+    <div class="ws-run-pane">
+      <form class="test-form" t-on-submit.prevent="() => this.run()">
+        <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
+          <option value="" selected="selected" hidden="hidden">Presets</option>
+          <optgroup t-if="this.presets.length" label="Presets">
+            <option t-foreach="this.presets" t-as="p" t-key="p_index" t-att-value="p.tags" t-out="p.tags"/>
+          </optgroup>
+          <optgroup t-if="this.tests.history().length" label="Recent">
+            <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
+          </optgroup>
+        </select>
+        <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
+               placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
+        <button type="submit" t-att-disabled="this.tests.runActive(this.slotId) or !this.tags().trim()"><span class="play"/>Run</button>
+        <button type="button" class="stop" t-att-disabled="!this.tests.runningFor(this.slotId)" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
+        <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
+        <div class="log-controls">
+          <label class="toggle" t-att-class="{on: this.slot.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+          <button type="button" class="tool-btn" t-on-click="() => this.slot.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
+        </div>
+      </form>
+      <div t-if="!this.slot.output.count() and !this.tests.runActive(this.slotId)" class="ws-empty-note dim">
+        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run.
+        The run uses this workspace's database and checkout.
+      </div>
+      <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
+    </div>`;
+  props = props({ ws: t.any() });
+  tests = plugin(TestsPlugin);
+  server = plugin(ServerPlugin);
+  config = plugin(ConfigPlugin);
+  wt = plugin(WorktreePlugin);
+  clearIcon = m(ICONS.clear);
+  tags = signal("");
+  get slotId() {
+    return slotFor(this.props.ws);
+  }
+  get slot() {
+    return this.tests.slot(this.slotId);
+  }
+  get presets() {
+    return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
+  }
+  get badge() {
+    const s = this.slot.status();
+    if (s === "passed") return { label: "success", cls: "ok" };
+    if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
+    if (s === "running\u2026" || s === "starting\u2026") return { label: "running", cls: "run" };
+    return null;
+  }
+  run() {
+    this.tests.run(this.tags(), this.props.ws);
+  }
+  // stopping the slot's server kills the run; the backend finalizes it and
+  // resumes the server the run had interrupted
+  stop() {
+    if (this.slotId === "main") this.server.stop();
+    else this.wt.stopServer(this.props.ws);
+  }
+  onPreset(ev) {
+    const v = ev.target.value;
+    ev.target.value = "";
+    if (v) this.tags.set(v);
+  }
+  toggleAuto() {
+    const b = this.slot.output;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
+  }
+};
+var AddonsPane = class extends Component {
+  static components = { LogConsole, SearchBox };
+  static template = xml`
+    <div class="ws-run-pane">
+      <div class="ws-pane-toolbar">
+        <SearchBox value="this.addons.filter"/>
+        <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+        <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
+        <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
+        <button class="pbtn" title="reload the module list" t-on-click="() => this.addons.load(this.props.ws)"><span class="restart"/></button>
+        <span t-if="this.slot.status()" class="dim ws-sec-meta" t-out="this.slot.status()"/>
+        <span class="dim ws-sec-meta ws-pane-count" t-out="this.count"/>
+      </div>
+      <div t-if="this.slot.loading()" class="dim ws-empty-note">Loading modules…</div>
+      <div t-elif="this.slot.error()" class="ws-empty-note form-error" t-out="this.slot.error()"/>
+      <div t-elif="!this.view.total" class="dim ws-empty-note">No modules match — check the filters, or the database may not exist yet.</div>
+      <div t-else="" class="ws-addons-scroll">
+        <table class="br-table brg-flat">
+          <thead>
+            <tr><th>Module</th><th>Summary</th><th>Repository</th><th>State</th><th/></tr>
+          </thead>
+          <tbody>
+            <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
+              <td class="addon-name" t-att-title="mod.summary" t-out="mod.name"/>
+              <td class="dim"><div class="br-ellip" t-att-title="mod.summary" t-out="mod.summary || '—'"/></td>
+              <td class="dim" t-out="mod.repo"/>
+              <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
+              <td>
+                <div class="br-act">
+                  <button class="addon-btn" t-att-disabled="this.addons.runActive(this.slotId) or mod.installable === false"
+                          t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.props.ws)"
+                          t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
+             t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
+      </div>
+      <LogConsole t-if="this.addons.runActive(this.slotId) or this.addons.runningFor(this.slotId)"
+                  t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
+    </div>`;
+  props = props({ ws: t.any() });
+  addons = plugin(AddonsPlugin);
+  setup() {
+    useEffect(() => {
+      const db = this.props.ws.db;
+      if (db && db !== this.slot.loadedDb() && db !== this.slot.erroredDb() && !this.slot.loading())
+        this.addons.load(this.props.ws);
+    });
+  }
+  get slotId() {
+    return slotFor(this.props.ws);
+  }
+  get slot() {
+    return this.addons.slot(this.slotId);
+  }
+  get view() {
+    return this.slot.filtered();
+  }
+  get count() {
+    const n = this.view.total;
+    return `${n} module${n === 1 ? "" : "s"}`;
+  }
+  toggleState(value) {
+    this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
+  }
+  stateClass(mod) {
+    return (mod.state || "none").replace(/\s+/g, "-");
+  }
+};
+var AssetsPane = class extends Component {
+  static template = xml`
+    <div class="ws-run-pane">
+      <div class="ws-pane-toolbar">
+        <span class="dim ws-sec-meta">db <b t-out="this.props.ws.db"/></span>
+        <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
+        <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
+                t-on-click="() => this.assets.generate(this.wsForGenerate)" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
+        <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
+      </div>
+      <div t-if="this.assets.loading()" class="dim ws-empty-note">Loading bundles…</div>
+      <div t-elif="this.assets.error()" class="ws-empty-note form-error" t-out="this.assets.error()"/>
+      <div t-elif="this.mismatch" class="dim ws-empty-note">Loading this workspace's bundles…</div>
+      <div t-elif="!this.bundles.length" class="dim ws-empty-note">No stored bundles — Generate builds them all (the database may not exist yet).</div>
+      <div t-else="" class="ws-addons-scroll">
+        <table class="br-table brg-flat">
+          <thead><tr><th>Bundle</th><th class="ws-num">Size</th></tr></thead>
+          <tbody>
+            <tr t-foreach="this.bundles" t-as="b" t-key="b.id">
+              <td class="addon-name" t-out="b.name"/>
+              <td class="ws-num" t-out="this.size(b)"/>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  props = props({ ws: t.any() });
+  assets = plugin(AssetsPlugin);
+  setup() {
+    useEffect(() => {
+      const db = this.props.ws.db;
+      if (db) untrack(() => this.assets.selectedDb() !== db && this.assets.selectDb(db));
+    });
+  }
+  // only pass the workspace to generate() when its checkout differs from the main
+  // one (a worktree) — the backend then builds the shell cmd from its copies
+  get wsForGenerate() {
+    return this.props.ws.location === "worktree" ? this.props.ws : null;
+  }
+  get mismatch() {
+    return this.assets.loadedDb() !== this.props.ws.db;
+  }
+  get bundles() {
+    return [...this.assets.bundles()].sort((a, b) => (b.size || 0) - (a.size || 0));
+  }
+  get meta() {
+    const n = this.bundles.length;
+    return this.mismatch ? "" : `${n} bundle${n === 1 ? "" : "s"}`;
+  }
+  size(b) {
+    return formatBytes(b.size || 0);
+  }
+};
+
 // static/src/workspaces_screen/workspaces.js
 var ClaudeChat = class extends Component {
   static template = xml`
     <div class="cchat">
       <div class="cchat-msgs" t-ref="this.scroll">
         <div t-if="!this.items.length" class="cchat-hint dim">
-          Send a task to Claude. It runs in this worktree's checkout with full autonomy —
-          it can edit files and run commands here without touching your main tree.
+          <t t-if="this.props.inMain">
+            Send a task to Claude. <b>Caution:</b> it runs with full autonomy in your
+            MAIN checkout — it edits the real working tree this workspace shares.
+          </t>
+          <t t-else="">
+            Send a task to Claude. It runs in this worktree's checkout with full autonomy —
+            it can edit files and run commands here without touching your main tree.
+          </t>
         </div>
         <t t-foreach="this.items" t-as="m" t-key="m_index">
           <div t-if="m.role === 'user'" class="cmsg cmsg-user"><div class="cmsg-body" t-out="m.text"/></div>
@@ -10227,19 +10580,17 @@ var ClaudeChat = class extends Component {
         </div>
       </div>
     </div>`;
-  props = props({ target: t.any() });
+  props = props({ target: t.any(), inMain: t.boolean().optional() });
   claude = plugin(ClaudePlugin);
   scroll = signal.ref(HTMLElement);
   ta = signal.ref(HTMLElement);
   setup() {
     onMounted(() => this.claude.prime(this.props.target.id));
-    useEffect(
-      () => {
-        const el = this.scroll();
-        if (el) el.scrollTop = el.scrollHeight;
-      },
-      () => [this.items.length, this.running]
-    );
+    useEffect(() => {
+      void this.items.length, this.running;
+      const el = this.scroll();
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   }
   get items() {
     return this.claude.items(this.props.target.id);
@@ -10323,12 +10674,9 @@ var CodePane = class extends Component {
   code = plugin(CodePlugin);
   store = plugin(StorePlugin);
   setup() {
-    useEffect(
-      () => {
-        this.load(false);
-      },
-      () => [this.props.ws.id]
-    );
+    useEffect(() => {
+      this.load(false);
+    });
   }
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
@@ -10418,7 +10766,17 @@ var TerminalPane = class extends Component {
   }
 };
 var WorkspacesScreen = class extends Component {
-  static components = { LogConsole, ClaudeChat, CodePane, TerminalPane, Panel, SearchBox };
+  static components = {
+    LogConsole,
+    ClaudeChat,
+    CodePane,
+    TerminalPane,
+    TestsPane,
+    AddonsPane,
+    AssetsPane,
+    Panel,
+    SearchBox
+  };
   static template = xml`
     <section>
       <Panel title="'Workspaces'">
@@ -10473,6 +10831,9 @@ var WorkspacesScreen = class extends Component {
               <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.pane.set('terminal')"><t t-out="this.icons.terminal"/>Terminal</button>
               </div>
@@ -10488,9 +10849,21 @@ var WorkspacesScreen = class extends Component {
                 </t>
                 <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it to see its server log.</div>
               </div>
+              <div class="wt-pane" t-elif="this.pane() === 'tests'">
+                <TestsPane t-if="this.canRunHere(this.sel)" t-key="this.sel.id" ws="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it first to run tests against its database and checkout.</div>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'addons'">
+                <AddonsPane t-if="this.canRunHere(this.sel)" t-key="this.sel.id" ws="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it first to browse and install its modules.</div>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'assets'">
+                <AssetsPane t-if="this.sel.db" t-key="this.sel.id" ws="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace has no database.</div>
+              </div>
               <div class="wt-pane" t-elif="this.pane() === 'claude'">
-                <ClaudeChat t-if="this.isWt(this.sel)" t-key="this.sel.id" target="this.sel"/>
-                <div t-else="" class="ws-pane-hint dim">Claude runs inside a workspace's own worktree checkout — available for worktree workspaces (main-checkout support comes later).</div>
+                <ClaudeChat t-if="this.canRunHere(this.sel)" t-key="this.sel.id" target="this.sel" inMain="!this.isWt(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — load it first, or use a worktree workspace to let Claude work in isolation.</div>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'terminal'">
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
@@ -10515,24 +10888,24 @@ var WorkspacesScreen = class extends Component {
   icons = {
     code: m(ICONS.code),
     journal: m(ICONS.journal),
+    tests: m(ICONS.tests),
+    addons: m(ICONS.addons),
+    assets: m(ICONS.assets),
     claude: m(ICONS.claude),
     terminal: m(ICONS.terminal)
   };
+  // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
   pane = signal("code");
-  // which detail pane is shown: code | log | claude | terminal
   query = signal("");
   // the list search
   setup() {
     this.db.load();
-    useEffect(
-      () => {
-        const ws = this.sel;
-        if (!ws) return;
-        const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-        if (ids.size) this.code.loadBranches(ids);
-      },
-      () => [this.wt.selectedId()]
-    );
+    useEffect(() => {
+      const ws = this.sel;
+      if (!ws) return;
+      const ids = new Set((ws.checkouts || []).map((c) => c.repo));
+      if (ids.size) this.code.loadBranches(ids);
+    });
   }
   // ── list / selection ─────────────────────────────────────────────────────────
   // reads the canonical `workspaces` array — it carries `location` and the stable
@@ -10567,6 +10940,12 @@ var WorkspacesScreen = class extends Component {
   }
   isLoaded(ws) {
     return !this.isWt(ws) && ws.id === this.activeId;
+  }
+  // whether runs (tests/addons) and Claude can act on this workspace here: a
+  // worktree always (its own checkout), a main-located one only when loaded —
+  // running against another workspace's checked-out code would mislead
+  canRunHere(ws) {
+    return this.isWt(ws) || this.isLoaded(ws);
   }
   // serverFor: the main slot when it runs this workspace, else its own entry
   stateOf(ws) {

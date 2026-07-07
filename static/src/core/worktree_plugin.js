@@ -296,9 +296,13 @@ export class WorktreePlugin extends Plugin {
 
   async stopServer(tgt) {
     this.eventLog.add(`stopping worktree server (${tgt.name})`);
+    // optimistic feedback only BEFORE the POST: the backend stop is synchronous and
+    // may itself restart the server (a stop mid-run finalizes the run and resumes
+    // the server it interrupted), so a merge after the reply would clobber the
+    // fresher starting/running SSE snapshots that arrived during the request
+    this._merge(tgt.id, { state: "stopping" });
     try {
       await postJSON("/api/workspace/stop", { target: tgt.id });
-      this._merge(tgt.id, { state: "stopped" });
     } catch {
       /* the SSE status will reconcile */
     }

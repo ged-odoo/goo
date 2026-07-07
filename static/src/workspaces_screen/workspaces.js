@@ -14,14 +14,21 @@ import { attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { timeAgo } from "../core/utils.js";
 import { deleteTargetDialog, repoBranchList } from "../targets_screen/targets.js";
+import { AddonsPane, AssetsPane, TestsPane } from "./panes.js";
 
 export class ClaudeChat extends Component {
   static template = xml`
     <div class="cchat">
       <div class="cchat-msgs" t-ref="this.scroll">
         <div t-if="!this.items.length" class="cchat-hint dim">
-          Send a task to Claude. It runs in this worktree's checkout with full autonomy —
-          it can edit files and run commands here without touching your main tree.
+          <t t-if="this.props.inMain">
+            Send a task to Claude. <b>Caution:</b> it runs with full autonomy in your
+            MAIN checkout — it edits the real working tree this workspace shares.
+          </t>
+          <t t-else="">
+            Send a task to Claude. It runs in this worktree's checkout with full autonomy —
+            it can edit files and run commands here without touching your main tree.
+          </t>
         </div>
         <t t-foreach="this.items" t-as="m" t-key="m_index">
           <div t-if="m.role === 'user'" class="cmsg cmsg-user"><div class="cmsg-body" t-out="m.text"/></div>
@@ -52,21 +59,20 @@ export class ClaudeChat extends Component {
       </div>
     </div>`;
 
-  props = props({ target: t.any() });
+  props = props({ target: t.any(), inMain: t.boolean().optional() });
   claude = plugin(ClaudePlugin);
   scroll = signal.ref(HTMLElement);
   ta = signal.ref(HTMLElement);
 
   setup() {
     onMounted(() => this.claude.prime(this.props.target.id));
-    // follow the tail as items stream in (reads items() so the effect re-runs on change)
-    useEffect(
-      () => {
-        const el = this.scroll();
-        if (el) el.scrollTop = el.scrollHeight;
-      },
-      () => [this.items.length, this.running],
-    );
+    // follow the tail as items stream in (owl3's useEffect tracks the body itself —
+    // the items/running reads below are what re-run it)
+    useEffect(() => {
+      (void this.items.length, this.running);
+      const el = this.scroll();
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   }
 
   get items() {
@@ -165,13 +171,11 @@ export class CodePane extends Component {
 
   setup() {
     // load branches + PRs narrowed to this workspace's repos (merging, so other
-    // repos' cached state is untouched); re-runs when the selection changes
-    useEffect(
-      () => {
-        this.load(false);
-      },
-      () => [this.props.ws.id],
-    );
+    // repos' cached state is untouched); owl3's useEffect tracks the body, so this
+    // re-runs when the workspace's checkouts change (the pane is t-keyed per ws)
+    useEffect(() => {
+      this.load(false);
+    });
   }
 
   load(force) {
@@ -289,7 +293,18 @@ export class TerminalPane extends Component {
 // workspace runs concurrently from its own checkout on its own stable port.
 
 export class WorkspacesScreen extends Component {
-  static components = { LogConsole, ClaudeChat, CodePane, TerminalPane, Panel, SearchBox };
+  static components = {
+    LogConsole,
+    ClaudeChat,
+    CodePane,
+    TerminalPane,
+    TestsPane,
+    AddonsPane,
+    AssetsPane,
+    Panel,
+    SearchBox,
+  };
+
   static template = xml`
     <section>
       <Panel title="'Workspaces'">
@@ -344,6 +359,9 @@ export class WorkspacesScreen extends Component {
               <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.pane.set('terminal')"><t t-out="this.icons.terminal"/>Terminal</button>
               </div>
@@ -359,9 +377,21 @@ export class WorkspacesScreen extends Component {
                 </t>
                 <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it to see its server log.</div>
               </div>
+              <div class="wt-pane" t-elif="this.pane() === 'tests'">
+                <TestsPane t-if="this.canRunHere(this.sel)" t-key="this.sel.id" ws="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it first to run tests against its database and checkout.</div>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'addons'">
+                <AddonsPane t-if="this.canRunHere(this.sel)" t-key="this.sel.id" ws="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it first to browse and install its modules.</div>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'assets'">
+                <AssetsPane t-if="this.sel.db" t-key="this.sel.id" ws="this.sel"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace has no database.</div>
+              </div>
               <div class="wt-pane" t-elif="this.pane() === 'claude'">
-                <ClaudeChat t-if="this.isWt(this.sel)" t-key="this.sel.id" target="this.sel"/>
-                <div t-else="" class="ws-pane-hint dim">Claude runs inside a workspace's own worktree checkout — available for worktree workspaces (main-checkout support comes later).</div>
+                <ClaudeChat t-if="this.canRunHere(this.sel)" t-key="this.sel.id" target="this.sel" inMain="!this.isWt(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — load it first, or use a worktree workspace to let Claude work in isolation.</div>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'terminal'">
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
@@ -387,26 +417,28 @@ export class WorkspacesScreen extends Component {
   icons = {
     code: m(ICONS.code),
     journal: m(ICONS.journal),
+    tests: m(ICONS.tests),
+    addons: m(ICONS.addons),
+    assets: m(ICONS.assets),
     claude: m(ICONS.claude),
     terminal: m(ICONS.terminal),
   };
 
-  pane = signal("code"); // which detail pane is shown: code | log | claude | terminal
+  // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
+  pane = signal("code");
   query = signal(""); // the list search
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
     // keep the selected workspace's git state fresh (drives the Start guard + the
-    // checked-out badges) — a scoped, cheap branch scan per selection change
-    useEffect(
-      () => {
-        const ws = this.sel;
-        if (!ws) return;
-        const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-        if (ids.size) this.code.loadBranches(ids);
-      },
-      () => [this.wt.selectedId()],
-    );
+    // checked-out badges) — a scoped, cheap branch scan when the selection (read
+    // via this.sel — owl3's useEffect tracks the body) changes
+    useEffect(() => {
+      const ws = this.sel;
+      if (!ws) return;
+      const ids = new Set((ws.checkouts || []).map((c) => c.repo));
+      if (ids.size) this.code.loadBranches(ids);
+    });
   }
 
   // ── list / selection ─────────────────────────────────────────────────────────
@@ -448,6 +480,13 @@ export class WorkspacesScreen extends Component {
 
   isLoaded(ws) {
     return !this.isWt(ws) && ws.id === this.activeId;
+  }
+
+  // whether runs (tests/addons) and Claude can act on this workspace here: a
+  // worktree always (its own checkout), a main-located one only when loaded —
+  // running against another workspace's checked-out code would mislead
+  canRunHere(ws) {
+    return this.isWt(ws) || this.isLoaded(ws);
   }
 
   // serverFor: the main slot when it runs this workspace, else its own entry

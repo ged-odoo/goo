@@ -79,15 +79,17 @@ export class AssetsPlugin extends Plugin {
   }
 
   // force a pregeneration of the bundles (odoo-bin shell), then reload the list.
-  // The server builds the addons-path + venv prefix from its own config — just the db.
-  async generate() {
+  // The server builds the addons-path + venv prefix from its own config — just the
+  // db, plus an optional workspace so a worktree workspace's bundles are generated
+  // with ITS checkout's code (the Workspaces pane passes it).
+  async generate(ws = null) {
     const db = this.selectedDb();
     if (!db) return;
     this.generating.set(true);
     this.error.set("");
     const eid = this.eventLog.begin(`generating asset bundles in ${db}…`);
     try {
-      await postJSON("/api/assets/generate", { db });
+      await postJSON("/api/assets/generate", { db, ...(ws ? { workspace: ws.id } : {}) });
       this.eventLog.finish(eid, "done");
       await this.load(true);
     } catch (e) {

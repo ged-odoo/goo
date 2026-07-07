@@ -4180,6 +4180,7 @@ a.commit-detail-hash svg {
 }
 .wt-tabs {
   display: flex;
+  flex-wrap: wrap; /* 7 icon+label tabs must not overflow a narrow detail column */
   gap: 4px;
   margin-bottom: 8px;
 }
@@ -4357,6 +4358,44 @@ a.commit-detail-hash svg {
   border-radius: 10px;
   font-size: 13px;
 }
+/* the Tests/Addons/Assets tab panes: toolbar row + a filling console/table */
+.ws-run-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.ws-run-pane .test-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ws-run-pane .test-form input[type="text"] {
+  flex: 1;
+  min-width: 160px;
+}
+.ws-pane-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ws-pane-count {
+  margin-left: auto;
+}
+.ws-addons-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ws-num {
+  text-align: right;
+  font-family: var(--mono);
+}
+
 .ws-term {
   flex: 1;
   min-height: 0;

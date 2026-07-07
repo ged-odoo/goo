@@ -97,26 +97,53 @@ export class ClaudePlugin extends Plugin {
     }
   }
 
-  // send a task to Claude for <tgt>, running in its worktree's community checkout with
-  // the target's other repos added as extra allowed dirs
+  // where Claude works for <tgt>: a worktree workspace's own checkout copies, or —
+  // for a main-located workspace (the screen only offers it when loaded) — the REAL
+  // main checkout paths. Returns { cwd, addDirs } or null (error already shown).
+  // Note: removing a main-located workspace never CLAUDE.forgets its transcript
+  // (only /api/workspace/remove does) — a harmless stale in-memory convo.
+  _dirsFor(tgt) {
+    if (this.worktree.isWorktree(tgt)) {
+      const repos = this.worktree.wtRepos(tgt);
+      const community = repos.find((r) => r.repo === "community");
+      if (!community) {
+        this._error("Cannot run Claude", "this worktree has no community repo");
+        return null;
+      }
+      return {
+        cwd: community.worktreePath,
+        addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath),
+      };
+    }
+    const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+    const cwd = pathById["community"];
+    if (!cwd) {
+      this._error("Cannot run Claude", "no community repo configured");
+      return null;
+    }
+    const addDirs = (tgt.checkouts || [])
+      .filter((c) => c.repo !== "community")
+      .map((c) => pathById[c.repo])
+      .filter(Boolean);
+    return { cwd, addDirs };
+  }
+
+  // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
+  // the main checkout for a loaded main-located workspace) with the workspace's
+  // other repos added as extra allowed dirs
   async send(tgt, prompt) {
     const text = (prompt || "").trim();
     if (!text || this.running(tgt.id)) return;
-    const repos = this.worktree.wtRepos(tgt);
-    const community = repos.find((r) => r.repo === "community");
-    if (!community) {
-      this._error("Cannot run Claude", "this worktree has no community repo");
-      return;
-    }
-    const addDirs = repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath);
+    const dirs = this._dirsFor(tgt);
+    if (!dirs) return;
     this._append(tgt.id, { role: "user", text }); // optimistic; backend keeps its own copy
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
       await postJSON("/api/workspace/claude", {
         target: tgt.id,
         prompt: text,
-        cwd: community.worktreePath,
-        addDirs,
+        cwd: dirs.cwd,
+        addDirs: dirs.addDirs,
         model: this.model() || undefined,
       });
     } catch (e) {
