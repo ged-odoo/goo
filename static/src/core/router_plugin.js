@@ -4,6 +4,9 @@ import { SECTIONS } from "./config.js";
 
 import { Plugin, signal } from "@odoo/owl";
 
+// retired section ids → their successor (stale bookmarks/links keep working)
+const ALIASES = { worktree: "workspaces" };
+
 export class RouterPlugin extends Plugin {
   static sequence = 1;
   section = signal(this._fromHash());
@@ -12,7 +15,8 @@ export class RouterPlugin extends Plugin {
   }
 
   _fromHash() {
-    const s = location.hash.replace("#", "");
+    const raw = location.hash.replace("#", "");
+    const s = ALIASES[raw] || raw;
     return SECTIONS.includes(s) ? s : "dashboard";
   }
 

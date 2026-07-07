@@ -23,7 +23,7 @@ import { ServerScreen } from "../server_screen/server.js";
 import { TargetsScreen } from "../targets_screen/targets.js";
 import { TerminalPanel } from "./terminal.js";
 import { TestsScreen } from "../tests_screen/tests.js";
-import { WorktreeScreen } from "../worktree_screen/worktree.js";
+import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
 
 export class Topbar extends Component {
   static template = xml`
@@ -198,7 +198,7 @@ export const SCREENS = {
   dashboard: DashboardScreen,
   code: CodeScreen,
   server: ServerScreen,
-  worktree: WorktreeScreen,
+  workspaces: WorkspacesScreen,
   targets: TargetsScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -221,7 +221,7 @@ export class App extends Component {
     DashboardScreen,
     CodeScreen,
     ServerScreen,
-    WorktreeScreen,
+    WorkspacesScreen,
     TargetsScreen,
     BranchesScreen,
     PrsScreen,

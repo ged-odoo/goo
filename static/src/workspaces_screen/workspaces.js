@@ -89,14 +89,14 @@ export class ClaudeChat extends Component {
   }
 }
 
-// ─────────────────────────── Worktrees screen ───────────────────────────
+// ─────────────────────────── Workspaces screen ───────────────────────────
 
 // A worktree is a first-class target backed by a git worktree checkout, running
 // its own odoo server. Left: the list of worktree targets; right: the selected
 // one's detail — start/stop/restart, /odoo + /web/tests, its live server log, and a
 // Claude chat that runs tasks in the worktree.
 
-export class WorktreeScreen extends Component {
+export class WorkspacesScreen extends Component {
   static components = { LogConsole, ClaudeChat, Panel };
   static template = xml`
     <section>

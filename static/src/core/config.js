@@ -112,7 +112,7 @@ export const SECTIONS = [
   "dashboard",
   "code",
   "server",
-  "worktree",
+  "workspaces",
   "branches",
   "prs",
   "reviews",

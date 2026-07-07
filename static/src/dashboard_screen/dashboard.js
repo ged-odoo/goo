@@ -73,7 +73,7 @@ export class DashboardScreen extends Component {
                     <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                       <span class="dash-ci-dot"/><t t-out="mb.label"/>
                     </a>
-                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Worktree screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
+                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Workspaces screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
                   </div>
                   <div class="dash-tgt-actions">
                     <div class="dash-kebab-wrap">
@@ -160,7 +160,7 @@ export class DashboardScreen extends Component {
 
   openWorktree(tgt) {
     this.worktree.select(tgt.id);
-    this.router.go("worktree");
+    this.router.go("workspaces");
   }
 
   startCreate() {
@@ -580,7 +580,7 @@ export class DashboardScreen extends Component {
   canActivate(tgt) {
     // a worktree target lives in its own checkout — its branch is checked out in the
     // worktree (git won't let the main tree check it out too), so it's never applied
-    // here; it's started from the Worktrees screen instead
+    // here; it's started from the Workspaces screen instead
     if (this.worktree.isWorktree(tgt)) return false;
     return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
   }
@@ -595,7 +595,7 @@ export class DashboardScreen extends Component {
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
     if (this.worktree.isWorktree(tgt))
-      return "worktree target — manage it from the Worktrees screen";
+      return "worktree workspace — manage it from the Workspaces screen";
     if (this.isActive(tgt)) return "this target is active";
     if (this.canActivate(tgt)) return "click to apply — " + this.activateTitle(tgt);
     return this.activateTitle(tgt);

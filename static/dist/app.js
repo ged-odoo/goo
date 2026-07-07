@@ -132,7 +132,7 @@ var SECTIONS = [
   "dashboard",
   "code",
   "server",
-  "worktree",
+  "workspaces",
   "branches",
   "prs",
   "reviews",
@@ -266,7 +266,7 @@ var GED_CONFIG = {
     { id: "dashboard", visible: true },
     { id: "targets", visible: true },
     { id: "server", visible: true },
-    { id: "worktree", visible: true },
+    { id: "workspaces", visible: true },
     { id: "tests", visible: true },
     { id: "branches", visible: true },
     { id: "prs", visible: true },
@@ -3317,6 +3317,7 @@ var ConfigPlugin = class extends Plugin {
 };
 
 // static/src/core/router_plugin.js
+var ALIASES = { worktree: "workspaces" };
 var RouterPlugin = class extends Plugin {
   static sequence = 1;
   section = signal(this._fromHash());
@@ -3324,7 +3325,8 @@ var RouterPlugin = class extends Plugin {
     window.addEventListener("hashchange", () => this.section.set(this._fromHash()));
   }
   _fromHash() {
-    const s = location.hash.replace("#", "");
+    const raw = location.hash.replace("#", "");
+    const s = ALIASES[raw] || raw;
     return SECTIONS.includes(s) ? s : "dashboard";
   }
   go(section) {
@@ -3637,7 +3639,7 @@ var NAV = [
   { id: "code", label: "Code", icon: ICONS.code },
   { id: "targets", label: "Targets", icon: ICONS.target },
   { id: "server", label: "Server", icon: ICONS.server },
-  { id: "worktree", label: "Worktrees", icon: ICONS.worktree, optIn: true },
+  { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "tests", label: "Tests", icon: ICONS.tests },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
@@ -7348,7 +7350,7 @@ var DashboardScreen = class extends Component {
                     <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                       <span class="dash-ci-dot"/><t t-out="mb.label"/>
                     </a>
-                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Worktree screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
+                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Workspaces screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
                   </div>
                   <div class="dash-tgt-actions">
                     <div class="dash-kebab-wrap">
@@ -7436,7 +7438,7 @@ var DashboardScreen = class extends Component {
   // id of the card whose kebab menu is open ("" = none)
   openWorktree(tgt) {
     this.worktree.select(tgt.id);
-    this.router.go("worktree");
+    this.router.go("workspaces");
   }
   startCreate() {
     return startCreateTarget(
@@ -7813,7 +7815,7 @@ var DashboardScreen = class extends Component {
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
     if (this.worktree.isWorktree(tgt))
-      return "worktree target \u2014 manage it from the Worktrees screen";
+      return "worktree workspace \u2014 manage it from the Workspaces screen";
     if (this.isActive(tgt)) return "this target is active";
     if (this.canActivate(tgt)) return "click to apply \u2014 " + this.activateTitle(tgt);
     return this.activateTitle(tgt);
@@ -10062,7 +10064,7 @@ var TestsScreen = class extends Component {
   }
 };
 
-// static/src/worktree_screen/claude_plugin.js
+// static/src/workspaces_screen/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
   { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
@@ -10172,7 +10174,7 @@ var ClaudePlugin = class extends Plugin {
   }
 };
 
-// static/src/worktree_screen/worktree.js
+// static/src/workspaces_screen/workspaces.js
 var ClaudeChat = class extends Component {
   static template = xml`
     <div class="cchat">
@@ -10246,7 +10248,7 @@ var ClaudeChat = class extends Component {
     this.claude.stop(this.props.target);
   }
 };
-var WorktreeScreen = class extends Component {
+var WorkspacesScreen = class extends Component {
   static components = { LogConsole, ClaudeChat, Panel };
   static template = xml`
     <section>
@@ -10546,7 +10548,7 @@ var SCREENS = {
   dashboard: DashboardScreen,
   code: CodeScreen,
   server: ServerScreen,
-  worktree: WorktreeScreen,
+  workspaces: WorkspacesScreen,
   targets: TargetsScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -10568,7 +10570,7 @@ var App = class extends Component {
     DashboardScreen,
     CodeScreen,
     ServerScreen,
-    WorktreeScreen,
+    WorkspacesScreen,
     TargetsScreen,
     BranchesScreen,
     PrsScreen,
