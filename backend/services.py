@@ -2094,14 +2094,19 @@ def _worktree_dir(config, target):
 
 def build_start_config(config, target_id, overrides=None):
     """Assemble the launch config `build_odoo_cmd` consumes from the stored config, a
-    target id, and optional `overrides` ({other_args?, test_tags?, install?, upgrade?}).
-    This is the one server-side builder the thin launch endpoints resolve
+    workspace/target id, and optional `overrides` ({other_args?, test_tags?, install?,
+    upgrade?}). This is the one server-side builder the thin launch endpoints resolve
     `{target, overrides}` to — the Python home of the retired frontend
-    buildStartConfig/buildWorktreeStartConfig. A worktree target points its repos +
-    server_path at its on-disk copies (so build_odoo_cmd cd's into the worktree's
-    community and runs its odoo-bin). Returns None if the target id isn't in the config.
+    buildStartConfig/buildWorktreeStartConfig. The id is resolved from the canonical
+    `workspaces` list first, falling back to the legacy `targets` list (an
+    un-migrated config, or a blob a pre-workspace tab flushed). A worktree-located
+    workspace points its repos + server_path at its on-disk copies (so build_odoo_cmd
+    cd's into the worktree's community and runs its odoo-bin) and forwards its stable
+    `port` as cfg["worktree_port"]. Returns None if the id isn't in the config.
     The checkout branches aren't applied here — they're checked out separately."""
-    target = next((t for t in (config.get("targets") or []) if t.get("id") == target_id), None)
+    target = next(
+        (w for w in (config.get("workspaces") or []) if w.get("id") == target_id), None
+    ) or next((t for t in (config.get("targets") or []) if t.get("id") == target_id), None)
     if not target:
         return None
     overrides = overrides or {}
@@ -2119,7 +2124,9 @@ def build_start_config(config, target_id, overrides=None):
             start[key] = overrides[key]
     cfg = {**config, "target": target["id"], "start": start}
     is_worktree = (
-        target.get("kind") or ("worktree" if target.get("worktree") else "plain")
+        target.get("location")
+        or target.get("kind")
+        or ("worktree" if target.get("worktree") else "plain")
     ) == "worktree"
     if is_worktree:
         d = _worktree_dir(config, target)
@@ -2134,4 +2141,6 @@ def build_start_config(config, target_id, overrides=None):
             {"id": rid, "path": f"{d}/{rid}", "github": github.get(rid, "")} for rid in repo_ids
         ]
         cfg["server_path"] = f"{d}/community/odoo-bin"
+        if target.get("port"):
+            cfg["worktree_port"] = target["port"]
     return cfg

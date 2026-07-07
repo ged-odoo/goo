@@ -81,6 +81,13 @@ export const DEFAULT_CONFIG = {
       on_create_args: "-i sale_management",
     },
   ],
+  // Workspaces + templates — the successors of targets (see the workspaces roadmap).
+  // Both MUST default empty: a stored legacy config has no `workspaces` key, and the
+  // one-time targets→workspaces migration only triggers on an empty list (a non-empty
+  // default merged in at read would defeat it). On a fresh boot the migration derives
+  // them from the default `targets` above.
+  workspaces: [],
+  templates: [],
   start: {
     repos: ["community"],
     db: "test_db",

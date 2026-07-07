@@ -102,6 +102,13 @@ var DEFAULT_CONFIG = {
       on_create_args: "-i sale_management"
     }
   ],
+  // Workspaces + templates — the successors of targets (see the workspaces roadmap).
+  // Both MUST default empty: a stored legacy config has no `workspaces` key, and the
+  // one-time targets→workspaces migration only triggers on an empty list (a non-empty
+  // default merged in at read would defeat it). On a fresh boot the migration derives
+  // them from the default `targets` above.
+  workspaces: [],
+  templates: [],
   start: {
     repos: ["community"],
     db: "test_db",
@@ -2573,30 +2580,35 @@ var repoUrls = {
     return `${MERGEBOT}/${github}/pull/${number}`;
   }
 };
-var Target = class extends Model {
-  static id = "target";
+var Workspace = class extends Model {
+  static id = "workspace";
   name = fields.char();
   favorite = fields.bool();
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
-  kind = fields.char({ defaultValue: "plain" });
+  // where the workspace physically lives: "main" = the primary checkout (shared —
+  // only one main-located workspace is loaded at a time, on the implicit :8069),
+  // "worktree" = its own git worktree dir, running concurrently on its own port
+  location = fields.char({ defaultValue: "main" });
   worktree = fields.json();
-  // { base, dir } | null — only worktree targets
-  checkouts = fields.one2many({ comodel: () => Checkout, inverse: "target" });
+  // { base, dir } | null — only worktree workspaces
+  port = fields.number();
+  // stable server port (worktree only; 0 = none/main)
+  checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
   // ── derivations (pure — this + this.orm) ─────────────────────────────────────
   // "repo:branch, …" — the human-readable checkout list
   checkoutsLabel() {
     return this.checkouts().map((c) => `${c.repository().id}:${c.branch()}`).join(", ");
   }
-  // the explicit `kind` marks a worktree, falling back to `worktree` metadata presence
+  // the explicit `location` marks a worktree, falling back to `worktree` metadata presence
   isWorktree() {
-    return (this.kind() || (this.worktree() ? "worktree" : "plain")) === "worktree";
+    return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
   }
   hasCommunity() {
     return this.checkouts().some((c) => c.repository().id === "community");
   }
-  // the repo ids this target checks out
+  // the repo ids this workspace checks out
   repoIds() {
     return this.checkouts().map((c) => c.repository().id);
   }
@@ -2664,10 +2676,19 @@ var Target = class extends Model {
 };
 var Checkout = class extends Model {
   static id = "checkout";
-  // id = `${target}:${repo}` — the join formerly mis-named target.config
-  target = fields.many2one({ comodel: () => Target, inverse: "checkouts" });
+  // id = `${workspace}:${repo}` (workspace ids = the old target ids)
+  workspace = fields.many2one({ comodel: () => Workspace, inverse: "checkouts" });
   repository = fields.many2one({ comodel: () => Repository, inverse: "checkouts" });
   branch = fields.char();
+};
+var Template = class extends Model {
+  static id = "template";
+  name = fields.char();
+  db = fields.char();
+  on_create_args = fields.char();
+  demo_data = fields.bool({ defaultValue: true });
+  checkouts = fields.json();
+  // [{repo, branch}]
 };
 var AppState = class extends Model {
   static id = "appstate";
@@ -2679,8 +2700,43 @@ var AppState = class extends Model {
   reviews_merged = fields.json();
   reviews_no_mergebot = fields.json();
 };
-var CONFIG_MODELS = [Settings, Repository, Target, Checkout, AppState];
-var checkoutId = (targetId, repo) => `${targetId}:${repo}`;
+var CONFIG_MODELS = [Settings, Repository, Workspace, Template, Checkout, AppState];
+var checkoutId = (workspaceId, repo) => `${workspaceId}:${repo}`;
+function workspaceFromTarget(t2) {
+  const location2 = (t2.kind || (t2.worktree ? "worktree" : "plain")) === "worktree" ? "worktree" : "main";
+  return {
+    id: t2.id,
+    name: t2.name ?? "",
+    favorite: !!t2.favorite,
+    db: t2.db ?? "",
+    on_create_args: t2.on_create_args ?? "",
+    demo_data: t2.demo_data ?? true,
+    location: location2,
+    worktree: t2.worktree ?? null,
+    checkouts: t2.checkouts || []
+  };
+}
+function targetFromWorkspace(w) {
+  const tgt = {
+    id: w.id,
+    name: w.name(),
+    favorite: w.favorite(),
+    db: w.db(),
+    on_create_args: w.on_create_args(),
+    demo_data: w.demo_data(),
+    kind: w.isWorktree() ? "worktree" : "plain",
+    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }))
+  };
+  const wt = w.worktree();
+  if (wt) tgt.worktree = wt;
+  return tgt;
+}
+function nextFreePort(orm) {
+  const used = new Set(orm.records(Workspace).map((w) => w.port()));
+  let p = 8070;
+  while (used.has(p)) p++;
+  return p;
+}
 function toModels(orm, config = {}, state = {}) {
   const settings = { id: "settings" };
   for (const k of SETTINGS_CHARS) settings[k] = config[k] ?? "";
@@ -2691,7 +2747,8 @@ function toModels(orm, config = {}, state = {}) {
   settings.test_presets = config.test_presets ?? [];
   orm.create(Settings, settings);
   for (const r of config.repos || []) createRepo(orm, r);
-  for (const t2 of config.targets || []) createTarget(orm, t2);
+  for (const w of config.workspaces || []) createWorkspace(orm, w);
+  for (const t2 of config.templates || []) createTemplate(orm, t2);
   const st = { id: "state" };
   for (const k of STATE_CHARS) st[k] = state[k] ?? "";
   for (const k of STATE_JSON) st[k] = state[k] ?? [];
@@ -2710,28 +2767,42 @@ function repoData(r) {
 function createRepo(orm, r) {
   orm.create(Repository, repoData(r));
 }
-function targetData(t2) {
+function workspaceData(w) {
   return {
-    id: t2.id,
-    name: t2.name ?? "",
-    favorite: !!t2.favorite,
-    db: t2.db ?? "",
-    on_create_args: t2.on_create_args ?? "",
-    demo_data: t2.demo_data ?? true,
-    kind: t2.kind || "plain",
-    worktree: t2.worktree ?? null
+    id: w.id,
+    name: w.name ?? "",
+    favorite: !!w.favorite,
+    db: w.db ?? "",
+    on_create_args: w.on_create_args ?? "",
+    demo_data: w.demo_data ?? true,
+    location: w.location || (w.worktree ? "worktree" : "main"),
+    worktree: w.worktree ?? null,
+    port: w.port ?? 0
   };
 }
-function createTarget(orm, t2) {
-  orm.create(Target, targetData(t2));
-  for (const c of t2.checkouts || []) {
+function createWorkspace(orm, w) {
+  orm.create(Workspace, workspaceData(w));
+  for (const c of w.checkouts || []) {
     orm.create(Checkout, {
-      id: checkoutId(t2.id, c.repo),
-      target: t2.id,
+      id: checkoutId(w.id, c.repo),
+      workspace: w.id,
       repository: c.repo,
       branch: c.branch ?? ""
     });
   }
+}
+function templateData(t2) {
+  return {
+    id: t2.id,
+    name: t2.name ?? "",
+    db: t2.db ?? "",
+    on_create_args: t2.on_create_args ?? "",
+    demo_data: t2.demo_data ?? true,
+    checkouts: t2.checkouts || []
+  };
+}
+function createTemplate(orm, t2) {
+  orm.create(Template, templateData(t2));
 }
 function toConfig(orm) {
   const s = orm.getById(Settings, "settings");
@@ -2752,21 +2823,28 @@ function toConfig(orm) {
     external: r.external(),
     autoreload: r.autoreload()
   }));
-  out.targets = orm.records(Target).map((t2) => {
-    const tgt = {
-      id: t2.id,
-      name: t2.name(),
-      favorite: t2.favorite(),
-      db: t2.db(),
-      on_create_args: t2.on_create_args(),
-      demo_data: t2.demo_data(),
-      kind: t2.kind(),
-      checkouts: t2.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }))
-    };
-    const wt = t2.worktree();
-    if (wt) tgt.worktree = wt;
-    return tgt;
-  });
+  const workspaces = orm.records(Workspace);
+  out.workspaces = workspaces.map((w) => ({
+    id: w.id,
+    name: w.name(),
+    favorite: w.favorite(),
+    db: w.db(),
+    on_create_args: w.on_create_args(),
+    demo_data: w.demo_data(),
+    location: w.location(),
+    worktree: w.worktree(),
+    port: w.port() || null,
+    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }))
+  }));
+  out.templates = orm.records(Template).map((t2) => ({
+    id: t2.id,
+    name: t2.name(),
+    db: t2.db(),
+    on_create_args: t2.on_create_args(),
+    demo_data: t2.demo_data(),
+    checkouts: t2.checkouts() || []
+  }));
+  out.targets = workspaces.map(targetFromWorkspace);
   return out;
 }
 function toState(orm) {
@@ -2785,7 +2863,12 @@ function applyPatch(orm, patch) {
     }
   }
   if ("repos" in patch) reconcileRepos(orm, patch.repos || []);
-  if ("targets" in patch) reconcileTargets(orm, patch.targets || []);
+  if ("templates" in patch) reconcileTemplates(orm, patch.templates || []);
+  if ("workspaces" in patch) reconcileWorkspaces(orm, patch.workspaces || []);
+  else if ("targets" in patch)
+    reconcileWorkspaces(orm, (patch.targets || []).map(workspaceFromTarget), {
+      legacy: true
+    });
 }
 function reconcile(orm, Cls, desired, keyOf, update, create) {
   const have = new Map(orm.records(Cls).map((rec) => [rec.id, rec]));
@@ -2812,50 +2895,72 @@ function reconcileRepos(orm, repos) {
     createRepo
   );
 }
-function reconcileTargets(orm, targets) {
+function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
   reconcile(
     orm,
-    Target,
-    targets,
-    (t2) => t2.id,
-    (rec, t2) => {
-      const d = targetData(t2);
-      for (const k of [
-        "name",
-        "favorite",
-        "db",
-        "on_create_args",
-        "demo_data",
-        "kind",
-        "worktree"
-      ]) {
+    Workspace,
+    desired,
+    (w) => w.id,
+    (rec, w) => {
+      const d = workspaceData(w);
+      for (const k of ["name", "favorite", "db", "on_create_args", "demo_data", "worktree"]) {
         rec[k].set(d[k]);
       }
-      reconcileCheckouts(orm, t2);
+      rec.location.set(d.location);
+      if (!legacy) rec.port.set(d.port);
+      reconcileCheckouts(orm, w);
     },
-    (o, t2) => createTarget(o, t2)
+    (o, w) => {
+      const port = w.port ?? (workspaceData(w).location === "worktree" ? nextFreePort(o) : 0);
+      createWorkspace(o, { ...w, port });
+    }
   );
-  const liveTargets = new Set(targets.map((t2) => t2.id));
+  const live = new Set(desired.map((w) => w.id));
   for (const c of orm.records(Checkout)) {
-    const tgt = c.target();
-    if (!tgt || !liveTargets.has(tgt.id)) orm.delete(c);
+    const ws = c.workspace();
+    if (!ws || !live.has(ws.id)) orm.delete(c);
+  }
+  const have = orm.records(Workspace).map((r) => r.id);
+  const want = desired.map((w) => w.id);
+  if (have.join("\n") !== want.join("\n")) {
+    const portById = new Map(orm.records(Workspace).map((r) => [r.id, r.port()]));
+    for (const c of orm.records(Checkout)) orm.delete(c);
+    for (const r of orm.records(Workspace)) orm.delete(r);
+    for (const w of desired) {
+      createWorkspace(orm, { ...w, port: w.port ?? portById.get(w.id) ?? 0 });
+    }
   }
 }
-function reconcileCheckouts(orm, t2) {
-  const desired = (t2.checkouts || []).map((c) => ({
-    id: checkoutId(t2.id, c.repo),
+function reconcileTemplates(orm, templates) {
+  reconcile(
+    orm,
+    Template,
+    templates,
+    (t2) => t2.id,
+    (rec, t2) => {
+      const d = templateData(t2);
+      for (const k of ["name", "db", "on_create_args", "demo_data", "checkouts"]) {
+        rec[k].set(d[k]);
+      }
+    },
+    createTemplate
+  );
+}
+function reconcileCheckouts(orm, w) {
+  const desired = (w.checkouts || []).map((c) => ({
+    id: checkoutId(w.id, c.repo),
     repo: c.repo,
     branch: c.branch ?? ""
   }));
   const have = new Map(
-    orm.records(Checkout).filter((c) => c.target()?.id === t2.id).map((c) => [c.id, c])
+    orm.records(Checkout).filter((c) => c.workspace()?.id === w.id).map((c) => [c.id, c])
   );
   const keep = /* @__PURE__ */ new Set();
   for (const c of desired) {
     keep.add(c.id);
     const rec = have.get(c.id);
     if (rec) rec.branch.set(c.branch);
-    else orm.create(Checkout, { id: c.id, target: t2.id, repository: c.repo, branch: c.branch });
+    else orm.create(Checkout, { id: c.id, workspace: w.id, repository: c.repo, branch: c.branch });
   }
   for (const [id, rec] of have) if (!keep.has(id)) orm.delete(rec);
 }
@@ -2915,6 +3020,42 @@ function migrateConfigState(config, state) {
   }
   return { config, state };
 }
+function migrateToWorkspaces(config, state) {
+  ({ config, state } = migrateConfigState(config, state));
+  const targets = Array.isArray(config.targets) ? config.targets : [];
+  if (Array.isArray(config.workspaces) && config.workspaces.length || !targets.length) {
+    return { config, state, changed: false };
+  }
+  const used = /* @__PURE__ */ new Set();
+  const workspaces = targets.map((t2) => {
+    const w = workspaceFromTarget(t2);
+    if (w.location === "worktree") {
+      let p = 8070;
+      while (used.has(p)) p++;
+      used.add(p);
+      w.port = p;
+    } else {
+      w.port = null;
+    }
+    return w;
+  });
+  const seen = /* @__PURE__ */ new Set();
+  const templates = targets.filter(
+    (t2) => (t2.checkouts || []).length && t2.checkouts.every((c) => BASE_BRANCH_RE.test(c.branch))
+  ).filter((t2) => !seen.has(t2.name) && seen.add(t2.name)).map((t2) => ({
+    id: t2.id,
+    name: t2.name,
+    db: t2.db ?? "",
+    on_create_args: t2.on_create_args ?? "",
+    demo_data: t2.demo_data ?? true,
+    checkouts: t2.checkouts
+  }));
+  return { config: { ...config, workspaces, templates }, state, changed: true };
+}
+function normalizeConfigState(config, state) {
+  const { config: c, state: s } = migrateToWorkspaces(config, state);
+  return { config: c, state: s };
+}
 var _boot = null;
 function merge(config) {
   return { ...DEFAULT_CONFIG, ...config || {} };
@@ -2927,12 +3068,14 @@ async function loadServerConfig() {
   } catch {
   }
   if (payload && payload.ok && payload.config) {
-    _boot = { rev: payload.rev, config: payload.config, state: payload.state || {} };
+    const boot2 = { rev: payload.rev, config: payload.config, state: payload.state || {} };
+    const migrated = migrateToWorkspaces(merge(boot2.config), boot2.state);
+    _boot = migrated.changed ? await _writeBackMigration(boot2.rev, migrated.config, migrated.state) : boot2;
     return;
   }
   const rev = payload && payload.ok ? payload.rev : 0;
   const adopted = adoptFromLocalStorage();
-  const { config, state } = migrateConfigState(adopted.config, adopted.state);
+  const { config, state } = normalizeConfigState(adopted.config, adopted.state);
   try {
     const resp = await fetch("/api/config", {
       method: "POST",
@@ -2943,6 +3086,29 @@ async function loadServerConfig() {
     _boot = { rev: res.rev, config: res.config ?? config, state: res.state ?? state };
   } catch {
     _boot = { rev, config, state };
+  }
+}
+async function _writeBackMigration(rev, config, state, retry = true) {
+  try {
+    const resp = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rev, config, state })
+    });
+    const res = await resp.json();
+    if (resp.status === 409 && retry) {
+      const theirs = {
+        rev: res.rev ?? rev,
+        config: res.config ?? config,
+        state: res.state ?? state
+      };
+      const again = migrateToWorkspaces(merge(theirs.config), theirs.state || {});
+      if (!again.changed) return theirs;
+      return _writeBackMigration(theirs.rev, again.config, again.state, false);
+    }
+    return { rev: res.rev ?? rev, config, state };
+  } catch {
+    return { rev, config, state };
   }
 }
 function adoptFromLocalStorage() {
@@ -2973,7 +3139,7 @@ function presetToConfigState(preset) {
   for (const [key, field] of Object.entries(STATE_KEYS)) {
     if (data[key] !== void 0) state[field] = tryParse(data[key]);
   }
-  return migrateConfigState(merge(overrides), state);
+  return normalizeConfigState(merge(overrides), state);
 }
 var ConfigPlugin = class extends Plugin {
   static sequence = 1;
@@ -2994,14 +3160,19 @@ var ConfigPlugin = class extends Plugin {
   // getState right after `plugin(ConfigPlugin)` returns)
   _seedOrm() {
     const orm = new ORM();
-    toModels(orm, merge(this._b.config), this._b.state || {});
+    const { config, state } = normalizeConfigState(merge(this._b.config), this._b.state || {});
+    toModels(orm, config, state);
     return orm;
   }
   // clear + re-seed the ORM in place (reset / preset / import / another tab's write).
   // Mutating the existing ORM — not replacing it — keeps `_configView` tracking it.
+  // Every incoming blob is normalized (targets→workspaces) so toModels can trust it —
+  // this also self-heals a blob a pre-workspace tab flushed (its save drops the
+  // workspaces/templates keys; re-deriving them here is deterministic).
   _reload(config, state) {
     for (const M of CONFIG_MODELS) for (const rec of this.orm.records(M)) this.orm.delete(rec);
-    toModels(this.orm, merge(config), state || {});
+    const norm = normalizeConfigState(merge(config), state || {});
+    toModels(this.orm, norm.config, norm.state);
   }
   get config() {
     return this._configView();
@@ -3021,9 +3192,14 @@ var ConfigPlugin = class extends Plugin {
     this._dirty.config = true;
     this._schedule();
   }
-  // record accessors, so consumers holding an id can call the models' own methods
+  // record accessors, so consumers holding an id can call the models' own methods.
+  // `target(id)` is the legacy name the current screens use; it returns the Workspace
+  // record (old target ids ARE workspace ids), same methods as the old Target model.
   target(id) {
-    return this.orm.getById(Target, id);
+    return this.orm.getById(Workspace, id);
+  }
+  workspace(id) {
+    return this.orm.getById(Workspace, id);
   }
   repoByGithub(github) {
     return this.orm.records(Repository).find((r) => r.githubOrDefault() === github) || null;

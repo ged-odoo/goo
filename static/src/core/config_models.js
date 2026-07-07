@@ -15,7 +15,14 @@
 //
 // Leaf/positional collections (start, tabs, links, test_presets) are json fields on
 // Settings for round-trip fidelity; promoting Link/TestPreset to their own models is
-// a later refinement. The relational spine — Target → Checkout → Repository — is real.
+// a later refinement. The relational spine — Workspace → Checkout → Repository — is
+// real; Template is flat (json checkouts).
+//
+// Workspaces (the successors of targets — see the workspaces roadmap): the records
+// are the source of truth, and `toConfig` emits BOTH the canonical `workspaces` /
+// `templates` keys AND `targets`, a legacy view in the exact old target shape, so the
+// ~30 `config.config.targets` readers, the `updateConfig({targets})` writers and the
+// backend resolver all keep working until the UI phases migrate them.
 
 import { Model, ORM, fields } from "../../../vendor/owl-orm/index.ts";
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
@@ -137,16 +144,20 @@ export const repoUrls = {
   },
 };
 
-export class Target extends Model {
-  static id = "target";
+export class Workspace extends Model {
+  static id = "workspace";
   name = fields.char();
   favorite = fields.bool();
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
-  kind = fields.char({ defaultValue: "plain" });
-  worktree = fields.json(); // { base, dir } | null — only worktree targets
-  checkouts = fields.one2many({ comodel: () => Checkout, inverse: "target" });
+  // where the workspace physically lives: "main" = the primary checkout (shared —
+  // only one main-located workspace is loaded at a time, on the implicit :8069),
+  // "worktree" = its own git worktree dir, running concurrently on its own port
+  location = fields.char({ defaultValue: "main" });
+  worktree = fields.json(); // { base, dir } | null — only worktree workspaces
+  port = fields.number(); // stable server port (worktree only; 0 = none/main)
+  checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
 
   // ── derivations (pure — this + this.orm) ─────────────────────────────────────
   // "repo:branch, …" — the human-readable checkout list
@@ -156,16 +167,16 @@ export class Target extends Model {
       .join(", ");
   }
 
-  // the explicit `kind` marks a worktree, falling back to `worktree` metadata presence
+  // the explicit `location` marks a worktree, falling back to `worktree` metadata presence
   isWorktree() {
-    return (this.kind() || (this.worktree() ? "worktree" : "plain")) === "worktree";
+    return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
   }
 
   hasCommunity() {
     return this.checkouts().some((c) => c.repository().id === "community");
   }
 
-  // the repo ids this target checks out
+  // the repo ids this workspace checks out
   repoIds() {
     return this.checkouts().map((c) => c.repository().id);
   }
@@ -245,10 +256,23 @@ export class Target extends Model {
 }
 
 export class Checkout extends Model {
-  static id = "checkout"; // id = `${target}:${repo}` — the join formerly mis-named target.config
-  target = fields.many2one({ comodel: () => Target, inverse: "checkouts" });
+  static id = "checkout"; // id = `${workspace}:${repo}` (workspace ids = the old target ids)
+  workspace = fields.many2one({ comodel: () => Workspace, inverse: "checkouts" });
   repository = fields.many2one({ comodel: () => Repository, inverse: "checkouts" });
   branch = fields.char();
+}
+
+// A template is what the old "target" becomes conceptually: a preset of configuration
+// keys that prefills workspace creation. Flat on purpose — `checkouts` is plain json
+// (template checkout ids would collide with workspace ones), and it carries none of a
+// workspace's physical identity (location/worktree/port).
+export class Template extends Model {
+  static id = "template";
+  name = fields.char();
+  db = fields.char();
+  on_create_args = fields.char();
+  demo_data = fields.bool({ defaultValue: true });
+  checkouts = fields.json(); // [{repo, branch}]
 }
 
 export class AppState extends Model {
@@ -261,13 +285,61 @@ export class AppState extends Model {
   reviews_no_mergebot = fields.json();
 }
 
-export const CONFIG_MODELS = [Settings, Repository, Target, Checkout, AppState];
+export const CONFIG_MODELS = [Settings, Repository, Workspace, Template, Checkout, AppState];
 
-const checkoutId = (targetId, repo) => `${targetId}:${repo}`;
+const checkoutId = (workspaceId, repo) => `${workspaceId}:${repo}`;
+
+// ── legacy target shape ↔ workspace shape (pure, the one mapping) ────────────────
+
+// a legacy target object → the workspace shape (no `port` — the caller allocates one
+// for worktree-located workspaces, so a legacy patch can't clobber a stable port)
+export function workspaceFromTarget(t) {
+  const location =
+    (t.kind || (t.worktree ? "worktree" : "plain")) === "worktree" ? "worktree" : "main";
+  return {
+    id: t.id,
+    name: t.name ?? "",
+    favorite: !!t.favorite,
+    db: t.db ?? "",
+    on_create_args: t.on_create_args ?? "",
+    demo_data: t.demo_data ?? true,
+    location,
+    worktree: t.worktree ?? null,
+    checkouts: t.checkouts || [],
+  };
+}
+
+// a Workspace record → the exact old target blob shape (byte-compatible: `kind`
+// instead of `location`, `worktree` only when set, no `port`)
+function targetFromWorkspace(w) {
+  const tgt = {
+    id: w.id,
+    name: w.name(),
+    favorite: w.favorite(),
+    db: w.db(),
+    on_create_args: w.on_create_args(),
+    demo_data: w.demo_data(),
+    kind: w.isWorktree() ? "worktree" : "plain",
+    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
+  };
+  const wt = w.worktree();
+  if (wt) tgt.worktree = wt;
+  return tgt;
+}
+
+// the smallest stable port ≥ 8070 not held by any workspace (8069 = the main checkout)
+export function nextFreePort(orm) {
+  const used = new Set(orm.records(Workspace).map((w) => w.port()));
+  let p = 8070;
+  while (used.has(p)) p++;
+  return p;
+}
 
 // ── blob → records ────────────────────────────────────────────────────────────
 
-// seed an empty ORM from a {config, state} pair (boot / reset / preset / import)
+// seed an empty ORM from a {config, state} pair (boot / reset / preset / import).
+// The blob arrives normalized (config_plugin's normalizeConfigState ran the one-time
+// targets→workspaces migration), so `workspaces`/`templates` are authoritative here.
 export function toModels(orm, config = {}, state = {}) {
   const settings = { id: "settings" };
   for (const k of SETTINGS_CHARS) settings[k] = config[k] ?? "";
@@ -279,7 +351,8 @@ export function toModels(orm, config = {}, state = {}) {
   orm.create(Settings, settings);
 
   for (const r of config.repos || []) createRepo(orm, r);
-  for (const t of config.targets || []) createTarget(orm, t); // repos exist → checkout m2o resolves
+  for (const w of config.workspaces || []) createWorkspace(orm, w); // repos exist → checkout m2o resolves
+  for (const t of config.templates || []) createTemplate(orm, t);
 
   const st = { id: "state" };
   for (const k of STATE_CHARS) st[k] = state[k] ?? "";
@@ -301,28 +374,43 @@ function createRepo(orm, r) {
   orm.create(Repository, repoData(r));
 }
 
-function targetData(t) {
+function workspaceData(w) {
   return {
-    id: t.id,
-    name: t.name ?? "",
-    favorite: !!t.favorite,
-    db: t.db ?? "",
-    on_create_args: t.on_create_args ?? "",
-    demo_data: t.demo_data ?? true,
-    kind: t.kind || "plain",
-    worktree: t.worktree ?? null,
+    id: w.id,
+    name: w.name ?? "",
+    favorite: !!w.favorite,
+    db: w.db ?? "",
+    on_create_args: w.on_create_args ?? "",
+    demo_data: w.demo_data ?? true,
+    location: w.location || (w.worktree ? "worktree" : "main"),
+    worktree: w.worktree ?? null,
+    port: w.port ?? 0,
   };
 }
-function createTarget(orm, t) {
-  orm.create(Target, targetData(t));
-  for (const c of t.checkouts || []) {
+function createWorkspace(orm, w) {
+  orm.create(Workspace, workspaceData(w));
+  for (const c of w.checkouts || []) {
     orm.create(Checkout, {
-      id: checkoutId(t.id, c.repo),
-      target: t.id,
+      id: checkoutId(w.id, c.repo),
+      workspace: w.id,
       repository: c.repo,
       branch: c.branch ?? "",
     });
   }
+}
+
+function templateData(t) {
+  return {
+    id: t.id,
+    name: t.name ?? "",
+    db: t.db ?? "",
+    on_create_args: t.on_create_args ?? "",
+    demo_data: t.demo_data ?? true,
+    checkouts: t.checkouts || [],
+  };
+}
+function createTemplate(orm, t) {
+  orm.create(Template, templateData(t));
 }
 
 // ── records → blob ──────────────────────────────────────────────────────────────
@@ -346,21 +434,29 @@ export function toConfig(orm) {
     external: r.external(),
     autoreload: r.autoreload(),
   }));
-  out.targets = orm.records(Target).map((t) => {
-    const tgt = {
-      id: t.id,
-      name: t.name(),
-      favorite: t.favorite(),
-      db: t.db(),
-      on_create_args: t.on_create_args(),
-      demo_data: t.demo_data(),
-      kind: t.kind(),
-      checkouts: t.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
-    };
-    const wt = t.worktree();
-    if (wt) tgt.worktree = wt;
-    return tgt;
-  });
+  const workspaces = orm.records(Workspace);
+  out.workspaces = workspaces.map((w) => ({
+    id: w.id,
+    name: w.name(),
+    favorite: w.favorite(),
+    db: w.db(),
+    on_create_args: w.on_create_args(),
+    demo_data: w.demo_data(),
+    location: w.location(),
+    worktree: w.worktree(),
+    port: w.port() || null,
+    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
+  }));
+  out.templates = orm.records(Template).map((t) => ({
+    id: t.id,
+    name: t.name(),
+    db: t.db(),
+    on_create_args: t.on_create_args(),
+    demo_data: t.demo_data(),
+    checkouts: t.checkouts() || [],
+  }));
+  // the legacy view — the exact old target shape, until the UI phases retire it
+  out.targets = workspaces.map(targetFromWorkspace);
   return out;
 }
 
@@ -383,7 +479,15 @@ export function applyPatch(orm, patch) {
     }
   }
   if ("repos" in patch) reconcileRepos(orm, patch.repos || []);
-  if ("targets" in patch) reconcileTargets(orm, patch.targets || []);
+  // canonical routes first; a legacy `targets` patch (today's ~10 writers) reconciles
+  // onto the Workspace records through the shape mapping. If a patch carries both,
+  // `workspaces` wins.
+  if ("templates" in patch) reconcileTemplates(orm, patch.templates || []);
+  if ("workspaces" in patch) reconcileWorkspaces(orm, patch.workspaces || []);
+  else if ("targets" in patch)
+    reconcileWorkspaces(orm, (patch.targets || []).map(workspaceFromTarget), {
+      legacy: true,
+    });
 }
 
 // reconcile a model's records against a desired array, keyed by `keyOf`: update the
@@ -415,47 +519,78 @@ function reconcileRepos(orm, repos) {
   );
 }
 
-function reconcileTargets(orm, targets) {
+// desired = workspace-shaped objects. A legacy patch (mapped from `targets`) carries
+// no `port`: updates leave the record's stable port untouched, and creates allocate
+// the next free one for a worktree-located workspace.
+function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
   reconcile(
     orm,
-    Target,
-    targets,
-    (t) => t.id,
-    (rec, t) => {
-      const d = targetData(t);
-      for (const k of [
-        "name",
-        "favorite",
-        "db",
-        "on_create_args",
-        "demo_data",
-        "kind",
-        "worktree",
-      ]) {
+    Workspace,
+    desired,
+    (w) => w.id,
+    (rec, w) => {
+      const d = workspaceData(w);
+      for (const k of ["name", "favorite", "db", "on_create_args", "demo_data", "worktree"]) {
         rec[k].set(d[k]);
       }
-      reconcileCheckouts(orm, t);
+      rec.location.set(d.location);
+      if (!legacy) rec.port.set(d.port);
+      reconcileCheckouts(orm, w);
     },
-    (o, t) => createTarget(o, t),
+    (o, w) => {
+      const port = w.port ?? (workspaceData(w).location === "worktree" ? nextFreePort(o) : 0);
+      createWorkspace(o, { ...w, port });
+    },
   );
-  // a deleted target's checkouts must go too (o2m is unlinked, not cascade-deleted)
-  const liveTargets = new Set(targets.map((t) => t.id));
+  // a deleted workspace's checkouts must go too (o2m is unlinked, not cascade-deleted)
+  const live = new Set(desired.map((w) => w.id));
   for (const c of orm.records(Checkout)) {
-    const tgt = c.target();
-    if (!tgt || !liveTargets.has(tgt.id)) orm.delete(c);
+    const ws = c.workspace();
+    if (!ws || !live.has(ws.id)) orm.delete(c);
+  }
+  // persist the desired ORDER too: orm.records() returns insertion order and the
+  // in-place reconcile above never moves records, so a reorder patch (the Targets
+  // screen's drag) wouldn't survive toConfig (bug present since the ORM refactor).
+  // When the id order changed, rebuild the records in the desired order — the data is
+  // fully carried by `desired` plus the ports the reconcile just settled.
+  const have = orm.records(Workspace).map((r) => r.id);
+  const want = desired.map((w) => w.id);
+  if (have.join("\n") !== want.join("\n")) {
+    const portById = new Map(orm.records(Workspace).map((r) => [r.id, r.port()]));
+    for (const c of orm.records(Checkout)) orm.delete(c);
+    for (const r of orm.records(Workspace)) orm.delete(r);
+    for (const w of desired) {
+      createWorkspace(orm, { ...w, port: w.port ?? portById.get(w.id) ?? 0 });
+    }
   }
 }
 
-function reconcileCheckouts(orm, t) {
-  const desired = (t.checkouts || []).map((c) => ({
-    id: checkoutId(t.id, c.repo),
+function reconcileTemplates(orm, templates) {
+  reconcile(
+    orm,
+    Template,
+    templates,
+    (t) => t.id,
+    (rec, t) => {
+      const d = templateData(t);
+      for (const k of ["name", "db", "on_create_args", "demo_data", "checkouts"]) {
+        rec[k].set(d[k]);
+      }
+    },
+    createTemplate,
+  );
+}
+
+function reconcileCheckouts(orm, w) {
+  const desired = (w.checkouts || []).map((c) => ({
+    id: checkoutId(w.id, c.repo),
     repo: c.repo,
     branch: c.branch ?? "",
   }));
   const have = new Map(
     orm
       .records(Checkout)
-      .filter((c) => c.target()?.id === t.id)
+      .filter((c) => c.workspace()?.id === w.id)
       .map((c) => [c.id, c]),
   );
   const keep = new Set();
@@ -463,7 +598,7 @@ function reconcileCheckouts(orm, t) {
     keep.add(c.id);
     const rec = have.get(c.id);
     if (rec) rec.branch.set(c.branch);
-    else orm.create(Checkout, { id: c.id, target: t.id, repository: c.repo, branch: c.branch });
+    else orm.create(Checkout, { id: c.id, workspace: w.id, repository: c.repo, branch: c.branch });
   }
   for (const [id, rec] of have) if (!keep.has(id)) orm.delete(rec);
 }

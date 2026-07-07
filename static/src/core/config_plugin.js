@@ -4,27 +4,28 @@
 // boot (see loadServerConfig + config_models.js), and keeps its flat public API —
 // `config` / `getState` / `setState` / `updateConfig` / presets / snapshot — so the
 // ~72 config consumers and the full-blob write wire are unchanged. Internally the
-// state now lives in normalized ORM records (Settings/Repository/Target/Checkout/
-// AppState) instead of a flat signal; the changeset write wire + migrating consumers
-// to read records directly are later passes.
+// state now lives in normalized ORM records (Settings/Repository/Workspace/Template/
+// Checkout/AppState) instead of a flat signal; the changeset write wire + migrating
+// consumers to read records directly are later passes.
 //
 //   config = the user's settings/repos/targets/… (schema in config.js; the models
 //            mirror it, and DEFAULT_CONFIG is merged in at read for new keys)
 //   state  = app-recorded: active_target, test_history, reviews_*, claude_model
 
-import { DEFAULT_CONFIG } from "./config.js";
+import { BASE_BRANCH_RE, DEFAULT_CONFIG } from "./config.js";
 import { PRESETS } from "./presets.js";
 import { worktreeDirFor } from "./utils.js";
 import {
   ORM,
   AppState,
-  Target,
+  Workspace,
   Repository,
   CONFIG_MODELS,
   toModels,
   toConfig,
   toState,
   applyPatch,
+  workspaceFromTarget,
 } from "./config_models.js";
 
 import { Plugin, signal, computed } from "@odoo/owl";
@@ -71,8 +72,8 @@ function tryParse(v) {
 // one-time, idempotent, deterministic migration of a {config, state} pair. Normalizes
 // each target (backfill a stable id; rename the checkout list `config`→`checkouts`; add
 // an explicit `kind`; freeze a worktree's `dir` so a rename can't orphan its checkout)
-// and maps a name-based active target to its id. Runs at first-boot adoption and on
-// preset-apply — never on already-server-owned config (which is already migrated).
+// and maps a name-based active target to its id. Runs as the first stage of
+// migrateToWorkspaces (which every blob entry point goes through).
 export function migrateConfigState(config, state) {
   config = { ...(config || {}) };
   state = { ...(state || {}) };
@@ -107,6 +108,55 @@ export function migrateConfigState(config, state) {
   return { config, state };
 }
 
+// One-time, idempotent, deterministic targets→workspaces migration (the workspaces
+// roadmap, Phase 1). Every target becomes a workspace (ids/order preserved; plain →
+// location "main", worktree → "worktree" with a stable port dealt from 8070 up), and
+// a fresh `templates` list is seeded from the targets whose branches are all base
+// branches. `targets` stays in the blob — from now on it's the legacy view that
+// toConfig re-emits from the Workspace records.
+export function migrateToWorkspaces(config, state) {
+  ({ config, state } = migrateConfigState(config, state));
+  const targets = Array.isArray(config.targets) ? config.targets : [];
+  if ((Array.isArray(config.workspaces) && config.workspaces.length) || !targets.length) {
+    return { config, state, changed: false };
+  }
+  const used = new Set();
+  const workspaces = targets.map((t) => {
+    const w = workspaceFromTarget(t);
+    if (w.location === "worktree") {
+      let p = 8070;
+      while (used.has(p)) p++;
+      used.add(p);
+      w.port = p;
+    } else {
+      w.port = null;
+    }
+    return w;
+  });
+  const seen = new Set();
+  const templates = targets
+    .filter(
+      (t) => (t.checkouts || []).length && t.checkouts.every((c) => BASE_BRANCH_RE.test(c.branch)),
+    )
+    .filter((t) => !seen.has(t.name) && seen.add(t.name))
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      db: t.db ?? "",
+      on_create_args: t.on_create_args ?? "",
+      demo_data: t.demo_data ?? true,
+      checkouts: t.checkouts,
+    }));
+  return { config: { ...config, workspaces, templates }, state, changed: true };
+}
+
+// the one normalization every external {config, state} blob goes through before it
+// reaches the ORM (boot, broadcast, reset, preset, import, adoption)
+function normalizeConfigState(config, state) {
+  const { config: c, state: s } = migrateToWorkspaces(config, state);
+  return { config: c, state: s };
+}
+
 // the payload GET /api/config returned at boot (or an adopted/seeded one), stashed by
 // loadServerConfig() for the plugin's field initializers to read at construction.
 let _boot = null;
@@ -128,13 +178,21 @@ export async function loadServerConfig() {
     /* server unreachable — fall through to defaults */
   }
   if (payload && payload.ok && payload.config) {
-    _boot = { rev: payload.rev, config: payload.config, state: payload.state || {} };
+    const boot = { rev: payload.rev, config: payload.config, state: payload.state || {} };
+    // one-time targets→workspaces migration of an already-adopted server config:
+    // persist it now (rev-checked) so the stored blob gains workspaces/templates and
+    // every later boot short-circuits. On any failure the UI still boots from the
+    // migrated blob in memory.
+    const migrated = migrateToWorkspaces(merge(boot.config), boot.state);
+    _boot = migrated.changed
+      ? await _writeBackMigration(boot.rev, migrated.config, migrated.state)
+      : boot;
     return;
   }
   // no server config yet — adopt + seed
   const rev = payload && payload.ok ? payload.rev : 0;
   const adopted = adoptFromLocalStorage();
-  const { config, state } = migrateConfigState(adopted.config, adopted.state);
+  const { config, state } = normalizeConfigState(adopted.config, adopted.state);
   try {
     const resp = await fetch("/api/config", {
       method: "POST",
@@ -146,6 +204,35 @@ export async function loadServerConfig() {
     _boot = { rev: res.rev, config: res.config ?? config, state: res.state ?? state };
   } catch {
     _boot = { rev, config, state };
+  }
+}
+
+// POST the migrated blob back, rev-checked. A 409 means another tab migrated (or
+// wrote) concurrently: re-run the migration on the server's copy — deterministic, so
+// if it already carries workspaces this is a no-op and we adopt theirs — and retry
+// once. Network failure → boot from the migrated blob in memory (same resilience as
+// the rest of boot).
+async function _writeBackMigration(rev, config, state, retry = true) {
+  try {
+    const resp = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rev, config, state }),
+    });
+    const res = await resp.json();
+    if (resp.status === 409 && retry) {
+      const theirs = {
+        rev: res.rev ?? rev,
+        config: res.config ?? config,
+        state: res.state ?? state,
+      };
+      const again = migrateToWorkspaces(merge(theirs.config), theirs.state || {});
+      if (!again.changed) return theirs;
+      return _writeBackMigration(theirs.rev, again.config, again.state, false);
+    }
+    return { rev: res.rev ?? rev, config, state };
+  } catch {
+    return { rev, config, state };
   }
 }
 
@@ -183,7 +270,7 @@ function presetToConfigState(preset) {
   for (const [key, field] of Object.entries(STATE_KEYS)) {
     if (data[key] !== undefined) state[field] = tryParse(data[key]);
   }
-  return migrateConfigState(merge(overrides), state);
+  return normalizeConfigState(merge(overrides), state);
 }
 
 export class ConfigPlugin extends Plugin {
@@ -203,15 +290,20 @@ export class ConfigPlugin extends Plugin {
   // getState right after `plugin(ConfigPlugin)` returns)
   _seedOrm() {
     const orm = new ORM();
-    toModels(orm, merge(this._b.config), this._b.state || {});
+    const { config, state } = normalizeConfigState(merge(this._b.config), this._b.state || {});
+    toModels(orm, config, state);
     return orm;
   }
 
   // clear + re-seed the ORM in place (reset / preset / import / another tab's write).
   // Mutating the existing ORM — not replacing it — keeps `_configView` tracking it.
+  // Every incoming blob is normalized (targets→workspaces) so toModels can trust it —
+  // this also self-heals a blob a pre-workspace tab flushed (its save drops the
+  // workspaces/templates keys; re-deriving them here is deterministic).
   _reload(config, state) {
     for (const M of CONFIG_MODELS) for (const rec of this.orm.records(M)) this.orm.delete(rec);
-    toModels(this.orm, merge(config), state || {});
+    const norm = normalizeConfigState(merge(config), state || {});
+    toModels(this.orm, norm.config, norm.state);
   }
 
   get config() {
@@ -235,9 +327,15 @@ export class ConfigPlugin extends Plugin {
     this._schedule();
   }
 
-  // record accessors, so consumers holding an id can call the models' own methods
+  // record accessors, so consumers holding an id can call the models' own methods.
+  // `target(id)` is the legacy name the current screens use; it returns the Workspace
+  // record (old target ids ARE workspace ids), same methods as the old Target model.
   target(id) {
-    return this.orm.getById(Target, id);
+    return this.orm.getById(Workspace, id);
+  }
+
+  workspace(id) {
+    return this.orm.getById(Workspace, id);
   }
 
   repoByGithub(github) {

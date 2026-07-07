@@ -1368,6 +1368,95 @@ class BuildStartConfigTest(unittest.TestCase):
         self.assertIsNone(services.build_start_config(self.CFG, "nope"))
 
 
+class WorkspaceResolutionTest(unittest.TestCase):
+    """build_start_config resolves the canonical `workspaces` list (targets fallback)
+    and forwards a worktree workspace's stable port."""
+
+    CFG = {
+        "worktree_dir": "/wt",
+        "repos": [
+            {"id": "community", "path": "/c", "github": "odoo/odoo"},
+            {"id": "enterprise", "path": "/e", "github": "odoo/enterprise"},
+        ],
+        "workspaces": [
+            {
+                "id": "w1",
+                "name": "w1",
+                "db": "wdb1",
+                "location": "main",
+                "checkouts": [{"repo": "community", "branch": "master"}],
+            },
+            {
+                "id": "ww1",
+                "name": "feature-x",
+                "db": "wwdb",
+                "location": "worktree",
+                "worktree": {"base": "w1", "dir": "/wt/feature-x"},
+                "port": 8071,
+                "checkouts": [{"repo": "community", "branch": "feat"}],
+            },
+            {
+                "id": "ww2",
+                "name": "feature-y",
+                "db": "wydb",
+                "location": "worktree",
+                "worktree": {"base": "w1", "dir": "/wt/feature-y"},
+                "checkouts": [{"repo": "community", "branch": "feat-y"}],
+            },
+            # same id in both lists: the workspaces entry must win
+            {
+                "id": "dup",
+                "name": "dup",
+                "db": "from-workspace",
+                "location": "main",
+                "checkouts": [{"repo": "community", "branch": "master"}],
+            },
+        ],
+        "targets": [
+            {
+                "id": "legacy",
+                "db": "legacydb",
+                "checkouts": [{"repo": "community", "branch": "17.0"}],
+            },
+            {
+                "id": "dup",
+                "db": "from-target",
+                "checkouts": [{"repo": "community", "branch": "master"}],
+            },
+        ],
+        "start": {"other_args": "--dev all"},
+    }
+
+    def test_plain_workspace_resolves(self):
+        cfg = services.build_start_config(self.CFG, "w1")
+        self.assertEqual(cfg["target"], "w1")
+        self.assertEqual(cfg["start"]["db"], "wdb1")
+        self.assertEqual(cfg["repos"], self.CFG["repos"])  # main-located: paths untouched
+        self.assertNotIn("worktree_port", cfg)
+
+    def test_worktree_workspace_rewrites_paths_and_forwards_port(self):
+        cfg = services.build_start_config(self.CFG, "ww1")
+        self.assertEqual(
+            cfg["repos"],
+            [{"id": "community", "path": "/wt/feature-x/community", "github": "odoo/odoo"}],
+        )
+        self.assertEqual(cfg["server_path"], "/wt/feature-x/community/odoo-bin")
+        self.assertEqual(cfg["worktree_port"], 8071)
+
+    def test_worktree_workspace_without_port(self):
+        cfg = services.build_start_config(self.CFG, "ww2")
+        self.assertEqual(cfg["server_path"], "/wt/feature-y/community/odoo-bin")
+        self.assertNotIn("worktree_port", cfg)
+
+    def test_legacy_targets_fallback(self):
+        cfg = services.build_start_config(self.CFG, "legacy")
+        self.assertEqual(cfg["start"]["db"], "legacydb")
+
+    def test_workspaces_win_over_targets(self):
+        cfg = services.build_start_config(self.CFG, "dup")
+        self.assertEqual(cfg["start"]["db"], "from-workspace")
+
+
 class BuildOdooCmdTest(unittest.TestCase):
     """--without-demo mirrors the target's demo_data flag (config_models.js
     Target.demo_data): dfc6299c hardcoded it off for every start, this makes it
@@ -1509,6 +1598,21 @@ class OdooManagerRunTest(unittest.TestCase):
         mgr.run = {"id": "run-4", "kind": "test", "state": "done", "returncode": 0}
         self.assertIsNone(mgr._finish_run(0))
         self.assertEqual(mgr.bus.runs, [])
+
+
+class PortIsFreeTest(unittest.TestCase):
+    """port_is_free is the guard that lets a workspace's stable port fall back safely."""
+
+    def test_free_and_held_ports(self):
+        import socket
+
+        from backend import server
+
+        with socket.socket() as held:
+            held.bind((server.HOST, 0))
+            port = held.getsockname()[1]
+            self.assertFalse(server.port_is_free(port))  # held right now
+        self.assertTrue(server.port_is_free(port))  # released → bindable again
 
 
 if __name__ == "__main__":

@@ -187,6 +187,17 @@ def port_busy(port):
         return False
 
 
+def port_is_free(port):
+    """Whether we can actually bind the port — used to honor a workspace's stable
+    port with a safe fallback when a stale process still holds it."""
+    try:
+        with socket.socket() as s:
+            s.bind((HOST, port))
+            return True
+    except OSError:
+        return False
+
+
 def kill_port(port):
     """Kill any process listening on the given port."""
     try:
@@ -1023,9 +1034,11 @@ class WorktreeManager:
         return snap
 
     def start(self, target, config):
-        """Launch a worktree odoo server for <target> on its own free port. Returns
-        (ok, detail): detail is {"port": N} on success, else an error string. The
-        config must already carry the worktree's repo paths + server_path."""
+        """Launch a worktree odoo server for <target> on its own port — the
+        workspace's stable cfg["worktree_port"] when set and free, else an
+        OS-assigned one. Returns (ok, detail): detail is {"port": N} on success, else
+        an error string. The config must already carry the worktree's repo paths +
+        server_path."""
         if not target:
             return False, "missing target"
         try:
@@ -1045,8 +1058,20 @@ class WorktreeManager:
             for t, e in self.servers.items():
                 if t != target and e["state"] in ("starting", "running") and e["db"] == db:
                     return False, f"database '{db}' is in use by another worktree server"
-            # run on free ports so the main server (default ports) is undisturbed
-            port, gport = free_port(), free_port()
+            # run on the workspace's stable port when it has one (and it's actually
+            # free — a stale holder must not brick the start), else on free ports, so
+            # the main server (default ports) is undisturbed either way
+            wanted = config.get("worktree_port")
+            if wanted and port_is_free(wanted):
+                port = wanted
+            else:
+                if wanted:
+                    self.bus.publish_log(
+                        f"{TAG} port {wanted} is busy — falling back to a free port"
+                        f" for worktree {target}"
+                    )
+                port = free_port()
+            gport = free_port()
             wcmd = f"{cmd} --http-port {port} --gevent-port {gport}"
             self.bus.publish_log(f"{TAG} starting worktree odoo ({target}): {wcmd}")
             warn_if_rust_bundler_missing(config, self.bus, context=f"worktree {target}")
