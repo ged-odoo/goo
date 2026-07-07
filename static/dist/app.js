@@ -3344,114 +3344,6 @@ var RouterPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/update_plugin.js
-var UpdatePlugin = class extends Plugin {
-  server = plugin(ServerPlugin);
-  dialogs = plugin(DialogPlugin);
-  // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
-  info = signal(null);
-  applying = signal(false);
-  // true while updating + restarting (drives an overlay)
-  setup() {
-    this._load();
-    setInterval(() => this._load(true), 30 * 60 * 1e3);
-    this.server.onGooUpdate((status) => this.info.set(status));
-  }
-  // on-demand re-check (the Config tab's "Check for update" button): fetch +
-  // recompute on the backend, refresh `info`, and return the fresh result
-  async check() {
-    try {
-      const data = await postJSON("/api/goo/check");
-      this.info.set(data);
-      return data;
-    } catch (e) {
-      return { ok: false, error: e.message };
-    }
-  }
-  // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
-  // otherwise explain how to update manually so local work is never clobbered.
-  // Only meaningful when behind > 0 (the badge / a positive check gate it).
-  async promptUpdate() {
-    const u = this.info() || {};
-    if (!u.behind) return;
-    if (!u.can_fast_forward) {
-      let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
-      if (u.ahead) why += `, with ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} on top`;
-      if (u.dirty) why += ", and the working tree has uncommitted changes";
-      why += ". Update manually to keep your work, e.g. `git pull --rebase`.";
-      return void this.dialogs.open({
-        title: "goo update available",
-        message: why,
-        okLabel: "OK",
-        cancelLabel: null
-      });
-    }
-    const serverNote = this.server.status().state === "running" ? " The running Odoo server will be stopped." : "";
-    const ok = await this.dialogs.open({
-      title: "goo update available",
-      message: `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master and can be updated cleanly. goo will fast-forward, restart, and this page will reload automatically.${serverNote}`,
-      okLabel: "Update & restart",
-      cancelLabel: "Later"
-    });
-    if (!ok) return;
-    const res = await this.applyAndRestart();
-    if (!res.ok)
-      this.dialogs.open({
-        title: "Update failed",
-        message: res.error,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
-  }
-  async _load(retried = false) {
-    try {
-      const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
-      this.info.set(data);
-      if (!data.checked && !retried) setTimeout(() => this._load(true), 3e3);
-    } catch {
-    }
-  }
-  // fast-forward goo onto origin/master, restart the server, then reload the page
-  // once it's back. Returns { ok, error }; on success the page is reloading.
-  async applyAndRestart() {
-    this.applying.set(true);
-    const boot2 = this.info()?.boot;
-    try {
-      await postJSON("/api/goo/update");
-      await postJSON("/api/goo/restart").catch(() => {
-      });
-      if (await this._waitUntilRestarted(boot2)) {
-        location.reload();
-        return { ok: true };
-      }
-      this.applying.set(false);
-      return { ok: false, error: "goo was updated but didn't come back \u2014 restart it manually." };
-    } catch (e) {
-      this.applying.set(false);
-      return { ok: false, error: e.message };
-    }
-  }
-  // wait until the re-exec'd goo is serving: a changed boot id is the reliable
-  // signal (the old, still-shutting-down server keeps the old id); fall back to
-  // "saw it go down, then back up" if we never had a boot id to compare.
-  async _waitUntilRestarted(boot2, timeout = 3e4) {
-    const t0 = Date.now();
-    let wentDown = false;
-    await new Promise((r) => setTimeout(r, 600));
-    while (Date.now() - t0 < timeout) {
-      try {
-        const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
-        if (boot2 ? data.boot && data.boot !== boot2 : wentDown) return true;
-      } catch {
-        wentDown = true;
-      }
-      await new Promise((r) => setTimeout(r, 400));
-    }
-    return false;
-  }
-};
-
 // static/src/core/worktree_plugin.js
 var WorktreePlugin = class extends Plugin {
   static sequence = 5;
@@ -3761,6 +3653,114 @@ var WorktreePlugin = class extends Plugin {
   }
   _error(title, message) {
     this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+    return false;
+  }
+};
+
+// static/src/core/update_plugin.js
+var UpdatePlugin = class extends Plugin {
+  server = plugin(ServerPlugin);
+  dialogs = plugin(DialogPlugin);
+  // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
+  info = signal(null);
+  applying = signal(false);
+  // true while updating + restarting (drives an overlay)
+  setup() {
+    this._load();
+    setInterval(() => this._load(true), 30 * 60 * 1e3);
+    this.server.onGooUpdate((status) => this.info.set(status));
+  }
+  // on-demand re-check (the Config tab's "Check for update" button): fetch +
+  // recompute on the backend, refresh `info`, and return the fresh result
+  async check() {
+    try {
+      const data = await postJSON("/api/goo/check");
+      this.info.set(data);
+      return data;
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+  // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
+  // otherwise explain how to update manually so local work is never clobbered.
+  // Only meaningful when behind > 0 (the badge / a positive check gate it).
+  async promptUpdate() {
+    const u = this.info() || {};
+    if (!u.behind) return;
+    if (!u.can_fast_forward) {
+      let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
+      if (u.ahead) why += `, with ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} on top`;
+      if (u.dirty) why += ", and the working tree has uncommitted changes";
+      why += ". Update manually to keep your work, e.g. `git pull --rebase`.";
+      return void this.dialogs.open({
+        title: "goo update available",
+        message: why,
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    }
+    const serverNote = this.server.status().state === "running" ? " The running Odoo server will be stopped." : "";
+    const ok = await this.dialogs.open({
+      title: "goo update available",
+      message: `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master and can be updated cleanly. goo will fast-forward, restart, and this page will reload automatically.${serverNote}`,
+      okLabel: "Update & restart",
+      cancelLabel: "Later"
+    });
+    if (!ok) return;
+    const res = await this.applyAndRestart();
+    if (!res.ok)
+      this.dialogs.open({
+        title: "Update failed",
+        message: res.error,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+  }
+  async _load(retried = false) {
+    try {
+      const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
+      this.info.set(data);
+      if (!data.checked && !retried) setTimeout(() => this._load(true), 3e3);
+    } catch {
+    }
+  }
+  // fast-forward goo onto origin/master, restart the server, then reload the page
+  // once it's back. Returns { ok, error }; on success the page is reloading.
+  async applyAndRestart() {
+    this.applying.set(true);
+    const boot2 = this.info()?.boot;
+    try {
+      await postJSON("/api/goo/update");
+      await postJSON("/api/goo/restart").catch(() => {
+      });
+      if (await this._waitUntilRestarted(boot2)) {
+        location.reload();
+        return { ok: true };
+      }
+      this.applying.set(false);
+      return { ok: false, error: "goo was updated but didn't come back \u2014 restart it manually." };
+    } catch (e) {
+      this.applying.set(false);
+      return { ok: false, error: e.message };
+    }
+  }
+  // wait until the re-exec'd goo is serving: a changed boot id is the reliable
+  // signal (the old, still-shutting-down server keeps the old id); fall back to
+  // "saw it go down, then back up" if we never had a boot id to compare.
+  async _waitUntilRestarted(boot2, timeout = 3e4) {
+    const t0 = Date.now();
+    let wentDown = false;
+    await new Promise((r) => setTimeout(r, 600));
+    while (Date.now() - t0 < timeout) {
+      try {
+        const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
+        if (boot2 ? data.boot && data.boot !== boot2 : wentDown) return true;
+      } catch {
+        wentDown = true;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
     return false;
   }
 };
@@ -7133,633 +7133,6 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
   });
 }
 
-// static/src/targets_screen/targets.js
-async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
-  const existingTargets = config.config.targets;
-  const configStr = repos.map((r) => `${r}:${branch}`).join(",");
-  const res = await dialogs.open({
-    title: "New target from remote branch",
-    okLabel: "Create",
-    validate: (v) => {
-      const name = (v.name || "").trim();
-      if (!name) return "a name is required";
-      if (existingTargets.some((t2) => t2.name === name))
-        return `a target named "${name}" already exists`;
-      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      return "";
-    },
-    fields: [
-      { key: "name", type: "text", label: "Name", value: branch, placeholder: "target name" },
-      {
-        key: "config",
-        type: "text",
-        label: "Config",
-        value: configStr,
-        placeholder: "community:branch,enterprise:branch"
-      },
-      { key: "db", type: "text", label: "Database", value: branch, placeholder: "database name" },
-      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
-      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
-      { key: "fav", type: "checkbox", label: "Favorite", value: false }
-    ]
-  });
-  if (!res) return;
-  const target = {
-    id: newTargetId(),
-    name: res.name.trim(),
-    favorite: !!res.fav,
-    kind: "plain",
-    checkouts: repoBranchList.parse(res.config.trim()),
-    db: (res.db || "").trim(),
-    on_create_args: (res.args || "").trim(),
-    demo_data: !!res.demoData
-  };
-  eventLog.add(`creating target ${target.name} from remote branch ${branch}`);
-  config.updateConfig({ targets: [...config.config.targets, target] });
-}
-async function activateTarget(server, code, eventLog, target) {
-  const pathByRepo = code.groups().pathByRepo;
-  const repos = (target.checkouts || []).map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch })).filter((r) => r.path);
-  eventLog.add(`activating target ${target.name}`);
-  const s = server.status().state;
-  const stopping = s === "running" || s === "starting" ? server.stop() : null;
-  await Promise.all([stopping, code.checkout(repos)]);
-  server.setLastTarget(target.id);
-}
-async function startCreateTarget(config, eventLog, code, dialogs, db, server) {
-  const existingTargets = config.config.targets;
-  await db.load();
-  const dbNames = new Set(db.databases().map((d) => d.name));
-  const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
-  const res = await dialogs.open({
-    title: "New target",
-    okLabel: "Create",
-    validate: (v) => {
-      const name = (v.name || "").trim();
-      if (!name) return "a name is required";
-      if (existingTargets.some((t2) => t2.name === name))
-        return `a target named "${name}" already exists`;
-      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if ((v.cloneDb || "") && !(v.db || "").trim())
-        return "set a database name to clone the selected database into";
-      return "";
-    },
-    fields: [
-      {
-        key: "template",
-        type: "select",
-        label: "Template",
-        placeholder: "\u2014 start blank \u2014",
-        options: existingTargets.map((t2) => ({ value: t2.id, label: t2.name })),
-        value: "",
-        onChange: (tplId) => {
-          if (!tplId) return null;
-          const tpl = existingTargets.find((t2) => t2.id === tplId);
-          if (!tpl) return null;
-          const branchName = tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
-          return {
-            name: branchName,
-            config: repoBranchList.format(tpl.checkouts),
-            db: tpl.db || "",
-            args: tpl.on_create_args || "",
-            demoData: tpl.demo_data ?? true,
-            fav: !!tpl.favorite
-          };
-        }
-      },
-      {
-        key: "name",
-        type: "text",
-        label: "Name",
-        placeholder: "name (e.g. master-mytask)",
-        onChange: (newName, currentValues, oldValues) => {
-          const oldName = oldValues.name;
-          if (!oldName) return null;
-          return {
-            config: (currentValues.config || "").replaceAll(oldName, newName),
-            db: (currentValues.db || "").replaceAll(oldName, newName)
-          };
-        }
-      },
-      {
-        key: "config",
-        type: "text",
-        label: "Config",
-        placeholder: "community:master,enterprise:master"
-      },
-      { key: "db", type: "text", label: "Database", placeholder: "database name" },
-      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
-      {
-        // off by default; tick it to clone an existing db into the target's db. The
-        // revealed select is seeded with the template's db (when it's on disk), else
-        // the first database — see Dialog.toggleCheckSelect.
-        key: "cloneDb",
-        type: "check-select",
-        label: "Clone db",
-        options: dbOptions,
-        value: "",
-        default: (v) => {
-          const tpl = existingTargets.find((t2) => t2.id === v.template);
-          if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
-          return dbOptions[0]?.value || "";
-        }
-      },
-      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
-      { key: "fav", type: "checkbox", label: "Favorite", value: false },
-      { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
-      { key: "activate", type: "checkbox", label: "Activate it", value: true }
-    ]
-  });
-  if (!res) return;
-  const target = {
-    id: newTargetId(),
-    name: res.name.trim(),
-    favorite: !!res.fav,
-    kind: "plain",
-    checkouts: repoBranchList.parse(res.config.trim()),
-    db: (res.db || "").trim(),
-    on_create_args: (res.args || "").trim(),
-    demo_data: !!res.demoData
-  };
-  eventLog.add(`creating target ${target.name}`);
-  config.updateConfig({ targets: [...config.config.targets, target] });
-  if (res.createBranches && code) {
-    const tpl = existingTargets.find((t2) => t2.id === res.template);
-    const baseBranchByRepo = Object.fromEntries(
-      (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
-    );
-    const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
-    await code.createBranches(
-      target.checkouts.map((c) => ({
-        path: pathByRepo[c.repo],
-        name: c.branch,
-        startPoint: baseBranchByRepo[c.repo]
-      }))
-    );
-  }
-  if (res.activate && server) {
-    await activateTarget(server, code, eventLog, target);
-  }
-  if (res.cloneDb && target.db && res.cloneDb !== target.db) {
-    await db.cloneStoppingServer(res.cloneDb, target.db);
-  }
-}
-var TargetsScreen = class extends Component {
-  static components = { Panel };
-  static template = xml`
-    <section>
-      <Panel title="'Targets'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
-          <button class="pbtn" t-on-click="() => this.targetFromRemoteBranch()">From remote branch</button>
-          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
-          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.count"/>
-        </t>
-      </Panel>
-      <div class="content br-fill">
-        <div>
-          <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
-          <div t-else="" class="br-card">
-            <!-- full-width card = scroll container (scrollbar on the right); the
-                 wrapper sizes the table to its natural width, like the Branches list -->
-            <div class="brg-table">
-            <table class="br-table brg-flat">
-              <thead>
-                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th>Demo data</th><th/></tr>
-              </thead>
-              <tbody>
-                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id), dragging: this.dragId() === tgt.id, 'drag-over': this.dragOverId() === tgt.id}" t-on-dragover="ev => this.onDragOver(ev, tgt)" t-on-drop="ev => this.onDrop(ev, tgt)">
-                  <td>
-                    <input type="checkbox" class="br-select" t-att-checked="this.selected().has(tgt.id)" t-on-change="() => this.toggleSelect(tgt.id)" title="select this target for batch actions"/>
-                  </td>
-                  <t t-if="this.editId() === tgt.id">
-                    <td><input type="text" class="cell-input" t-att-value="this.draftName()" placeholder="name" t-on-input="ev => this.draftName.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
-                    <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" title="Favorite targets show up on the Dashboard" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
-                    <td><input type="text" class="cell-input wide" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
-                    <td><input type="text" class="cell-input" t-att-value="this.draftDb()" placeholder="database" t-on-input="ev => this.draftDb.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
-                    <td><input type="text" class="cell-input" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
-                    <td><input type="checkbox" class="br-select" t-att-checked="tgt.demo_data" t-on-change="() => this.toggleDemoData(tgt.id)" title="load demo data when this target creates its database"/></td>
-                    <td>
-                      <div class="br-act">
-                        <button class="drop-btn pr-close" t-on-click="() => this.saveEdit()">Save</button>
-                        <button class="drop-btn" t-on-click="() => this.cancelEdit()">Cancel</button>
-                      </div>
-                    </td>
-                  </t>
-                  <t t-else="">
-                    <td class="tgt-name-handle" draggable="true" title="drag to reorder" t-on-dragstart="ev => this.onDragStart(ev, tgt)" t-on-dragend="() => this.onDragEnd()" t-out="tgt.name"/>
-                    <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" title="Favorite targets show up on the Dashboard" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
-                    <td class="dim"><div class="br-ellip" t-att-title="this.fmtConfig(tgt)" t-out="this.fmtConfig(tgt)"/></td>
-                    <td t-out="tgt.db"/>
-                    <td class="dim"><div class="br-ellip" t-att-title="tgt.on_create_args" t-out="tgt.on_create_args || '—'"/></td>
-                    <td><input type="checkbox" class="br-select" t-att-checked="tgt.demo_data" t-on-change="() => this.toggleDemoData(tgt.id)" title="load demo data when this target creates its database"/></td>
-                    <td>
-                      <div class="br-act">
-                        <button class="dash-kebab" title="target actions"
-                                t-on-click.stop="(ev) => this.openRowMenu(ev, tgt)"><t t-out="this.kebabIcon"/></button>
-                      </div>
-                    </td>
-                  </t>
-                </tr>
-              </tbody>
-            </table>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>`;
-  config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  code = plugin(CodePlugin);
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
-  starIcon = m(ICONS.star);
-  kebabIcon = m(ICONS.kebab);
-  editId = signal("");
-  // id of the row being edited inline ("" = none)
-  draftName = signal("");
-  draftConfig = signal("");
-  draftDb = signal("");
-  draftArgs = signal("");
-  error = signal("");
-  // inline-edit validation error
-  selected = signal(/* @__PURE__ */ new Set());
-  // target ids ticked for batch actions
-  dragId = signal("");
-  // id of the target currently being dragged ("" = none)
-  dragOverId = signal("");
-  // id of the row the drag is hovering over
-  // This screen does no git/network on mount — the table is just config, and the
-  // active-row highlight is browser-side (see isActive). Branch / PR / db state is
-  // pulled lazily, scoped to the repos of the target(s) involved, when a kebab or
-  // batch action actually needs it (see openRowMenu, _loadForDelete).
-  // the deduped set of repo ids used by the given targets — to scope the lazy reads
-  _repoIdsFor(targets) {
-    const ids = /* @__PURE__ */ new Set();
-    for (const t2 of targets) for (const c of t2.checkouts || []) ids.add(c.repo);
-    return ids;
-  }
-  // branches + open PRs + the db list for the given targets' repos: what the delete
-  // dialog needs to offer "also delete branches / close PRs / drop db"
-  async _loadForDelete(targets) {
-    const ids = this._repoIdsFor(targets);
-    await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
-  }
-  // repo id -> { current branch, dirty, branches map } — for the activate checks
-  get repoMap() {
-    const map = {};
-    for (const repo of this.code.branchRepos()) {
-      map[repo.id] = {
-        current: repo.current,
-        dirty: repo.dirty,
-        branches: new Map((repo.branches || []).map((b) => [b.name, b]))
-      };
-    }
-    return map;
-  }
-  // the active target: the explicit one (set on Activate / Start). A browser-side
-  // fact — the running server's code + database belong to the last-activated target
-  // regardless of what's currently checked out — so it needs no git read, which is
-  // what lets this screen skip the per-repo branch scan on a passive visit. The id
-  // check disambiguates overlapping targets (e.g. master vs master(e)).
-  isActive(tgt) {
-    const s = this.server.status();
-    const id = s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
-    return tgt.id === id;
-  }
-  _targetDirty(tgt) {
-    const repos = this.repoMap;
-    return (tgt.checkouts || []).some(({ repo }) => repos[repo]?.dirty);
-  }
-  _targetPresent(tgt) {
-    const repos = this.repoMap;
-    return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
-  }
-  canActivate(tgt) {
-    return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
-  }
-  activateTitle(tgt) {
-    if (this.isActive(tgt)) return "this target is already active";
-    if (this._targetDirty(tgt)) return "commit or stash changes first \u2014 the working tree is dirty";
-    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
-    return "stop the server, switch to this target and check out its branches";
-  }
-  // stop the server, switch to this target, check out its branches — the action lives
-  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
-  async activate(tgt) {
-    if (!this.canActivate(tgt)) return;
-    await this.config.target(tgt.id)?.activate();
-  }
-  // the configured order — reorderable by dragging a row's name
-  get targets() {
-    return this.config.config.targets;
-  }
-  onDragStart(ev, tgt) {
-    this.dragId.set(tgt.id);
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", tgt.id);
-  }
-  onDragOver(ev, tgt) {
-    if (!this.dragId()) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "move";
-    if (this.dragOverId() !== tgt.id) this.dragOverId.set(tgt.id);
-  }
-  onDrop(ev, tgt) {
-    ev.preventDefault();
-    this.reorderTargets(this.dragId(), tgt.id);
-    this.onDragEnd();
-  }
-  onDragEnd() {
-    this.dragId.set("");
-    this.dragOverId.set("");
-  }
-  // move the dragged target to sit immediately before the drop target
-  reorderTargets(fromId, toId) {
-    if (!fromId || fromId === toId) return;
-    const targets = [...this.config.config.targets];
-    const from = targets.findIndex((t2) => t2.id === fromId);
-    if (from < 0) return;
-    const [moved] = targets.splice(from, 1);
-    const to = targets.findIndex((t2) => t2.id === toId);
-    if (to < 0) return;
-    targets.splice(to, 0, moved);
-    this.config.updateConfig({ targets });
-  }
-  get count() {
-    const n = this.targets.length;
-    return `${n} target${n === 1 ? "" : "s"}`;
-  }
-  fmtConfig(tgt) {
-    return this.config.target(tgt.id)?.checkoutsLabel() ?? (tgt.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
-  }
-  toggleFavorite(id) {
-    this.config.target(id)?.toggleFavorite();
-  }
-  toggleDemoData(id) {
-    this.config.target(id)?.toggleDemoData();
-  }
-  toggleSelect(id) {
-    const sel = new Set(this.selected());
-    sel.has(id) ? sel.delete(id) : sel.add(id);
-    this.selected.set(sel);
-  }
-  get _selectableTargets() {
-    return this.targets.filter((t2) => !this.isActive(t2));
-  }
-  get allSelected() {
-    const sel = this.selected();
-    const selectable = this._selectableTargets;
-    return selectable.length > 0 && selectable.every((t2) => sel.has(t2.id));
-  }
-  toggleSelectAll() {
-    this.selected.set(
-      this.allSelected ? /* @__PURE__ */ new Set() : new Set(this._selectableTargets.map((t2) => t2.id))
-    );
-  }
-  get _selectedTargets() {
-    const sel = this.selected();
-    return this.targets.filter((t2) => sel.has(t2.id) && !this.isActive(t2));
-  }
-  get selectedCount() {
-    return this._selectedTargets.length;
-  }
-  async deleteSelected() {
-    const targets = this._selectedTargets;
-    if (!targets.length) return;
-    await this._loadForDelete(targets);
-    const repos = this.repoMap;
-    const groups = this.code.groups();
-    const allBranches = targets.flatMap(
-      (tgt) => (tgt.checkouts || []).map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) })).filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch)).map((x) => ({
-        repo: x.repo,
-        branch: x.branch,
-        path: groups.pathByRepo[x.repo],
-        remote: !!x.b.remote
-      }))
-    );
-    const allPrs = targets.flatMap(
-      (tgt) => (tgt.checkouts || []).map(({ repo, branch }) => ({
-        pr: groups.prIndex[`${repo}:${branch}`],
-        github: groups.githubByRepo[repo]
-      })).filter((x) => x.pr && x.pr.state === "open" && x.github).map((x) => ({ github: x.github, number: x.pr.number }))
-    );
-    const existingDbs = this.db.databases().map((d) => d.name);
-    const allDbs = [
-      ...new Set(targets.map((t2) => t2.db).filter((db) => db && existingDbs.includes(db)))
-    ];
-    const n = targets.length;
-    const fields2 = [];
-    if (allBranches.length)
-      fields2.push({
-        key: "delBranches",
-        type: "checkbox",
-        label: `Also delete ${allBranches.length === 1 ? "their branch" : `their ${allBranches.length} branches`}`,
-        value: true
-      });
-    if (allBranches.some((b) => b.remote))
-      fields2.push({
-        key: "delRemote",
-        type: "checkbox",
-        label: "\u2026also on the remote (odoo-dev)",
-        value: true
-      });
-    if (allPrs.length)
-      fields2.push({
-        key: "closePrs",
-        type: "checkbox",
-        label: `Close ${allPrs.length === 1 ? "their open pull request" : `their ${allPrs.length} open pull requests`}`,
-        value: true
-      });
-    if (allDbs.length)
-      fields2.push({
-        key: "dropDbs",
-        type: "checkbox",
-        label: `Drop ${allDbs.length === 1 ? `database "${allDbs[0]}"` : `their ${allDbs.length} databases`}`,
-        value: true
-      });
-    const res = await this.dialogs.open({
-      title: `Delete ${n} target${n === 1 ? "" : "s"}?`,
-      message: "The targets will be removed from your list. This cannot be undone.",
-      okLabel: "Delete",
-      fields: fields2
-    });
-    if (!res) return;
-    for (const t2 of targets) this.eventLog.add(`deleting target ${t2.name}`);
-    const ops = [];
-    if (res.closePrs)
-      for (const p of allPrs) ops.push(this.code.closePrNoConfirm(p.github, p.number));
-    if (res.delBranches)
-      for (const b of allBranches)
-        ops.push(
-          this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote)
-        );
-    if (res.dropDbs) for (const db of allDbs) ops.push(this.db.drop(db));
-    await Promise.all(ops);
-    const deletedIds = new Set(targets.map((t2) => t2.id));
-    this.config.updateConfig({
-      targets: this.config.config.targets.filter((t2) => !deletedIds.has(t2.id))
-    });
-    this.selected.set(/* @__PURE__ */ new Set());
-  }
-  // create a new target through a dialog form (validated before it closes)
-  startCreate() {
-    return startCreateTarget(
-      this.config,
-      this.eventLog,
-      this.code,
-      this.dialogs,
-      this.db,
-      this.server
-    );
-  }
-  // search for a remote branch across all repos, fetch it locally, then open
-  // the prefilled target creation dialog
-  async targetFromRemoteBranch() {
-    const res = await this.dialogs.openComponent(RemoteBranchDialog);
-    if (!res) return;
-    const { branch, repos } = res;
-    const pathByRepo = this.code.groups().pathByRepo;
-    for (const repoId of repos) {
-      const path = pathByRepo[repoId];
-      if (!path) continue;
-      await fetch("/api/code/remote-branch/fetch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, branch })
-      });
-    }
-    await createTargetFromRemoteBranch(this.config, this.eventLog, this.dialogs, branch, repos);
-  }
-  // regroup the per-target actions into the floating kebab menu (shared ActionMenu)
-  async openRowMenu(ev, tgt) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    await this.code.loadBranches(this._repoIdsFor([tgt]));
-    const active = this.isActive(tgt);
-    const actions = [
-      { label: "Edit", onClick: () => this.startEdit(tgt) },
-      {
-        label: "Apply",
-        disabled: !this.canActivate(tgt),
-        title: this.activateTitle(tgt),
-        onClick: () => this.activate(tgt)
-      },
-      { label: "Duplicate", onClick: () => this.duplicateTarget(tgt) },
-      {
-        label: "Delete",
-        danger: true,
-        disabled: active,
-        title: active ? "the active target cannot be deleted" : "",
-        onClick: () => this.deleteTarget(tgt)
-      }
-    ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
-  }
-  // turn one row into inline inputs, pre-filled with the target's values
-  // (only one row is editable at a time)
-  startEdit(tgt) {
-    this.draftName.set(tgt.name);
-    this.draftConfig.set(repoBranchList.format(tgt.checkouts));
-    this.draftDb.set(tgt.db || "");
-    this.draftArgs.set(tgt.on_create_args || "");
-    this.error.set("");
-    this.editId.set(tgt.id);
-  }
-  // commit the inline edit back onto the target (favorite is left untouched —
-  // it is toggled directly via the star)
-  saveEdit() {
-    const id = this.editId();
-    const name = this.draftName().trim();
-    if (!name) return this.error.set("a name is required");
-    if (this.config.config.targets.some((t2) => t2.name === name && t2.id !== id))
-      return this.error.set(`a target named "${name}" already exists`);
-    const checkouts = repoBranchList.parse(this.draftConfig().trim());
-    if (!checkouts.length) return this.error.set("a config is required");
-    this.config.target(id).applyEdit({
-      name,
-      checkouts,
-      db: this.draftDb().trim(),
-      on_create_args: this.draftArgs().trim()
-    });
-    this.cancelEdit();
-  }
-  cancelEdit() {
-    this.editId.set("");
-    this.error.set("");
-  }
-  // Enter saves the inline edit, Escape cancels it
-  onEditKey(ev) {
-    if (ev.key === "Enter") this.saveEdit();
-    else if (ev.key === "Escape") this.cancelEdit();
-  }
-  // clone a target onto a chosen branch: ask (via a dialog) for a branch name —
-  // prefilled from the first configured branch — and point every repo at it.
-  // When "Create branches" is checked, also create that branch in each repo,
-  // starting from the repo's branch in the original target (its base).
-  async duplicateTarget(tgt) {
-    const first = tgt.checkouts?.[0]?.branch || "master";
-    const res = await this.dialogs.open({
-      title: `Duplicate "${tgt.name}"`,
-      fields: [
-        {
-          key: "branch",
-          type: "text",
-          label: "Branch name",
-          value: first,
-          placeholder: "branch (applied to all repos)"
-        },
-        { key: "create", type: "checkbox", label: "Create branches", value: true }
-      ]
-    });
-    if (!res) return;
-    const b = (res.branch || "").trim();
-    if (!b) return;
-    const names = new Set(this.config.config.targets.map((t2) => t2.name));
-    let name = b;
-    for (let i = 2; names.has(name); i++) name = `${b} (${i})`;
-    const copy = {
-      id: newTargetId(),
-      name,
-      favorite: !!tgt.favorite,
-      kind: "plain",
-      checkouts: (tgt.checkouts || []).map((c) => ({ repo: c.repo, branch: b })),
-      db: b,
-      // default the database to the branch name
-      on_create_args: tgt.on_create_args || "",
-      demo_data: tgt.demo_data ?? true
-    };
-    this.eventLog.add(`creating target ${copy.name}`);
-    this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
-    if (res.create) {
-      const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-      await this.code.createBranches(
-        (tgt.checkouts || []).map((c) => ({
-          path: pathByRepo[c.repo],
-          name: b,
-          startPoint: c.branch
-          // start from the base
-        }))
-      );
-    }
-  }
-  async deleteTarget(tgt) {
-    await this._loadForDelete([tgt]);
-    return deleteWorkspaceDialog(tgt, {
-      config: this.config,
-      code: this.code,
-      db: this.db,
-      eventLog: this.eventLog,
-      repoMap: this.repoMap,
-      dialogs: this.dialogs,
-      isActive: this.isActive(tgt)
-    });
-  }
-};
-
 // static/src/dashboard_screen/dashboard.js
 var DashboardScreen = class extends Component {
   static components = { DirtyBadge, Panel };
@@ -7771,8 +7144,8 @@ var DashboardScreen = class extends Component {
           <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
         <t t-set-slot="bottom-left">
-          <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
-          <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
+          <button class="dash-rebase" t-on-click="() => this.startCreate()">New workspace</button>
+          <span class="dash-subtitle">Monitor repositories and switch between workspaces.</span>
         </t>
       </Panel>
       <div class="content">
@@ -7782,14 +7155,14 @@ var DashboardScreen = class extends Component {
           <div class="dash-layout">
           <!-- build targets — a responsive grid, one self-contained card per target -->
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
+          <div t-elif="!this.workspaces.length" class="dim">No favorite workspaces — star workspaces in the Workspaces tab to see them here.</div>
           <section t-else="" class="dash-tgts-sec">
             <div class="dash-tgts">
-              <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
+              <div t-foreach="this.workspaces" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
                 <div class="dash-tgt-head">
                   <div class="dash-tgt-title">
                     <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
-                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.activate(tgt)" t-out="tgt.name"/>
+                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt) || this.isWt(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.onNameClick(tgt)" t-out="tgt.name"/>
                     <!-- one runbot/CI badge per target (the build is per bundle, the same
                          across the target's repos): a link to the runbot bundle that, when
                          there's a per-check CI breakdown, opens the breakdown popover on
@@ -7814,7 +7187,7 @@ var DashboardScreen = class extends Component {
                     <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                       <span class="dash-ci-dot"/><t t-out="mb.label"/>
                     </a>
-                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Workspaces screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
+                    <span t-if="this.isWt(tgt)" class="wt-badge" role="button" title="worktree — open the Workspaces screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
                   </div>
                   <div class="dash-tgt-actions">
                     <div class="dash-kebab-wrap">
@@ -7823,7 +7196,7 @@ var DashboardScreen = class extends Component {
                         <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
                         <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
                         <button class="dash-menu-item danger" t-att-disabled="!this.targetDbExists(tgt)" t-att-title="this.dropDbTitle(tgt)" t-on-click="() => this.menuDropDb(tgt)">Drop database</button>
-                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the loaded workspace cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
                       </div>
                     </div>
                   </div>
@@ -7905,14 +7278,14 @@ var DashboardScreen = class extends Component {
     this.router.go("workspaces");
   }
   startCreate() {
-    return startCreateTarget(
-      this.config,
-      this.eventLog,
-      this.code,
-      this.dialogs,
-      this.db,
-      this.server
-    );
+    return startCreateWorkspace({
+      config: this.config,
+      dialogs: this.dialogs,
+      db: this.db,
+      code: this.code,
+      eventLog: this.eventLog,
+      wt: this.worktree
+    });
   }
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
@@ -7966,10 +7339,7 @@ var DashboardScreen = class extends Component {
   }
   menuRemoveFavorite(tgt) {
     this.menuId.set("");
-    const targets = this.config.config.targets.map(
-      (t2) => t2.id === tgt.id ? { ...t2, favorite: false } : t2
-    );
-    this.config.updateConfig({ targets });
+    this.config.workspace(tgt.id)?.toggleFavorite();
   }
   // whether the target's configured database actually exists (so there's something
   // to drop) — drives the "Drop database" item's enabled state
@@ -7977,7 +7347,7 @@ var DashboardScreen = class extends Component {
     return !!tgt.db && this.db.databases().some((d) => d.name === tgt.db);
   }
   dropDbTitle(tgt) {
-    if (!tgt.db) return "no database set for this target";
+    if (!tgt.db) return "no database set for this workspace";
     if (!this.targetDbExists(tgt)) return `database "${tgt.db}" does not exist`;
     return `drop database "${tgt.db}"`;
   }
@@ -8028,7 +7398,7 @@ var DashboardScreen = class extends Component {
   // always have a canonical bundle, synced or not.
   _runbotBranches() {
     const seen = /* @__PURE__ */ new Set();
-    for (const tgt of this.targets)
+    for (const tgt of this.workspaces)
       for (const row of this.rows(tgt)) {
         if (!row.present) continue;
         if (this.code.isExternalRepo(row.github)) continue;
@@ -8045,9 +7415,11 @@ var DashboardScreen = class extends Component {
   // load() skips fetching them. Returns a Set of repo ids.
   _dashRepoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
+    const current = (this.config.config.workspaces || []).find(
+      (w) => w.id === this.server.lastTarget()
+    );
     for (const c of current?.checkouts || []) ids.add(c.repo);
-    for (const tgt of this.targets) for (const c of tgt.checkouts || []) ids.add(c.repo);
+    for (const ws of this.workspaces) for (const c of ws.checkouts || []) ids.add(c.repo);
     return ids;
   }
   // the dashboard shows only this subset of repos, so narrow both the PR and the
@@ -8061,7 +7433,7 @@ var DashboardScreen = class extends Component {
   _prs() {
     const seen = /* @__PURE__ */ new Set();
     const prs = [];
-    for (const tgt of this.targets) {
+    for (const tgt of this.workspaces) {
       for (const row of this.rows(tgt)) {
         if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
         const key = `${row.github}#${row.pr.number}`;
@@ -8207,9 +7579,13 @@ var DashboardScreen = class extends Component {
   get errors() {
     return this.code.groups().errors;
   }
-  // favorite targets only, in the order defined in the Targets tab
-  get targets() {
-    return this.config.config.targets.filter((t2) => t2.favorite);
+  // favorite workspaces only, in the configured order (the canonical list — it
+  // carries `location`)
+  get workspaces() {
+    return (this.config.config.workspaces || []).filter((w) => w.favorite);
+  }
+  isWt(ws) {
+    return ws.location === "worktree";
   }
   // repoId -> { current, dirty, branches: Map(name -> branch) }
   get repoMap() {
@@ -8267,7 +7643,7 @@ var DashboardScreen = class extends Component {
     return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
   }
   canActivate(tgt) {
-    if (this.worktree.isWorktree(tgt)) return false;
+    if (this.isWt(tgt)) return false;
     return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
   }
   activateTitle(tgt) {
@@ -8278,17 +7654,18 @@ var DashboardScreen = class extends Component {
   // tooltip for the clickable target name — clicking an inactive, applyable target
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
-    if (this.worktree.isWorktree(tgt))
-      return "worktree workspace \u2014 manage it from the Workspaces screen";
+    if (this.isWt(tgt)) return "worktree workspace \u2014 click to open it in the Workspaces screen";
     if (this.isActive(tgt)) return "this target is active";
     if (this.canActivate(tgt)) return "click to apply \u2014 " + this.activateTitle(tgt);
     return this.activateTitle(tgt);
   }
-  // stop the server, switch to this target, check out its branches — the action lives
-  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
-  async activate(tgt) {
+  // main-located: stop the server, switch to this workspace, check out its branches
+  // (the action lives on the Workspace model); worktree: open it in the Workspaces
+  // screen — it runs from its own checkout there.
+  async onNameClick(tgt) {
+    if (this.isWt(tgt)) return this.openWorktree(tgt);
     if (!this.canActivate(tgt)) return;
-    await this.config.target(tgt.id)?.activate();
+    await this.config.workspace(tgt.id)?.activate();
   }
   // the canonical base branch a branch derives from: master-owl-update -> master,
   // 19.0-some-fix -> 19.0 (defaults to master)
@@ -10302,6 +9679,633 @@ var ServerScreen = class extends Component {
   }
 };
 
+// static/src/targets_screen/targets.js
+async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
+  const existingTargets = config.config.targets;
+  const configStr = repos.map((r) => `${r}:${branch}`).join(",");
+  const res = await dialogs.open({
+    title: "New target from remote branch",
+    okLabel: "Create",
+    validate: (v) => {
+      const name = (v.name || "").trim();
+      if (!name) return "a name is required";
+      if (existingTargets.some((t2) => t2.name === name))
+        return `a target named "${name}" already exists`;
+      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+      return "";
+    },
+    fields: [
+      { key: "name", type: "text", label: "Name", value: branch, placeholder: "target name" },
+      {
+        key: "config",
+        type: "text",
+        label: "Config",
+        value: configStr,
+        placeholder: "community:branch,enterprise:branch"
+      },
+      { key: "db", type: "text", label: "Database", value: branch, placeholder: "database name" },
+      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
+      { key: "fav", type: "checkbox", label: "Favorite", value: false }
+    ]
+  });
+  if (!res) return;
+  const target = {
+    id: newTargetId(),
+    name: res.name.trim(),
+    favorite: !!res.fav,
+    kind: "plain",
+    checkouts: repoBranchList.parse(res.config.trim()),
+    db: (res.db || "").trim(),
+    on_create_args: (res.args || "").trim(),
+    demo_data: !!res.demoData
+  };
+  eventLog.add(`creating target ${target.name} from remote branch ${branch}`);
+  config.updateConfig({ targets: [...config.config.targets, target] });
+}
+async function activateTarget(server, code, eventLog, target) {
+  const pathByRepo = code.groups().pathByRepo;
+  const repos = (target.checkouts || []).map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch })).filter((r) => r.path);
+  eventLog.add(`activating target ${target.name}`);
+  const s = server.status().state;
+  const stopping = s === "running" || s === "starting" ? server.stop() : null;
+  await Promise.all([stopping, code.checkout(repos)]);
+  server.setLastTarget(target.id);
+}
+async function startCreateTarget(config, eventLog, code, dialogs, db, server) {
+  const existingTargets = config.config.targets;
+  await db.load();
+  const dbNames = new Set(db.databases().map((d) => d.name));
+  const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
+  const res = await dialogs.open({
+    title: "New target",
+    okLabel: "Create",
+    validate: (v) => {
+      const name = (v.name || "").trim();
+      if (!name) return "a name is required";
+      if (existingTargets.some((t2) => t2.name === name))
+        return `a target named "${name}" already exists`;
+      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
+      if ((v.cloneDb || "") && !(v.db || "").trim())
+        return "set a database name to clone the selected database into";
+      return "";
+    },
+    fields: [
+      {
+        key: "template",
+        type: "select",
+        label: "Template",
+        placeholder: "\u2014 start blank \u2014",
+        options: existingTargets.map((t2) => ({ value: t2.id, label: t2.name })),
+        value: "",
+        onChange: (tplId) => {
+          if (!tplId) return null;
+          const tpl = existingTargets.find((t2) => t2.id === tplId);
+          if (!tpl) return null;
+          const branchName = tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
+          return {
+            name: branchName,
+            config: repoBranchList.format(tpl.checkouts),
+            db: tpl.db || "",
+            args: tpl.on_create_args || "",
+            demoData: tpl.demo_data ?? true,
+            fav: !!tpl.favorite
+          };
+        }
+      },
+      {
+        key: "name",
+        type: "text",
+        label: "Name",
+        placeholder: "name (e.g. master-mytask)",
+        onChange: (newName, currentValues, oldValues) => {
+          const oldName = oldValues.name;
+          if (!oldName) return null;
+          return {
+            config: (currentValues.config || "").replaceAll(oldName, newName),
+            db: (currentValues.db || "").replaceAll(oldName, newName)
+          };
+        }
+      },
+      {
+        key: "config",
+        type: "text",
+        label: "Config",
+        placeholder: "community:master,enterprise:master"
+      },
+      { key: "db", type: "text", label: "Database", placeholder: "database name" },
+      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      {
+        // off by default; tick it to clone an existing db into the target's db. The
+        // revealed select is seeded with the template's db (when it's on disk), else
+        // the first database — see Dialog.toggleCheckSelect.
+        key: "cloneDb",
+        type: "check-select",
+        label: "Clone db",
+        options: dbOptions,
+        value: "",
+        default: (v) => {
+          const tpl = existingTargets.find((t2) => t2.id === v.template);
+          if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
+          return dbOptions[0]?.value || "";
+        }
+      },
+      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
+      { key: "fav", type: "checkbox", label: "Favorite", value: false },
+      { key: "createBranches", type: "checkbox", label: "Create branches", value: true },
+      { key: "activate", type: "checkbox", label: "Activate it", value: true }
+    ]
+  });
+  if (!res) return;
+  const target = {
+    id: newTargetId(),
+    name: res.name.trim(),
+    favorite: !!res.fav,
+    kind: "plain",
+    checkouts: repoBranchList.parse(res.config.trim()),
+    db: (res.db || "").trim(),
+    on_create_args: (res.args || "").trim(),
+    demo_data: !!res.demoData
+  };
+  eventLog.add(`creating target ${target.name}`);
+  config.updateConfig({ targets: [...config.config.targets, target] });
+  if (res.createBranches && code) {
+    const tpl = existingTargets.find((t2) => t2.id === res.template);
+    const baseBranchByRepo = Object.fromEntries(
+      (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
+    );
+    const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
+    await code.createBranches(
+      target.checkouts.map((c) => ({
+        path: pathByRepo[c.repo],
+        name: c.branch,
+        startPoint: baseBranchByRepo[c.repo]
+      }))
+    );
+  }
+  if (res.activate && server) {
+    await activateTarget(server, code, eventLog, target);
+  }
+  if (res.cloneDb && target.db && res.cloneDb !== target.db) {
+    await db.cloneStoppingServer(res.cloneDb, target.db);
+  }
+}
+var TargetsScreen = class extends Component {
+  static components = { Panel };
+  static template = xml`
+    <section>
+      <Panel title="'Targets'">
+        <t t-set-slot="bottom-left">
+          <button class="pbtn primary" t-on-click="() => this.startCreate()">New target</button>
+          <button class="pbtn" t-on-click="() => this.targetFromRemoteBranch()">From remote branch</button>
+          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
+          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
+        </t>
+        <t t-set-slot="bottom-right">
+          <span class="row-count" t-out="this.count"/>
+        </t>
+      </Panel>
+      <div class="content br-fill">
+        <div>
+          <div t-if="!this.targets.length" class="dim br-empty">No targets.</div>
+          <div t-else="" class="br-card">
+            <!-- full-width card = scroll container (scrollbar on the right); the
+                 wrapper sizes the table to its natural width, like the Branches list -->
+            <div class="brg-table">
+            <table class="br-table brg-flat">
+              <thead>
+                <tr><th><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all targets"/></th><th>Name</th><th/><th>Config</th><th>Database</th><th>Start args</th><th>Demo data</th><th/></tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-class="{'br-editing': this.editId() === tgt.id, active: this.isActive(tgt), 'row-sel': this.selected().has(tgt.id), dragging: this.dragId() === tgt.id, 'drag-over': this.dragOverId() === tgt.id}" t-on-dragover="ev => this.onDragOver(ev, tgt)" t-on-drop="ev => this.onDrop(ev, tgt)">
+                  <td>
+                    <input type="checkbox" class="br-select" t-att-checked="this.selected().has(tgt.id)" t-on-change="() => this.toggleSelect(tgt.id)" title="select this target for batch actions"/>
+                  </td>
+                  <t t-if="this.editId() === tgt.id">
+                    <td><input type="text" class="cell-input" t-att-value="this.draftName()" placeholder="name" t-on-input="ev => this.draftName.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" title="Favorite targets show up on the Dashboard" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
+                    <td><input type="text" class="cell-input wide" t-att-value="this.draftConfig()" placeholder="community:master,enterprise:master" t-on-input="ev => this.draftConfig.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="text" class="cell-input" t-att-value="this.draftDb()" placeholder="database" t-on-input="ev => this.draftDb.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="text" class="cell-input" t-att-value="this.draftArgs()" placeholder="-i sale_management" t-on-input="ev => this.draftArgs.set(ev.target.value)" t-on-keydown="ev => this.onEditKey(ev)"/></td>
+                    <td><input type="checkbox" class="br-select" t-att-checked="tgt.demo_data" t-on-change="() => this.toggleDemoData(tgt.id)" title="load demo data when this target creates its database"/></td>
+                    <td>
+                      <div class="br-act">
+                        <button class="drop-btn pr-close" t-on-click="() => this.saveEdit()">Save</button>
+                        <button class="drop-btn" t-on-click="() => this.cancelEdit()">Cancel</button>
+                      </div>
+                    </td>
+                  </t>
+                  <t t-else="">
+                    <td class="tgt-name-handle" draggable="true" title="drag to reorder" t-on-dragstart="ev => this.onDragStart(ev, tgt)" t-on-dragend="() => this.onDragEnd()" t-out="tgt.name"/>
+                    <td><button class="fav-star" t-att-class="{'is-fav': tgt.favorite}" title="Favorite targets show up on the Dashboard" t-on-click="() => this.toggleFavorite(tgt.id)"><t t-out="this.starIcon"/></button></td>
+                    <td class="dim"><div class="br-ellip" t-att-title="this.fmtConfig(tgt)" t-out="this.fmtConfig(tgt)"/></td>
+                    <td t-out="tgt.db"/>
+                    <td class="dim"><div class="br-ellip" t-att-title="tgt.on_create_args" t-out="tgt.on_create_args || '—'"/></td>
+                    <td><input type="checkbox" class="br-select" t-att-checked="tgt.demo_data" t-on-change="() => this.toggleDemoData(tgt.id)" title="load demo data when this target creates its database"/></td>
+                    <td>
+                      <div class="br-act">
+                        <button class="dash-kebab" title="target actions"
+                                t-on-click.stop="(ev) => this.openRowMenu(ev, tgt)"><t t-out="this.kebabIcon"/></button>
+                      </div>
+                    </td>
+                  </t>
+                </tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+  config = plugin(ConfigPlugin);
+  server = plugin(ServerPlugin);
+  code = plugin(CodePlugin);
+  db = plugin(DatabasePlugin);
+  dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
+  starIcon = m(ICONS.star);
+  kebabIcon = m(ICONS.kebab);
+  editId = signal("");
+  // id of the row being edited inline ("" = none)
+  draftName = signal("");
+  draftConfig = signal("");
+  draftDb = signal("");
+  draftArgs = signal("");
+  error = signal("");
+  // inline-edit validation error
+  selected = signal(/* @__PURE__ */ new Set());
+  // target ids ticked for batch actions
+  dragId = signal("");
+  // id of the target currently being dragged ("" = none)
+  dragOverId = signal("");
+  // id of the row the drag is hovering over
+  // This screen does no git/network on mount — the table is just config, and the
+  // active-row highlight is browser-side (see isActive). Branch / PR / db state is
+  // pulled lazily, scoped to the repos of the target(s) involved, when a kebab or
+  // batch action actually needs it (see openRowMenu, _loadForDelete).
+  // the deduped set of repo ids used by the given targets — to scope the lazy reads
+  _repoIdsFor(targets) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const t2 of targets) for (const c of t2.checkouts || []) ids.add(c.repo);
+    return ids;
+  }
+  // branches + open PRs + the db list for the given targets' repos: what the delete
+  // dialog needs to offer "also delete branches / close PRs / drop db"
+  async _loadForDelete(targets) {
+    const ids = this._repoIdsFor(targets);
+    await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
+  }
+  // repo id -> { current branch, dirty, branches map } — for the activate checks
+  get repoMap() {
+    const map = {};
+    for (const repo of this.code.branchRepos()) {
+      map[repo.id] = {
+        current: repo.current,
+        dirty: repo.dirty,
+        branches: new Map((repo.branches || []).map((b) => [b.name, b]))
+      };
+    }
+    return map;
+  }
+  // the active target: the explicit one (set on Activate / Start). A browser-side
+  // fact — the running server's code + database belong to the last-activated target
+  // regardless of what's currently checked out — so it needs no git read, which is
+  // what lets this screen skip the per-repo branch scan on a passive visit. The id
+  // check disambiguates overlapping targets (e.g. master vs master(e)).
+  isActive(tgt) {
+    const s = this.server.status();
+    const id = s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    return tgt.id === id;
+  }
+  _targetDirty(tgt) {
+    const repos = this.repoMap;
+    return (tgt.checkouts || []).some(({ repo }) => repos[repo]?.dirty);
+  }
+  _targetPresent(tgt) {
+    const repos = this.repoMap;
+    return (tgt.checkouts || []).every(({ repo, branch }) => repos[repo]?.branches.has(branch));
+  }
+  canActivate(tgt) {
+    return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
+  }
+  activateTitle(tgt) {
+    if (this.isActive(tgt)) return "this target is already active";
+    if (this._targetDirty(tgt)) return "commit or stash changes first \u2014 the working tree is dirty";
+    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
+    return "stop the server, switch to this target and check out its branches";
+  }
+  // stop the server, switch to this target, check out its branches — the action lives
+  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
+  async activate(tgt) {
+    if (!this.canActivate(tgt)) return;
+    await this.config.target(tgt.id)?.activate();
+  }
+  // the configured order — reorderable by dragging a row's name
+  get targets() {
+    return this.config.config.targets;
+  }
+  onDragStart(ev, tgt) {
+    this.dragId.set(tgt.id);
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", tgt.id);
+  }
+  onDragOver(ev, tgt) {
+    if (!this.dragId()) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+    if (this.dragOverId() !== tgt.id) this.dragOverId.set(tgt.id);
+  }
+  onDrop(ev, tgt) {
+    ev.preventDefault();
+    this.reorderTargets(this.dragId(), tgt.id);
+    this.onDragEnd();
+  }
+  onDragEnd() {
+    this.dragId.set("");
+    this.dragOverId.set("");
+  }
+  // move the dragged target to sit immediately before the drop target
+  reorderTargets(fromId, toId) {
+    if (!fromId || fromId === toId) return;
+    const targets = [...this.config.config.targets];
+    const from = targets.findIndex((t2) => t2.id === fromId);
+    if (from < 0) return;
+    const [moved] = targets.splice(from, 1);
+    const to = targets.findIndex((t2) => t2.id === toId);
+    if (to < 0) return;
+    targets.splice(to, 0, moved);
+    this.config.updateConfig({ targets });
+  }
+  get count() {
+    const n = this.targets.length;
+    return `${n} target${n === 1 ? "" : "s"}`;
+  }
+  fmtConfig(tgt) {
+    return this.config.target(tgt.id)?.checkoutsLabel() ?? (tgt.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
+  }
+  toggleFavorite(id) {
+    this.config.target(id)?.toggleFavorite();
+  }
+  toggleDemoData(id) {
+    this.config.target(id)?.toggleDemoData();
+  }
+  toggleSelect(id) {
+    const sel = new Set(this.selected());
+    sel.has(id) ? sel.delete(id) : sel.add(id);
+    this.selected.set(sel);
+  }
+  get _selectableTargets() {
+    return this.targets.filter((t2) => !this.isActive(t2));
+  }
+  get allSelected() {
+    const sel = this.selected();
+    const selectable = this._selectableTargets;
+    return selectable.length > 0 && selectable.every((t2) => sel.has(t2.id));
+  }
+  toggleSelectAll() {
+    this.selected.set(
+      this.allSelected ? /* @__PURE__ */ new Set() : new Set(this._selectableTargets.map((t2) => t2.id))
+    );
+  }
+  get _selectedTargets() {
+    const sel = this.selected();
+    return this.targets.filter((t2) => sel.has(t2.id) && !this.isActive(t2));
+  }
+  get selectedCount() {
+    return this._selectedTargets.length;
+  }
+  async deleteSelected() {
+    const targets = this._selectedTargets;
+    if (!targets.length) return;
+    await this._loadForDelete(targets);
+    const repos = this.repoMap;
+    const groups = this.code.groups();
+    const allBranches = targets.flatMap(
+      (tgt) => (tgt.checkouts || []).map(({ repo, branch }) => ({ repo, branch, b: repos[repo]?.branches.get(branch) })).filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch)).map((x) => ({
+        repo: x.repo,
+        branch: x.branch,
+        path: groups.pathByRepo[x.repo],
+        remote: !!x.b.remote
+      }))
+    );
+    const allPrs = targets.flatMap(
+      (tgt) => (tgt.checkouts || []).map(({ repo, branch }) => ({
+        pr: groups.prIndex[`${repo}:${branch}`],
+        github: groups.githubByRepo[repo]
+      })).filter((x) => x.pr && x.pr.state === "open" && x.github).map((x) => ({ github: x.github, number: x.pr.number }))
+    );
+    const existingDbs = this.db.databases().map((d) => d.name);
+    const allDbs = [
+      ...new Set(targets.map((t2) => t2.db).filter((db) => db && existingDbs.includes(db)))
+    ];
+    const n = targets.length;
+    const fields2 = [];
+    if (allBranches.length)
+      fields2.push({
+        key: "delBranches",
+        type: "checkbox",
+        label: `Also delete ${allBranches.length === 1 ? "their branch" : `their ${allBranches.length} branches`}`,
+        value: true
+      });
+    if (allBranches.some((b) => b.remote))
+      fields2.push({
+        key: "delRemote",
+        type: "checkbox",
+        label: "\u2026also on the remote (odoo-dev)",
+        value: true
+      });
+    if (allPrs.length)
+      fields2.push({
+        key: "closePrs",
+        type: "checkbox",
+        label: `Close ${allPrs.length === 1 ? "their open pull request" : `their ${allPrs.length} open pull requests`}`,
+        value: true
+      });
+    if (allDbs.length)
+      fields2.push({
+        key: "dropDbs",
+        type: "checkbox",
+        label: `Drop ${allDbs.length === 1 ? `database "${allDbs[0]}"` : `their ${allDbs.length} databases`}`,
+        value: true
+      });
+    const res = await this.dialogs.open({
+      title: `Delete ${n} target${n === 1 ? "" : "s"}?`,
+      message: "The targets will be removed from your list. This cannot be undone.",
+      okLabel: "Delete",
+      fields: fields2
+    });
+    if (!res) return;
+    for (const t2 of targets) this.eventLog.add(`deleting target ${t2.name}`);
+    const ops = [];
+    if (res.closePrs)
+      for (const p of allPrs) ops.push(this.code.closePrNoConfirm(p.github, p.number));
+    if (res.delBranches)
+      for (const b of allBranches)
+        ops.push(
+          this.code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote)
+        );
+    if (res.dropDbs) for (const db of allDbs) ops.push(this.db.drop(db));
+    await Promise.all(ops);
+    const deletedIds = new Set(targets.map((t2) => t2.id));
+    this.config.updateConfig({
+      targets: this.config.config.targets.filter((t2) => !deletedIds.has(t2.id))
+    });
+    this.selected.set(/* @__PURE__ */ new Set());
+  }
+  // create a new target through a dialog form (validated before it closes)
+  startCreate() {
+    return startCreateTarget(
+      this.config,
+      this.eventLog,
+      this.code,
+      this.dialogs,
+      this.db,
+      this.server
+    );
+  }
+  // search for a remote branch across all repos, fetch it locally, then open
+  // the prefilled target creation dialog
+  async targetFromRemoteBranch() {
+    const res = await this.dialogs.openComponent(RemoteBranchDialog);
+    if (!res) return;
+    const { branch, repos } = res;
+    const pathByRepo = this.code.groups().pathByRepo;
+    for (const repoId of repos) {
+      const path = pathByRepo[repoId];
+      if (!path) continue;
+      await fetch("/api/code/remote-branch/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, branch })
+      });
+    }
+    await createTargetFromRemoteBranch(this.config, this.eventLog, this.dialogs, branch, repos);
+  }
+  // regroup the per-target actions into the floating kebab menu (shared ActionMenu)
+  async openRowMenu(ev, tgt) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    await this.code.loadBranches(this._repoIdsFor([tgt]));
+    const active = this.isActive(tgt);
+    const actions = [
+      { label: "Edit", onClick: () => this.startEdit(tgt) },
+      {
+        label: "Apply",
+        disabled: !this.canActivate(tgt),
+        title: this.activateTitle(tgt),
+        onClick: () => this.activate(tgt)
+      },
+      { label: "Duplicate", onClick: () => this.duplicateTarget(tgt) },
+      {
+        label: "Delete",
+        danger: true,
+        disabled: active,
+        title: active ? "the active target cannot be deleted" : "",
+        onClick: () => this.deleteTarget(tgt)
+      }
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+  }
+  // turn one row into inline inputs, pre-filled with the target's values
+  // (only one row is editable at a time)
+  startEdit(tgt) {
+    this.draftName.set(tgt.name);
+    this.draftConfig.set(repoBranchList.format(tgt.checkouts));
+    this.draftDb.set(tgt.db || "");
+    this.draftArgs.set(tgt.on_create_args || "");
+    this.error.set("");
+    this.editId.set(tgt.id);
+  }
+  // commit the inline edit back onto the target (favorite is left untouched —
+  // it is toggled directly via the star)
+  saveEdit() {
+    const id = this.editId();
+    const name = this.draftName().trim();
+    if (!name) return this.error.set("a name is required");
+    if (this.config.config.targets.some((t2) => t2.name === name && t2.id !== id))
+      return this.error.set(`a target named "${name}" already exists`);
+    const checkouts = repoBranchList.parse(this.draftConfig().trim());
+    if (!checkouts.length) return this.error.set("a config is required");
+    this.config.target(id).applyEdit({
+      name,
+      checkouts,
+      db: this.draftDb().trim(),
+      on_create_args: this.draftArgs().trim()
+    });
+    this.cancelEdit();
+  }
+  cancelEdit() {
+    this.editId.set("");
+    this.error.set("");
+  }
+  // Enter saves the inline edit, Escape cancels it
+  onEditKey(ev) {
+    if (ev.key === "Enter") this.saveEdit();
+    else if (ev.key === "Escape") this.cancelEdit();
+  }
+  // clone a target onto a chosen branch: ask (via a dialog) for a branch name —
+  // prefilled from the first configured branch — and point every repo at it.
+  // When "Create branches" is checked, also create that branch in each repo,
+  // starting from the repo's branch in the original target (its base).
+  async duplicateTarget(tgt) {
+    const first = tgt.checkouts?.[0]?.branch || "master";
+    const res = await this.dialogs.open({
+      title: `Duplicate "${tgt.name}"`,
+      fields: [
+        {
+          key: "branch",
+          type: "text",
+          label: "Branch name",
+          value: first,
+          placeholder: "branch (applied to all repos)"
+        },
+        { key: "create", type: "checkbox", label: "Create branches", value: true }
+      ]
+    });
+    if (!res) return;
+    const b = (res.branch || "").trim();
+    if (!b) return;
+    const names = new Set(this.config.config.targets.map((t2) => t2.name));
+    let name = b;
+    for (let i = 2; names.has(name); i++) name = `${b} (${i})`;
+    const copy = {
+      id: newTargetId(),
+      name,
+      favorite: !!tgt.favorite,
+      kind: "plain",
+      checkouts: (tgt.checkouts || []).map((c) => ({ repo: c.repo, branch: b })),
+      db: b,
+      // default the database to the branch name
+      on_create_args: tgt.on_create_args || "",
+      demo_data: tgt.demo_data ?? true
+    };
+    this.eventLog.add(`creating target ${copy.name}`);
+    this.config.updateConfig({ targets: [...this.config.config.targets, copy] });
+    if (res.create) {
+      const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+      await this.code.createBranches(
+        (tgt.checkouts || []).map((c) => ({
+          path: pathByRepo[c.repo],
+          name: b,
+          startPoint: c.branch
+          // start from the base
+        }))
+      );
+    }
+  }
+  async deleteTarget(tgt) {
+    await this._loadForDelete([tgt]);
+    return deleteWorkspaceDialog(tgt, {
+      config: this.config,
+      code: this.code,
+      db: this.db,
+      eventLog: this.eventLog,
+      repoMap: this.repoMap,
+      dialogs: this.dialogs,
+      isActive: this.isActive(tgt)
+    });
+  }
+};
+
 // static/src/tests_screen/tests.js
 var TestsScreen = class extends Component {
   static components = { LogConsole, Panel };
@@ -11318,7 +11322,29 @@ var Topbar = class extends Component {
         <span class="nt-name">
           <span class="dot"/>
           <span class="t-name" t-out="this.target"/>
+          <span class="nt-caret">▾</span>
         </span>
+        <div class="nt-menu">
+          <button t-foreach="this.mainWorkspaces" t-as="ws" t-key="ws.id" class="nt-item"
+                  t-att-class="{active: ws.id === this.activeId}"
+                  t-att-title="ws.id === this.activeId ? 'the loaded workspace' : 'stop the server, check out its branches and make it current'"
+                  t-on-click="() => this.switchTo(ws)">
+            <span class="nt-item-dot" t-att-class="{on: ws.id === this.activeId}"/>
+            <span class="nt-item-name" t-out="ws.name"/>
+          </button>
+          <t t-if="this.runningWorktrees.length">
+            <div class="nt-sep"/>
+            <button t-foreach="this.runningWorktrees" t-as="wt" t-key="wt.id" class="nt-item"
+                    title="worktree server — open it in the Workspaces screen"
+                    t-on-click="() => this.openWorktree(wt.id)">
+              <span class="nt-item-dot on wt"/>
+              <span class="nt-item-name" t-out="wt.name"/>
+              <span class="nt-item-port" t-out="':' + wt.port"/>
+            </button>
+          </t>
+          <div class="nt-sep"/>
+          <button class="nt-item nt-all" t-on-click="() => this.router.go('workspaces')">All workspaces →</button>
+        </div>
         <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
@@ -11341,6 +11367,12 @@ var Topbar = class extends Component {
   config = plugin(ConfigPlugin);
   update = plugin(UpdatePlugin);
   eventLog = plugin(EventLogPlugin);
+  code = plugin(CodePlugin);
+  // activation guards read the live branch state
+  store = plugin(StorePlugin);
+  // running worktree servers for the switcher menu
+  wt = plugin(WorktreePlugin);
+  router = plugin(RouterPlugin);
   journalIcon = m(ICONS.journal);
   version = `v${VERSION}`;
   // event-log toggle tooltip, surfacing the unread count when there is one
@@ -11377,17 +11409,38 @@ var Topbar = class extends Component {
     const s = this.server.status();
     return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
   }
-  // the active target's display name (dimmed when the server is stopped)
+  // the loaded workspace's display name (dimmed when the server is stopped)
   get target() {
-    const tgt = this.config.config.targets.find((t2) => t2.id === this.activeId);
-    return tgt ? tgt.name : this.activeId || "";
+    const ws = (this.config.config.workspaces || []).find((w) => w.id === this.activeId);
+    return ws ? ws.name : this.activeId || "";
+  }
+  // the switcher menu: every main-located workspace (they share the main checkout —
+  // exactly the set "activate" can switch between), in the configured order
+  get mainWorkspaces() {
+    return (this.config.config.workspaces || []).filter((w) => w.location !== "worktree");
+  }
+  // worktree workspaces whose own server is up — quick jumps to their screen
+  get runningWorktrees() {
+    return (this.config.config.workspaces || []).filter((w) => w.location === "worktree").map((w) => ({ ...w, state: this.store.server(w.id)?.state })).filter((w) => w.state === "running" || w.state === "starting").map((w) => ({ ...w, port: this.store.server(w.id)?.port || w.port || "?" }));
+  }
+  // activate a main-located workspace from the menu: load the live branch state
+  // first (the model's guard reads it — empty state would silently refuse), then
+  // let the Workspace model do the guarded stop+checkout+set-current
+  async switchTo(ws) {
+    if (ws.id === this.activeId) return;
+    await this.code.loadBranches(new Set((ws.checkouts || []).map((c) => c.repo)));
+    await this.config.workspace(ws.id)?.activate();
+  }
+  openWorktree(id) {
+    this.wt.select(id);
+    this.router.go("workspaces");
   }
   get stateClass() {
     const s = this.server.displayState();
     return s === "running" ? "live" : s === "starting" ? "starting" : "idle";
   }
   get tooltip() {
-    return this.active ? `current target (${this.server.status().state})` : "last target \u2014 server stopped";
+    return this.active ? `loaded workspace (${this.server.status().state})` : "loaded workspace \u2014 server stopped";
   }
   // the Start/Stop control on the right of the badge. "Starting…" spans the whole
   // launch — from the optimistic click (pending) through the backend's "starting"
@@ -11404,7 +11457,7 @@ var Topbar = class extends Component {
       return { label: "Stop", cls: "stop", disabled: false, title: "stop the server" };
     if (s === "disconnected")
       return { label: "Start", cls: "start", disabled: true, title: "server unreachable" };
-    return { label: "Start", cls: "start", disabled: false, title: "start the active target" };
+    return { label: "Start", cls: "start", disabled: false, title: "start the loaded workspace" };
   }
   onToggle() {
     const s = this.server.status().state;

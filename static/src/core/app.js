@@ -3,8 +3,11 @@ import { VERSION } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
+import { CodePlugin } from "./code_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
+import { WorktreePlugin } from "./worktree_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 import { AddonsScreen } from "../addons_screen/addons.js";
 import { AssetsScreen } from "../assets_screen/assets.js";
@@ -35,7 +38,29 @@ export class Topbar extends Component {
         <span class="nt-name">
           <span class="dot"/>
           <span class="t-name" t-out="this.target"/>
+          <span class="nt-caret">▾</span>
         </span>
+        <div class="nt-menu">
+          <button t-foreach="this.mainWorkspaces" t-as="ws" t-key="ws.id" class="nt-item"
+                  t-att-class="{active: ws.id === this.activeId}"
+                  t-att-title="ws.id === this.activeId ? 'the loaded workspace' : 'stop the server, check out its branches and make it current'"
+                  t-on-click="() => this.switchTo(ws)">
+            <span class="nt-item-dot" t-att-class="{on: ws.id === this.activeId}"/>
+            <span class="nt-item-name" t-out="ws.name"/>
+          </button>
+          <t t-if="this.runningWorktrees.length">
+            <div class="nt-sep"/>
+            <button t-foreach="this.runningWorktrees" t-as="wt" t-key="wt.id" class="nt-item"
+                    title="worktree server — open it in the Workspaces screen"
+                    t-on-click="() => this.openWorktree(wt.id)">
+              <span class="nt-item-dot on wt"/>
+              <span class="nt-item-name" t-out="wt.name"/>
+              <span class="nt-item-port" t-out="':' + wt.port"/>
+            </button>
+          </t>
+          <div class="nt-sep"/>
+          <button class="nt-item nt-all" t-on-click="() => this.router.go('workspaces')">All workspaces →</button>
+        </div>
         <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
@@ -59,6 +84,10 @@ export class Topbar extends Component {
   config = plugin(ConfigPlugin);
   update = plugin(UpdatePlugin);
   eventLog = plugin(EventLogPlugin);
+  code = plugin(CodePlugin); // activation guards read the live branch state
+  store = plugin(StorePlugin); // running worktree servers for the switcher menu
+  wt = plugin(WorktreePlugin);
+  router = plugin(RouterPlugin);
   journalIcon = m(ICONS.journal);
 
   version = `v${VERSION}`;
@@ -106,10 +135,39 @@ export class Topbar extends Component {
     return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
   }
 
-  // the active target's display name (dimmed when the server is stopped)
+  // the loaded workspace's display name (dimmed when the server is stopped)
   get target() {
-    const tgt = this.config.config.targets.find((t) => t.id === this.activeId);
-    return tgt ? tgt.name : this.activeId || "";
+    const ws = (this.config.config.workspaces || []).find((w) => w.id === this.activeId);
+    return ws ? ws.name : this.activeId || "";
+  }
+
+  // the switcher menu: every main-located workspace (they share the main checkout —
+  // exactly the set "activate" can switch between), in the configured order
+  get mainWorkspaces() {
+    return (this.config.config.workspaces || []).filter((w) => w.location !== "worktree");
+  }
+
+  // worktree workspaces whose own server is up — quick jumps to their screen
+  get runningWorktrees() {
+    return (this.config.config.workspaces || [])
+      .filter((w) => w.location === "worktree")
+      .map((w) => ({ ...w, state: this.store.server(w.id)?.state }))
+      .filter((w) => w.state === "running" || w.state === "starting")
+      .map((w) => ({ ...w, port: this.store.server(w.id)?.port || w.port || "?" }));
+  }
+
+  // activate a main-located workspace from the menu: load the live branch state
+  // first (the model's guard reads it — empty state would silently refuse), then
+  // let the Workspace model do the guarded stop+checkout+set-current
+  async switchTo(ws) {
+    if (ws.id === this.activeId) return;
+    await this.code.loadBranches(new Set((ws.checkouts || []).map((c) => c.repo)));
+    await this.config.workspace(ws.id)?.activate();
+  }
+
+  openWorktree(id) {
+    this.wt.select(id);
+    this.router.go("workspaces");
   }
 
   get stateClass() {
@@ -120,8 +178,8 @@ export class Topbar extends Component {
 
   get tooltip() {
     return this.active
-      ? `current target (${this.server.status().state})`
-      : "last target — server stopped";
+      ? `loaded workspace (${this.server.status().state})`
+      : "loaded workspace — server stopped";
   }
 
   // the Start/Stop control on the right of the badge. "Starting…" spans the whole
@@ -139,7 +197,7 @@ export class Topbar extends Component {
       return { label: "Stop", cls: "stop", disabled: false, title: "stop the server" };
     if (s === "disconnected")
       return { label: "Start", cls: "start", disabled: true, title: "server unreachable" };
-    return { label: "Start", cls: "start", disabled: false, title: "start the active target" };
+    return { label: "Start", cls: "start", disabled: false, title: "start the loaded workspace" };
   }
 
   onToggle() {

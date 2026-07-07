@@ -13,8 +13,7 @@ import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { DirtyBadge, ICONS, appBus, m, mbCategory } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
-import { deleteWorkspaceDialog } from "../workspaces_screen/dialogs.js";
-import { startCreateTarget } from "../targets_screen/targets.js";
+import { deleteWorkspaceDialog, startCreateWorkspace } from "../workspaces_screen/dialogs.js";
 
 export class DashboardScreen extends Component {
   static components = { DirtyBadge, Panel };
@@ -26,8 +25,8 @@ export class DashboardScreen extends Component {
           <button class="pbtn" t-on-click="() => this._dashLoad(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
         <t t-set-slot="bottom-left">
-          <button class="dash-rebase" t-on-click="() => this.startCreate()">New target</button>
-          <span class="dash-subtitle">Monitor repositories and switch between build targets.</span>
+          <button class="dash-rebase" t-on-click="() => this.startCreate()">New workspace</button>
+          <span class="dash-subtitle">Monitor repositories and switch between workspaces.</span>
         </t>
       </Panel>
       <div class="content">
@@ -37,14 +36,14 @@ export class DashboardScreen extends Component {
           <div class="dash-layout">
           <!-- build targets — a responsive grid, one self-contained card per target -->
           <div t-if="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.targets.length" class="dim">No favorite targets — star targets in the Targets tab to see them here.</div>
+          <div t-elif="!this.workspaces.length" class="dim">No favorite workspaces — star workspaces in the Workspaces tab to see them here.</div>
           <section t-else="" class="dash-tgts-sec">
             <div class="dash-tgts">
-              <div t-foreach="this.targets" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
+              <div t-foreach="this.workspaces" t-as="tgt" t-key="tgt.id" class="dash-tgt" t-att-class="{active: this.isActive(tgt)}">
                 <div class="dash-tgt-head">
                   <div class="dash-tgt-title">
                     <span class="dash-dot" t-att-class="{active: this.isActive(tgt)}"/>
-                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.activate(tgt)" t-out="tgt.name"/>
+                    <span class="dash-name" t-att-class="{clickable: this.canActivate(tgt) || this.isWt(tgt)}" t-att-title="this.nameTitle(tgt)" t-on-click="() => this.onNameClick(tgt)" t-out="tgt.name"/>
                     <!-- one runbot/CI badge per target (the build is per bundle, the same
                          across the target's repos): a link to the runbot bundle that, when
                          there's a per-check CI breakdown, opens the breakdown popover on
@@ -69,7 +68,7 @@ export class DashboardScreen extends Component {
                     <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                       <span class="dash-ci-dot"/><t t-out="mb.label"/>
                     </a>
-                    <span t-if="this.worktree.isWorktree(tgt)" class="wt-badge" role="button" title="worktree — open the Workspaces screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
+                    <span t-if="this.isWt(tgt)" class="wt-badge" role="button" title="worktree — open the Workspaces screen" t-on-click.stop="() => this.openWorktree(tgt)">wt</span>
                   </div>
                   <div class="dash-tgt-actions">
                     <div class="dash-kebab-wrap">
@@ -78,7 +77,7 @@ export class DashboardScreen extends Component {
                         <button class="dash-menu-item" t-att-disabled="!this.canPushTarget(tgt)" t-att-title="this.canPushTarget(tgt) ? '' : 'no pushable branches'" t-on-click="() => this.menuPush(tgt)">Push branches to GitHub</button>
                         <button class="dash-menu-item" t-on-click="() => this.menuRemoveFavorite(tgt)">Remove from favorites</button>
                         <button class="dash-menu-item danger" t-att-disabled="!this.targetDbExists(tgt)" t-att-title="this.dropDbTitle(tgt)" t-on-click="() => this.menuDropDb(tgt)">Drop database</button>
-                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the current target cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
+                        <button class="dash-menu-item danger" t-att-disabled="this.isCurrent(tgt)" t-att-title="this.isCurrent(tgt) ? 'the loaded workspace cannot be deleted' : ''" t-on-click="() => this.menuDelete(tgt)">Delete</button>
                       </div>
                     </div>
                   </div>
@@ -160,14 +159,14 @@ export class DashboardScreen extends Component {
   }
 
   startCreate() {
-    return startCreateTarget(
-      this.config,
-      this.eventLog,
-      this.code,
-      this.dialogs,
-      this.db,
-      this.server,
-    );
+    return startCreateWorkspace({
+      config: this.config,
+      dialogs: this.dialogs,
+      db: this.db,
+      code: this.code,
+      eventLog: this.eventLog,
+      wt: this.worktree,
+    });
   }
 
   toggleMenu(id) {
@@ -232,10 +231,7 @@ export class DashboardScreen extends Component {
 
   menuRemoveFavorite(tgt) {
     this.menuId.set("");
-    const targets = this.config.config.targets.map((t) =>
-      t.id === tgt.id ? { ...t, favorite: false } : t,
-    );
-    this.config.updateConfig({ targets });
+    this.config.workspace(tgt.id)?.toggleFavorite();
   }
 
   // whether the target's configured database actually exists (so there's something
@@ -245,7 +241,7 @@ export class DashboardScreen extends Component {
   }
 
   dropDbTitle(tgt) {
-    if (!tgt.db) return "no database set for this target";
+    if (!tgt.db) return "no database set for this workspace";
     if (!this.targetDbExists(tgt)) return `database "${tgt.db}" does not exist`;
     return `drop database "${tgt.db}"`;
   }
@@ -306,7 +302,7 @@ export class DashboardScreen extends Component {
   // always have a canonical bundle, synced or not.
   _runbotBranches() {
     const seen = new Set();
-    for (const tgt of this.targets)
+    for (const tgt of this.workspaces)
       for (const row of this.rows(tgt)) {
         if (!row.present) continue;
         if (this.code.isExternalRepo(row.github)) continue; // not on runbot — would 404
@@ -324,9 +320,11 @@ export class DashboardScreen extends Component {
   // load() skips fetching them. Returns a Set of repo ids.
   _dashRepoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
+    const current = (this.config.config.workspaces || []).find(
+      (w) => w.id === this.server.lastTarget(),
+    );
     for (const c of current?.checkouts || []) ids.add(c.repo);
-    for (const tgt of this.targets) for (const c of tgt.checkouts || []) ids.add(c.repo);
+    for (const ws of this.workspaces) for (const c of ws.checkouts || []) ids.add(c.repo);
     return ids;
   }
 
@@ -342,7 +340,7 @@ export class DashboardScreen extends Component {
   _prs() {
     const seen = new Set();
     const prs = [];
-    for (const tgt of this.targets) {
+    for (const tgt of this.workspaces) {
       for (const row of this.rows(tgt)) {
         if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
         const key = `${row.github}#${row.pr.number}`;
@@ -508,9 +506,14 @@ export class DashboardScreen extends Component {
     return this.code.groups().errors;
   }
 
-  // favorite targets only, in the order defined in the Targets tab
-  get targets() {
-    return this.config.config.targets.filter((t) => t.favorite);
+  // favorite workspaces only, in the configured order (the canonical list — it
+  // carries `location`)
+  get workspaces() {
+    return (this.config.config.workspaces || []).filter((w) => w.favorite);
+  }
+
+  isWt(ws) {
+    return ws.location === "worktree";
   }
 
   // repoId -> { current, dirty, branches: Map(name -> branch) }
@@ -574,10 +577,10 @@ export class DashboardScreen extends Component {
   }
 
   canActivate(tgt) {
-    // a worktree target lives in its own checkout — its branch is checked out in the
-    // worktree (git won't let the main tree check it out too), so it's never applied
-    // here; it's started from the Workspaces screen instead
-    if (this.worktree.isWorktree(tgt)) return false;
+    // a worktree workspace lives in its own checkout — its branch is checked out in
+    // the worktree (git won't let the main tree check it out too), so it's never
+    // applied here; its card navigates to the Workspaces screen instead
+    if (this.isWt(tgt)) return false;
     return !this.isActive(tgt) && this._targetPresent(tgt) && !this._targetDirty(tgt);
   }
 
@@ -590,18 +593,19 @@ export class DashboardScreen extends Component {
   // tooltip for the clickable target name — clicking an inactive, applyable target
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
-    if (this.worktree.isWorktree(tgt))
-      return "worktree workspace — manage it from the Workspaces screen";
+    if (this.isWt(tgt)) return "worktree workspace — click to open it in the Workspaces screen";
     if (this.isActive(tgt)) return "this target is active";
     if (this.canActivate(tgt)) return "click to apply — " + this.activateTitle(tgt);
     return this.activateTitle(tgt);
   }
 
-  // stop the server, switch to this target, check out its branches — the action lives
-  // on the Target model (it drives ServerPlugin/CodePlugin/EventLog itself)
-  async activate(tgt) {
+  // main-located: stop the server, switch to this workspace, check out its branches
+  // (the action lives on the Workspace model); worktree: open it in the Workspaces
+  // screen — it runs from its own checkout there.
+  async onNameClick(tgt) {
+    if (this.isWt(tgt)) return this.openWorktree(tgt);
     if (!this.canActivate(tgt)) return;
-    await this.config.target(tgt.id)?.activate();
+    await this.config.workspace(tgt.id)?.activate();
   }
 
   // the canonical base branch a branch derives from: master-owl-update -> master,
