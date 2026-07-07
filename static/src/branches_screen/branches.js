@@ -10,7 +10,7 @@ import { DirtyBadge, ICONS, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { CommitsDialog } from "../core/dialogs.js";
 
-import { pushBranchesDialog } from "../targets_screen/targets.js";
+import { pushBranchesDialog } from "../core/dialogs.js";
 
 export class BranchesScreen extends Component {
   static components = { SearchBox, DirtyBadge, Panel };

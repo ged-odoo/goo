@@ -8,7 +8,7 @@ export class RemoteBranchDialog extends Component {
   static template = xml`
     <div class="dialog-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog rbd" t-on-click.stop="() => {}">
-        <h2 class="dialog-title">Target from remote branch</h2>
+        <h2 class="dialog-title">Workspace from remote branch</h2>
         <div class="dialog-body">
           <div class="dialog-field">
             <label>Branch name</label>
@@ -29,7 +29,7 @@ export class RemoteBranchDialog extends Component {
           </div>
         </div>
         <div class="dialog-foot">
-          <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Create target</button>
+          <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Continue</button>
           <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
         </div>
       </div>
@@ -215,4 +215,18 @@ export class CommitsDialog extends Component {
   done(result) {
     this.props.done(result);
   }
+}
+
+// confirm (via the app modal) then push one or more branches to the dev remote.
+// branches: [{ path, branch }]. Shared by every "Push" affordance.
+export async function pushBranchesDialog(
+  code,
+  dialogs,
+  branches,
+  { title, message, force = false },
+) {
+  if (!branches.length) return;
+  const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
+  if (!ok) return;
+  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
 }

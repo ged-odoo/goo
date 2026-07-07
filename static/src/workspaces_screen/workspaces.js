@@ -1,7 +1,7 @@
 import { Component, onMounted, plugin, props, signal, t, useEffect, xml } from "@odoo/owl";
 import { ClaudePlugin } from "./claude_plugin.js";
 import { CodePlugin } from "../core/code_plugin.js";
-import { ConfigPlugin, newTargetId } from "../core/config_plugin.js";
+import { ConfigPlugin } from "../core/config_plugin.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
@@ -12,8 +12,12 @@ import { ICONS, LogConsole, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
-import { timeAgo } from "../core/utils.js";
-import { deleteTargetDialog, repoBranchList } from "../targets_screen/targets.js";
+import { repoBranchList, timeAgo } from "../core/utils.js";
+import {
+  createWorkspaceFromRemoteBranch,
+  deleteWorkspaceDialog,
+  startCreateWorkspace,
+} from "./dialogs.js";
 import { AddonsPane, AssetsPane, TestsPane } from "./panes.js";
 
 export class ClaudeChat extends Component {
@@ -313,6 +317,7 @@ export class WorkspacesScreen extends Component {
         </t>
         <t t-set-slot="bottom-left">
           <button class="pbtn primary" t-on-click="() => this.create()">New workspace</button>
+          <button class="pbtn" title="fetch a remote branch and create a workspace on it" t-on-click="() => this.createFromRemoteBranch()">From remote branch</button>
           <span class="dash-subtitle">A workspace bundles branches, a database and a server — in the main checkout or its own worktree.</span>
         </t>
       </Panel>
@@ -613,10 +618,10 @@ export class WorkspacesScreen extends Component {
   async remove(ws) {
     if (this.removeBlocked(ws)) return;
     if (this.isWt(ws)) return this.wt.remove(ws);
-    // main-located: the Targets screen's delete dialog (branches / PRs / db cleanup)
+    // main-located: the shared delete dialog (branches / PRs / db cleanup)
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
     await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
-    return deleteTargetDialog(ws, {
+    return deleteWorkspaceDialog(ws, {
       config: this.config,
       code: this.code,
       db: this.db,
@@ -681,156 +686,23 @@ export class WorkspacesScreen extends Component {
   }
 
   // ── new workspace (unified: template picker + location) ─────────────────────
-  async create() {
-    await this.db.load(); // populate the "Clone db" select
-    const templates = this.config.config.templates || [];
-    const existing = this.config.config.workspaces || [];
-    const dbNames = new Set(this.db.databases().map((d) => d.name));
-    const dbOptions = this.db.databases().map((d) => ({ value: d.name, label: d.name }));
-    const res = await this.dialogs.open({
-      title: "New workspace",
-      okLabel: "Create",
-      validate: (v) => {
-        const name = (v.name || "").trim();
-        if (!name) return "a name is required";
-        if (existing.some((w) => w.name === name))
-          return `a workspace named "${name}" already exists`;
-        if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-        if (v.location === "worktree" && !v.template)
-          return "a worktree workspace needs a template — its branches fork from it";
-        if ((v.cloneDb || "") && !(v.db || "").trim())
-          return "set a database name to clone the selected database into";
-        if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
-          return `database "${(v.db || "").trim()}" already exists — pick a new name to clone into`;
-        return "";
-      },
-      fields: [
-        {
-          key: "template",
-          type: "select",
-          label: "Template",
-          placeholder: "— start blank —",
-          options: templates.map((t) => ({ value: t.id, label: t.name })),
-          value: templates[0]?.id ?? "",
-          onChange: (tplId) => {
-            const tpl = templates.find((t) => t.id === tplId);
-            if (!tpl) return null;
-            const branch =
-              tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
-              tpl.checkouts.find((c) => c.repo === "community")?.branch ||
-              "";
-            return {
-              name: branch,
-              config: repoBranchList.format(tpl.checkouts),
-              db: tpl.db || "",
-              args: tpl.on_create_args || "",
-              demoData: tpl.demo_data ?? true,
-            };
-          },
-        },
-        {
-          key: "location",
-          type: "select",
-          label: "Location",
-          value: "main",
-          options: [
-            { value: "main", label: "Main checkout (one loaded at a time)" },
-            { value: "worktree", label: "Own worktree + port (runs concurrently)" },
-          ],
-        },
-        {
-          key: "name",
-          type: "text",
-          label: "Name",
-          placeholder: "name (e.g. master-mytask)",
-          onChange: (newName, currentValues, oldValues) => {
-            const oldName = oldValues.name;
-            if (!oldName) return null;
-            return {
-              config: (currentValues.config || "").replaceAll(oldName, newName),
-              db: (currentValues.db || "").replaceAll(oldName, newName),
-            };
-          },
-        },
-        {
-          key: "config",
-          type: "text",
-          label: "Config",
-          placeholder: "community:master,enterprise:master",
-        },
-        { key: "db", type: "text", label: "Database", placeholder: "database name" },
-        { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
-        {
-          key: "cloneDb",
-          type: "check-select",
-          label: "Clone db",
-          options: dbOptions,
-          value: "",
-          default: (v) => {
-            const tpl = templates.find((t) => t.id === v.template);
-            if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
-            return dbOptions[0]?.value || "";
-          },
-        },
-        { key: "demoData", type: "checkbox", label: "Demo data", value: true },
-        { key: "fav", type: "checkbox", label: "Favorite", value: false },
-        { key: "createBranches", type: "checkbox", label: "Create branches (main)", value: true },
-        { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
-      ],
-    });
-    if (!res) return;
-    const checkouts = repoBranchList.parse(res.config.trim());
-    const tpl = templates.find((t) => t.id === res.template);
-    const startPointByRepo = Object.fromEntries(
-      (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
-    );
-
-    if (res.location === "worktree") {
-      await this.wt.createWorktree({
-        name: res.name.trim(),
-        dbName: (res.db || "").trim(),
-        cloneSource: res.cloneDb || "",
-        checkouts,
-        startPointByRepo,
-        baseId: tpl?.id || "",
-        on_create_args: (res.args || "").trim(),
-        demo_data: !!res.demoData,
-        favorite: !!res.fav,
-      });
-      return;
-    }
-
-    // main-located: persist canonically (the workspaces key — spread the existing
-    // array so stable ports survive), then branches / activation / db clone
-    const ws = {
-      id: newTargetId(),
-      name: res.name.trim(),
-      favorite: !!res.fav,
-      db: (res.db || "").trim(),
-      on_create_args: (res.args || "").trim(),
-      demo_data: !!res.demoData,
-      location: "main",
-      worktree: null,
-      port: null,
-      checkouts,
+  _dialogPlugins() {
+    return {
+      config: this.config,
+      dialogs: this.dialogs,
+      db: this.db,
+      code: this.code,
+      eventLog: this.eventLog,
+      wt: this.wt,
     };
-    this.eventLog.add(`creating workspace ${ws.name}`);
-    this.config.updateConfig({ workspaces: [...this.config.config.workspaces, ws] });
-    if (res.createBranches) {
-      const pathByRepo = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-      await this.code.createBranches(
-        checkouts.map((c) => ({
-          path: pathByRepo[c.repo],
-          name: c.branch,
-          startPoint: startPointByRepo[c.repo],
-        })),
-      );
-    }
-    if (res.activate) await this.config.workspace(ws.id)?.activate();
-    if (res.cloneDb && ws.db && res.cloneDb !== ws.db) {
-      await this.db.cloneStoppingServer(res.cloneDb, ws.db);
-    }
-    this.wt.select(ws.id);
+  }
+
+  create() {
+    return startCreateWorkspace(this._dialogPlugins());
+  }
+
+  createFromRemoteBranch() {
+    return createWorkspaceFromRemoteBranch(this._dialogPlugins());
   }
 }
 

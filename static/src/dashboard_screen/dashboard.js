@@ -12,13 +12,9 @@ import { ServerPlugin } from "../core/server_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { DirtyBadge, ICONS, appBus, m, mbCategory } from "../core/common.js";
 import { Panel } from "../core/panel.js";
-import { CommitsDialog } from "../core/dialogs.js";
-
-import {
-  deleteTargetDialog,
-  pushBranchesDialog,
-  startCreateTarget,
-} from "../targets_screen/targets.js";
+import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
+import { deleteWorkspaceDialog } from "../workspaces_screen/dialogs.js";
+import { startCreateTarget } from "../targets_screen/targets.js";
 
 export class DashboardScreen extends Component {
   static components = { DirtyBadge, Panel };
@@ -191,7 +187,7 @@ export class DashboardScreen extends Component {
   }
 
   deleteTarget(tgt) {
-    return deleteTargetDialog(tgt, {
+    return deleteWorkspaceDialog(tgt, {
       config: this.config,
       code: this.code,
       db: this.db,

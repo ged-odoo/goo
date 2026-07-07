@@ -9,6 +9,8 @@ import { ServerPlugin } from "../core/server_plugin.js";
 import { ICONS, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
+import { repoBranchList } from "../core/utils.js";
+import { deleteWorkspaceDialog } from "../workspaces_screen/dialogs.js";
 
 export async function createTargetFromRemoteBranch(config, eventLog, dialogs, branch, repos) {
   const existingTargets = config.config.targets;
@@ -197,104 +199,6 @@ export async function startCreateTarget(config, eventLog, code, dialogs, db, ser
   if (res.cloneDb && target.db && res.cloneDb !== target.db) {
     await db.cloneStoppingServer(res.cloneDb, target.db);
   }
-}
-
-// confirm (via the app modal) then push one or more branches to the dev remote.
-// branches: [{ path, branch }]. Shared by every "Push" affordance.
-
-export async function pushBranchesDialog(
-  code,
-  dialogs,
-  branches,
-  { title, message, force = false },
-) {
-  if (!branches.length) return;
-  const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
-  if (!ok) return;
-  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
-}
-
-// delete a target via a confirmation dialog that can also (optionally) delete
-// its local/remote branches (non-base ones that exist), close its open PRs and
-// drop its database. Shared by the Targets tab and the dashboard card menu.
-
-export async function deleteTargetDialog(
-  tgt,
-  { config, code, db, eventLog, repoMap, isActive, dialogs },
-) {
-  if (isActive) return; // the active target cannot be deleted
-  const groups = code.groups();
-  // deletable branches: present locally and not a base/primary branch
-  const branches = (tgt.checkouts || [])
-    .map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) }))
-    .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
-    .map((x) => ({
-      repo: x.repo,
-      branch: x.branch,
-      path: groups.pathByRepo[x.repo],
-      remote: !!x.b.remote,
-    }));
-  // open PRs for the target's branches
-  const prs = (tgt.checkouts || [])
-    .map(({ repo, branch }) => ({
-      pr: groups.prIndex[`${repo}:${branch}`],
-      github: groups.githubByRepo[repo],
-    }))
-    .filter((x) => x.pr && x.pr.state === "open" && x.github)
-    .map((x) => ({ github: x.github, number: x.pr.number }));
-
-  const fields = [];
-  if (branches.length)
-    fields.push({
-      key: "delBranches",
-      type: "checkbox",
-      label: `Also delete ${branches.length === 1 ? "its branch" : `its ${branches.length} branches`}`,
-      value: true,
-    });
-  if (branches.some((b) => b.remote))
-    fields.push({
-      key: "delRemote",
-      type: "checkbox",
-      label: "…also on the remote (odoo-dev)",
-      value: true,
-    });
-  if (prs.length)
-    fields.push({
-      key: "closePrs",
-      type: "checkbox",
-      label: `Close ${prs.length === 1 ? "its open pull request" : `its ${prs.length} open pull requests`}`,
-      value: true,
-    });
-  // only offer to drop the db if it actually exists (a never-run target has none)
-  const dbExists = tgt.db && db.databases().some((d) => d.name === tgt.db);
-  if (dbExists)
-    fields.push({
-      key: "dropDb",
-      type: "checkbox",
-      label: `Drop database "${tgt.db}"`,
-      value: true,
-    });
-
-  const res = await dialogs.open({
-    title: `Delete "${tgt.name}"?`,
-    message: "The target will be removed from your list. This cannot be undone.",
-    okLabel: "Delete",
-    fields,
-  });
-  if (!res) return;
-
-  eventLog.add(`deleting target ${tgt.name}`);
-  // these are independent network/git ops (close PRs, delete branches per repo,
-  // drop the db) — fire them concurrently rather than one slow await after another.
-  // Each helper handles its own errors and never rejects, so Promise.all is safe.
-  const ops = [];
-  if (res.closePrs) for (const p of prs) ops.push(code.closePrNoConfirm(p.github, p.number));
-  if (res.delBranches)
-    for (const b of branches)
-      ops.push(code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote));
-  if (res.dropDb && tgt.db) ops.push(db.drop(tgt.db));
-  await Promise.all(ops);
-  config.updateConfig({ targets: config.config.targets.filter((t) => t.id !== tgt.id) });
 }
 
 export class TargetsScreen extends Component {
@@ -797,7 +701,7 @@ export class TargetsScreen extends Component {
 
   async deleteTarget(tgt) {
     await this._loadForDelete([tgt]); // branches + PRs + db for the cleanup options
-    return deleteTargetDialog(tgt, {
+    return deleteWorkspaceDialog(tgt, {
       config: this.config,
       code: this.code,
       db: this.db,
@@ -808,19 +712,3 @@ export class TargetsScreen extends Component {
     });
   }
 }
-
-// ─────────────────────────── Branches screen ───────────────────────────
-// flat list (one row per branch × repo) over the same data the Dashboard tab loads
-
-export const repoBranchList = {
-  format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
-  parse: (s) =>
-    s
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .map((pair) => {
-        const [repo, branch = ""] = pair.split(":").map((p) => p.trim());
-        return { repo, branch };
-      }),
-};

@@ -213,3 +213,18 @@ export function worktreeSlug(tgt) {
 export function worktreeDirFor(worktreeDir, tgt) {
   return `${(worktreeDir || "/tmp").replace(/\/+$/, "")}/${worktreeSlug(tgt)}`;
 }
+
+// the "repo:branch,repo:branch" config-string format used by the workspace /
+// template create+edit dialogs — one line both ways
+export const repoBranchList = {
+  format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
+  parse: (s) =>
+    s
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .map((pair) => {
+        const [repo, branch = ""] = pair.split(":").map((p) => p.trim());
+        return { repo, branch };
+      }),
+};
