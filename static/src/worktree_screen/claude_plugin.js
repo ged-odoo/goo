@@ -3,7 +3,7 @@
 // runs commands there, never touching the main tree), and its assistant text + tool
 // activity stream back live over the "claude" SSE event (relayed by ServerPlugin).
 // Per-target transcripts are kept here (and mirrored on the backend so a page reload
-// re-primes them via /api/worktree/claude/history). The backend owns the resumable
+// re-primes them via /api/workspace/claude/history). The backend owns the resumable
 // session id, so a conversation just continues turn after turn.
 
 import { ConfigPlugin } from "../core/config_plugin.js";
@@ -90,7 +90,7 @@ export class ClaudePlugin extends Plugin {
     this._primed.add(id);
     if (this._get(id).items.length) return;
     try {
-      const res = await postJSON("/api/worktree/claude/history", { target: id });
+      const res = await postJSON("/api/workspace/claude/history", { target: id });
       this._set(id, { items: res.items || [], state: res.state || "idle" });
     } catch {
       /* leave empty */
@@ -112,7 +112,7 @@ export class ClaudePlugin extends Plugin {
     this._append(tgt.id, { role: "user", text }); // optimistic; backend keeps its own copy
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
-      await postJSON("/api/worktree/claude", {
+      await postJSON("/api/workspace/claude", {
         target: tgt.id,
         prompt: text,
         cwd: community.worktreePath,
@@ -127,7 +127,7 @@ export class ClaudePlugin extends Plugin {
 
   async stop(tgt) {
     try {
-      await postJSON("/api/worktree/claude/stop", { target: tgt.id });
+      await postJSON("/api/workspace/claude/stop", { target: tgt.id });
     } catch {
       /* the SSE result will reconcile the state */
     }

@@ -62,7 +62,7 @@ const SETTINGS_CHARS = [
 const SETTINGS_BOOLS = ["auto_open_event_log", "update_check", "rust_bundler"];
 const SETTINGS_JSON = ["start", "tabs", "links", "test_presets"];
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
-const STATE_CHARS = ["active_target", "claude_model"];
+const STATE_CHARS = ["active_workspace", "claude_model"];
 const STATE_JSON = ["test_history", "reviews_favorites", "reviews_merged", "reviews_no_mergebot"];
 
 export class Settings extends Model {
@@ -277,7 +277,7 @@ export class Template extends Model {
 
 export class AppState extends Model {
   static id = "appstate"; // singleton — the app-recorded state blob
-  active_target = fields.char();
+  active_workspace = fields.char();
   claude_model = fields.char();
   test_history = fields.json();
   reviews_favorites = fields.json();
@@ -327,9 +327,13 @@ function targetFromWorkspace(w) {
   return tgt;
 }
 
-// the smallest stable port ≥ 8070 not held by any workspace (8069 = the main checkout)
+// ports a workspace may never claim: 8069 = the main server, 8072 = its default
+// gevent (websocket) port — a workspace bound there would collide with a running main
+export const RESERVED_PORTS = [8069, 8072];
+
+// the smallest stable port ≥ 8070 not held by any workspace and not reserved
 export function nextFreePort(orm) {
-  const used = new Set(orm.records(Workspace).map((w) => w.port()));
+  const used = new Set([...RESERVED_PORTS, ...orm.records(Workspace).map((w) => w.port())]);
   let p = 8070;
   while (used.has(p)) p++;
   return p;

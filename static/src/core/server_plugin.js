@@ -31,7 +31,7 @@ export class ServerPlugin extends Plugin {
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
-  activeTarget = signal(this.config.getState("active_target", ""));
+  activeTarget = signal(this.config.getState("active_workspace", ""));
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
@@ -102,8 +102,8 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("config", (e) => {
       const d = JSON.parse(e.data);
       this.config.applyBroadcast(d);
-      // active_target lives in a signal here too; follow the broadcast
-      const at = (d.state || {}).active_target;
+      // active_workspace lives in a signal here too; follow the broadcast
+      const at = (d.state || {}).active_workspace;
       if (at !== undefined && at !== this.activeTarget()) this.activeTarget.set(at);
     });
     // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log.
@@ -174,7 +174,7 @@ export class ServerPlugin extends Plugin {
 
   setLastTarget(id) {
     this.activeTarget.set(id);
-    this.config.setState("active_target", id);
+    this.config.setState("active_workspace", id);
   }
 
   // the command that would launch this target (built by the backend); "" if invalid

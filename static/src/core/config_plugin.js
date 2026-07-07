@@ -10,7 +10,7 @@
 //
 //   config = the user's settings/repos/targets/… (schema in config.js; the models
 //            mirror it, and DEFAULT_CONFIG is merged in at read for new keys)
-//   state  = app-recorded: active_target, test_history, reviews_*, claude_model
+//   state  = app-recorded: active_workspace, test_history, reviews_*, claude_model
 
 import { BASE_BRANCH_RE, DEFAULT_CONFIG } from "./config.js";
 import { PRESETS } from "./presets.js";
@@ -26,6 +26,7 @@ import {
   toState,
   applyPatch,
   workspaceFromTarget,
+  RESERVED_PORTS,
 } from "./config_models.js";
 
 import { Plugin, signal, computed } from "@odoo/owl";
@@ -33,7 +34,7 @@ import { Plugin, signal, computed } from "@odoo/owl";
 // old localStorage keys → their field in the server `state` blob. Used to adopt an
 // upgrading user's browser data on first boot, and to translate config presets.
 const STATE_KEYS = {
-  "oo-last-target": "active_target",
+  "oo-last-target": "active_workspace",
   "oo-test-history": "test_history",
   "oo-reviews-merged": "reviews_merged",
   "oo-reviews-no-mergebot": "reviews_no_mergebot",
@@ -65,7 +66,7 @@ function tryParse(v) {
   try {
     return JSON.parse(v);
   } catch {
-    return v; // plain strings (active_target, claude_model) aren't JSON
+    return v; // plain strings (active_workspace, claude_model) aren't JSON
   }
 }
 
@@ -77,6 +78,13 @@ function tryParse(v) {
 export function migrateConfigState(config, state) {
   config = { ...(config || {}) };
   state = { ...(state || {}) };
+  // active_target → active_workspace (Phase 2 state rename). Only when the new key
+  // is absent, so a stray write from a still-open pre-workspace tab can't clobber a
+  // live value; the old key is dropped (toState never re-emits it).
+  if (state.active_workspace === undefined && state.active_target !== undefined) {
+    state.active_workspace = state.active_target;
+  }
+  delete state.active_target;
   if (Array.isArray(config.targets)) {
     const stale = (t) =>
       !t.id || t.config !== undefined || !t.kind || (t.worktree && !t.worktree.dir);
@@ -100,10 +108,10 @@ export function migrateConfigState(config, state) {
       });
     }
   }
-  const at = state.active_target;
+  const at = state.active_workspace;
   if (at && Array.isArray(config.targets) && !config.targets.some((t) => t.id === at)) {
     const byName = config.targets.find((t) => t.name === at);
-    if (byName) state.active_target = byName.id;
+    if (byName) state.active_workspace = byName.id;
   }
   return { config, state };
 }
@@ -115,12 +123,16 @@ export function migrateConfigState(config, state) {
 // branches. `targets` stays in the blob — from now on it's the legacy view that
 // toConfig re-emits from the Workspace records.
 export function migrateToWorkspaces(config, state) {
+  // the state-key rename below must reach the server even when the workspace
+  // conversion already ran (a Phase-1 config) — track it as its own change
+  const renamed = state?.active_workspace === undefined && state?.active_target !== undefined;
   ({ config, state } = migrateConfigState(config, state));
   const targets = Array.isArray(config.targets) ? config.targets : [];
   if ((Array.isArray(config.workspaces) && config.workspaces.length) || !targets.length) {
-    return { config, state, changed: false };
+    return { config, state, changed: renamed };
   }
-  const used = new Set();
+  // 8069 = the main server; 8072 = its default gevent port — both off-limits
+  const used = new Set(RESERVED_PORTS);
   const workspaces = targets.map((t) => {
     const w = workspaceFromTarget(t);
     if (w.location === "worktree") {

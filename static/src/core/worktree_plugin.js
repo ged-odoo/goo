@@ -145,7 +145,7 @@ export class WorktreePlugin extends Plugin {
     const targets = this.worktreeTargets().map((t) => ({ id: t.id, dirPath: this.dirPath(t) }));
     if (!targets.length) return;
     try {
-      const res = await postJSON("/api/worktree/list", { targets });
+      const res = await postJSON("/api/workspace/list", { targets });
       for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
     } catch {
       /* leave current state */
@@ -164,7 +164,7 @@ export class WorktreePlugin extends Plugin {
     const buf = this.logBuffer(id);
     if (buf.count()) return;
     try {
-      const res = await postJSON("/api/worktree/logs", { target: id });
+      const res = await postJSON("/api/workspace/logs", { target: id });
       buf.clear();
       for (const line of res.lines || []) buf.append(line);
     } catch {
@@ -232,7 +232,7 @@ export class WorktreePlugin extends Plugin {
           filestore: this.config.config.filestore,
         });
       }
-      const res = await postJSON("/api/worktree/create", { target: id, repos });
+      const res = await postJSON("/api/workspace/create", { target: id, repos });
       if (!res.ok) {
         this.eventLog.finish(eid, "error");
         const msg = (res.results || [])
@@ -263,7 +263,7 @@ export class WorktreePlugin extends Plugin {
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/worktree/start", { target: tgt.id });
+      const res = await postJSON("/api/workspace/start", { target: tgt.id });
       this._merge(tgt.id, { state: "starting", port: res.port });
     } catch (e) {
       delete this._startEids[tgt.id];
@@ -276,7 +276,7 @@ export class WorktreePlugin extends Plugin {
   async stopServer(tgt) {
     this.eventLog.add(`stopping worktree server (${tgt.name})`);
     try {
-      await postJSON("/api/worktree/stop", { target: tgt.id });
+      await postJSON("/api/workspace/stop", { target: tgt.id });
       this._merge(tgt.id, { state: "stopped" });
     } catch {
       /* the SSE status will reconcile */
@@ -308,7 +308,11 @@ export class WorktreePlugin extends Plugin {
     }));
     this.eventLog.add(`removing worktree ${tgt.name}`);
     try {
-      await postJSON("/api/worktree/remove", { target: tgt.id, dirPath: this.dirPath(tgt), repos });
+      await postJSON("/api/workspace/remove", {
+        target: tgt.id,
+        dirPath: this.dirPath(tgt),
+        repos,
+      });
     } catch (e) {
       // the worktree is still on disk / registered with git — keep the target so
       // there's a UI handle to retry, rather than orphaning it.

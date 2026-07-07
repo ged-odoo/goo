@@ -1338,21 +1338,25 @@ var StorePlugin = class extends Plugin {
     if (rec) rec.data.set({ ...rec.data(), ...snap });
     else this.orm.create(Run, { id: snap.id, data: { ...snap } });
   }
-  // the currently-running one-shot (there's one shared slot), or null
+  // the currently-running one-shot on the MAIN slot, or null. Runs carry the
+  // workspace slot they occupy (`server`, "main" unless a workspace one-shot minted
+  // it) — the Tests/Addons screens are main-slot UIs until Phase 4, so a run fired
+  // at a worktree workspace must not light them up.
   activeRun() {
     for (const r of this.orm.records(Run)) {
       const d = r.data();
-      if (d.state === "running") return d;
+      if (d.state === "running" && (d.server ?? "main") === "main") return d;
     }
     return null;
   }
-  // the most recent run of a kind (test | install | upgrade), running or finished — so
-  // a screen still shows its last result after a run of another kind occupied the slot
+  // the most recent main-slot run of a kind (test | install | upgrade), running or
+  // finished — so a screen still shows its last result after a run of another kind
+  // occupied the slot
   latestRunOfKind(kind) {
     let best = null;
     for (const r of this.orm.records(Run)) {
       const d = r.data();
-      if (d.kind !== kind) continue;
+      if (d.kind !== kind || (d.server ?? "main") !== "main") continue;
       if (!best || (d.started_at || 0) >= (best.started_at || 0)) best = d;
     }
     return best;
@@ -2244,7 +2248,7 @@ var ServerPlugin = class extends Plugin {
   // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
-  activeTarget = signal(this.config.getState("active_target", ""));
+  activeTarget = signal(this.config.getState("active_workspace", ""));
   setup() {
     setInterval(() => this.now.set(Date.now()), 1e3);
     this._connect();
@@ -2299,7 +2303,7 @@ var ServerPlugin = class extends Plugin {
     es.addEventListener("config", (e) => {
       const d = JSON.parse(e.data);
       this.config.applyBroadcast(d);
-      const at = (d.state || {}).active_target;
+      const at = (d.state || {}).active_workspace;
       if (at !== void 0 && at !== this.activeTarget()) this.activeTarget.set(at);
     });
     es.addEventListener("event", (e) => {
@@ -2355,7 +2359,7 @@ var ServerPlugin = class extends Plugin {
   }
   setLastTarget(id) {
     this.activeTarget.set(id);
-    this.config.setState("active_target", id);
+    this.config.setState("active_workspace", id);
   }
   // the command that would launch this target (built by the backend); "" if invalid
   async previewCommand(targetId, otherArgs) {
@@ -2510,7 +2514,7 @@ var SETTINGS_CHARS = [
 ];
 var SETTINGS_BOOLS = ["auto_open_event_log", "update_check", "rust_bundler"];
 var SETTINGS_JSON = ["start", "tabs", "links", "test_presets"];
-var STATE_CHARS = ["active_target", "claude_model"];
+var STATE_CHARS = ["active_workspace", "claude_model"];
 var STATE_JSON = ["test_history", "reviews_favorites", "reviews_merged", "reviews_no_mergebot"];
 var Settings = class extends Model {
   static id = "settings";
@@ -2693,7 +2697,7 @@ var Template = class extends Model {
 var AppState = class extends Model {
   static id = "appstate";
   // singleton — the app-recorded state blob
-  active_target = fields.char();
+  active_workspace = fields.char();
   claude_model = fields.char();
   test_history = fields.json();
   reviews_favorites = fields.json();
@@ -2731,8 +2735,9 @@ function targetFromWorkspace(w) {
   if (wt) tgt.worktree = wt;
   return tgt;
 }
+var RESERVED_PORTS = [8069, 8072];
 function nextFreePort(orm) {
-  const used = new Set(orm.records(Workspace).map((w) => w.port()));
+  const used = /* @__PURE__ */ new Set([...RESERVED_PORTS, ...orm.records(Workspace).map((w) => w.port())]);
   let p = 8070;
   while (used.has(p)) p++;
   return p;
@@ -2967,7 +2972,7 @@ function reconcileCheckouts(orm, w) {
 
 // static/src/core/config_plugin.js
 var STATE_KEYS = {
-  "oo-last-target": "active_target",
+  "oo-last-target": "active_workspace",
   "oo-test-history": "test_history",
   "oo-reviews-merged": "reviews_merged",
   "oo-reviews-no-mergebot": "reviews_no_mergebot",
@@ -2993,6 +2998,10 @@ function tryParse(v) {
 function migrateConfigState(config, state) {
   config = { ...config || {} };
   state = { ...state || {} };
+  if (state.active_workspace === void 0 && state.active_target !== void 0) {
+    state.active_workspace = state.active_target;
+  }
+  delete state.active_target;
   if (Array.isArray(config.targets)) {
     const stale = (t2) => !t2.id || t2.config !== void 0 || !t2.kind || t2.worktree && !t2.worktree.dir;
     if (config.targets.some(stale)) {
@@ -3013,20 +3022,21 @@ function migrateConfigState(config, state) {
       });
     }
   }
-  const at = state.active_target;
+  const at = state.active_workspace;
   if (at && Array.isArray(config.targets) && !config.targets.some((t2) => t2.id === at)) {
     const byName = config.targets.find((t2) => t2.name === at);
-    if (byName) state.active_target = byName.id;
+    if (byName) state.active_workspace = byName.id;
   }
   return { config, state };
 }
 function migrateToWorkspaces(config, state) {
+  const renamed = state?.active_workspace === void 0 && state?.active_target !== void 0;
   ({ config, state } = migrateConfigState(config, state));
   const targets = Array.isArray(config.targets) ? config.targets : [];
   if (Array.isArray(config.workspaces) && config.workspaces.length || !targets.length) {
-    return { config, state, changed: false };
+    return { config, state, changed: renamed };
   }
-  const used = /* @__PURE__ */ new Set();
+  const used = new Set(RESERVED_PORTS);
   const workspaces = targets.map((t2) => {
     const w = workspaceFromTarget(t2);
     if (w.location === "worktree") {
@@ -4593,7 +4603,7 @@ var WorktreePlugin = class extends Plugin {
     const targets = this.worktreeTargets().map((t2) => ({ id: t2.id, dirPath: this.dirPath(t2) }));
     if (!targets.length) return;
     try {
-      const res = await postJSON("/api/worktree/list", { targets });
+      const res = await postJSON("/api/workspace/list", { targets });
       for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
     } catch {
     }
@@ -4609,7 +4619,7 @@ var WorktreePlugin = class extends Plugin {
     const buf = this.logBuffer(id);
     if (buf.count()) return;
     try {
-      const res = await postJSON("/api/worktree/logs", { target: id });
+      const res = await postJSON("/api/workspace/logs", { target: id });
       buf.clear();
       for (const line of res.lines || []) buf.append(line);
     } catch {
@@ -4663,7 +4673,7 @@ var WorktreePlugin = class extends Plugin {
           filestore: this.config.config.filestore
         });
       }
-      const res = await postJSON("/api/worktree/create", { target: id, repos });
+      const res = await postJSON("/api/workspace/create", { target: id, repos });
       if (!res.ok) {
         this.eventLog.finish(eid, "error");
         const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
@@ -4690,7 +4700,7 @@ var WorktreePlugin = class extends Plugin {
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/worktree/start", { target: tgt.id });
+      const res = await postJSON("/api/workspace/start", { target: tgt.id });
       this._merge(tgt.id, { state: "starting", port: res.port });
     } catch (e) {
       delete this._startEids[tgt.id];
@@ -4702,7 +4712,7 @@ var WorktreePlugin = class extends Plugin {
   async stopServer(tgt) {
     this.eventLog.add(`stopping worktree server (${tgt.name})`);
     try {
-      await postJSON("/api/worktree/stop", { target: tgt.id });
+      await postJSON("/api/workspace/stop", { target: tgt.id });
       this._merge(tgt.id, { state: "stopped" });
     } catch {
     }
@@ -4731,7 +4741,11 @@ var WorktreePlugin = class extends Plugin {
     }));
     this.eventLog.add(`removing worktree ${tgt.name}`);
     try {
-      await postJSON("/api/worktree/remove", { target: tgt.id, dirPath: this.dirPath(tgt), repos });
+      await postJSON("/api/workspace/remove", {
+        target: tgt.id,
+        dirPath: this.dirPath(tgt),
+        repos
+      });
     } catch (e) {
       return this._error("Worktree removal failed", e.message);
     }
@@ -10114,7 +10128,7 @@ var ClaudePlugin = class extends Plugin {
     this._primed.add(id);
     if (this._get(id).items.length) return;
     try {
-      const res = await postJSON("/api/worktree/claude/history", { target: id });
+      const res = await postJSON("/api/workspace/claude/history", { target: id });
       this._set(id, { items: res.items || [], state: res.state || "idle" });
     } catch {
     }
@@ -10134,7 +10148,7 @@ var ClaudePlugin = class extends Plugin {
     this._append(tgt.id, { role: "user", text });
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
-      await postJSON("/api/worktree/claude", {
+      await postJSON("/api/workspace/claude", {
         target: tgt.id,
         prompt: text,
         cwd: community.worktreePath,
@@ -10148,7 +10162,7 @@ var ClaudePlugin = class extends Plugin {
   }
   async stop(tgt) {
     try {
-      await postJSON("/api/worktree/claude/stop", { target: tgt.id });
+      await postJSON("/api/workspace/claude/stop", { target: tgt.id });
     } catch {
     }
     this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
