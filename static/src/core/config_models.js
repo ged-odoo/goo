@@ -570,6 +570,16 @@ function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
 }
 
 function reconcileTemplates(orm, templates) {
+  // order-aware (like workspaces): the Templates screen's drag-reorder sends the
+  // same id set in a new order — rebuild the records so the order persists
+  // (templates are flat, no dependents, so a full rebuild is cheap and safe)
+  const have = orm.records(Template).map((r) => r.id);
+  const want = templates.map((t) => t.id);
+  if (have.length === want.length && have.join("\n") !== want.join("\n")) {
+    for (const r of orm.records(Template)) orm.delete(r);
+    for (const t of templates) createTemplate(orm, t);
+    return;
+  }
   reconcile(
     orm,
     Template,

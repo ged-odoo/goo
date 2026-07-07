@@ -120,7 +120,7 @@ export const SECTIONS = [
   "assets",
   "addons",
   "databases",
-  "targets",
+  "templates",
   "nightly",
   "memory",
   "config",

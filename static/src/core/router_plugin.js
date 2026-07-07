@@ -5,7 +5,8 @@ import { SECTIONS } from "./config.js";
 import { Plugin, signal } from "@odoo/owl";
 
 // retired section ids → their successor (stale bookmarks/links keep working)
-const ALIASES = { worktree: "workspaces" };
+// retired sections redirect: old bookmarks/bundles keep working
+const ALIASES = { worktree: "workspaces", targets: "templates" };
 
 export class RouterPlugin extends Plugin {
   static sequence = 1;

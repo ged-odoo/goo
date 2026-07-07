@@ -23,7 +23,7 @@ import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
 import { NightlyScreen } from "../nightly_screen/nightly.js";
 import { PrsScreen } from "../prs_screen/prs.js";
 import { ServerScreen } from "../server_screen/server.js";
-import { TargetsScreen } from "../targets_screen/targets.js";
+import { TemplatesScreen } from "../templates_screen/templates.js";
 import { TerminalPanel } from "./terminal.js";
 import { TestsScreen } from "../tests_screen/tests.js";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
@@ -257,7 +257,7 @@ export const SCREENS = {
   code: CodeScreen,
   server: ServerScreen,
   workspaces: WorkspacesScreen,
-  targets: TargetsScreen,
+  templates: TemplatesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
   // back-compat: old #reviews bookmarks render the merged PRs screen, which opens
@@ -280,7 +280,7 @@ export class App extends Component {
     CodeScreen,
     ServerScreen,
     WorkspacesScreen,
-    TargetsScreen,
+    TemplatesScreen,
     BranchesScreen,
     PrsScreen,
     TestsScreen,
