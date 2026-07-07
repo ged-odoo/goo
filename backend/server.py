@@ -780,12 +780,15 @@ class WorkspaceManager:
         """The SSE/JSON-safe view of a non-main entry. `exists` is dropped here:
         it's a client-facing on-disk fact added only by status_for on bootstrap, so
         the live SSE stream carries just state/port and the client's spread-merge
-        preserves the bootstrapped `exists` rather than clobbering it with null."""
+        preserves the bootstrapped `exists` rather than clobbering it with null.
+        terminal=True: every entry has carried its own PTY channel since the
+        manager unification (the synthesized never-started snapshot in status_for
+        keeps False — no entry, no PTY yet)."""
         snap = asdict(
             ServerSnapshot(
                 id=entry.id,
                 state=entry.state,
-                terminal=False,
+                terminal=True,
                 target=entry.id,
                 db=entry.db,
                 port=entry.port,
@@ -1060,6 +1063,18 @@ class WorkspaceManager:
             resume = entry.server_config if (active and entry.mode == "server") else None
         self.stop(wsid)
         return self.start(wsid, config, resume_config=resume)
+
+    def stop_and_finalize(self, wsid):
+        """Stop a workspace's server; if that manually killed an active one-shot
+        run, finalize it (returncode None → failed) and resume the server it had
+        interrupted — the mirror of the reader thread's natural-finish path (which
+        bails out on manual stops because stop() owns the exit)."""
+        ok, detail = self.stop(wsid)
+        if ok:
+            resume = self.finish_run(wsid, None)
+            if resume:
+                self.start(wsid, resume)
+        return ok, detail
 
     def finish_run(self, wsid, returncode):
         """Finalize a workspace's active run (if any) and return the server config
@@ -1596,14 +1611,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
         elif path == "/api/stop":
-            ok, detail = WORKSPACES.stop("main")
-            # stopping a one-shot run mid-flight finalizes it and, like a natural
-            # finish, resumes any server it had interrupted (the reader bailed out
-            # because stop() owns the exit, so drive the resume from here)
+            ok, detail = WORKSPACES.stop_and_finalize("main")
             if ok:
-                resume = WORKSPACES.finish_run("main", None)
-                if resume:
-                    WORKSPACES.start("main", resume)
                 self._send_json(200, {"ok": True, "state": "stopped"})
             else:
                 self._send_json(409, {"ok": False, "error": detail})
@@ -1692,9 +1701,14 @@ class Handler(BaseHTTPRequestHandler):
             if err or not isinstance(db, str) or not db:
                 return self._send_json(400, {"ok": False, "error": "missing db"})
             try:
-                # the shell cmd spans all configured repos (not a target) — build from
-                # the server's own config, no config in the request body
-                cmd = build_shell_cmd(CONFIG.get()["config"], db)
+                # the shell cmd is built from the server's own config; an optional
+                # `workspace` resolves through the launch builder so a worktree
+                # workspace's bundles are generated with ITS checkout's code
+                cfg = CONFIG.get()["config"]
+                wsid = (body or {}).get("workspace")
+                if wsid:
+                    cfg = services.build_start_config(cfg, wsid) or cfg
+                cmd = build_shell_cmd(cfg, db)
             except ValueError as e:
                 return self._send_json(400, {"ok": False, "error": str(e)})
             ok, error = ASSETS.generate(cmd, db)
@@ -1851,7 +1865,9 @@ class Handler(BaseHTTPRequestHandler):
             target = (body or {}).get("target")
             if err or not target:
                 return self._send_json(400, {"ok": False, "error": "missing target"})
-            ok, detail = WORKSPACES.stop(target)
+            # stop_and_finalize: a stop mid-run finalizes the run + resumes the
+            # server it interrupted, exactly like /api/stop does for main
+            ok, detail = WORKSPACES.stop_and_finalize(target)
             self._send_json(200 if ok else 409, {"ok": ok, "error": None if ok else detail})
         elif path == "/api/workspace/remove":
             body, err = self._read_json()

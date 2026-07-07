@@ -1457,6 +1457,16 @@ class WorkspaceResolutionTest(unittest.TestCase):
         cfg = services.build_start_config(self.CFG, "dup")
         self.assertEqual(cfg["start"]["db"], "from-workspace")
 
+    def test_shell_cmd_uses_worktree_checkout(self):
+        # /api/assets/generate with a workspace: the shell command must run the
+        # worktree's own odoo-bin from its own checkout
+        from backend import server
+
+        cfg = services.build_start_config(self.CFG, "ww1")
+        cmd = server.build_shell_cmd(cfg, "wwdb")
+        self.assertIn("cd /wt/feature-x/community", cmd)
+        self.assertIn("/wt/feature-x/community/odoo-bin", cmd)
+
 
 class BuildOdooCmdTest(unittest.TestCase):
     """--without-demo mirrors the target's demo_data flag (config_models.js
@@ -1526,11 +1536,12 @@ class ServerSnapshotTest(unittest.TestCase):
         self.assertIsNone(snap["odoo_version"])  # enrichment absent until set
 
     def test_worktree_shape(self):
+        # every live entry has its own PTY since the manager unification → terminal True
         snap = asdict(
-            ServerSnapshot(id="wt-x", state="running", terminal=False, target="wt-x", port=8072)
+            ServerSnapshot(id="wt-x", state="running", terminal=True, target="wt-x", port=8072)
         )
         self.assertEqual((snap["id"], snap["target"], snap["port"]), ("wt-x", "wt-x", 8072))
-        self.assertFalse(snap["terminal"])
+        self.assertTrue(snap["terminal"])
 
     def test_run_snapshot_server_key(self):
         # runs default to the main slot; a workspace one-shot carries its own id
@@ -1675,6 +1686,60 @@ class WorkspaceManagerRunTest(unittest.TestCase):
         self._seed(mgr, "wt-x", {"id": "run-2", "state": "running", "server": "wt-x"})
         snaps = mgr.run_snapshots()
         self.assertEqual({s["id"] for s in snaps}, {"run-1", "run-2"})
+
+    def test_public_terminal_flag(self):
+        # a live entry's snapshot advertises its PTY; a synthesized never-started
+        # snapshot (status_for for an id with no entry) does not
+        import unittest.mock as mock
+
+        from backend import effects, server
+
+        mgr, _ = self._manager()
+        entry = server._Entry("wt-x")
+        mgr.entries["wt-x"] = entry
+        self.assertTrue(mgr._public(entry)["terminal"])
+        with mock.patch.object(effects, "is_dir", return_value=False):
+            snap = mgr.status_for([{"id": "wt-never", "dirPath": "/nope"}])["wt-never"]
+        self.assertFalse(snap["terminal"])
+
+    def test_stop_and_finalize_resumes(self):
+        # a manual stop mid-run finalizes the run (returncode None → failed) and
+        # restarts the server the run had interrupted
+        mgr, _ = self._manager()
+        self._seed(
+            mgr,
+            "wt-x",
+            {"id": "run-9", "kind": "test", "state": "running", "server": "wt-x"},
+            resume={"target": "wt-x"},
+        )
+        with (
+            unittest.mock.patch.object(mgr, "stop", return_value=(True, "stopped")) as stop,
+            unittest.mock.patch.object(mgr, "start") as start,
+        ):
+            ok, detail = mgr.stop_and_finalize("wt-x")
+        self.assertTrue(ok)
+        stop.assert_called_once_with("wt-x")
+        start.assert_called_once_with("wt-x", {"target": "wt-x"})
+        run = mgr.entries["wt-x"].run
+        self.assertEqual(run["state"], "failed")
+        self.assertIsNone(run["returncode"])
+        self.assertEqual(mgr.bus.runs[-1]["state"], "failed")
+
+    def test_stop_and_finalize_refused(self):
+        # a refused stop leaves the run untouched and resumes nothing
+        mgr, _ = self._manager()
+        entry = self._seed(
+            mgr, "main", {"id": "run-10", "kind": "test", "state": "running"}, resume={"t": 1}
+        )
+        with (
+            unittest.mock.patch.object(mgr, "stop", return_value=(False, "already_stopping")),
+            unittest.mock.patch.object(mgr, "start") as start,
+        ):
+            ok, detail = mgr.stop_and_finalize("main")
+        self.assertFalse(ok)
+        self.assertEqual(detail, "already_stopping")
+        start.assert_not_called()
+        self.assertEqual(entry.run["state"], "running")
 
     def test_public_snapshots_orders_main_first(self):
         mgr, _ = self._manager()
