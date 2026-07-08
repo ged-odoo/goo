@@ -10283,14 +10283,11 @@ var WorkspacesScreen = class extends Component {
           <div class="wt-list-items">
             <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
             <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
-                    t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)">
+                    t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
+                    t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '')">
               <span class="wt-dot" t-att-class="this.dotClass(ws)"/>
-              <span class="wt-item-main">
-                <span class="wt-item-name" t-out="ws.name"/>
-                <span class="wt-item-sub"><t t-out="this.branchOf(ws)"/> · <t t-out="ws.db"/></span>
-              </span>
+              <span class="wt-item-name" t-out="ws.name"/>
               <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
-              <span t-if="this.portOf(ws)" class="wt-item-port" t-out="':' + this.portOf(ws)"/>
             </button>
           </div>
         </div>

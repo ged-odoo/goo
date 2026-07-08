@@ -4084,6 +4084,10 @@ a.commit-detail-hash svg {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 12px;
+  padding: 10px;
 }
 /* the list column header: search + compact create buttons (no screen panel — the
    list and detail fill the whole area, per the Workspaces design) */
@@ -4092,7 +4096,6 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 6px;
   flex: none;
-  padding-right: 4px;
 }
 .wt-list-head .search-box {
   flex: 1;
@@ -4103,7 +4106,7 @@ a.commit-detail-hash svg {
   padding: 6px 12px;
   border: 1px solid var(--l-line);
   border-radius: 8px;
-  background: var(--l-card);
+  background: var(--l-bg);
   color: var(--l-text);
   font-size: 12.5px;
   min-width: 0;
@@ -4182,31 +4185,15 @@ a.commit-detail-hash svg {
   border-color: var(--l-accent-line);
   background: var(--l-accent-soft);
 }
-.wt-item-main {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
 .wt-item-name {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.wt-item-sub {
-  font-size: 11px;
-  color: var(--l-text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.wt-item-port {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--l-text-mid);
+  text-align: left;
 }
 
 /* status dot on a list row (wt-dot + wt-dot-<state>) */
