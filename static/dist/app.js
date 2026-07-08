@@ -10392,6 +10392,8 @@ var WorkspacesScreen = class extends Component {
   // the list search
   setup() {
     this.db.load();
+    const first = (this.config.config.workspaces || [])[0];
+    if (!this.sel && first) this.wt.select(first.id);
     useEffect(() => {
       const ws = this.sel;
       if (!ws) return;

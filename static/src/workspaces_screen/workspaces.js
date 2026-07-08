@@ -430,6 +430,11 @@ export class WorkspacesScreen extends Component {
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+    // open with a selection: when nothing (or a removed workspace) is selected,
+    // default to the first configured one — never override an existing selection
+    // (e.g. the event log's [jump] selects the loaded workspace before navigating)
+    const first = (this.config.config.workspaces || [])[0];
+    if (!this.sel && first) this.wt.select(first.id);
     // keep the selected workspace's git state fresh (drives the Start guard + the
     // checked-out badges) — a scoped, cheap branch scan when the selection (read
     // via this.sel — owl3's useEffect tracks the body) changes
