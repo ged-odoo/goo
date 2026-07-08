@@ -9,7 +9,6 @@ import { ServerPlugin } from "../core/server_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
 import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { ICONS, LogConsole, SearchBox, appBus, m } from "../core/common.js";
-import { Panel } from "../core/panel.js";
 import { attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo } from "../core/utils.js";
@@ -305,36 +304,31 @@ export class WorkspacesScreen extends Component {
     TestsPane,
     AddonsPane,
     AssetsPane,
-    Panel,
     SearchBox,
   };
 
   static template = xml`
     <section>
-      <Panel title="'Workspaces'">
-        <t t-set-slot="top-right">
-          <span class="meta" t-out="this.count"/>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button class="pbtn primary" t-on-click="() => this.create()">New workspace</button>
-          <button class="pbtn" title="fetch a remote branch and create a workspace on it" t-on-click="() => this.createFromRemoteBranch()">From remote branch</button>
-          <span class="dash-subtitle">A workspace bundles branches, a database and a server — in the main checkout or its own worktree.</span>
-        </t>
-      </Panel>
       <div class="content wt-content">
         <div class="wt-list">
-          <SearchBox value="this.query"/>
-          <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
-          <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
-                  t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)">
-            <span class="wt-dot" t-att-class="this.dotClass(ws)"/>
-            <span class="wt-item-main">
-              <span class="wt-item-name" t-out="ws.name"/>
-              <span class="wt-item-sub"><t t-out="this.branchOf(ws)"/> · <t t-out="ws.db"/></span>
-            </span>
-            <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
-            <span t-if="this.portOf(ws)" class="wt-item-port" t-out="':' + this.portOf(ws)"/>
-          </button>
+          <div class="wt-list-head">
+            <SearchBox value="this.query"/>
+            <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
+            <button class="wt-new" title="fetch a remote branch and create a workspace on it" t-on-click="() => this.createFromRemoteBranch()"><t t-out="this.branchIcon"/></button>
+          </div>
+          <div class="wt-list-items">
+            <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
+            <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
+                    t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)">
+              <span class="wt-dot" t-att-class="this.dotClass(ws)"/>
+              <span class="wt-item-main">
+                <span class="wt-item-name" t-out="ws.name"/>
+                <span class="wt-item-sub"><t t-out="this.branchOf(ws)"/> · <t t-out="ws.db"/></span>
+              </span>
+              <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+              <span t-if="this.portOf(ws)" class="wt-item-port" t-out="':' + this.portOf(ws)"/>
+            </button>
+          </div>
         </div>
         <div class="wt-detail">
           <t t-if="this.sel">
@@ -419,6 +413,7 @@ export class WorkspacesScreen extends Component {
   store = plugin(StorePlugin);
   externalIcon = m(ICONS.external);
   codeIcon = m(ICONS.code);
+  branchIcon = m(ICONS.branches);
   icons = {
     code: m(ICONS.code),
     journal: m(ICONS.journal),
@@ -465,11 +460,6 @@ export class WorkspacesScreen extends Component {
     return all.filter((ws) =>
       `${ws.name} ${this.branchOf(ws)} ${ws.db || ""}`.toLowerCase().includes(q),
     );
-  }
-
-  get count() {
-    const n = (this.config.config.workspaces || []).length;
-    return `${n} workspace${n === 1 ? "" : "s"}`;
   }
 
   get sel() {

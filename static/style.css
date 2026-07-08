@@ -4082,7 +4082,78 @@ a.commit-detail-hash svg {
 .wt-list {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+/* the list column header: search + compact create buttons (no screen panel — the
+   list and detail fill the whole area, per the Workspaces design) */
+.wt-list-head {
+  display: flex;
+  align-items: center;
   gap: 6px;
+  flex: none;
+  padding-right: 4px;
+}
+.wt-list-head .search-box {
+  flex: 1;
+  min-width: 0;
+}
+.wt-list-head input[type="text"] {
+  width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  background: var(--l-card);
+  color: var(--l-text);
+  font-size: 12.5px;
+  min-width: 0;
+}
+.wt-list-head input::placeholder {
+  color: var(--l-text-faint);
+}
+.wt-list-head input:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
+.wt-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  background: var(--l-card);
+  color: var(--l-text);
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wt-new:hover {
+  border-color: var(--l-accent-line);
+}
+.wt-new.primary {
+  background: var(--l-accent);
+  border-color: var(--l-accent);
+  color: #fff;
+}
+.wt-new.primary:hover {
+  filter: brightness(1.1);
+}
+.wt-new svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.wt-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -4294,12 +4365,6 @@ a.commit-detail-hash svg {
 }
 
 /* ── Workspaces screen (extends the wt-* vocabulary) ── */
-.wt-list .search-box {
-  margin: 0 0 8px;
-}
-.wt-list .search-box input {
-  width: 100%;
-}
 .wt-tab svg {
   width: 14px;
   height: 14px;
