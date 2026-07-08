@@ -1326,7 +1326,7 @@ var StorePlugin = class extends Plugin {
   // otherwise the target's own worktree server (or null)
   serverFor(tgt) {
     const main = this.server("main");
-    if (main && main.target === tgt.id && (main.state === "running" || main.state === "starting")) {
+    if (main && main.workspace === tgt.id && (main.state === "running" || main.state === "starting")) {
       return main;
     }
     return this.server(tgt.id);
@@ -1373,7 +1373,7 @@ var StorePlugin = class extends Plugin {
       return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });
     const active = this.activeRun();
-    const run = active && active.target === tgt.id ? active : null;
+    const run = active && active.workspace === tgt.id ? active : null;
     return {
       target: tgt,
       checkouts,
@@ -2236,14 +2236,12 @@ var ServerPlugin = class extends Plugin {
   now = signal(Date.now());
   output = new LogBuffer();
   // the persistent server-log element
-  lineListeners = /* @__PURE__ */ new Set();
-  // tests/addons mirror lines from here
+  logListeners = /* @__PURE__ */ new Set();
+  // per-server log lines {server, line} — tests/addons/worktree buffers
   gooUpdateListeners = /* @__PURE__ */ new Set();
   // UpdatePlugin refreshes the navbar badge from here
   worktreeListeners = /* @__PURE__ */ new Set();
   // WorktreePlugin updates per-worktree state from here
-  worktreeLogListeners = /* @__PURE__ */ new Set();
-  // WorktreePlugin streams per-worktree logs from here
   claudeListeners = /* @__PURE__ */ new Set();
   // ClaudePlugin appends per-worktree chat items from here
   _startEid = null;
@@ -2260,9 +2258,11 @@ var ServerPlugin = class extends Plugin {
   status() {
     return this.store.server("main") || { state: "stopped" };
   }
-  onLine(cb) {
-    this.lineListeners.add(cb);
-    return () => this.lineListeners.delete(cb);
+  // subscribe to every server's log stream; cb receives {server, line}
+  // ("main" | a workspace id)
+  onLog(cb) {
+    this.logListeners.add(cb);
+    return () => this.logListeners.delete(cb);
   }
   onGooUpdate(cb) {
     this.gooUpdateListeners.add(cb);
@@ -2272,17 +2272,15 @@ var ServerPlugin = class extends Plugin {
     this.worktreeListeners.add(cb);
     return () => this.worktreeListeners.delete(cb);
   }
-  onWorktreeLog(cb) {
-    this.worktreeLogListeners.add(cb);
-    return () => this.worktreeLogListeners.delete(cb);
-  }
   onClaude(cb) {
     this.claudeListeners.add(cb);
     return () => this.claudeListeners.delete(cb);
   }
+  // a MAIN-server log line (local [goo] notes take this path too): the persistent
+  // Server-screen buffer + every log subscriber
   log(line) {
     this.output.append(line);
-    for (const cb of this.lineListeners) cb(line);
+    for (const cb of this.logListeners) cb({ server: "main", line });
   }
   _connect() {
     const es = new EventSource("/api/events");
@@ -2301,7 +2299,11 @@ var ServerPlugin = class extends Plugin {
       }
     });
     es.addEventListener("run", (e) => this.store.mergeRun(JSON.parse(e.data)));
-    es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
+    es.addEventListener("log", (e) => {
+      const d = JSON.parse(e.data);
+      if (d.server === "main") this.output.append(d.line);
+      for (const cb of this.logListeners) cb(d);
+    });
     es.addEventListener("config", (e) => {
       const d = JSON.parse(e.data);
       this.config.applyBroadcast(d);
@@ -2318,10 +2320,6 @@ var ServerPlugin = class extends Plugin {
     es.addEventListener("goo_update", (e) => {
       const d = JSON.parse(e.data);
       for (const cb of this.gooUpdateListeners) cb(d);
-    });
-    es.addEventListener("worktree_log", (e) => {
-      const d = JSON.parse(e.data);
-      for (const cb of this.worktreeLogListeners) cb(d);
     });
     es.addEventListener("claude", (e) => {
       const d = JSON.parse(e.data);
@@ -2368,7 +2366,7 @@ var ServerPlugin = class extends Plugin {
     if (!this._hasTarget(targetId)) return "";
     try {
       const res = await postJSON("/api/command", {
-        target: targetId,
+        workspace: targetId,
         overrides: this._overrides(otherArgs)
       });
       return res.cmd;
@@ -2452,7 +2450,7 @@ Start with the current branches anyway?`,
     this.setLastTarget(targetId);
     await this._run(
       "/api/start",
-      { target: targetId, overrides: this._overrides(otherArgs) },
+      { workspace: targetId, overrides: this._overrides(otherArgs) },
       "start"
     );
   }
@@ -2464,7 +2462,7 @@ Start with the current branches anyway?`,
     this.setLastTarget(targetId);
     await this._run(
       "/api/restart",
-      { target: targetId, overrides: this._overrides(otherArgs) },
+      { workspace: targetId, overrides: this._overrides(otherArgs) },
       "restart"
     );
   }
@@ -2474,7 +2472,7 @@ Start with the current branches anyway?`,
     const targetId = this.lastTarget();
     if (!this._hasTarget(targetId)) return;
     this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
-    await this._run("/api/start", { target: targetId, overrides: {} }, "resume");
+    await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
   async stop() {
     this.pending.set("stop");
@@ -2658,7 +2656,7 @@ var Workspace = class extends Model {
     }
     const cos = this.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }));
     const s = server.status();
-    const activeId = s.state === "running" || s.state === "starting" ? s.target : server.lastTarget();
+    const activeId = s.state === "running" || s.state === "starting" ? s.workspace : server.lastTarget();
     if (this.id === activeId) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
@@ -3345,7 +3343,9 @@ var WorktreePlugin = class extends Plugin {
   // targetId -> pending "starting worktree server" timed-event id
   setup() {
     this.server.onWorktree((d) => this.applyStatus(d));
-    this.server.onWorktreeLog(({ target, line }) => this.logBuffer(target).append(line));
+    this.server.onLog(({ server, line }) => {
+      if (server !== "main") this.logBuffer(server).append(line);
+    });
     this.load();
   }
   // ── which targets are worktrees ──────────────────────────────────────────────
@@ -3435,13 +3435,13 @@ var WorktreePlugin = class extends Plugin {
       delete this._startEids[d.id];
     }
   }
-  // hydrate existence + current server state for every worktree target
+  // hydrate existence + current server state for every worktree workspace
   async load() {
-    const targets = this.worktreeTargets().map((t2) => ({ id: t2.id, dirPath: this.dirPath(t2) }));
-    if (!targets.length) return;
+    const workspaces = this.worktreeTargets().map((t2) => ({ id: t2.id, dirPath: this.dirPath(t2) }));
+    if (!workspaces.length) return;
     try {
-      const res = await postJSON("/api/workspace/list", { targets });
-      for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
+      const res = await postJSON("/api/workspace/list", { workspaces });
+      for (const snap of Object.values(res.servers || {})) this.store.mergeServer(snap);
     } catch {
     }
   }
@@ -3456,7 +3456,7 @@ var WorktreePlugin = class extends Plugin {
     const buf = this.logBuffer(id);
     if (buf.count()) return;
     try {
-      const res = await postJSON("/api/workspace/logs", { target: id });
+      const res = await postJSON("/api/workspace/logs", { workspace: id });
       buf.clear();
       for (const line of res.lines || []) buf.append(line);
     } catch {
@@ -3520,11 +3520,11 @@ var WorktreePlugin = class extends Plugin {
       if (cloneSource) {
         await postJSON("/api/databases/clone", {
           source: cloneSource,
-          target: dbName,
+          dest: dbName,
           filestore: this.config.config.filestore
         });
       }
-      const res = await postJSON("/api/workspace/create", { target: id, repos });
+      const res = await postJSON("/api/workspace/create", { workspace: id, repos });
       if (!res.ok) {
         this.eventLog.finish(eid, "error");
         const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
@@ -3551,7 +3551,7 @@ var WorktreePlugin = class extends Plugin {
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/workspace/start", { target: tgt.id });
+      const res = await postJSON("/api/workspace/start", { workspace: tgt.id });
       this._merge(tgt.id, { port: res.port });
     } catch (e) {
       delete this._startEids[tgt.id];
@@ -3564,7 +3564,7 @@ var WorktreePlugin = class extends Plugin {
     this.eventLog.add(`stopping worktree server (${tgt.name})`);
     this._merge(tgt.id, { state: "stopping" });
     try {
-      await postJSON("/api/workspace/stop", { target: tgt.id });
+      await postJSON("/api/workspace/stop", { workspace: tgt.id });
     } catch {
     }
   }
@@ -3593,7 +3593,7 @@ var WorktreePlugin = class extends Plugin {
     this.eventLog.add(`removing worktree ${tgt.name}`);
     try {
       await postJSON("/api/workspace/remove", {
-        target: tgt.id,
+        workspace: tgt.id,
         dirPath: this.dirPath(tgt),
         repos
       });
@@ -5814,7 +5814,7 @@ var DatabasePlugin = class extends Plugin {
     try {
       await postJSON("/api/databases/clone", {
         source: name,
-        target,
+        dest: target,
         filestore: this._filestore()
       });
       await this.load(true);
@@ -7105,7 +7105,6 @@ var HISTORY_MAX = 10;
 function slotFor(ws) {
   return ws && ws.location === "worktree" ? ws.id : "main";
 }
-var WT_ECHO_RE = /\[goo\] (starting|stopping|error stopping) worktree/;
 var TestsPlugin = class extends Plugin {
   static sequence = 3;
   config = plugin(ConfigPlugin);
@@ -7180,15 +7179,12 @@ var TestsPlugin = class extends Plugin {
       );
       for (const s of slots) this._onRun(s, this.currentRun(s));
     });
-    this.server.onLine((line) => this._capture("main", line));
-    this.server.onWorktreeLog(({ target, line }) => this._capture(target, line));
+    this.server.onLog(({ server, line }) => this._capture(server, line));
   }
   _capture(slotId, line) {
     if (!this.runActive(slotId)) return;
-    if (slotId === "main" && WT_ECHO_RE.test(line)) return;
     const s = this.slot(slotId);
-    if (!s.capturing && slotId === "main" && line.includes("[goo] starting odoo:"))
-      s.capturing = true;
+    if (!s.capturing && line.includes("[goo] starting odoo:")) s.capturing = true;
     if (!s.capturing) return;
     const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
     const anchor = failed && slotId === "main" ? `test-fail-${++this._failSeq}` : "";
@@ -7212,8 +7208,6 @@ var TestsPlugin = class extends Plugin {
       if (s.announced !== run.id) {
         s.announced = run.id;
         this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? s.tags})`);
-        if (slotId !== "main" && !s.capturing)
-          s.output.append(`[goo] running tests (tags: ${run.spec?.tags ?? s.tags})`);
         s.capturing = true;
       }
       s.status.set("running\u2026");
@@ -7263,8 +7257,8 @@ var TestsPlugin = class extends Plugin {
     s.status.set("starting\u2026");
     try {
       await postJSON("/api/tests/run", {
-        target: targetId,
-        workspace: slotId,
+        workspace: targetId,
+        slot: slotId,
         overrides: { test_tags: s.tags }
       });
     } catch (e) {
@@ -7344,7 +7338,7 @@ var EventLog = class extends Component {
   // become laid out before revealing it.
   jump(anchor) {
     const s = this.server.status();
-    const loaded = s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    const loaded = s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
     if (loaded) this.worktree.select(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");
@@ -9229,8 +9223,8 @@ var ClaudePlugin = class extends Plugin {
   // a live chat item pushed from the backend (assistant text, tool activity, result,
   // or error). The final "result" ends the turn — flip back to idle.
   apply(d) {
-    if (!d || !d.target) return;
-    const id = d.target;
+    if (!d || !d.workspace) return;
+    const id = d.workspace;
     if (d.role === "result") {
       const c = this._get(id);
       if (!d.ok && d.error) this._set(id, { ...c, items: [...c.items, d], state: "idle" });
@@ -9246,7 +9240,7 @@ var ClaudePlugin = class extends Plugin {
     this._primed.add(id);
     if (this._get(id).items.length) return;
     try {
-      const res = await postJSON("/api/workspace/claude/history", { target: id });
+      const res = await postJSON("/api/workspace/claude/history", { workspace: id });
       this._set(id, { items: res.items || [], state: res.state || "idle" });
     } catch {
     }
@@ -9290,7 +9284,7 @@ var ClaudePlugin = class extends Plugin {
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
       await postJSON("/api/workspace/claude", {
-        target: tgt.id,
+        workspace: tgt.id,
         prompt: text,
         cwd: dirs.cwd,
         addDirs: dirs.addDirs,
@@ -9303,7 +9297,7 @@ var ClaudePlugin = class extends Plugin {
   }
   async stop(tgt) {
     try {
-      await postJSON("/api/workspace/claude/stop", { target: tgt.id });
+      await postJSON("/api/workspace/claude/stop", { workspace: tgt.id });
     } catch {
     }
     this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
@@ -9369,11 +9363,9 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
       );
       for (const s of slots) this._onRun(s, this.currentRun(s));
     });
-    this.server.onLine((line) => {
-      if (this.runActive("main") && !WT_ECHO_RE.test(line)) this.slot("main").output.append(line);
-    });
-    this.server.onWorktreeLog(({ target, line }) => {
-      if (this._slots.has(target) && this.runActive(target)) this.slot(target).output.append(line);
+    this.server.onLog(({ server, line }) => {
+      if (server === "main" ? this.runActive("main") : this._slots.has(server) && this.runActive(server))
+        this.slot(server).output.append(line);
     });
   }
   // the current/last install-or-upgrade run on a slot
@@ -9481,8 +9473,8 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
     this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
     try {
       await postJSON("/api/addons/run", {
-        target: target.id,
-        workspace: slotId,
+        workspace: target.id,
+        slot: slotId,
         overrides: { [op]: name }
       });
     } catch (e) {
@@ -10438,7 +10430,7 @@ var WorkspacesScreen = class extends Component {
   // last activated one (a browser-side fact — see targets_screen isActive)
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
   }
   isLoaded(ws) {
     return !this.isWt(ws) && ws.id === this.activeId;
@@ -10723,7 +10715,7 @@ var Topbar = class extends Component {
   // the active target id: the running one while up, else the last-used one
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
   }
   // the loaded workspace's display name (dimmed when the server is stopped)
   get target() {

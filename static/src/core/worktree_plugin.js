@@ -5,7 +5,7 @@
 // with the main server (and other worktrees), on its own stable port. Per-workspace
 // state — { exists, state, port } — lives in the shared servers map, updated live
 // from the backend's "server" SSE events (relayed by ServerPlugin), and each
-// worktree's server log streams into its own LogBuffer ("worktree_log").
+// worktree server log streams into its own LogBuffer (the unified "log" SSE).
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
@@ -36,7 +36,11 @@ export class WorktreePlugin extends Plugin {
 
   setup() {
     this.server.onWorktree((d) => this.applyStatus(d));
-    this.server.onWorktreeLog(({ target, line }) => this.logBuffer(target).append(line));
+    // every non-main server's log lines land in its own buffer (main's live in
+    // ServerPlugin.output)
+    this.server.onLog(({ server, line }) => {
+      if (server !== "main") this.logBuffer(server).append(line);
+    });
     this.load();
   }
 
@@ -147,13 +151,13 @@ export class WorktreePlugin extends Plugin {
     }
   }
 
-  // hydrate existence + current server state for every worktree target
+  // hydrate existence + current server state for every worktree workspace
   async load() {
-    const targets = this.worktreeTargets().map((t) => ({ id: t.id, dirPath: this.dirPath(t) }));
-    if (!targets.length) return;
+    const workspaces = this.worktreeTargets().map((t) => ({ id: t.id, dirPath: this.dirPath(t) }));
+    if (!workspaces.length) return;
     try {
-      const res = await postJSON("/api/workspace/list", { targets });
-      for (const snap of Object.values(res.worktrees || {})) this.store.mergeServer(snap);
+      const res = await postJSON("/api/workspace/list", { workspaces });
+      for (const snap of Object.values(res.servers || {})) this.store.mergeServer(snap);
     } catch {
       /* leave current state */
     }
@@ -171,7 +175,7 @@ export class WorktreePlugin extends Plugin {
     const buf = this.logBuffer(id);
     if (buf.count()) return;
     try {
-      const res = await postJSON("/api/workspace/logs", { target: id });
+      const res = await postJSON("/api/workspace/logs", { workspace: id });
       buf.clear();
       for (const line of res.lines || []) buf.append(line);
     } catch {
@@ -248,11 +252,11 @@ export class WorktreePlugin extends Plugin {
       if (cloneSource) {
         await postJSON("/api/databases/clone", {
           source: cloneSource,
-          target: dbName,
+          dest: dbName,
           filestore: this.config.config.filestore,
         });
       }
-      const res = await postJSON("/api/workspace/create", { target: id, repos });
+      const res = await postJSON("/api/workspace/create", { workspace: id, repos });
       if (!res.ok) {
         this.eventLog.finish(eid, "error");
         const msg = (res.results || [])
@@ -285,7 +289,7 @@ export class WorktreePlugin extends Plugin {
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/workspace/start", { target: tgt.id });
+      const res = await postJSON("/api/workspace/start", { workspace: tgt.id });
       // merge only the port: a fast server's SSE "running" snapshot can beat this
       // reply, and re-merging "starting" here would clobber it
       this._merge(tgt.id, { port: res.port });
@@ -305,7 +309,7 @@ export class WorktreePlugin extends Plugin {
     // fresher starting/running SSE snapshots that arrived during the request
     this._merge(tgt.id, { state: "stopping" });
     try {
-      await postJSON("/api/workspace/stop", { target: tgt.id });
+      await postJSON("/api/workspace/stop", { workspace: tgt.id });
     } catch {
       /* the SSE status will reconcile */
     }
@@ -337,7 +341,7 @@ export class WorktreePlugin extends Plugin {
     this.eventLog.add(`removing worktree ${tgt.name}`);
     try {
       await postJSON("/api/workspace/remove", {
-        target: tgt.id,
+        workspace: tgt.id,
         dirPath: this.dirPath(tgt),
         repos,
       });

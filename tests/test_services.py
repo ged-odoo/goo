@@ -1296,82 +1296,9 @@ class ConfigStoreTest(unittest.TestCase):
         self.assertNotIn("conflict", res)
 
 
-class BuildStartConfigTest(unittest.TestCase):
-    CFG = {
-        "venv_activate": "src activate",
-        "worktree_dir": "/wt",
-        "repos": [
-            {"id": "community", "path": "/c", "github": "odoo/odoo"},
-            {"id": "enterprise", "path": "/e", "github": "odoo/enterprise"},
-        ],
-        "targets": [
-            {
-                "id": "t1",
-                "db": "db1",
-                "on_create_args": "-i sale",
-                "checkouts": [
-                    {"repo": "community", "branch": "master"},
-                    {"repo": "enterprise", "branch": "master"},
-                ],
-            },
-            {
-                "id": "wt1",
-                "db": "wtdb",
-                "kind": "worktree",
-                "worktree": {"base": "t1", "dir": "/wt/feature-x"},
-                "checkouts": [{"repo": "community", "branch": "feat"}],
-            },
-            {
-                "id": "t2",
-                "db": "db2",
-                "demo_data": False,
-                "checkouts": [{"repo": "community", "branch": "master"}],
-            },
-        ],
-        "start": {"other_args": "--dev all"},
-    }
-
-    def test_maps_target_to_start_block(self):
-        cfg = services.build_start_config(self.CFG, "t1")
-        self.assertEqual(cfg["target"], "t1")
-        self.assertEqual(cfg["start"]["repos"], ["community", "enterprise"])
-        self.assertEqual(cfg["start"]["db"], "db1")
-        self.assertEqual(cfg["start"]["on_create_args"], "-i sale")
-        self.assertEqual(cfg["start"]["other_args"], "--dev all")  # from config.start
-        self.assertTrue(cfg["start"]["demo_data"])  # defaults on when unset
-        self.assertEqual(cfg["venv_activate"], "src activate")  # scalars spread through
-        self.assertEqual(cfg["repos"], self.CFG["repos"])  # plain: real repo paths untouched
-
-    def test_demo_data_false_propagates(self):
-        cfg = services.build_start_config(self.CFG, "t2")
-        self.assertFalse(cfg["start"]["demo_data"])
-
-    def test_overrides(self):
-        cfg = services.build_start_config(
-            self.CFG, "t1", {"other_args": "-u web", "test_tags": ":Foo"}
-        )
-        self.assertEqual(cfg["start"]["other_args"], "-u web")
-        self.assertEqual(cfg["start"]["test_tags"], ":Foo")
-
-    def test_worktree_target_rewrites_paths(self):
-        cfg = services.build_start_config(self.CFG, "wt1", {"test_tags": ":Bar"})
-        # repos point at the worktree's on-disk copies under its persisted dir
-        self.assertEqual(
-            cfg["repos"],
-            [{"id": "community", "path": "/wt/feature-x/community", "github": "odoo/odoo"}],
-        )
-        self.assertEqual(cfg["server_path"], "/wt/feature-x/community/odoo-bin")
-        self.assertEqual(cfg["start"]["db"], "wtdb")
-        self.assertEqual(cfg["start"]["repos"], ["community"])
-        self.assertEqual(cfg["start"]["test_tags"], ":Bar")
-
-    def test_unknown_target_is_none(self):
-        self.assertIsNone(services.build_start_config(self.CFG, "nope"))
-
-
 class WorkspaceResolutionTest(unittest.TestCase):
-    """build_start_config resolves the canonical `workspaces` list (targets fallback)
-    and forwards a worktree workspace's stable port."""
+    """build_start_config resolves the canonical `workspaces` list and forwards a
+    worktree workspace's stable port."""
 
     CFG = {
         "worktree_dir": "/wt",
@@ -1404,25 +1331,17 @@ class WorkspaceResolutionTest(unittest.TestCase):
                 "worktree": {"base": "w1", "dir": "/wt/feature-y"},
                 "checkouts": [{"repo": "community", "branch": "feat-y"}],
             },
-            # same id in both lists: the workspaces entry must win
             {
-                "id": "dup",
-                "name": "dup",
-                "db": "from-workspace",
+                "id": "w2",
+                "name": "w2",
+                "db": "wdb2",
                 "location": "main",
-                "checkouts": [{"repo": "community", "branch": "master"}],
-            },
-        ],
-        "targets": [
-            {
-                "id": "legacy",
-                "db": "legacydb",
-                "checkouts": [{"repo": "community", "branch": "17.0"}],
-            },
-            {
-                "id": "dup",
-                "db": "from-target",
-                "checkouts": [{"repo": "community", "branch": "master"}],
+                "demo_data": False,
+                "on_create_args": "-i sale",
+                "checkouts": [
+                    {"repo": "community", "branch": "master"},
+                    {"repo": "enterprise", "branch": "master"},
+                ],
             },
         ],
         "start": {"other_args": "--dev all"},
@@ -1430,10 +1349,27 @@ class WorkspaceResolutionTest(unittest.TestCase):
 
     def test_plain_workspace_resolves(self):
         cfg = services.build_start_config(self.CFG, "w1")
-        self.assertEqual(cfg["target"], "w1")
+        self.assertEqual(cfg["workspace"], "w1")
         self.assertEqual(cfg["start"]["db"], "wdb1")
         self.assertEqual(cfg["repos"], self.CFG["repos"])  # main-located: paths untouched
         self.assertNotIn("worktree_port", cfg)
+
+    def test_maps_workspace_to_start_block(self):
+        cfg = services.build_start_config(self.CFG, "w2")
+        self.assertEqual(cfg["start"]["repos"], ["community", "enterprise"])
+        self.assertEqual(cfg["start"]["on_create_args"], "-i sale")
+        self.assertEqual(cfg["start"]["other_args"], "--dev all")  # from config.start
+        self.assertFalse(cfg["start"]["demo_data"])
+
+    def test_overrides(self):
+        cfg = services.build_start_config(
+            self.CFG, "w1", {"other_args": "-u web", "test_tags": "web"}
+        )
+        self.assertEqual(cfg["start"]["other_args"], "-u web")
+        self.assertEqual(cfg["start"]["test_tags"], "web")
+
+    def test_unknown_workspace_is_none(self):
+        self.assertIsNone(services.build_start_config(self.CFG, "nope"))
 
     def test_worktree_workspace_rewrites_paths_and_forwards_port(self):
         cfg = services.build_start_config(self.CFG, "ww1")
@@ -1448,14 +1384,6 @@ class WorkspaceResolutionTest(unittest.TestCase):
         cfg = services.build_start_config(self.CFG, "ww2")
         self.assertEqual(cfg["server_path"], "/wt/feature-y/community/odoo-bin")
         self.assertNotIn("worktree_port", cfg)
-
-    def test_legacy_targets_fallback(self):
-        cfg = services.build_start_config(self.CFG, "legacy")
-        self.assertEqual(cfg["start"]["db"], "legacydb")
-
-    def test_workspaces_win_over_targets(self):
-        cfg = services.build_start_config(self.CFG, "dup")
-        self.assertEqual(cfg["start"]["db"], "from-workspace")
 
     def test_shell_cmd_uses_worktree_checkout(self):
         # /api/assets/generate with a workspace: the shell command must run the
@@ -1508,7 +1436,7 @@ class ServerSnapshotTest(unittest.TestCase):
         "id",
         "state",
         "terminal",
-        "target",
+        "workspace",
         "db",
         "port",
         "mode",
@@ -1538,9 +1466,9 @@ class ServerSnapshotTest(unittest.TestCase):
     def test_worktree_shape(self):
         # every live entry has its own PTY since the manager unification → terminal True
         snap = asdict(
-            ServerSnapshot(id="wt-x", state="running", terminal=True, target="wt-x", port=8072)
+            ServerSnapshot(id="wt-x", state="running", terminal=True, workspace="wt-x", port=8072)
         )
-        self.assertEqual((snap["id"], snap["target"], snap["port"]), ("wt-x", "wt-x", 8072))
+        self.assertEqual((snap["id"], snap["workspace"], snap["port"]), ("wt-x", "wt-x", 8072))
         self.assertTrue(snap["terminal"])
 
     def test_run_snapshot_server_key(self):
@@ -1558,7 +1486,7 @@ class _FakeBus:
     def __init__(self):
         self.runs = []
         self.servers = []
-        self.worktree_logs = []
+        self.logs = []  # (server, line)
         self.events = []
 
     def publish_run(self, snap):
@@ -1567,11 +1495,8 @@ class _FakeBus:
     def publish_server(self, snap):
         self.servers.append(snap)
 
-    def publish_log(self, line):
-        pass
-
-    def publish_worktree_log(self, target, line):
-        self.worktree_logs.append((target, line))
+    def publish_log(self, line, server="main"):
+        self.logs.append((server, line))
 
     def publish_event(self, text, level="", **kw):
         self.events.append((text, level))
@@ -1604,10 +1529,10 @@ class WorkspaceManagerRunTest(unittest.TestCase):
             mgr,
             "main",
             {"id": "run-1", "kind": "test", "state": "running", "returncode": None},
-            resume={"target": "t1"},
+            resume={"workspace": "t1"},
         )
         resume = mgr.finish_run("main", 0)
-        self.assertEqual(resume, {"target": "t1"})  # a server was interrupted → resume it
+        self.assertEqual(resume, {"workspace": "t1"})  # a server was interrupted → resume it
         self.assertEqual(entry.run["state"], "done")
         self.assertTrue(entry.run["ok"])
         self.assertEqual(entry.run["returncode"], 0)
@@ -1651,22 +1576,22 @@ class WorkspaceManagerRunTest(unittest.TestCase):
             mgr,
             "main",
             {"id": "run-1", "kind": "test", "state": "running", "server": "main"},
-            resume={"target": "t1"},
+            resume={"workspace": "t1"},
         )
         wt = self._seed(
             mgr,
             "wt-x",
             {"id": "run-2", "kind": "test", "state": "running", "server": "wt-x"},
-            resume={"target": "wt-x"},
+            resume={"workspace": "wt-x"},
         )
         # finishing the worktree run leaves main's untouched, and vice versa
         resume = mgr.finish_run("wt-x", 0)
-        self.assertEqual(resume, {"target": "wt-x"})
+        self.assertEqual(resume, {"workspace": "wt-x"})
         self.assertEqual(wt.run["state"], "done")
         self.assertEqual(main.run["state"], "running")
         self.assertEqual(mgr.bus.runs[-1]["server"], "wt-x")
         resume = mgr.finish_run("main", 1)
-        self.assertEqual(resume, {"target": "t1"})
+        self.assertEqual(resume, {"workspace": "t1"})
         self.assertEqual(main.run["state"], "failed")
         self.assertEqual(mgr.bus.runs[-1]["server"], "main")
 
@@ -1710,7 +1635,7 @@ class WorkspaceManagerRunTest(unittest.TestCase):
             mgr,
             "wt-x",
             {"id": "run-9", "kind": "test", "state": "running", "server": "wt-x"},
-            resume={"target": "wt-x"},
+            resume={"workspace": "wt-x"},
         )
         with (
             unittest.mock.patch.object(mgr, "stop", return_value=(True, "stopped")) as stop,
@@ -1719,7 +1644,7 @@ class WorkspaceManagerRunTest(unittest.TestCase):
             ok, detail = mgr.stop_and_finalize("wt-x")
         self.assertTrue(ok)
         stop.assert_called_once_with("wt-x")
-        start.assert_called_once_with("wt-x", {"target": "wt-x"})
+        start.assert_called_once_with("wt-x", {"workspace": "wt-x"})
         run = mgr.entries["wt-x"].run
         self.assertEqual(run["state"], "failed")
         self.assertIsNone(run["returncode"])
@@ -1774,7 +1699,7 @@ class DbConflictTest(unittest.TestCase):
     def test_refuses_db_held_by_peer_worktree(self):
         mgr, seed = self._manager()
         seed("wt-a", "running", "shared")
-        self.assertIn("another worktree server", mgr._db_conflict("wt-b", "shared"))
+        self.assertIn("another workspace's server", mgr._db_conflict("wt-b", "shared"))
 
     def test_main_refused_when_worktree_holds_db(self):
         mgr, seed = self._manager()

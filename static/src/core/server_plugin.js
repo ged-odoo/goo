@@ -23,10 +23,9 @@ export class ServerPlugin extends Plugin {
   pending = signal("");
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
-  lineListeners = new Set(); // tests/addons mirror lines from here
+  logListeners = new Set(); // per-server log lines {server, line} — tests/addons/worktree buffers
   gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
   worktreeListeners = new Set(); // WorktreePlugin updates per-worktree state from here
-  worktreeLogListeners = new Set(); // WorktreePlugin streams per-worktree logs from here
   claudeListeners = new Set(); // ClaudePlugin appends per-worktree chat items from here
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
   // the active target (last started or activated), server-persisted + reactive. The
@@ -44,9 +43,11 @@ export class ServerPlugin extends Plugin {
     return this.store.server("main") || { state: "stopped" };
   }
 
-  onLine(cb) {
-    this.lineListeners.add(cb);
-    return () => this.lineListeners.delete(cb);
+  // subscribe to every server's log stream; cb receives {server, line}
+  // ("main" | a workspace id)
+  onLog(cb) {
+    this.logListeners.add(cb);
+    return () => this.logListeners.delete(cb);
   }
 
   onGooUpdate(cb) {
@@ -59,19 +60,16 @@ export class ServerPlugin extends Plugin {
     return () => this.worktreeListeners.delete(cb);
   }
 
-  onWorktreeLog(cb) {
-    this.worktreeLogListeners.add(cb);
-    return () => this.worktreeLogListeners.delete(cb);
-  }
-
   onClaude(cb) {
     this.claudeListeners.add(cb);
     return () => this.claudeListeners.delete(cb);
   }
 
+  // a MAIN-server log line (local [goo] notes take this path too): the persistent
+  // Server-screen buffer + every log subscriber
   log(line) {
     this.output.append(line);
-    for (const cb of this.lineListeners) cb(line);
+    for (const cb of this.logListeners) cb({ server: "main", line });
   }
 
   _connect() {
@@ -97,7 +95,13 @@ export class ServerPlugin extends Plugin {
     // one-shot run state (test/install/upgrade), backend-minted → the shared runs map
     // (Tests/Addons watch it; the backend owns resume-after, so no client flag)
     es.addEventListener("run", (e) => this.store.mergeRun(JSON.parse(e.data)));
-    es.addEventListener("log", (e) => this.log(JSON.parse(e.data).line));
+    // the unified per-server log stream {server, line}: main lines feed the
+    // Server screen's buffer; every subscriber routes by `server`
+    es.addEventListener("log", (e) => {
+      const d = JSON.parse(e.data);
+      if (d.server === "main") this.output.append(d.line);
+      for (const cb of this.logListeners) cb(d);
+    });
     // config/state written by another tab → keep this tab's ConfigPlugin in lockstep
     es.addEventListener("config", (e) => {
       const d = JSON.parse(e.data);
@@ -121,11 +125,6 @@ export class ServerPlugin extends Plugin {
     es.addEventListener("goo_update", (e) => {
       const d = JSON.parse(e.data);
       for (const cb of this.gooUpdateListeners) cb(d);
-    });
-    // per-worktree server log lines → WorktreePlugin's per-target LogBuffer
-    es.addEventListener("worktree_log", (e) => {
-      const d = JSON.parse(e.data);
-      for (const cb of this.worktreeLogListeners) cb(d);
     });
     // per-worktree Claude chat items (assistant text / tool activity / result) → ClaudePlugin
     es.addEventListener("claude", (e) => {
@@ -182,7 +181,7 @@ export class ServerPlugin extends Plugin {
     if (!this._hasTarget(targetId)) return "";
     try {
       const res = await postJSON("/api/command", {
-        target: targetId,
+        workspace: targetId,
         overrides: this._overrides(otherArgs),
       });
       return res.cmd;
@@ -286,7 +285,7 @@ export class ServerPlugin extends Plugin {
     this.setLastTarget(targetId);
     await this._run(
       "/api/start",
-      { target: targetId, overrides: this._overrides(otherArgs) },
+      { workspace: targetId, overrides: this._overrides(otherArgs) },
       "start",
     );
   }
@@ -299,7 +298,7 @@ export class ServerPlugin extends Plugin {
     this.setLastTarget(targetId);
     await this._run(
       "/api/restart",
-      { target: targetId, overrides: this._overrides(otherArgs) },
+      { workspace: targetId, overrides: this._overrides(otherArgs) },
       "restart",
     );
   }
@@ -310,7 +309,7 @@ export class ServerPlugin extends Plugin {
     const targetId = this.lastTarget();
     if (!this._hasTarget(targetId)) return;
     this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
-    await this._run("/api/start", { target: targetId, overrides: {} }, "resume");
+    await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
 
   async stop() {

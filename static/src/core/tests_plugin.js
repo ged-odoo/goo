@@ -20,10 +20,6 @@ export function slotFor(ws) {
   return ws && ws.location === "worktree" ? ws.id : "main";
 }
 
-// goo's worktree orchestration echoes in the MAIN log (another workspace's server
-// starting/stopping) — kept out of the main-slot test/addons consoles
-export const WT_ECHO_RE = /\[goo\] (starting|stopping|error stopping) worktree/;
-
 export class TestsPlugin extends Plugin {
   static sequence = 3;
 
@@ -101,23 +97,18 @@ export class TestsPlugin extends Plugin {
       );
       for (const s of slots) this._onRun(s, this.currentRun(s));
     });
-    // both output streams feed the same capture pipeline: the main server's log
-    // lines, and each worktree server's own stream (keyed by workspace id). For a
-    // worktree slot this mirrors lines already going to its Server-logs buffer —
-    // intentionally, like the main test console mirrors the main server log.
-    this.server.onLine((line) => this._capture("main", line));
-    this.server.onWorktreeLog(({ target, line }) => this._capture(target, line));
+    // the unified log stream feeds the capture pipeline, keyed by server slot.
+    // For a worktree slot this mirrors lines already going to its Server-logs
+    // buffer — intentionally, like the main test console mirrors the main log.
+    this.server.onLog(({ server, line }) => this._capture(server, line));
   }
 
   _capture(slotId, line) {
     if (!this.runActive(slotId)) return;
-    if (slotId === "main" && WT_ECHO_RE.test(line)) return; // another workspace's echo
     const s = this.slot(slotId);
-    // open the console window at the launch command line (main only — a worktree
-    // run's launch line goes to the main log; its capture opens in _onRun when the
-    // run event lands, which precedes the worktree server's first output)
-    if (!s.capturing && slotId === "main" && line.includes("[goo] starting odoo:"))
-      s.capturing = true;
+    // open the console window at the launch command line — every server's own
+    // stream now carries its launch echo (the _onRun opener stays as a fallback)
+    if (!s.capturing && line.includes("[goo] starting odoo:")) s.capturing = true;
     if (!s.capturing) return;
     // a failing HOOT test gets a DOM anchor on its row so the event log entry can
     // scroll the console straight to it (main slot only — the [jump] link opens
@@ -148,13 +139,9 @@ export class TestsPlugin extends Plugin {
       s.pending.set(false); // the real run is in — drop the optimistic override
       if (s.announced !== run.id) {
         s.announced = run.id;
-        // main: mirroring usually began at the launch-command line (see _capture);
-        // this is the fallback announce. Worktree slots START capturing here — and
-        // get the announce line in their console, compensating for the launch echo
-        // that only the main log carries.
+        // mirroring usually began at the launch-command line (see _capture);
+        // this is the fallback announce + capture opener
         this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? s.tags})`);
-        if (slotId !== "main" && !s.capturing)
-          s.output.append(`[goo] running tests (tags: ${run.spec?.tags ?? s.tags})`);
         s.capturing = true;
       }
       s.status.set("running…");
@@ -219,8 +206,8 @@ export class TestsPlugin extends Plugin {
       // the server resolves the launch config from the target + overrides, and
       // runs it on the given workspace slot
       await postJSON("/api/tests/run", {
-        target: targetId,
-        workspace: slotId,
+        workspace: targetId,
+        slot: slotId,
         overrides: { test_tags: s.tags },
       });
     } catch (e) {

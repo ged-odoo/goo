@@ -94,23 +94,23 @@ class LaunchSpec:
 
 # ─────────────────────────── Runtime snapshots ───────────────────────────────
 # Live-process state the backend owns and mirrors to the browser over SSE. Step 5
-# unifies the main odoo (OdooManager) and each worktree odoo (WorktreeManager) —
-# the same thing, a server bound to a db + port — into one shape keyed by id
-# ("main" | target id), published on a single "server" event.
+# unifies the main odoo and each workspace's own odoo — the same thing, a server
+# bound to a db + port — into one shape keyed by id ("main" | workspace id),
+# published on a single "server" event.
 
 
 @dataclass
 class ServerSnapshot:
     """One odoo server, whether the main process (`id="main"`, `terminal=True`) or a
-    worktree server (`id=target`). Keyed by `id`. Every field is always present so a
+    workspace server (`id=workspace`). Keyed by `id`. Every field is always present so a
     client-side spread-merge behaves as a full replace for the complete "main"
     snapshot while still preserving a worktree's client-only `exists` across the
     partial updates the SSE stream carries."""
 
-    id: str  # "main" | target id — the map key
+    id: str  # "main" | workspace id — the map key
     state: str  # stopped | starting | running | stopping (| disconnected, client-only)
     terminal: bool = False  # only "main" has the PTY/xterm channel
-    target: str | None = None  # the target this server runs
+    workspace: str | None = None  # the workspace this server runs (== id for non-main)
     db: str | None = None
     port: int | None = None  # 8069 for main (implicit), an assigned free port for worktrees
     mode: str | None = None  # server | test | install | upgrade (main only; → Run in Step 6)
@@ -139,7 +139,7 @@ class RunSnapshot:
     kind: str  # test | install | upgrade
     state: str  # running | done | failed
     server: str = "main"  # the slot it occupies
-    target: str | None = None
+    workspace: str | None = None  # the workspace whose config the run resolved from
     db: str | None = None
     spec: dict = field(default_factory=dict)  # {"tags": …} | {"module": …}
     returncode: int | None = None

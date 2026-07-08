@@ -82,7 +82,7 @@ export class DatabasePlugin extends Plugin {
     try {
       await postJSON("/api/databases/clone", {
         source: name,
-        target,
+        dest: target,
         filestore: this._filestore(),
       });
       await this.load(true); // server cache was invalidated; pull the fresh list

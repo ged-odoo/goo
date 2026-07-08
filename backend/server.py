@@ -64,12 +64,17 @@ class EventBus:
         self._buffer = collections.deque(maxlen=maxlen)
         self._subscribers = []
 
-    def publish_log(self, line):
+    def publish_log(self, line, server="main"):
+        """Stream one server's log line to the browser (SSE 'log', {server, line}).
+        Only the MAIN server's lines feed the shared backlog ring buffer (replayed on
+        SSE connect); other servers keep per-entry scrollback in WorkspaceManager,
+        primed on selection via /api/workspace/logs."""
         with self._lock:
-            self._buffer.append(line)
+            if server == "main":
+                self._buffer.append(line)
             subscribers = list(self._subscribers)
         for q in subscribers:
-            q.put(("log", {"line": line}))
+            q.put(("log", {"server": server, "line": line}))
 
     def publish_server(self, snapshot):
         """Push one server snapshot to the browser (SSE 'server'), keyed by
@@ -128,19 +133,9 @@ class EventBus:
         for q in subscribers:
             q.put(("run", snapshot))
 
-    def publish_worktree_log(self, target, line):
-        """Stream one worktree server's log line to the browser (SSE 'worktree_log',
-        {target, line}). Unlike publish_log this does NOT touch the shared backlog
-        ring buffer — worktree scrollback is kept per-server in WorktreeManager and
-        primed on selection via /api/workspace/logs."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("worktree_log", {"target": target, "line": line}))
-
     def publish_claude(self, payload):
         """Stream one Claude chat item for a worktree to the browser (SSE 'claude').
-        payload is {target, role, ...}: role 'assistant'/'tool'/'result'/'error' as a
+        payload is {workspace, role, ...}: role 'assistant'/'tool'/'result'/'error' as a
         headless `claude -p` run produces text, tool activity and its final result.
         Per-target history lives in ClaudeManager and is primed via /api/workspace/
         claude/history — this only pushes the live increments."""
@@ -701,7 +696,7 @@ class _Entry:
         self.master_fd = None
         self.reader_thread = None
         self.db = None
-        self.target = None
+        self.workspace = None  # the workspace this server runs
         self.cmd = None
         self.mode = "server"  # server | test | install | upgrade
         self.started_at = None
@@ -729,9 +724,9 @@ class WorkspaceManager:
     checkout's server, on odoo's default port) plus one entry per worktree
     workspace, each on its own stable port, all running concurrently. Each entry
     carries a PTY terminal channel, readiness detection, a one-shot run slot with
-    backend-owned resume-after, and per-server log routing (main lines go to the
-    shared log ring buffer; worktree lines to the 'worktree_log' SSE stream + a
-    bounded tail).
+    backend-owned resume-after, and per-server log routing on the single 'log'
+    {server, line} SSE stream (main lines also feed the shared backlog ring; other
+    servers keep a bounded per-entry tail).
 
     Locking: `self.lock` guards the entries dict and every entry's lifecycle
     fields; each entry's `raw_lock` guards only its raw_buf/ws_clients (terminal
@@ -759,7 +754,7 @@ class WorkspaceManager:
                 terminal=True,  # the main server owns the default PTY/xterm channel
                 pid=e.process.pid if (active and e.process) else None,
                 db=e.db if active else None,
-                target=e.target if active else None,
+                workspace=e.workspace if active else None,
                 cmd=e.cmd if active else None,
                 mode=e.mode if active else None,
                 started_at=e.started_at if active else None,
@@ -789,13 +784,20 @@ class WorkspaceManager:
                 id=entry.id,
                 state=entry.state,
                 terminal=True,
-                target=entry.id,
+                workspace=entry.id,
                 db=entry.db,
                 port=entry.port,
             )
         )
         del snap["exists"]
         return snap
+
+    def _echo(self, entry, line):
+        """An orchestration message (port fallback, stopping, errors) on a non-main
+        server's own log stream, recorded in its scrollback deque like process
+        output so /api/workspace/logs replays it."""
+        entry.log.append(line)
+        self.bus.publish_log(line, server=entry.id)
 
     def _snapshot(self, wsid, public):
         """The wire snapshot for a publish: main's enriched status() (must run
@@ -844,7 +846,7 @@ class WorkspaceManager:
                 return f"database '{db}' is in use by the main server"
             if wsid == "main":
                 return f"database '{db}' is in use by the '{other}' workspace server"
-            return f"database '{db}' is in use by another worktree server"
+            return f"database '{db}' is in use by another workspace's server"
         return None
 
     def start(self, wsid, config, resume_config=None):
@@ -877,7 +879,7 @@ class WorkspaceManager:
             entry.exited_unexpectedly = False
             entry.returncode = None
             entry.db = db
-            entry.target = config.get("target")
+            entry.workspace = config.get("workspace")
             s = config.get("start") or {}
             entry.mode = (
                 "test"
@@ -899,9 +901,9 @@ class WorkspaceManager:
                     port = wanted
                 else:
                     if wanted:
-                        self.bus.publish_log(
-                            f"{TAG} port {wanted} is busy — falling back to a free port"
-                            f" for worktree {wsid}"
+                        self._echo(
+                            entry,
+                            f"{TAG} port {wanted} is busy — falling back to a free port",
                         )
                     port = free_port()
                 entry.port = port
@@ -927,7 +929,7 @@ class WorkspaceManager:
                         kind=entry.mode,
                         state="running",
                         server=wsid,
-                        target=entry.target,
+                        workspace=entry.workspace,
                         db=db,
                         spec=spec,
                         resume=bool(resume_config),
@@ -943,8 +945,9 @@ class WorkspaceManager:
                 self.bus.publish_log(f"{TAG} starting odoo: {full_cmd}")
                 warn_if_rust_bundler_missing(config, self.bus)
             else:
-                self.bus.publish_log(f"{TAG} starting worktree odoo ({wsid}): {full_cmd}")
-                warn_if_rust_bundler_missing(config, self.bus, context=f"worktree {wsid}")
+                # the workspace's own stream — its log pane shows the exact launch cmd
+                self.bus.publish_log(f"{TAG} starting odoo: {full_cmd}", server=wsid)
+                warn_if_rust_bundler_missing(config, self.bus, context=f"workspace {wsid}")
 
             entry.log.clear()
             with entry.raw_lock:
@@ -1003,7 +1006,7 @@ class WorkspaceManager:
                 self.bus.publish_server(self.status())
                 self.bus.publish_log(f"{TAG} stopping odoo...")
             else:
-                self.bus.publish_log(f"{TAG} stopping worktree odoo ({wsid})...")
+                self._echo(entry, f"{TAG} stopping odoo...")
             # never let an exception leave us stuck in "stopping" (the guard
             # above would then refuse every future stop until goo restarts)
             try:
@@ -1012,7 +1015,7 @@ class WorkspaceManager:
                 if main:
                     self.bus.publish_log(f"{TAG} error while stopping: {e}")
                 else:
-                    self.bus.publish_log(f"{TAG} error stopping worktree ({wsid}): {e}")
+                    self._echo(entry, f"{TAG} error while stopping: {e}")
             # terminate_process already SIGKILLed odoo's whole process group, so the
             # port is normally free now — the lsof kill is the orphan fallback ("main"
             # only when something still listens; workspaces always, as before)
@@ -1029,7 +1032,7 @@ class WorkspaceManager:
                 entry.master_fd = None
                 if main:
                     entry.db = None
-                    entry.target = None
+                    entry.workspace = None
                     entry.cmd = None
                     entry.started_at = None
                 public = None if main else self._public(entry)
@@ -1156,7 +1159,7 @@ class WorkspaceManager:
             entry.master_fd = None
             if main:
                 entry.db = None
-                entry.target = None
+                entry.workspace = None
                 entry.cmd = None
                 entry.started_at = None
             entry.exited_unexpectedly = True
@@ -1166,7 +1169,7 @@ class WorkspaceManager:
             self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
         else:
             self.bus.publish_event(
-                f"worktree server ({wsid}) exited unexpectedly (code {ret})", level="error"
+                f"workspace server ({wsid}) exited unexpectedly (code {ret})", level="error"
             )
         self.bus.publish_server(self._snapshot(wsid, public))
         # a one-shot run just ended on its own: finalize it and, if it had interrupted
@@ -1177,9 +1180,9 @@ class WorkspaceManager:
             self.start(wsid, resume)
 
     def _handle_line(self, wsid, process, line):
-        """Route one output line (main → the shared log ring buffer, workspaces →
-        the per-server tail + 'worktree_log' SSE) and flip starting→running on the
-        ready marker. A stale process's lines are dropped."""
+        """Route one output line to its server's log stream (SSE 'log'
+        {server, line}; main's lines also feed the shared backlog ring) and flip
+        starting→running on the ready marker. A stale process's lines are dropped."""
         entry = self.entries.get(wsid)
         main = wsid == "main"
         with self.lock:
@@ -1190,10 +1193,7 @@ class WorkspaceManager:
             if ready:
                 entry.state = "running"
             public = None if main else self._public(entry)
-        if main:
-            self.bus.publish_log(line)
-        else:
-            self.bus.publish_worktree_log(wsid, line)
+        self.bus.publish_log(line, server=wsid)
         if ready:
             self.bus.publish_server(self._snapshot(wsid, public))
 
@@ -1205,19 +1205,19 @@ class WorkspaceManager:
             entry = self.entries.get(wsid)
             return list(entry.log) if entry else []
 
-    def status_for(self, targets):
-        """targets: [{"id", "dirPath"}]. Returns {id: ServerSnapshot-dict}, merging
+    def status_for(self, workspaces):
+        """workspaces: [{"id", "dirPath"}]. Returns {id: ServerSnapshot-dict}, merging
         each workspace's on-disk worktree existence with its live server state (or
         a stopped snapshot when no server has run yet)."""
         with self.lock:
             servers = {w: self._public(e) for w, e in self.entries.items() if w != "main"}
         out = {}
-        for t in targets:
+        for t in workspaces:
             tid = t.get("id")
             if not tid:
                 continue
             snap = servers.get(tid) or asdict(
-                ServerSnapshot(id=tid, state="stopped", terminal=False, target=tid)
+                ServerSnapshot(id=tid, state="stopped", terminal=False, workspace=tid)
             )
             snap["exists"] = effects.is_dir(t.get("dirPath", ""))
             out[tid] = snap
@@ -1245,7 +1245,7 @@ def _summarize_tool(name, inp):
 
 
 class ClaudeManager:
-    """One headless Claude conversation per worktree target. A message spawns
+    """One headless Claude conversation per workspace. A message spawns
     `claude -p <prompt> --output-format stream-json` with the worktree checkout as
     cwd, streaming its assistant text + tool activity to the browser (SSE 'claude')
     and keeping a per-target transcript so a reload can re-prime the chat. The
@@ -1281,14 +1281,14 @@ class ClaudeManager:
             e["history"].append(item)
             del e["history"][: -self.HISTORY_MAX]
         if item.get("role") != "user":
-            self.bus.publish_claude({"target": target, **item})
+            self.bus.publish_claude({"workspace": target, **item})
 
     def send(self, target, prompt, cwd, add_dirs=None, model=None):
         """Spawn a Claude turn for <target> in <cwd> (its worktree checkout), resuming
         the target's session when one exists. `model` (a CLI alias/name, e.g. "sonnet"
         or "opus[1m]") overrides the CLI's default when set. Returns (ok, detail)."""
         if not target or not (prompt or "").strip():
-            return False, "missing target or prompt"
+            return False, "missing workspace or prompt"
         if not effects.is_dir(cwd):
             return False, f"worktree checkout not found: {cwd}"
         with self.lock:
@@ -1430,7 +1430,7 @@ class ClaudeManager:
             if e:
                 e["state"] = "idle"
                 e["process"] = None
-        self.bus.publish_claude({"target": target, "role": "result", "ok": True})
+        self.bus.publish_claude({"workspace": target, "role": "result", "ok": True})
         return True, "stopped"
 
     def history_for(self, target):
@@ -1442,7 +1442,7 @@ class ClaudeManager:
             return {"items": list(e["history"]), "state": e["state"]}
 
     def forget(self, target):
-        """Drop a target's conversation (its worktree was removed)."""
+        """Drop a workspace's conversation (its worktree was removed)."""
         self.stop(target)
         with self.lock:
             self.convos.pop(target, None)
@@ -1585,9 +1585,6 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_ok():
             return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         path = self.path.split("?", 1)[0]
-        # legacy alias: a still-open tab running the pre-workspace bundle keeps
-        # working across the goo restart (removed in Phase 6)
-        path = path.replace("/api/worktree/", "/api/workspace/", 1)
         if path == "/api/start":
             self._action_start(lambda cfg: WORKSPACES.start("main", cfg))
         elif path == "/api/restart":
@@ -1604,7 +1601,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": err})
             cfg = self._build_launch(body)
             if cfg is None:
-                return self._send_json(400, {"ok": False, "error": "unknown target"})
+                return self._send_json(400, {"ok": False, "error": "unknown workspace"})
             try:
                 cmd, _, _ = build_odoo_cmd(cfg)
                 self._send_json(200, {"ok": True, "cmd": cmd})
@@ -1848,12 +1845,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
         elif path == "/api/workspace/start":
             body, err = self._read_json()
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing target"})
+                return self._send_json(400, {"ok": False, "error": "missing workspace"})
             cfg = self._build_launch(body)  # server builds the worktree launch config
             if cfg is None:
-                return self._send_json(400, {"ok": False, "error": "unknown target"})
+                return self._send_json(400, {"ok": False, "error": "unknown workspace"})
             ok, detail = WORKSPACES.start(target, cfg)
             if ok:
                 self._send_json(200, {"ok": True, "port": detail["port"]})
@@ -1862,9 +1859,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(code, {"ok": False, "error": detail})
         elif path == "/api/workspace/stop":
             body, err = self._read_json()
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing target"})
+                return self._send_json(400, {"ok": False, "error": "missing workspace"})
             # stop_and_finalize: a stop mid-run finalizes the run + resumes the
             # server it interrupted, exactly like /api/stop does for main
             ok, detail = WORKSPACES.stop_and_finalize(target)
@@ -1883,31 +1880,33 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             if dir_path:
                 effects.remove_tree(dir_path)  # sweep the now-empty parent folder
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             if target:
                 CLAUDE.forget(target)  # its checkout is gone; drop the chat + any run
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
         elif path == "/api/workspace/list":
             body, err = self._read_json()
-            targets = (body or {}).get("targets")
-            if err or not isinstance(targets, list):
-                return self._send_json(400, {"ok": False, "error": "missing targets list"})
-            self._send_json(200, {"ok": True, "worktrees": WORKSPACES.status_for(targets)})
+            workspaces = (body or {}).get("workspaces")
+            if err or not isinstance(workspaces, list):
+                return self._send_json(400, {"ok": False, "error": "missing workspaces list"})
+            self._send_json(200, {"ok": True, "servers": WORKSPACES.status_for(workspaces)})
         elif path == "/api/workspace/logs":
             body, err = self._read_json()
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing target"})
+                return self._send_json(400, {"ok": False, "error": "missing workspace"})
             self._send_json(200, {"ok": True, "lines": WORKSPACES.logs_for(target)})
         elif path == "/api/workspace/claude":
             body, err = self._read_json()
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             prompt = (body or {}).get("prompt")
             cwd = (body or {}).get("cwd")
             add_dirs = (body or {}).get("addDirs") or []
             model = (body or {}).get("model")
             if err or not target or not prompt or not cwd:
-                return self._send_json(400, {"ok": False, "error": "missing target, prompt or cwd"})
+                return self._send_json(
+                    400, {"ok": False, "error": "missing workspace, prompt or cwd"}
+                )
             ok, detail = CLAUDE.send(target, prompt, cwd, add_dirs, model=model)
             if ok:
                 self._send_json(200, {"ok": True, "state": detail["state"]})
@@ -1916,16 +1915,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(code, {"ok": False, "error": detail})
         elif path == "/api/workspace/claude/stop":
             body, err = self._read_json()
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing target"})
+                return self._send_json(400, {"ok": False, "error": "missing workspace"})
             ok, detail = CLAUDE.stop(target)
             self._send_json(200, {"ok": ok, "error": None if ok else detail})
         elif path == "/api/workspace/claude/history":
             body, err = self._read_json()
-            target = (body or {}).get("target")
+            target = (body or {}).get("workspace")
             if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing target"})
+                return self._send_json(400, {"ok": False, "error": "missing workspace"})
             self._send_json(200, {"ok": True, **CLAUDE.history_for(target)})
         elif path == "/api/databases/drop":
             body, err = self._read_json()
@@ -1940,7 +1939,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/databases/clone":
             body, err = self._read_json()
             source = (body or {}).get("source")
-            target = (body or {}).get("target")
+            target = (body or {}).get("dest")
             if (
                 err
                 or not isinstance(source, str)
@@ -1948,7 +1947,7 @@ class Handler(BaseHTTPRequestHandler):
                 or not source
                 or not target
             ):
-                return self._send_json(400, {"ok": False, "error": "missing source or target"})
+                return self._send_json(400, {"ok": False, "error": "missing source or dest"})
             ok, error = DATABASE.clone(source, target, _filestore(body))
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/databases/rename":
@@ -2054,10 +2053,10 @@ class Handler(BaseHTTPRequestHandler):
     # --- API helpers ---
 
     def _build_launch(self, body):
-        """Resolve a thin {target, overrides} launch request against the server's own
-        config into the dict build_odoo_cmd consumes (handles plain + worktree targets).
-        Returns None if the target is missing/unknown."""
-        target = (body or {}).get("target")
+        """Resolve a thin {workspace, overrides} launch request against the server's
+        own config into the dict build_odoo_cmd consumes (handles main + worktree
+        workspaces). Returns None if the workspace is missing/unknown."""
+        target = (body or {}).get("workspace")
         if not target:
             return None
         overrides = (body or {}).get("overrides") or {}
@@ -2069,7 +2068,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": err})
         cfg = self._build_launch(body)
         if cfg is None:
-            return self._send_json(400, {"ok": False, "error": "unknown target"})
+            return self._send_json(400, {"ok": False, "error": "unknown workspace"})
         ok, detail = action(cfg)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail["cmd"]})
@@ -2079,7 +2078,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _action_oneshot(self):
         """Start a one-shot run (tests / install / upgrade) on a workspace's server
-        slot — `body["workspace"]` (default "main"). The slot's own server is stopped
+        slot — `body["slot"]` (default "main"). The slot's own server is stopped
         first; if a real server was interrupted, its config is handed to the run so
         the backend restarts it when the run ends (resume-after, owned server-side)."""
         body, err = self._read_json()
@@ -2087,8 +2086,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"ok": False, "error": err})
         cfg = self._build_launch(body)
         if cfg is None:
-            return self._send_json(400, {"ok": False, "error": "unknown target"})
-        wsid = (body or {}).get("workspace") or "main"
+            return self._send_json(400, {"ok": False, "error": "unknown workspace"})
+        wsid = (body or {}).get("slot") or "main"
         ok, detail = WORKSPACES.oneshot(wsid, cfg)
         if ok:
             self._send_json(200, {"ok": True, "state": "starting", "cmd": detail["cmd"]})
@@ -2324,7 +2323,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_event("run", run)
             self._send_event("config", CONFIG.get())
             for line in backlog:
-                self._send_event("log", {"line": line})
+                self._send_event("log", {"server": "main", "line": line})
             while True:
                 try:
                     event, payload = q.get(timeout=15)
@@ -2363,7 +2362,7 @@ class Handler(BaseHTTPRequestHandler):
         """Run a one-shot test (triggered by the `goo --test-tags` CLI) as its own
         odoo process — on free ports, so a running server is left untouched — and
         stream the log back as plain text. Announces the run on the server log +
-        the browser event log, using the server's own config + active target."""
+        the browser event log, using the server's own config + active workspace."""
         body, err = self._read_json()
         tags = ((body or {}).get("test_tags") or "").strip()
         if err or not tags:
@@ -2371,9 +2370,7 @@ class Handler(BaseHTTPRequestHandler):
         snapshot = CONFIG.get()
         config = snapshot.get("config")
         state = snapshot.get("state") or {}
-        # active_workspace is the current key; active_target survives in configs that
-        # never booted the workspace-era frontend
-        active = state.get("active_workspace") or state.get("active_target")
+        active = state.get("active_workspace")
         cfg = (
             services.build_start_config(config, active, {"test_tags": tags})
             if config and active
@@ -2384,7 +2381,7 @@ class Handler(BaseHTTPRequestHandler):
                 409,
                 {
                     "ok": False,
-                    "error": "no target yet — open the goo UI (with a target configured) once",
+                    "error": "no workspace yet — open the goo UI (with a workspace configured) once",
                 },
             )
         try:

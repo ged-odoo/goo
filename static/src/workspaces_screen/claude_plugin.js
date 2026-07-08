@@ -72,8 +72,8 @@ export class ClaudePlugin extends Plugin {
   // a live chat item pushed from the backend (assistant text, tool activity, result,
   // or error). The final "result" ends the turn — flip back to idle.
   apply(d) {
-    if (!d || !d.target) return;
-    const id = d.target;
+    if (!d || !d.workspace) return;
+    const id = d.workspace;
     if (d.role === "result") {
       const c = this._get(id);
       if (!d.ok && d.error) this._set(id, { ...c, items: [...c.items, d], state: "idle" });
@@ -90,7 +90,7 @@ export class ClaudePlugin extends Plugin {
     this._primed.add(id);
     if (this._get(id).items.length) return;
     try {
-      const res = await postJSON("/api/workspace/claude/history", { target: id });
+      const res = await postJSON("/api/workspace/claude/history", { workspace: id });
       this._set(id, { items: res.items || [], state: res.state || "idle" });
     } catch {
       /* leave empty */
@@ -140,7 +140,7 @@ export class ClaudePlugin extends Plugin {
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
       await postJSON("/api/workspace/claude", {
-        target: tgt.id,
+        workspace: tgt.id,
         prompt: text,
         cwd: dirs.cwd,
         addDirs: dirs.addDirs,
@@ -154,7 +154,7 @@ export class ClaudePlugin extends Plugin {
 
   async stop(tgt) {
     try {
-      await postJSON("/api/workspace/claude/stop", { target: tgt.id });
+      await postJSON("/api/workspace/claude/stop", { workspace: tgt.id });
     } catch {
       /* the SSE result will reconcile the state */
     }

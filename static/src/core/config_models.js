@@ -224,7 +224,7 @@ export class Workspace extends Model {
     // guard (mirrors canActivate): not already active, all branches present, none dirty
     const s = server.status();
     const activeId =
-      s.state === "running" || s.state === "starting" ? s.target : server.lastTarget();
+      s.state === "running" || s.state === "starting" ? s.workspace : server.lastTarget();
     if (this.id === activeId) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;

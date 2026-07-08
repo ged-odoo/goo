@@ -212,7 +212,11 @@ export class StorePlugin extends Plugin {
   // otherwise the target's own worktree server (or null)
   serverFor(tgt) {
     const main = this.server("main");
-    if (main && main.target === tgt.id && (main.state === "running" || main.state === "starting")) {
+    if (
+      main &&
+      main.workspace === tgt.id &&
+      (main.state === "running" || main.state === "starting")
+    ) {
       return main;
     }
     return this.server(tgt.id);
@@ -264,7 +268,7 @@ export class StorePlugin extends Plugin {
       return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });
     const active = this.activeRun();
-    const run = active && active.target === tgt.id ? active : null;
+    const run = active && active.workspace === tgt.id ? active : null;
     return {
       target: tgt,
       checkouts,

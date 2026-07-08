@@ -489,7 +489,7 @@ export class WorkspacesScreen extends Component {
   // last activated one (a browser-side fact — see targets_screen isActive)
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
   }
 
   isLoaded(ws) {

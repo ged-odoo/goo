@@ -11,7 +11,7 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { WorktreePlugin } from "../core/worktree_plugin.js";
 import { LogBuffer } from "../core/log_buffer.js";
 import { postJSON } from "../core/utils.js";
-import { slotFor, WT_ECHO_RE } from "../core/tests_plugin.js";
+import { slotFor } from "../core/tests_plugin.js";
 
 import { Plugin, plugin, useEffect, signal, computed } from "@odoo/owl";
 
@@ -69,13 +69,14 @@ export class AddonsPlugin extends Plugin {
       );
       for (const s of slots) this._onRun(s, this.currentRun(s));
     });
-    // both output streams: the main server's log + each worktree server's own
-    // (minus goo's worktree orchestration echoes — another workspace's business)
-    this.server.onLine((line) => {
-      if (this.runActive("main") && !WT_ECHO_RE.test(line)) this.slot("main").output.append(line);
-    });
-    this.server.onWorktreeLog(({ target, line }) => {
-      if (this._slots.has(target) && this.runActive(target)) this.slot(target).output.append(line);
+    // the unified log stream, routed by server slot
+    this.server.onLog(({ server, line }) => {
+      if (
+        server === "main"
+          ? this.runActive("main")
+          : this._slots.has(server) && this.runActive(server)
+      )
+        this.slot(server).output.append(line);
     });
   }
 
@@ -206,8 +207,8 @@ export class AddonsPlugin extends Plugin {
     try {
       // the server resolves the target's repos + db; overrides carry the module op
       await postJSON("/api/addons/run", {
-        target: target.id,
-        workspace: slotId,
+        workspace: target.id,
+        slot: slotId,
         overrides: { [op]: name },
       });
     } catch (e) {
