@@ -4334,29 +4334,35 @@ a.commit-detail-hash svg {
   display: flex;
   flex-direction: column;
 }
+/* underline tabs on a hairline, per the Workspaces design (not pill buttons) */
 .wt-tabs {
   display: flex;
   flex-wrap: wrap; /* 7 icon+label tabs must not overflow a narrow detail column */
-  gap: 4px;
-  margin-bottom: 8px;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--l-line);
 }
 .wt-tab {
-  padding: 4px 12px;
-  border: 1px solid var(--l-line);
-  border-radius: 8px;
-  background: var(--l-card);
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 13px;
+  margin-bottom: -1px; /* the active underline sits ON the hairline */
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
   color: var(--l-text-mid);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
   cursor: pointer;
 }
 .wt-tab:hover {
-  border-color: var(--l-accent-line);
+  color: var(--l-text);
 }
 .wt-tab.on {
   color: var(--l-accent);
-  background: var(--l-accent-soft);
-  border-color: var(--l-accent-line);
+  font-weight: 600;
+  border-bottom-color: var(--l-accent);
 }
 .wt-pane {
   flex: 1;
@@ -4522,6 +4528,8 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  flex: none; /* the base .test-form flex:1 is for the old panel ROW — in this
+                 column pane it would absorb height and spread the layout */
 }
 .ws-run-pane .test-form input[type="text"] {
   flex: 1;
