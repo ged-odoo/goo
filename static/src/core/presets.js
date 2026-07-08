@@ -11,7 +11,6 @@
 // Only the override is stored; everything else falls back to DEFAULT_CONFIG.
 const SIMPLE_TABS = [
   { id: "dashboard", visible: true },
-  { id: "server", visible: true },
   { id: "branches", visible: true },
   { id: "prs", visible: false },
   { id: "reviews", visible: false },
@@ -121,7 +120,6 @@ const GED_CONFIG = {
   ],
   tabs: [
     { id: "dashboard", visible: true },
-    { id: "server", visible: true },
     { id: "workspaces", visible: true },
     { id: "branches", visible: true },
     { id: "prs", visible: true },

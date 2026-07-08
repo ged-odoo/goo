@@ -1595,18 +1595,6 @@ class Handler(BaseHTTPRequestHandler):
             self._save_config()
         elif path == "/api/cli/test":
             self._handle_cli_test()
-        elif path == "/api/command":
-            body, err = self._read_json()
-            if err:
-                return self._send_json(400, {"ok": False, "error": err})
-            cfg = self._build_launch(body)
-            if cfg is None:
-                return self._send_json(400, {"ok": False, "error": "unknown workspace"})
-            try:
-                cmd, _, _ = build_odoo_cmd(cfg)
-                self._send_json(200, {"ok": True, "cmd": cmd})
-            except ValueError as e:
-                self._send_json(400, {"ok": False, "error": str(e)})
         elif path == "/api/stop":
             ok, detail = WORKSPACES.stop_and_finalize("main")
             if ok:

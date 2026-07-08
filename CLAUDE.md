@@ -63,8 +63,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     `utils.js`, `presets.js`, `log_buffer.js`. `appBus` is a single shared `EventBus` exported
     from `core/common.js` — import it, never re-instantiate.
   - One folder per screen, each suffixed `_screen/` (`dashboard_screen/`, `code_screen/`,
-    `server_screen/`, `workspaces_screen/`, `branches_screen/`, `prs_screen/`,
-    `databases_screen/`, `nightly_screen/`, `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
+    `workspaces_screen/`, `branches_screen/`, `prs_screen/`, `databases_screen/`,
+    `nightly_screen/`, `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
     (`workspaces_screen/claude_plugin.js`, `nightly_screen/nightly_plugin.js`,
     `memory_screen/memory_plugin.js`). `workspaces_screen/` is the primary surface — the
     master-detail Workspaces screen with per-workspace Code/Logs/Tests/Addons/Assets/Claude/

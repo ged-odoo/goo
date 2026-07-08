@@ -132,7 +132,6 @@ var DEFAULT_CONFIG = {
 var SECTIONS = [
   "dashboard",
   "code",
-  "server",
   "workspaces",
   "branches",
   "prs",
@@ -148,7 +147,6 @@ var BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
 // static/src/core/presets.js
 var SIMPLE_TABS = [
   { id: "dashboard", visible: true },
-  { id: "server", visible: true },
   { id: "branches", visible: true },
   { id: "prs", visible: false },
   { id: "reviews", visible: false },
@@ -257,7 +255,6 @@ var GED_CONFIG = {
   ],
   tabs: [
     { id: "dashboard", visible: true },
-    { id: "server", visible: true },
     { id: "workspaces", visible: true },
     { id: "branches", visible: true },
     { id: "prs", visible: true },
@@ -329,15 +326,6 @@ function formatBytes(n) {
 }
 function escapeHtml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-function tintCmd(cmd) {
-  const tokens = cmd.split(" ").map((tok) => {
-    const esc = escapeHtml(tok);
-    if (tok.startsWith("-")) return `<span class="flag">${esc}</span>`;
-    if (tok.includes("/")) return `<span class="path">${esc}</span>`;
-    return esc;
-  });
-  return `<span class="prompt">$</span>${tokens.join(" ")}`;
 }
 var ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 var LOG_RE = /^(?:\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2},\d+) (\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) ([\w.]+): (.*)$/;
@@ -2358,19 +2346,6 @@ var ServerPlugin = class extends Plugin {
     this.activeWorkspace.set(id);
     this.config.setState("active_workspace", id);
   }
-  // the command that would launch this workspace (built by the backend); "" if invalid
-  async previewCommand(targetId, otherArgs) {
-    if (!this._hasTarget(targetId)) return "";
-    try {
-      const res = await postJSON("/api/command", {
-        workspace: targetId,
-        overrides: this._overrides(otherArgs)
-      });
-      return res.cmd;
-    } catch (e) {
-      return `# ${e.message}`;
-    }
-  }
   async _run(path, body, label) {
     try {
       await postJSON(path, body);
@@ -3300,6 +3275,8 @@ var ConfigPlugin = class extends Plugin {
 // static/src/core/router_plugin.js
 var ALIASES = {
   worktree: "workspaces",
+  server: "workspaces",
+  // the loaded workspace's Server-logs tab superseded it
   targets: "config",
   // template management lives on the Configuration screen
   templates: "config",
@@ -3799,7 +3776,6 @@ var ICONS = {
 var NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
   { id: "code", label: "Code", icon: ICONS.code },
-  { id: "server", label: "Server", icon: ICONS.server },
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
@@ -8837,163 +8813,6 @@ var PrsScreen = class extends Component {
   }
 };
 
-// static/src/server_screen/server.js
-var ServerScreen = class extends Component {
-  static components = { LogConsole, Panel };
-  static template = xml`
-    <section>
-      <Panel title="'Server'">
-        <t t-set-slot="title-extra">
-          <div t-if="this.info" class="sub"><t t-out="this.info"/></div>
-          <div t-if="this.hint" class="sub hint" t-out="this.hint"/>
-        </t>
-        <t t-set-slot="top-right">
-          <div t-if="this.uptime" class="uptime">uptime: <b t-out="this.uptime"/></div>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button class="pbtn primary dash-start" t-att-disabled="!this.stopped or this.busy" t-on-click="() => this.server.start(this.target(), this.extraArgs())"><span class="play"/><t t-out="this.startLabel"/></button>
-          <button class="pbtn stop" t-att-disabled="!this.canStop or this.busy" t-on-click="() => this.server.stop()"><span class="ic square"/>Stop</button>
-          <button class="pbtn" t-att-disabled="!this.active or this.busy" t-on-click="() => this.server.restart(this.target(), this.extraArgs())"><span class="restart"/>Restart</button>
-          <button class="pbtn pbtn-icon" t-att-class="{active: this.term.open()}" t-att-disabled="!this.active" title="Open terminal" t-on-click="() => this.term.toggle()"><t t-out="this.termIcon"/></button>
-          <span t-if="this.transient" class="run-state" t-out="this.transient"/>
-          <div t-if="this.showLogs" class="log-controls">
-            <label class="toggle" t-att-class="{on: this.server.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
-            <button class="tool-btn" t-on-click="() => this.server.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
-          </div>
-        </t>
-      </Panel>
-      <div class="content" t-att-class="{ flush: !this.stopped }">
-        <div t-if="this.disconnected" class="offline">server is offline</div>
-        <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
-        <div t-else="" class="launch-form">
-          <div class="launch-field">
-            <label>Workspace</label>
-            <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
-              <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
-            </select>
-          </div>
-          <div class="launch-field">
-            <label>Extra arguments</label>
-            <input type="text" t-att-value="this.extraArgs()" t-on-input="ev => this.extraArgs.set(ev.target.value)" placeholder="e.g. --dev all"/>
-          </div>
-          <div class="launch-field">
-            <label>Command</label>
-            <div class="cmd">
-              <span class="label">launch</span>
-              <div class="code" t-out="this.cmdPreviewMarkup"/>
-              <button class="copy" t-on-click="() => this.copy()"><t t-out="this.copyIcon"/><span t-out="this.copyLbl()"/></button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>`;
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  term = plugin(TerminalPlugin);
-  copyIcon = m(ICONS.copy);
-  clearIcon = m(ICONS.clear);
-  termIcon = m(ICONS.terminal);
-  copyLbl = signal("Copy");
-  target = signal(this._initialTarget());
-  extraArgs = signal(this.config.config.start.other_args || "");
-  command = signal("");
-  setup() {
-    let timer;
-    useEffect(() => {
-      const tgt = this.target();
-      const args = this.extraArgs();
-      clearTimeout(timer);
-      timer = setTimeout(
-        () => this.server.previewCommand(tgt, args).then((c) => this.command.set(c)),
-        200
-      );
-    });
-  }
-  get targets() {
-    return this.config.config.workspaces || [];
-  }
-  // last used target id if it still exists, else the first one
-  _initialTarget() {
-    const ids = this.targets.map((t2) => t2.id);
-    const last = this.server.lastWorkspace();
-    return ids.includes(last) ? last : ids[0] || "";
-  }
-  status() {
-    return this.server.status();
-  }
-  get stopped() {
-    return this.status().state === "stopped";
-  }
-  // an optimistic start/stop/restart is in flight (between the click and the
-  // first real status event) — disable the controls so it can't be double-fired
-  get busy() {
-    return !!this.server.pending();
-  }
-  get startLabel() {
-    return this.server.pending() === "start" || this.status().state === "starting" ? "Starting\u2026" : "Start";
-  }
-  get disconnected() {
-    return this.status().state === "disconnected";
-  }
-  get transient() {
-    const s = this.status().state;
-    return s === "starting" ? "starting\u2026" : s === "stopping" ? "stopping\u2026" : null;
-  }
-  // logs are visible (so their controls belong in the panel) whenever we're not
-  // showing the launch form or the offline message
-  get showLogs() {
-    return !this.stopped && !this.disconnected;
-  }
-  toggleAuto() {
-    const b = this.server.output;
-    b.autoScroll.set(!b.autoScroll());
-    if (b.autoScroll()) b.toBottom();
-  }
-  get active() {
-    return this.status().state === "starting" || this.status().state === "running";
-  }
-  get canStop() {
-    return this.active || this.stopped && this.status().odoo_port_busy;
-  }
-  get cmdPreviewMarkup() {
-    return m(tintCmd(this.command() || ""));
-  }
-  get info() {
-    const s = this.status();
-    if (s.db) {
-      let html = `database: <b>${s.db}</b>`;
-      if (s.odoo_version) {
-        html += `<span class="sep">\xB7</span>odoo: <b>${s.odoo_version}</b>`;
-        if (s.enterprise) html += ` (enterprise)`;
-      }
-      return m(html);
-    }
-    const tgt = this.targets.find((t2) => t2.id === this.target());
-    return tgt && tgt.db ? m(`database: <b>${tgt.db}</b>`) : null;
-  }
-  get hint() {
-    const s = this.status();
-    const hints = [];
-    if (s.exited_unexpectedly) hints.push(`odoo exited unexpectedly (code ${s.returncode})`);
-    if (s.state === "stopped" && s.odoo_port_busy)
-      hints.push("port 8069 is busy (external odoo?) \u2014 Stop will kill it");
-    return hints.join(" \u2014 ") || null;
-  }
-  get uptime() {
-    const s = this.status();
-    if (s.state !== "starting" && s.state !== "running" || !s.started_at) return null;
-    const secs = Math.max(0, Math.floor(this.server.now() / 1e3 - s.started_at));
-    const h = Math.floor(secs / 3600), mn = Math.floor(secs % 3600 / 60), sec = secs % 60;
-    return h ? `${h}h ${mn}m` : mn ? `${mn}m ${sec}s` : `${sec}s`;
-  }
-  copy() {
-    if (!this.command()) return;
-    navigator.clipboard?.writeText(this.command());
-    this.copyLbl.set("Copied");
-    setTimeout(() => this.copyLbl.set("Copy"), 1400);
-  }
-};
-
 // static/src/workspaces_screen/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
@@ -10617,7 +10436,6 @@ var Sidebar = class extends Component {
 var SCREENS = {
   dashboard: DashboardScreen,
   code: CodeScreen,
-  server: ServerScreen,
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -10635,7 +10453,6 @@ var App = class extends Component {
     Sidebar,
     DashboardScreen,
     CodeScreen,
-    ServerScreen,
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,

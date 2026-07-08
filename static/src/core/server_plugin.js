@@ -176,20 +176,6 @@ export class ServerPlugin extends Plugin {
     this.config.setState("active_workspace", id);
   }
 
-  // the command that would launch this workspace (built by the backend); "" if invalid
-  async previewCommand(targetId, otherArgs) {
-    if (!this._hasTarget(targetId)) return "";
-    try {
-      const res = await postJSON("/api/command", {
-        workspace: targetId,
-        overrides: this._overrides(otherArgs),
-      });
-      return res.cmd;
-    } catch (e) {
-      return `# ${e.message}`;
-    }
-  }
-
   async _run(path, body, label) {
     try {
       await postJSON(path, body);

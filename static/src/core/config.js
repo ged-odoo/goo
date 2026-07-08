@@ -111,7 +111,6 @@ export const DEFAULT_CONFIG = {
 export const SECTIONS = [
   "dashboard",
   "code",
-  "server",
   "workspaces",
   "branches",
   "prs",

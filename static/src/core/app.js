@@ -20,7 +20,6 @@ import { MemoryScreen } from "../memory_screen/memory.js";
 import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
 import { NightlyScreen } from "../nightly_screen/nightly.js";
 import { PrsScreen } from "../prs_screen/prs.js";
-import { ServerScreen } from "../server_screen/server.js";
 import { TerminalPanel } from "./terminal.js";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
 
@@ -253,7 +252,6 @@ export class Sidebar extends Component {
 export const SCREENS = {
   dashboard: DashboardScreen,
   code: CodeScreen,
-  server: ServerScreen,
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -272,7 +270,6 @@ export class App extends Component {
     Sidebar,
     DashboardScreen,
     CodeScreen,
-    ServerScreen,
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,
