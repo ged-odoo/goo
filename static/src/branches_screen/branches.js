@@ -237,8 +237,8 @@ export class BranchesScreen extends Component {
     if (this.deleteBlocked(r)) return;
     const canRemote = r.remote && !r.base; // pushed, non-base: removable on the remote
     const hasPr = !!(r.pr && r.pr.state === "open" && r.github);
-    const targets = this.config.config.targets.filter((t) =>
-      (t.checkouts || []).some((c) => c.repo === r.repo && c.branch === r.branch),
+    const targets = (this.config.config.workspaces || []).filter((w) =>
+      (w.checkouts || []).some((c) => c.repo === r.repo && c.branch === r.branch),
     );
     const fields = [];
     if (canRemote)
@@ -259,7 +259,7 @@ export class BranchesScreen extends Component {
       fields.push({
         key: `tgt:${t.id}`,
         type: "checkbox",
-        label: `Delete target "${t.name}"`,
+        label: `Delete workspace "${t.name}"`,
         value: false,
       });
 
@@ -273,13 +273,14 @@ export class BranchesScreen extends Component {
     // close the PR before deleting the branch, then drop the branch
     if (hasPr && res.closePr) await this.code.closePrNoConfirm(r.github, r.pr.number);
     await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, !!res.delRemote);
-    // remove any targets the user opted to delete
+    // remove any workspaces the user opted to delete (canonical write — full
+    // records spread so stable ports survive)
     const drop = targets.filter((t) => res[`tgt:${t.id}`]);
     if (drop.length) {
       const ids = new Set(drop.map((t) => t.id));
-      for (const t of drop) this.code.eventLog.add(`deleting target ${t.name}`);
+      for (const t of drop) this.code.eventLog.add(`deleting workspace ${t.name}`);
       this.config.updateConfig({
-        targets: this.config.config.targets.filter((t) => !ids.has(t.id)),
+        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id)),
       });
     }
   }

@@ -729,9 +729,9 @@ export const SPECS = {
       if (!repos.find((r) => r.id === "community"))
         return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
-      for (const t of config.targets) {
-        const used = (t.checkouts || []).find((c) => !ids.has(c.repo));
-        if (used) return `repository "${used.repo}" is still used by target "${t.name}"`;
+      for (const w of config.workspaces || []) {
+        const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
+        if (used) return `repository "${used.repo}" is still used by workspace "${w.name}"`;
       }
       return null;
     },

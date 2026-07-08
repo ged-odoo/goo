@@ -109,11 +109,13 @@ export class CodeScreen extends Component {
     return this.code.groups().errors;
   }
 
-  // repo ids shown by the strip — favorite repos plus the current target's repos.
+  // repo ids shown by the strip — favorite repos plus the current workspace's repos.
   // Narrow both the branch and PR fetch to these (the only repos this screen shows).
   _repoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
+    const current = (this.config.config.workspaces || []).find(
+      (w) => w.id === this.server.lastTarget(),
+    );
     for (const c of current?.checkouts || []) ids.add(c.repo);
     return ids;
   }
@@ -123,12 +125,14 @@ export class CodeScreen extends Component {
     this.code.load(force, ids, ids);
   }
 
-  // repositories shown in the strip: union of the active target's repos and the
+  // repositories shown in the strip: union of the active workspace's repos and the
   // favorite repositories, in config order
   get favRepos() {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
-    const currentTarget = this.config.config.targets.find((t) => t.id === this.server.lastTarget());
+    const currentTarget = (this.config.config.workspaces || []).find(
+      (w) => w.id === this.server.lastTarget(),
+    );
     const visibleIds = new Set([
       ...(currentTarget?.checkouts || []).map((c) => c.repo),
       ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id),

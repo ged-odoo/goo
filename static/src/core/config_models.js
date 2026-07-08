@@ -19,10 +19,9 @@
 // real; Template is flat (json checkouts).
 //
 // Workspaces (the successors of targets — see the workspaces roadmap): the records
-// are the source of truth, and `toConfig` emits BOTH the canonical `workspaces` /
-// `templates` keys AND `targets`, a legacy view in the exact old target shape, so the
-// ~30 `config.config.targets` readers, the `updateConfig({targets})` writers and the
-// backend resolver all keep working until the UI phases migrate them.
+// are the source of truth; `toConfig` emits the canonical `workspaces` / `templates`
+// keys. The legacy `targets` view is gone (Phase 6) — `workspaceFromTarget` survives
+// only for the one-time migration of stored pre-workspace configs.
 
 import { Model, ORM, fields } from "../../../vendor/owl-orm/index.ts";
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
@@ -160,13 +159,6 @@ export class Workspace extends Model {
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
 
   // ── derivations (pure — this + this.orm) ─────────────────────────────────────
-  // "repo:branch, …" — the human-readable checkout list
-  checkoutsLabel() {
-    return this.checkouts()
-      .map((c) => `${c.repository().id}:${c.branch()}`)
-      .join(", ");
-  }
-
   // the explicit `location` marks a worktree, falling back to `worktree` metadata presence
   isWorktree() {
     return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
@@ -174,11 +166,6 @@ export class Workspace extends Model {
 
   hasCommunity() {
     return this.checkouts().some((c) => c.repository().id === "community");
-  }
-
-  // the repo ids this workspace checks out
-  repoIds() {
-    return this.checkouts().map((c) => c.repository().id);
   }
 
   // the worktree's on-disk directory: the value frozen at creation (worktree.dir),
@@ -289,10 +276,10 @@ export const CONFIG_MODELS = [Settings, Repository, Workspace, Template, Checkou
 
 const checkoutId = (workspaceId, repo) => `${workspaceId}:${repo}`;
 
-// ── legacy target shape ↔ workspace shape (pure, the one mapping) ────────────────
+// ── legacy target shape → workspace shape (migration-only mapping) ───────────────
 
-// a legacy target object → the workspace shape (no `port` — the caller allocates one
-// for worktree-located workspaces, so a legacy patch can't clobber a stable port)
+// a stored legacy target object → the workspace shape (no `port` — the migration
+// deals stable ports itself). Used ONLY by migrateToWorkspaces (config_plugin).
 export function workspaceFromTarget(t) {
   const location =
     (t.kind || (t.worktree ? "worktree" : "plain")) === "worktree" ? "worktree" : "main";
@@ -307,24 +294,6 @@ export function workspaceFromTarget(t) {
     worktree: t.worktree ?? null,
     checkouts: t.checkouts || [],
   };
-}
-
-// a Workspace record → the exact old target blob shape (byte-compatible: `kind`
-// instead of `location`, `worktree` only when set, no `port`)
-function targetFromWorkspace(w) {
-  const tgt = {
-    id: w.id,
-    name: w.name(),
-    favorite: w.favorite(),
-    db: w.db(),
-    on_create_args: w.on_create_args(),
-    demo_data: w.demo_data(),
-    kind: w.isWorktree() ? "worktree" : "plain",
-    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
-  };
-  const wt = w.worktree();
-  if (wt) tgt.worktree = wt;
-  return tgt;
 }
 
 // ports a workspace may never claim: 8069 = the main server, 8072 = its default
@@ -459,8 +428,6 @@ export function toConfig(orm) {
     demo_data: t.demo_data(),
     checkouts: t.checkouts() || [],
   }));
-  // the legacy view — the exact old target shape, until the UI phases retire it
-  out.targets = workspaces.map(targetFromWorkspace);
   return out;
 }
 
@@ -483,15 +450,8 @@ export function applyPatch(orm, patch) {
     }
   }
   if ("repos" in patch) reconcileRepos(orm, patch.repos || []);
-  // canonical routes first; a legacy `targets` patch (today's ~10 writers) reconciles
-  // onto the Workspace records through the shape mapping. If a patch carries both,
-  // `workspaces` wins.
   if ("templates" in patch) reconcileTemplates(orm, patch.templates || []);
   if ("workspaces" in patch) reconcileWorkspaces(orm, patch.workspaces || []);
-  else if ("targets" in patch)
-    reconcileWorkspaces(orm, (patch.targets || []).map(workspaceFromTarget), {
-      legacy: true,
-    });
 }
 
 // reconcile a model's records against a desired array, keyed by `keyOf`: update the
@@ -523,10 +483,9 @@ function reconcileRepos(orm, repos) {
   );
 }
 
-// desired = workspace-shaped objects. A legacy patch (mapped from `targets`) carries
-// no `port`: updates leave the record's stable port untouched, and creates allocate
-// the next free one for a worktree-located workspace.
-function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
+// desired = workspace-shaped objects. A migration-produced workspace may carry no
+// `port` — creates then allocate the next free one for a worktree-located workspace.
+function reconcileWorkspaces(orm, desired) {
   reconcile(
     orm,
     Workspace,
@@ -538,7 +497,7 @@ function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
         rec[k].set(d[k]);
       }
       rec.location.set(d.location);
-      if (!legacy) rec.port.set(d.port);
+      if ("port" in w) rec.port.set(d.port); // absent key = keep the stable port
       reconcileCheckouts(orm, w);
     },
     (o, w) => {

@@ -12,7 +12,7 @@
 //            mirror it, and DEFAULT_CONFIG is merged in at read for new keys)
 //   state  = app-recorded: active_workspace, test_history, reviews_*, claude_model
 
-import { BASE_BRANCH_RE, DEFAULT_CONFIG } from "./config.js";
+import { BASE_BRANCH_RE, DEFAULT_CONFIG, SECTIONS } from "./config.js";
 import { PRESETS } from "./presets.js";
 import { worktreeDirFor } from "./utils.js";
 import {
@@ -113,6 +113,16 @@ export function migrateConfigState(config, state) {
     const byName = config.targets.find((t) => t.name === at);
     if (byName) state.active_workspace = byName.id;
   }
+  // tab list hygiene: retired section ids linger in stored configs (harmless — the
+  // sidebar filters unknown ids — but they'd sit there forever). Map the renamed
+  // ones onto their successors and drop the rest.
+  if (Array.isArray(config.tabs)) {
+    const RENAMED = { targets: "templates", worktree: "workspaces" };
+    const seen = new Set();
+    config.tabs = config.tabs
+      .map((t) => (RENAMED[t.id] ? { ...t, id: RENAMED[t.id] } : t))
+      .filter((t) => SECTIONS.includes(t.id) && !seen.has(t.id) && seen.add(t.id));
+  }
   return { config, state };
 }
 
@@ -123,13 +133,15 @@ export function migrateConfigState(config, state) {
 // branches. `targets` stays in the blob — from now on it's the legacy view that
 // toConfig re-emits from the Workspace records.
 export function migrateToWorkspaces(config, state) {
-  // the state-key rename below must reach the server even when the workspace
-  // conversion already ran (a Phase-1 config) — track it as its own change
+  // the state-key rename + tabs cleanup below must reach the server even when the
+  // workspace conversion already ran — track them as their own change
   const renamed = state?.active_workspace === undefined && state?.active_target !== undefined;
+  const tabsBefore = JSON.stringify(config?.tabs ?? null);
   ({ config, state } = migrateConfigState(config, state));
+  const cleaned = renamed || JSON.stringify(config.tabs ?? null) !== tabsBefore;
   const targets = Array.isArray(config.targets) ? config.targets : [];
   if ((Array.isArray(config.workspaces) && config.workspaces.length) || !targets.length) {
-    return { config, state, changed: renamed };
+    return { config, state, changed: cleaned };
   }
   // 8069 = the main server; 8072 = its default gevent port — both off-limits
   const used = new Set(RESERVED_PORTS);
@@ -159,7 +171,10 @@ export function migrateToWorkspaces(config, state) {
       demo_data: t.demo_data ?? true,
       checkouts: t.checkouts,
     }));
-  return { config: { ...config, workspaces, templates }, state, changed: true };
+  // the consumed legacy list is dropped from the persisted blob (toConfig never
+  // re-emits it; merge() only re-injects DEFAULT's transient copy in memory)
+  const { targets: _consumed, ...rest } = config;
+  return { config: { ...rest, workspaces, templates }, state, changed: true };
 }
 
 // the one normalization every external {config, state} blob goes through before it
@@ -339,13 +354,7 @@ export class ConfigPlugin extends Plugin {
     this._schedule();
   }
 
-  // record accessors, so consumers holding an id can call the models' own methods.
-  // `target(id)` is the legacy name the current screens use; it returns the Workspace
-  // record (old target ids ARE workspace ids), same methods as the old Target model.
-  target(id) {
-    return this.orm.getById(Workspace, id);
-  }
-
+  // record accessors, so consumers holding an id can call the models' own methods
   workspace(id) {
     return this.orm.getById(Workspace, id);
   }

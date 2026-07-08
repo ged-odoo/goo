@@ -141,7 +141,7 @@ export class ServerPlugin extends Plugin {
   }
 
   _hasTarget(targetId) {
-    return !!this.config.config.targets.find((t) => t.id === targetId);
+    return !!(this.config.config.workspaces || []).find((w) => w.id === targetId);
   }
 
   // fetch the live status once, synchronously, before the first render — the SSE
@@ -169,7 +169,7 @@ export class ServerPlugin extends Plugin {
   }
 
   _targetName(id) {
-    return this.config.config.targets.find((t) => t.id === id)?.name || id;
+    return (this.config.config.workspaces || []).find((w) => w.id === id)?.name || id;
   }
 
   setLastTarget(id) {
@@ -250,7 +250,7 @@ export class ServerPlugin extends Plugin {
   // user to confirm — starting with different branches is a valid use case.
   // Returns true to proceed, false if the user cancelled.
   async _confirmBranches(targetId) {
-    const target = this.config.config.targets.find((t) => t.id === targetId);
+    const target = (this.config.config.workspaces || []).find((w) => w.id === targetId);
     if (!target) return true;
     // we only need this target's repos' current branch to compare against what it
     // wants — read just those (local git, a few subprocesses). A full code.load()

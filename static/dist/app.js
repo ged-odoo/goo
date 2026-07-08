@@ -2334,7 +2334,7 @@ var ServerPlugin = class extends Plugin {
     return otherArgs == null ? {} : { other_args: otherArgs };
   }
   _hasTarget(targetId) {
-    return !!this.config.config.targets.find((t2) => t2.id === targetId);
+    return !!(this.config.config.workspaces || []).find((w) => w.id === targetId);
   }
   // fetch the live status once, synchronously, before the first render — the SSE
   // delivers it too, but only after connecting, which leaves a "stopped" flash
@@ -2357,7 +2357,7 @@ var ServerPlugin = class extends Plugin {
     return this.pending() === "start" ? "starting" : this.status().state;
   }
   _targetName(id) {
-    return this.config.config.targets.find((t2) => t2.id === id)?.name || id;
+    return (this.config.config.workspaces || []).find((w) => w.id === id)?.name || id;
   }
   setLastTarget(id) {
     this.activeTarget.set(id);
@@ -2426,7 +2426,7 @@ var ServerPlugin = class extends Plugin {
   // user to confirm — starting with different branches is a valid use case.
   // Returns true to proceed, false if the user cancelled.
   async _confirmBranches(targetId) {
-    const target = this.config.config.targets.find((t2) => t2.id === targetId);
+    const target = (this.config.config.workspaces || []).find((w) => w.id === targetId);
     if (!target) return true;
     await this.code.loadBranches(new Set((target.checkouts || []).map((c) => c.repo)));
     const off = this.store.targetView(target).checkouts.filter((c) => c.current !== void 0 && !c.matches);
@@ -2603,20 +2603,12 @@ var Workspace = class extends Model {
   // stable server port (worktree only; 0 = none/main)
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
   // ── derivations (pure — this + this.orm) ─────────────────────────────────────
-  // "repo:branch, …" — the human-readable checkout list
-  checkoutsLabel() {
-    return this.checkouts().map((c) => `${c.repository().id}:${c.branch()}`).join(", ");
-  }
   // the explicit `location` marks a worktree, falling back to `worktree` metadata presence
   isWorktree() {
     return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
   }
   hasCommunity() {
     return this.checkouts().some((c) => c.repository().id === "community");
-  }
-  // the repo ids this workspace checks out
-  repoIds() {
-    return this.checkouts().map((c) => c.repository().id);
   }
   // the worktree's on-disk directory: the value frozen at creation (worktree.dir),
   // else derived from <settings.worktree_dir>/<name>. Persisting it means a later
@@ -2721,21 +2713,6 @@ function workspaceFromTarget(t2) {
     worktree: t2.worktree ?? null,
     checkouts: t2.checkouts || []
   };
-}
-function targetFromWorkspace(w) {
-  const tgt = {
-    id: w.id,
-    name: w.name(),
-    favorite: w.favorite(),
-    db: w.db(),
-    on_create_args: w.on_create_args(),
-    demo_data: w.demo_data(),
-    kind: w.isWorktree() ? "worktree" : "plain",
-    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }))
-  };
-  const wt = w.worktree();
-  if (wt) tgt.worktree = wt;
-  return tgt;
 }
 var RESERVED_PORTS = [8069, 8072];
 function nextFreePort(orm) {
@@ -2851,7 +2828,6 @@ function toConfig(orm) {
     demo_data: t2.demo_data(),
     checkouts: t2.checkouts() || []
   }));
-  out.targets = workspaces.map(targetFromWorkspace);
   return out;
 }
 function toState(orm) {
@@ -2872,10 +2848,6 @@ function applyPatch(orm, patch) {
   if ("repos" in patch) reconcileRepos(orm, patch.repos || []);
   if ("templates" in patch) reconcileTemplates(orm, patch.templates || []);
   if ("workspaces" in patch) reconcileWorkspaces(orm, patch.workspaces || []);
-  else if ("targets" in patch)
-    reconcileWorkspaces(orm, (patch.targets || []).map(workspaceFromTarget), {
-      legacy: true
-    });
 }
 function reconcile(orm, Cls, desired, keyOf, update, create) {
   const have = new Map(orm.records(Cls).map((rec) => [rec.id, rec]));
@@ -2902,7 +2874,7 @@ function reconcileRepos(orm, repos) {
     createRepo
   );
 }
-function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
+function reconcileWorkspaces(orm, desired) {
   reconcile(
     orm,
     Workspace,
@@ -2914,7 +2886,7 @@ function reconcileWorkspaces(orm, desired, { legacy = false } = {}) {
         rec[k].set(d[k]);
       }
       rec.location.set(d.location);
-      if (!legacy) rec.port.set(d.port);
+      if ("port" in w) rec.port.set(d.port);
       reconcileCheckouts(orm, w);
     },
     (o, w) => {
@@ -3036,14 +3008,21 @@ function migrateConfigState(config, state) {
     const byName = config.targets.find((t2) => t2.name === at);
     if (byName) state.active_workspace = byName.id;
   }
+  if (Array.isArray(config.tabs)) {
+    const RENAMED = { targets: "templates", worktree: "workspaces" };
+    const seen = /* @__PURE__ */ new Set();
+    config.tabs = config.tabs.map((t2) => RENAMED[t2.id] ? { ...t2, id: RENAMED[t2.id] } : t2).filter((t2) => SECTIONS.includes(t2.id) && !seen.has(t2.id) && seen.add(t2.id));
+  }
   return { config, state };
 }
 function migrateToWorkspaces(config, state) {
   const renamed = state?.active_workspace === void 0 && state?.active_target !== void 0;
+  const tabsBefore = JSON.stringify(config?.tabs ?? null);
   ({ config, state } = migrateConfigState(config, state));
+  const cleaned = renamed || JSON.stringify(config.tabs ?? null) !== tabsBefore;
   const targets = Array.isArray(config.targets) ? config.targets : [];
   if (Array.isArray(config.workspaces) && config.workspaces.length || !targets.length) {
-    return { config, state, changed: renamed };
+    return { config, state, changed: cleaned };
   }
   const used = new Set(RESERVED_PORTS);
   const workspaces = targets.map((t2) => {
@@ -3069,7 +3048,8 @@ function migrateToWorkspaces(config, state) {
     demo_data: t2.demo_data ?? true,
     checkouts: t2.checkouts
   }));
-  return { config: { ...config, workspaces, templates }, state, changed: true };
+  const { targets: _consumed, ...rest } = config;
+  return { config: { ...rest, workspaces, templates }, state, changed: true };
 }
 function normalizeConfigState(config, state) {
   const { config: c, state: s } = migrateToWorkspaces(config, state);
@@ -3211,12 +3191,7 @@ var ConfigPlugin = class extends Plugin {
     this._dirty.config = true;
     this._schedule();
   }
-  // record accessors, so consumers holding an id can call the models' own methods.
-  // `target(id)` is the legacy name the current screens use; it returns the Workspace
-  // record (old target ids ARE workspace ids), same methods as the old Target model.
-  target(id) {
-    return this.orm.getById(Workspace, id);
-  }
+  // record accessors, so consumers holding an id can call the models' own methods
   workspace(id) {
     return this.orm.getById(Workspace, id);
   }
@@ -3374,23 +3349,23 @@ var WorktreePlugin = class extends Plugin {
     this.load();
   }
   // ── which targets are worktrees ──────────────────────────────────────────────
-  // the explicit `kind` marks a worktree; fall back to the presence of the
-  // `worktree` metadata object for any target not yet carrying a kind.
+  // canonical records carry `location`; the metadata-object fallback covers a
+  // transient (not-yet-persisted) spec passed by the create flow.
   isWorktree(tgt) {
     if (!tgt) return false;
-    const rec = this.config.target(tgt.id);
+    const rec = this.config.workspace(tgt.id);
     if (rec) return rec.isWorktree();
-    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree";
+    return (tgt.location || (tgt.worktree ? "worktree" : "main")) === "worktree";
   }
   worktreeTargets() {
-    return (this.config.config.targets || []).filter((t2) => this.isWorktree(t2));
+    return (this.config.config.workspaces || []).filter((w) => this.isWorktree(w));
   }
   selected() {
     return this.worktreeTargets().find((t2) => t2.id === this.selectedId()) || null;
   }
   select(id) {
     this.selectedId.set(id);
-    if (id && this.isWorktree(this.config.config.targets.find((t2) => t2.id === id)))
+    if (id && this.isWorktree((this.config.config.workspaces || []).find((w) => w.id === id)))
       this._primeLogs(id);
   }
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)
@@ -3408,12 +3383,12 @@ var WorktreePlugin = class extends Plugin {
   // (worktree.dir), else derived from the name. Persisting it means a later rename
   // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
   dirPath(tgt) {
-    const rec = this.config.target(tgt.id);
+    const rec = this.config.workspace(tgt.id);
     if (rec) return rec.dirPath();
     return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt);
   }
   hasCommunity(tgt) {
-    const rec = this.config.target(tgt.id);
+    const rec = this.config.workspace(tgt.id);
     if (rec) return rec.hasCommunity();
     return (tgt.checkouts || []).some((c) => c.repo === "community");
   }
@@ -3490,7 +3465,7 @@ var WorktreePlugin = class extends Plugin {
   // ── create ─────────────────────────────────────────────────────────────────
   _newId(seed) {
     const base = "wt-" + (seed || "wt").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
-    const taken = new Set((this.config.config.targets || []).map((t2) => t2.id));
+    const taken = new Set((this.config.config.workspaces || []).map((w) => w.id));
     let id = base;
     let n = 2;
     while (taken.has(id)) id = `${base}-${n++}`;
@@ -4485,8 +4460,8 @@ var BranchesScreen = class extends Component {
     if (this.deleteBlocked(r)) return;
     const canRemote = r.remote && !r.base;
     const hasPr = !!(r.pr && r.pr.state === "open" && r.github);
-    const targets = this.config.config.targets.filter(
-      (t2) => (t2.checkouts || []).some((c) => c.repo === r.repo && c.branch === r.branch)
+    const targets = (this.config.config.workspaces || []).filter(
+      (w) => (w.checkouts || []).some((c) => c.repo === r.repo && c.branch === r.branch)
     );
     const fields2 = [];
     if (canRemote)
@@ -4507,7 +4482,7 @@ var BranchesScreen = class extends Component {
       fields2.push({
         key: `tgt:${t2.id}`,
         type: "checkbox",
-        label: `Delete target "${t2.name}"`,
+        label: `Delete workspace "${t2.name}"`,
         value: false
       });
     const res = await this.dialogs.open({
@@ -4522,9 +4497,9 @@ var BranchesScreen = class extends Component {
     const drop = targets.filter((t2) => res[`tgt:${t2.id}`]);
     if (drop.length) {
       const ids = new Set(drop.map((t2) => t2.id));
-      for (const t2 of drop) this.code.eventLog.add(`deleting target ${t2.name}`);
+      for (const t2 of drop) this.code.eventLog.add(`deleting workspace ${t2.name}`);
       this.config.updateConfig({
-        targets: this.config.config.targets.filter((t2) => !ids.has(t2.id))
+        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id))
       });
     }
   }
@@ -4918,11 +4893,13 @@ var CodeScreen = class extends Component {
   get errors() {
     return this.code.groups().errors;
   }
-  // repo ids shown by the strip — favorite repos plus the current target's repos.
+  // repo ids shown by the strip — favorite repos plus the current workspace's repos.
   // Narrow both the branch and PR fetch to these (the only repos this screen shows).
   _repoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
+    const current = (this.config.config.workspaces || []).find(
+      (w) => w.id === this.server.lastTarget()
+    );
     for (const c of current?.checkouts || []) ids.add(c.repo);
     return ids;
   }
@@ -4930,12 +4907,14 @@ var CodeScreen = class extends Component {
     const ids = this._repoIds();
     this.code.load(force, ids, ids);
   }
-  // repositories shown in the strip: union of the active target's repos and the
+  // repositories shown in the strip: union of the active workspace's repos and the
   // favorite repositories, in config order
   get favRepos() {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
-    const currentTarget = this.config.config.targets.find((t2) => t2.id === this.server.lastTarget());
+    const currentTarget = (this.config.config.workspaces || []).find(
+      (w) => w.id === this.server.lastTarget()
+    );
     const visibleIds = /* @__PURE__ */ new Set([
       ...(currentTarget?.checkouts || []).map((c) => c.repo),
       ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id)
@@ -5742,9 +5721,9 @@ var SPECS = {
       if (!repos.find((r) => r.id === "community"))
         return 'a "community" repository is required (odoo-bin lives there)';
       const ids = new Set(repos.map((r) => r.id));
-      for (const t2 of config.targets) {
-        const used = (t2.checkouts || []).find((c) => !ids.has(c.repo));
-        if (used) return `repository "${used.repo}" is still used by target "${t2.name}"`;
+      for (const w of config.workspaces || []) {
+        const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
+        if (used) return `repository "${used.repo}" is still used by workspace "${w.name}"`;
       }
       return null;
     }
@@ -8885,7 +8864,7 @@ var ServerScreen = class extends Component {
     });
   }
   get targets() {
-    return this.config.config.targets;
+    return this.config.config.workspaces || [];
   }
   // last used target id if it still exists, else the first one
   _initialTarget() {

@@ -83,7 +83,7 @@ export class ServerScreen extends Component {
   }
 
   get targets() {
-    return this.config.config.targets;
+    return this.config.config.workspaces || [];
   }
 
   // last used target id if it still exists, else the first one

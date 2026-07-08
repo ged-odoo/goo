@@ -41,17 +41,17 @@ export class WorktreePlugin extends Plugin {
   }
 
   // ── which targets are worktrees ──────────────────────────────────────────────
-  // the explicit `kind` marks a worktree; fall back to the presence of the
-  // `worktree` metadata object for any target not yet carrying a kind.
+  // canonical records carry `location`; the metadata-object fallback covers a
+  // transient (not-yet-persisted) spec passed by the create flow.
   isWorktree(tgt) {
     if (!tgt) return false;
-    const rec = this.config.target(tgt.id);
-    if (rec) return rec.isWorktree(); // logic lives on the Target model
-    return (tgt.kind || (tgt.worktree ? "worktree" : "plain")) === "worktree"; // transient
+    const rec = this.config.workspace(tgt.id);
+    if (rec) return rec.isWorktree(); // logic lives on the Workspace model
+    return (tgt.location || (tgt.worktree ? "worktree" : "main")) === "worktree"; // transient
   }
 
   worktreeTargets() {
-    return (this.config.config.targets || []).filter((t) => this.isWorktree(t));
+    return (this.config.config.workspaces || []).filter((w) => this.isWorktree(w));
   }
 
   selected() {
@@ -62,7 +62,7 @@ export class WorktreePlugin extends Plugin {
     this.selectedId.set(id);
     // only worktree workspaces have a per-server tail to prime (a main-located
     // workspace's log is the shared main-server buffer)
-    if (id && this.isWorktree(this.config.config.targets.find((t) => t.id === id)))
+    if (id && this.isWorktree((this.config.config.workspaces || []).find((w) => w.id === id)))
       this._primeLogs(id);
   }
 
@@ -83,13 +83,13 @@ export class WorktreePlugin extends Plugin {
   // (worktree.dir), else derived from the name. Persisting it means a later rename
   // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
   dirPath(tgt) {
-    const rec = this.config.target(tgt.id);
+    const rec = this.config.workspace(tgt.id);
     if (rec) return rec.dirPath(); // logic lives on the Target model
     return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt); // transient
   }
 
   hasCommunity(tgt) {
-    const rec = this.config.target(tgt.id);
+    const rec = this.config.workspace(tgt.id);
     if (rec) return rec.hasCommunity();
     return (tgt.checkouts || []).some((c) => c.repo === "community"); // transient
   }
@@ -187,7 +187,7 @@ export class WorktreePlugin extends Plugin {
         .replace(/[^a-zA-Z0-9._-]+/g, "-")
         .replace(/^-+|-+$/g, "")
         .toLowerCase();
-    const taken = new Set((this.config.config.targets || []).map((t) => t.id));
+    const taken = new Set((this.config.config.workspaces || []).map((w) => w.id));
     let id = base;
     let n = 2;
     while (taken.has(id)) id = `${base}-${n++}`;
