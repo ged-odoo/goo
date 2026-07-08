@@ -1,10 +1,11 @@
 import { Component, plugin, props, signal, t, xml } from "@odoo/owl";
 import { PRESETS } from "../core/presets.js";
-import { ConfigPlugin } from "../core/config_plugin.js";
+import { ConfigPlugin, newWorkspaceId } from "../core/config_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { UpdatePlugin } from "../core/update_plugin.js";
 import { ICONS, NAV, m, mergedTabIds } from "../core/common.js";
+import { repoBranchList } from "../core/utils.js";
 import { Panel } from "../core/panel.js";
 
 export class ListEditor extends Component {
@@ -93,6 +94,8 @@ export class ListEditor extends Component {
               : f.format
                 ? f.format(item[f.key])
                 : item[f.key] || "";
+        // non-edited keys that must survive a round-trip (e.g. a record id)
+        for (const k of this.spec.carry || []) r[k] = item[k];
         return r;
       }),
     );
@@ -100,7 +103,7 @@ export class ListEditor extends Component {
 
   addRow() {
     const r = {};
-    for (const f of this.spec.fields) r[f.key] = "";
+    for (const f of this.spec.fields) r[f.key] = f.default ?? "";
     this.rows.set([...this.rows(), r]);
   }
 
@@ -132,6 +135,8 @@ export class ListEditor extends Component {
       seen.add(keyVal);
       const item = {};
       for (const f of this.spec.fields) item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
+      for (const k of this.spec.carry || []) if (row[k]) item[k] = row[k];
+      if (this.spec.prepare) this.spec.prepare(item);
       items.push(item);
     }
     const err = this.spec.validate(items, this.config.config);
@@ -530,6 +535,7 @@ export class ConfigScreen extends Component {
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
+        <ListEditor kind="'templates'"/>
         <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
         <div class="config-block">
@@ -733,6 +739,46 @@ export const SPECS = {
         const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by workspace "${w.name}"`;
       }
+      return null;
+    },
+  },
+  templates: {
+    key: "templates",
+    title: "Workspace templates",
+    itemName: "template",
+    reorderable: true, // drag the handle to reorder how templates appear in the New-workspace dialog
+    carry: ["id"], // reconcile keys templates by id — edits must not mint new records
+    prepare(item) {
+      if (!item.id) item.id = newWorkspaceId(); // a freshly added row
+    },
+    fields: [
+      { key: "name", name: "name", placeholder: "name (e.g. master)", className: "w-name" },
+      {
+        key: "checkouts",
+        name: "config",
+        placeholder: "community:master,enterprise:master",
+        className: "w-flex",
+        format: repoBranchList.format,
+        parse: repoBranchList.parse,
+      },
+      { key: "db", name: "database", placeholder: "database", className: "w-name", optional: true },
+      {
+        key: "on_create_args",
+        name: "start args",
+        placeholder: "-i sale_management",
+        className: "w-name",
+        optional: true,
+      },
+      {
+        key: "demo_data",
+        name: "demo data",
+        type: "checkbox",
+        optional: true,
+        default: true,
+        title: "load demo data when a workspace created from this template makes its database",
+      },
+    ],
+    validate() {
       return null;
     },
   },

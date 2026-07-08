@@ -2572,13 +2572,6 @@ a.dash-ci:hover {
   color: var(--l-amber);
   fill: currentColor;
 }
-/* the target name doubles as a drag handle for reordering */
-.tgt-name-handle {
-  cursor: grab;
-}
-.tgt-name-handle:active {
-  cursor: grabbing;
-}
 .br-table tr.dragging {
   opacity: 0.4;
 }

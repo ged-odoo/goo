@@ -117,7 +117,7 @@ export function migrateConfigState(config, state) {
   // sidebar filters unknown ids — but they'd sit there forever). Map the renamed
   // ones onto their successors and drop the rest.
   if (Array.isArray(config.tabs)) {
-    const RENAMED = { targets: "templates", worktree: "workspaces" };
+    const RENAMED = { worktree: "workspaces" }; // retired ids just drop below
     const seen = new Set();
     config.tabs = config.tabs
       .map((t) => (RENAMED[t.id] ? { ...t, id: RENAMED[t.id] } : t))

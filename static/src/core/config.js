@@ -117,7 +117,6 @@ export const SECTIONS = [
   "prs",
   "reviews",
   "databases",
-  "templates",
   "nightly",
   "memory",
   "config",

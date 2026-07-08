@@ -8,7 +8,8 @@ import { Plugin, signal } from "@odoo/owl";
 // retired sections redirect: old bookmarks/bundles keep working
 const ALIASES = {
   worktree: "workspaces",
-  targets: "templates",
+  targets: "config", // template management lives on the Configuration screen
+  templates: "config",
   tests: "workspaces",
   assets: "workspaces",
   addons: "workspaces",
