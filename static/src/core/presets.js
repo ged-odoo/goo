@@ -7,18 +7,15 @@
 //   - Simple — the defaults with the PRs/Reviews/Tests tabs hidden, no venv.
 //   - GED    — Géry's personal config (repos incl. owl, his targets/links, venv).
 
-// Simple: the default config plus a tabs override hiding prs/reviews/tests/assets.
+// Simple: the default config plus a tabs override hiding prs/reviews.
 // Only the override is stored; everything else falls back to DEFAULT_CONFIG.
 const SIMPLE_TABS = [
   { id: "dashboard", visible: true },
   { id: "templates", visible: true },
   { id: "server", visible: true },
-  { id: "tests", visible: false },
   { id: "branches", visible: true },
   { id: "prs", visible: false },
   { id: "reviews", visible: false },
-  { id: "assets", visible: false },
-  { id: "addons", visible: true },
   { id: "databases", visible: true },
   { id: "config", visible: true },
 ];
@@ -128,11 +125,9 @@ const GED_CONFIG = {
     { id: "templates", visible: true },
     { id: "server", visible: true },
     { id: "workspaces", visible: true },
-    { id: "tests", visible: true },
     { id: "branches", visible: true },
     { id: "prs", visible: true },
     { id: "reviews", visible: true },
-    { id: "addons", visible: true },
     { id: "databases", visible: true },
     { id: "config", visible: true },
   ],

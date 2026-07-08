@@ -444,6 +444,15 @@ export class WorkspacesScreen extends Component {
       const ids = new Set((ws.checkouts || []).map((c) => c.repo));
       if (ids.size) this.code.loadBranches(ids);
     });
+    // consume the event log's one-shot pane request (its [jump] selects the
+    // workspace and sets this before navigating here — the plugin holds it so it
+    // survives this screen not being mounted at dispatch time)
+    useEffect(() => {
+      const pane = this.wt.requestedPane();
+      if (!pane) return;
+      this.pane.set(pane);
+      this.wt.requestedPane.set(""); // one re-run with "" then settles
+    });
   }
 
   // ── list / selection ─────────────────────────────────────────────────────────

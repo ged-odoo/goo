@@ -1,9 +1,7 @@
 // Browse a workspace's modules and install/upgrade one on its server slot.
 // State is PER SLOT ("main" | a worktree workspace id): each slot has its own
-// module list, console and status, so the Workspaces pane can browse a worktree
-// workspace's checkout (its own addons paths + db) while the standalone Addons
-// screen keeps following the active target on the main slot — the old flat
-// public surface (output/modules/status/running/…) aliases the main slot.
+// module list, console and status, so the Addons pane can browse a worktree
+// workspace's checkout (its own addons paths + db) while another slot runs.
 
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
@@ -56,43 +54,6 @@ export class AddonsPlugin extends Plugin {
     return this._slots.get(id);
   }
 
-  // ── main-slot aliases (the standalone Addons screen reads these) ─────────────
-  get output() {
-    return this.slot("main").output;
-  }
-
-  get modules() {
-    return this.slot("main").modules;
-  }
-
-  get loadedDb() {
-    return this.slot("main").loadedDb;
-  }
-
-  get erroredDb() {
-    return this.slot("main").erroredDb;
-  }
-
-  get loading() {
-    return this.slot("main").loading;
-  }
-
-  get error() {
-    return this.slot("main").error;
-  }
-
-  get status() {
-    return this.slot("main").status;
-  }
-
-  get filtered() {
-    return this.slot("main").filtered;
-  }
-
-  get running() {
-    return this.currentRun()?.state === "running";
-  }
-
   runningFor(slotId) {
     return this.currentRun(slotId)?.state === "running";
   }
@@ -133,42 +94,25 @@ export class AddonsPlugin extends Plugin {
     return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
   }
 
-  // the active target: the running server's target, else the last one used
-  // (the standalone screen's main-slot oracle)
-  _activeTarget() {
-    const id = this.server.status().target || this.server.lastTarget();
-    return this.config.config.targets.find((t) => t.id === id) || null;
-  }
-
-  targetName() {
-    return this._activeTarget()?.name || "";
-  }
-
-  targetDb() {
-    return this._activeTarget()?.db || "";
-  }
-
   // a workspace's repos as {id, path}: a worktree workspace's own checkout copies,
-  // else the main checkout paths of the workspace's (or active target's) checkouts —
-  // the addons-path used to list + install, so only its modules are ever shown
+  // else the main checkout paths of its checkouts — the addons-path used to list +
+  // install, so only its modules are ever shown
   _reposFor(ws) {
-    if (ws && ws.location === "worktree") {
+    if (ws.location === "worktree") {
       return this.worktree.wtRepos(ws).map((r) => ({ id: r.repo, path: r.worktreePath }));
     }
-    const target = ws || this._activeTarget();
-    if (!target) return [];
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    return (target.checkouts || [])
+    return (ws.checkouts || [])
       .map((c) => ({ id: c.repo, path: pathById[c.repo] }))
       .filter((r) => r.path);
   }
 
-  // load a slot's module list: ws omitted = the standalone screen's main path
-  // (active target's db); a workspace loads its own db + repos into its slot
-  async load(ws = null) {
+  // load a workspace's module list (own db + repos) into its slot
+  async load(ws) {
+    if (!ws) return;
     const slotId = slotFor(ws);
     const s = this.slot(slotId);
-    const db = ws ? ws.db : this.targetDb();
+    const db = ws.db;
     s.lastWs = ws;
     if (!db) {
       s.modules.set([]);
@@ -182,13 +126,11 @@ export class AddonsPlugin extends Plugin {
       const data = await postJSON("/api/addons", { repos: this._reposFor(ws), db });
       // latest wins: if the slot's db changed mid-flight, this result is stale —
       // drop it rather than show one db's modules under another's header.
-      const want = s.lastWs ? s.lastWs.db : this.targetDb();
-      if (want !== db) return;
+      if (s.lastWs?.db !== db) return;
       s.modules.set(data.modules);
       s.loadedDb.set(db);
     } catch (e) {
-      const want = s.lastWs ? s.lastWs.db : this.targetDb();
-      if (want !== db) return;
+      if (s.lastWs?.db !== db) return;
       s.error.set(e.message);
       s.erroredDb.set(db); // remember the failure so the effect doesn't re-fire forever
     } finally {
@@ -241,13 +183,13 @@ export class AddonsPlugin extends Plugin {
     }
   }
 
-  // install/upgrade a module: on the main slot (standalone screen, ws omitted) or
-  // a workspace's slot
-  async run(op, name, ws = null) {
+  // install/upgrade a module on a workspace's slot
+  async run(op, name, ws) {
+    if (!ws) return;
     const slotId = slotFor(ws);
-    const target = ws || this._activeTarget();
-    const db = ws ? ws.db : this.targetDb();
-    if (!target || !db) return;
+    const target = ws;
+    const db = ws.db;
+    if (!db) return;
     const s = this.slot(slotId);
     const verb = op === "upgrade" ? "Upgrade" : "Install";
     const ok = await this.dialogs.open({

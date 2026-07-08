@@ -9,8 +9,6 @@ import { ServerPlugin } from "./server_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
 import { WorktreePlugin } from "./worktree_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
-import { AddonsScreen } from "../addons_screen/addons.js";
-import { AssetsScreen } from "../assets_screen/assets.js";
 import { BranchesScreen } from "../branches_screen/branches.js";
 import { CodeScreen } from "../code_screen/code.js";
 import { DirtyMenu, ICONS, NAV, m, mergedTabIds } from "./common.js";
@@ -25,7 +23,6 @@ import { PrsScreen } from "../prs_screen/prs.js";
 import { ServerScreen } from "../server_screen/server.js";
 import { TemplatesScreen } from "../templates_screen/templates.js";
 import { TerminalPanel } from "./terminal.js";
-import { TestsScreen } from "../tests_screen/tests.js";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
 
 export class Topbar extends Component {
@@ -263,10 +260,7 @@ export const SCREENS = {
   // back-compat: old #reviews bookmarks render the merged PRs screen, which opens
   // on its Reviewing segment (PrsScreen seeds its mode from the route)
   reviews: PrsScreen,
-  tests: TestsScreen,
   databases: DatabasesScreen,
-  assets: AssetsScreen,
-  addons: AddonsScreen,
   nightly: NightlyScreen,
   memory: MemoryScreen,
   config: ConfigScreen,
@@ -283,10 +277,7 @@ export class App extends Component {
     TemplatesScreen,
     BranchesScreen,
     PrsScreen,
-    TestsScreen,
     DatabasesScreen,
-    AssetsScreen,
-    AddonsScreen,
     NightlyScreen,
     MemoryScreen,
     ConfigScreen,

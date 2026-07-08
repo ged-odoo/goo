@@ -1,10 +1,8 @@
 // Run `odoo-bin --test-tags …` against a workspace's server slot. State is kept
 // PER SLOT ("main" | a worktree workspace id): each slot has its own console
 // buffer, status badge and capture window, so a worktree run and a main run can
-// stream concurrently without corrupting each other. The main slot keeps the old
-// flat public surface (output/status/running/…) so the standalone Tests screen
-// and the event log are unchanged; the Workspaces screen's Tests pane passes a
-// workspace to address its slot.
+// stream concurrently without corrupting each other. The Workspaces screen's
+// Tests pane passes a workspace to address its slot.
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
@@ -56,17 +54,9 @@ export class TestsPlugin extends Plugin {
     return this._slots.get(id);
   }
 
-  // ── main-slot aliases (the standalone Tests screen + event log read these) ────
+  // main-slot console alias — the event log's [jump] pins its autoscroll
   get output() {
     return this.slot("main").output;
-  }
-
-  get status() {
-    return this.slot("main").status;
-  }
-
-  get running() {
-    return this.currentRun()?.state === "running";
   }
 
   runningFor(slotId) {
@@ -85,16 +75,6 @@ export class TestsPlugin extends Plugin {
     const h = [tag, ...this.history().filter((t) => t !== tag)].slice(0, HISTORY_MAX);
     this.history.set(h);
     this.config.setState("test_history", h);
-  }
-
-  // the target id main-slot tests run against: the running/starting server's target,
-  // else the last-used one, else the first configured workspace (the standalone
-  // screen's oracle; the Workspaces pane passes its workspace explicitly)
-  get target() {
-    const targets = this.config.config.targets;
-    const candidate = this.server.status().target || this.server.lastTarget();
-    if (targets.some((t) => t.id === candidate)) return candidate;
-    return targets[0]?.id || "";
   }
 
   // the current/last test run on a slot (backend-minted, from the shared store)
@@ -140,8 +120,8 @@ export class TestsPlugin extends Plugin {
       s.capturing = true;
     if (!s.capturing) return;
     // a failing HOOT test gets a DOM anchor on its row so the event log entry can
-    // scroll the console straight to it (main slot only — the [jump] link targets
-    // the standalone Tests screen; worktree failures get a plain error row)
+    // scroll the console straight to it (main slot only — the [jump] link opens
+    // the loaded workspace's Tests pane; worktree failures get a plain error row)
     const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
     const anchor = failed && slotId === "main" ? `test-fail-${++this._failSeq}` : "";
     s.output.append(line, anchor);
@@ -209,13 +189,11 @@ export class TestsPlugin extends Plugin {
     );
   }
 
-  // run tests: against the main slot (standalone screen, ws omitted) or a
-  // workspace's slot (the Workspaces pane passes its workspace)
-  async run(tags, ws = null) {
-    if (!tags.trim()) return;
+  // run tests against a workspace's slot (the Tests pane passes its workspace)
+  async run(tags, ws) {
+    if (!tags.trim() || !ws) return;
     const slotId = slotFor(ws);
-    const targetId = ws ? ws.id : this.target;
-    if (!targetId) return this.server.log(`[goo] no valid target to test`);
+    const targetId = ws.id;
     const s = this.slot(slotId);
     // a real server is up on the slot; the backend stops it for the one-shot run
     // and resumes it when the run ends (resume-after is backend-owned)

@@ -27,7 +27,10 @@ export class WorktreePlugin extends Plugin {
   code = plugin(CodePlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  selectedId = signal(""); // the worktree selected in the Worktree screen
+  selectedId = signal(""); // the workspace selected in the Workspaces screen
+  // one-shot: a detail pane the Workspaces screen should open on its next render
+  // (set by the event log's [jump] — survives the screen not being mounted yet)
+  requestedPane = signal("");
   logs = new Map(); // targetId -> LogBuffer (per-server scrollback + live stream)
   _startEids = {}; // targetId -> pending "starting worktree server" timed-event id
 

@@ -3,7 +3,6 @@
 // Assets screen; it defaults to the active target's db but isn't tied to it.
 
 import { ConfigPlugin } from "../core/config_plugin.js";
-import { ServerPlugin } from "../core/server_plugin.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
@@ -15,7 +14,6 @@ export class AssetsPlugin extends Plugin {
   static sequence = 6;
 
   config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
   db = plugin(DatabasePlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
@@ -35,13 +33,6 @@ export class AssetsPlugin extends Plugin {
   // disable actions while a load or a generation is in flight
   busy() {
     return this.loading() || this.generating();
-  }
-
-  // the db to inspect by default: the running server's db, else the active target's
-  defaultDb() {
-    const id = this.server.status().target || this.server.lastTarget();
-    const target = this.config.config.targets.find((t) => t.id === id);
-    return this.server.status().db || target?.db || "";
   }
 
   // pick a database and (re)load its bundles; "" clears the list

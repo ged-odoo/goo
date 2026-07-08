@@ -3,6 +3,8 @@ import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
+import { ServerPlugin } from "./server_plugin.js";
+import { WorktreePlugin } from "./worktree_plugin.js";
 import { ICONS, m, useDragResize } from "./common.js";
 
 export class EventLog extends Component {
@@ -32,6 +34,8 @@ export class EventLog extends Component {
   config = plugin(ConfigPlugin);
   router = plugin(RouterPlugin);
   tests = plugin(TestsPlugin);
+  server = plugin(ServerPlugin);
+  worktree = plugin(WorktreePlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true); // follow the tail as new events arrive
@@ -76,11 +80,18 @@ export class EventLog extends Component {
     this.config.updateConfig({ auto_open_event_log: !this.config.config.auto_open_event_log });
   }
 
-  // open the Tests tab and scroll its console to the anchored line. The console
-  // unmounts when off-tab and its element is re-hosted on return, so we wait
-  // (a few frames) for the row to become laid out before revealing it.
+  // open the loaded workspace's Tests pane (anchors are main-slot only) and scroll
+  // its console to the anchored line. The console unmounts when off-pane and its
+  // element is re-hosted on return, so we wait (a few frames) for the row to
+  // become laid out before revealing it.
   jump(anchor) {
-    this.router.go("tests");
+    // anchors are main-slot rows — land on the LOADED workspace's Tests pane
+    const s = this.server.status();
+    const loaded =
+      s.state === "running" || s.state === "starting" ? s.target : this.server.lastTarget();
+    if (loaded) this.worktree.select(loaded);
+    this.worktree.requestedPane.set("tests");
+    this.router.go("workspaces");
     let tries = 0;
     const reveal = () => {
       const row = document.getElementById(anchor);
