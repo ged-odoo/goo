@@ -544,7 +544,7 @@ export class ConfigScreen extends Component {
         </div>
         <div class="config-block">
           <h2 class="subtitle">Danger zone</h2>
-          <p class="dim">Erase every customization (settings, repos, targets, links, favorites, last target, history) and restore the built-in initial config. This cannot be undone.</p>
+          <p class="dim">Erase every customization (settings, repos, workspaces, templates, links, favorites, history) and restore the built-in initial config. This cannot be undone.</p>
           <div class="config-actions">
             <button class="danger" t-on-click="() => this.resetAll()">Reset to initial config</button>
           </div>
@@ -618,7 +618,7 @@ export class ConfigScreen extends Component {
     const ok = await this.dialogs.open({
       title: "Reset the complete config to its initial state?",
       message:
-        "This erases all your customizations (settings, repos, targets, links, favorites, last target, history) and cannot be undone.",
+        "This erases all your customizations (settings, repos, workspaces, templates, links, favorites, history) and cannot be undone.",
       okLabel: "Reset everything",
       cls: "dialog-error",
     });
@@ -632,7 +632,7 @@ export class ConfigScreen extends Component {
     const res = await this.dialogs.open({
       title: "Configuration presets",
       message:
-        "Applying a preset replaces your current configuration (settings, repos, targets, links, tabs, favorites). This cannot be undone.",
+        "Applying a preset replaces your current configuration (settings, repos, workspaces, templates, links, tabs, favorites). This cannot be undone.",
       fields: [
         {
           key: "preset",

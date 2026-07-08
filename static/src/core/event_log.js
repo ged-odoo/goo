@@ -4,7 +4,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { TestsPlugin } from "./tests_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
-import { WorktreePlugin } from "./worktree_plugin.js";
+import { WorkspacePlugin } from "./workspace_plugin.js";
 import { ICONS, m, useDragResize } from "./common.js";
 
 export class EventLog extends Component {
@@ -35,7 +35,7 @@ export class EventLog extends Component {
   router = plugin(RouterPlugin);
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true); // follow the tail as new events arrive
@@ -88,7 +88,7 @@ export class EventLog extends Component {
     // anchors are main-slot rows — land on the LOADED workspace's Tests pane
     const s = this.server.status();
     const loaded =
-      s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
+      s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
     if (loaded) this.worktree.select(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");

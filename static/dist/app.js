@@ -1366,7 +1366,7 @@ var StorePlugin = class extends Plugin {
   // the aggregate the UI orbits: a target joined with its checkouts' live git state
   // (current branch, does it match, dirty), its server, and the one-shot run holding
   // its slot. db/claude are filled in a later step.
-  targetView(tgt) {
+  workspaceView(tgt) {
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
       const rec = this.orm.getById(RepoStatus, repo);
       const current = rec ? rec.current() : void 0;
@@ -2241,14 +2241,14 @@ var ServerPlugin = class extends Plugin {
   gooUpdateListeners = /* @__PURE__ */ new Set();
   // UpdatePlugin refreshes the navbar badge from here
   worktreeListeners = /* @__PURE__ */ new Set();
-  // WorktreePlugin updates per-worktree state from here
+  // WorkspacePlugin updates per-worktree state from here
   claudeListeners = /* @__PURE__ */ new Set();
   // ClaudePlugin appends per-worktree chat items from here
   _startEid = null;
   // pending "starting server" timed event, resolved on the green dot
-  // the active target (last started or activated), server-persisted + reactive. The
+  // the active workspace (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
-  activeTarget = signal(this.config.getState("active_workspace", ""));
+  activeWorkspace = signal(this.config.getState("active_workspace", ""));
   setup() {
     setInterval(() => this.now.set(Date.now()), 1e3);
     this._connect();
@@ -2308,7 +2308,7 @@ var ServerPlugin = class extends Plugin {
       const d = JSON.parse(e.data);
       this.config.applyBroadcast(d);
       const at = (d.state || {}).active_workspace;
-      if (at !== void 0 && at !== this.activeTarget()) this.activeTarget.set(at);
+      if (at !== void 0 && at !== this.activeWorkspace()) this.activeWorkspace.set(at);
     });
     es.addEventListener("event", (e) => {
       const d = JSON.parse(e.data);
@@ -2345,8 +2345,8 @@ var ServerPlugin = class extends Plugin {
     } catch {
     }
   }
-  lastTarget() {
-    return this.activeTarget();
+  lastWorkspace() {
+    return this.activeWorkspace();
   }
   // the state the UI should reflect: an optimistic "start" click reads as
   // "starting" before the backend confirms, so the navbar dot and the favicon
@@ -2357,11 +2357,11 @@ var ServerPlugin = class extends Plugin {
   _targetName(id) {
     return (this.config.config.workspaces || []).find((w) => w.id === id)?.name || id;
   }
-  setLastTarget(id) {
-    this.activeTarget.set(id);
+  setLastWorkspace(id) {
+    this.activeWorkspace.set(id);
     this.config.setState("active_workspace", id);
   }
-  // the command that would launch this target (built by the backend); "" if invalid
+  // the command that would launch this workspace (built by the backend); "" if invalid
   async previewCommand(targetId, otherArgs) {
     if (!this._hasTarget(targetId)) return "";
     try {
@@ -2427,11 +2427,13 @@ var ServerPlugin = class extends Plugin {
     const target = (this.config.config.workspaces || []).find((w) => w.id === targetId);
     if (!target) return true;
     await this.code.loadBranches(new Set((target.checkouts || []).map((c) => c.repo)));
-    const off = this.store.targetView(target).checkouts.filter((c) => c.current !== void 0 && !c.matches);
+    const off = this.store.workspaceView(target).checkouts.filter((c) => c.current !== void 0 && !c.matches);
     if (!off.length) return true;
-    const lines = off.map(({ repo, branch, current }) => `${repo}: on "${current}" \u2014 target wants "${branch}"`).join("\n");
+    const lines = off.map(
+      ({ repo, branch, current }) => `${repo}: on "${current}" \u2014 the workspace wants "${branch}"`
+    ).join("\n");
     const ok = await this.dialogs.open({
-      title: "Branches don't match this target",
+      title: "Branches don't match this workspace",
       message: `The checked-out branches differ from "${this._targetName(targetId)}":
 
 ${lines}
@@ -2443,11 +2445,11 @@ Start with the current branches anyway?`,
     return !!ok;
   }
   async start(targetId, otherArgs) {
-    if (!this._hasTarget(targetId)) return this.log(`[goo] no such target: "${targetId}"`);
+    if (!this._hasTarget(targetId)) return this.log(`[goo] no such workspace: "${targetId}"`);
     this.pending.set("start");
-    this._beginStart(`starting server (target: ${this._targetName(targetId)})`);
+    this._beginStart(`starting server (workspace: ${this._targetName(targetId)})`);
     if (!await this._confirmBranches(targetId)) return this._cancelStart();
-    this.setLastTarget(targetId);
+    this.setLastWorkspace(targetId);
     await this._run(
       "/api/start",
       { workspace: targetId, overrides: this._overrides(otherArgs) },
@@ -2457,9 +2459,9 @@ Start with the current branches anyway?`,
   async restart(targetId, otherArgs) {
     if (!this._hasTarget(targetId)) return;
     this.pending.set("restart");
-    this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
+    this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     if (!await this._confirmBranches(targetId)) return this._cancelStart();
-    this.setLastTarget(targetId);
+    this.setLastWorkspace(targetId);
     await this._run(
       "/api/restart",
       { workspace: targetId, overrides: this._overrides(otherArgs) },
@@ -2469,9 +2471,9 @@ Start with the current branches anyway?`,
   // re-start the server on the last target (e.g. DatabasePlugin stops it for a db op,
   // then resumes). The backend rebuilds the launch config from the target id.
   async resume() {
-    const targetId = this.lastTarget();
+    const targetId = this.lastWorkspace();
     if (!this._hasTarget(targetId)) return;
-    this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
+    this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
   async stop() {
@@ -2639,7 +2641,7 @@ var Workspace = class extends Model {
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
     this._configPlugin().touch();
   }
-  // ── action: stop the server, switch to this target, check out its branches ────
+  // ── action: stop the server, switch to this workspace, check out its branches ─
   async activate() {
     const { server, code, eventLog } = withScope(this, () => ({
       server: plugin(ServerPlugin),
@@ -2656,18 +2658,18 @@ var Workspace = class extends Model {
     }
     const cos = this.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }));
     const s = server.status();
-    const activeId = s.state === "running" || s.state === "starting" ? s.workspace : server.lastTarget();
+    const activeId = s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
     if (this.id === activeId) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
     const pathByRepo = code.groups().pathByRepo;
     const repos = cos.map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch })).filter((r) => r.path);
     const switched = repos.filter((r) => repoMap[r.repo]?.current !== r.branch);
-    eventLog.add(`activating target ${this.name()}`);
+    eventLog.add(`activating workspace ${this.name()}`);
     for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
     const stopping = s.state === "running" || s.state === "starting" ? server.stop() : null;
     await Promise.all([stopping, code.checkout(repos)]);
-    server.setLastTarget(this.id);
+    server.setLastWorkspace(this.id);
   }
 };
 var Checkout = class extends Model {
@@ -2958,7 +2960,7 @@ var STATE_KEYS = {
   "oo-reviews-favorites": "reviews_favorites",
   "oo-claude-model": "claude_model"
 };
-function newTargetId() {
+function newWorkspaceId() {
   return crypto.randomUUID ? crypto.randomUUID() : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 function slugId(name, used) {
@@ -3322,8 +3324,8 @@ var RouterPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/worktree_plugin.js
-var WorktreePlugin = class extends Plugin {
+// static/src/core/workspace_plugin.js
+var WorkspacePlugin = class extends Plugin {
   static sequence = 5;
   config = plugin(ConfigPlugin);
   store = plugin(StorePlugin);
@@ -3357,11 +3359,11 @@ var WorktreePlugin = class extends Plugin {
     if (rec) return rec.isWorktree();
     return (tgt.location || (tgt.worktree ? "worktree" : "main")) === "worktree";
   }
-  worktreeTargets() {
+  worktreeWorkspaces() {
     return (this.config.config.workspaces || []).filter((w) => this.isWorktree(w));
   }
   selected() {
-    return this.worktreeTargets().find((t2) => t2.id === this.selectedId()) || null;
+    return this.worktreeWorkspaces().find((t2) => t2.id === this.selectedId()) || null;
   }
   select(id) {
     this.selectedId.set(id);
@@ -3371,7 +3373,7 @@ var WorktreePlugin = class extends Plugin {
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)
   worktreeBranches() {
     const s = /* @__PURE__ */ new Set();
-    for (const t2 of this.worktreeTargets())
+    for (const t2 of this.worktreeWorkspaces())
       for (const c of t2.checkouts || []) if (c.branch) s.add(c.branch);
     return s;
   }
@@ -3437,7 +3439,10 @@ var WorktreePlugin = class extends Plugin {
   }
   // hydrate existence + current server state for every worktree workspace
   async load() {
-    const workspaces = this.worktreeTargets().map((t2) => ({ id: t2.id, dirPath: this.dirPath(t2) }));
+    const workspaces = this.worktreeWorkspaces().map((t2) => ({
+      id: t2.id,
+      dirPath: this.dirPath(t2)
+    }));
     if (!workspaces.length) return;
     try {
       const res = await postJSON("/api/workspace/list", { workspaces });
@@ -3546,8 +3551,8 @@ var WorktreePlugin = class extends Plugin {
   async startServer(tgt) {
     if (this.running(tgt)) return;
     if (!this.hasCommunity(tgt))
-      return this._error("Cannot start worktree server", "this target has no community repo");
-    const eid = this.eventLog.begin(`starting worktree server (${tgt.name})`);
+      return this._error("Cannot start the server", "this workspace has no community repo");
+    const eid = this.eventLog.begin(`starting server (${tgt.name})`);
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
@@ -3557,11 +3562,11 @@ var WorktreePlugin = class extends Plugin {
       delete this._startEids[tgt.id];
       this.eventLog.finish(eid, "error");
       this._merge(tgt.id, { state: "stopped" });
-      this._error("Could not start the worktree server", e.message);
+      this._error("Could not start the server", e.message);
     }
   }
   async stopServer(tgt) {
-    this.eventLog.add(`stopping worktree server (${tgt.name})`);
+    this.eventLog.add(`stopping server (${tgt.name})`);
     this._merge(tgt.id, { state: "stopping" });
     try {
       await postJSON("/api/workspace/stop", { workspace: tgt.id });
@@ -3575,9 +3580,12 @@ var WorktreePlugin = class extends Plugin {
   }
   async remove(tgt) {
     if (this.running(tgt))
-      return this._error("Stop the server first", "Stop the worktree server before removing it.");
+      return this._error(
+        "Stop the server first",
+        "Stop the workspace's server before removing it."
+      );
     const res = await this.dialogs.open({
-      title: `Remove worktree "${tgt.name}"?`,
+      title: `Remove workspace "${tgt.name}"?`,
       message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.`,
       fields: [
         { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false }
@@ -3590,7 +3598,7 @@ var WorktreePlugin = class extends Plugin {
       mainPath,
       worktreePath
     }));
-    this.eventLog.add(`removing worktree ${tgt.name}`);
+    this.eventLog.add(`removing workspace ${tgt.name} (worktree)`);
     try {
       await postJSON("/api/workspace/remove", {
         workspace: tgt.id,
@@ -4245,7 +4253,7 @@ async function pushBranchesDialog(code, dialogs, branches, { title, message, for
 // static/src/branches_screen/branches.js
 var BranchesScreen = class extends Component {
   static components = { SearchBox, DirtyBadge, Panel };
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
@@ -4898,7 +4906,7 @@ var CodeScreen = class extends Component {
   _repoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
     const current = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastTarget()
+      (w) => w.id === this.server.lastWorkspace()
     );
     for (const c of current?.checkouts || []) ids.add(c.repo);
     return ids;
@@ -4913,7 +4921,7 @@ var CodeScreen = class extends Component {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
     const currentTarget = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastTarget()
+      (w) => w.id === this.server.lastWorkspace()
     );
     const visibleIds = /* @__PURE__ */ new Set([
       ...(currentTarget?.checkouts || []).map((c) => c.repo),
@@ -5558,7 +5566,7 @@ var ConfigScreen = class extends Component {
         </div>
         <div class="config-block">
           <h2 class="subtitle">Danger zone</h2>
-          <p class="dim">Erase every customization (settings, repos, targets, links, favorites, last target, history) and restore the built-in initial config. This cannot be undone.</p>
+          <p class="dim">Erase every customization (settings, repos, workspaces, templates, links, favorites, history) and restore the built-in initial config. This cannot be undone.</p>
           <div class="config-actions">
             <button class="danger" t-on-click="() => this.resetAll()">Reset to initial config</button>
           </div>
@@ -5624,7 +5632,7 @@ var ConfigScreen = class extends Component {
   async resetAll() {
     const ok = await this.dialogs.open({
       title: "Reset the complete config to its initial state?",
-      message: "This erases all your customizations (settings, repos, targets, links, favorites, last target, history) and cannot be undone.",
+      message: "This erases all your customizations (settings, repos, workspaces, templates, links, favorites, history) and cannot be undone.",
       okLabel: "Reset everything",
       cls: "dialog-error"
     });
@@ -5636,7 +5644,7 @@ var ConfigScreen = class extends Component {
   async openPresets() {
     const res = await this.dialogs.open({
       title: "Configuration presets",
-      message: "Applying a preset replaces your current configuration (settings, repos, targets, links, tabs, favorites). This cannot be undone.",
+      message: "Applying a preset replaces your current configuration (settings, repos, workspaces, templates, links, tabs, favorites). This cannot be undone.",
       fields: [
         {
           key: "preset",
@@ -6110,7 +6118,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     return;
   }
   const ws = {
-    id: newTargetId(),
+    id: newWorkspaceId(),
     name: res.name.trim(),
     favorite: !!res.fav,
     db: (res.db || "").trim(),
@@ -6350,7 +6358,7 @@ var DashboardScreen = class extends Component {
   eventLog = plugin(EventLogPlugin);
   review = plugin(ReviewPlugin);
   // starred branch groups + their reviewed PRs
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   // "wt" badge on worktree targets
   router = plugin(RouterPlugin);
   refreshIcon = m(ICONS.refresh);
@@ -6381,7 +6389,7 @@ var DashboardScreen = class extends Component {
   // the "current" target: the one being worked on (last activated), regardless
   // of whether its branches are still checked out
   isCurrent(tgt) {
-    return tgt.id === this.server.lastTarget();
+    return tgt.id === this.server.lastWorkspace();
   }
   async menuDelete(tgt) {
     this.menuId.set("");
@@ -6504,7 +6512,7 @@ var DashboardScreen = class extends Component {
   _dashRepoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
     const current = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastTarget()
+      (w) => w.id === this.server.lastWorkspace()
     );
     for (const c of current?.checkouts || []) ids.add(c.repo);
     for (const ws of this.workspaces) for (const c of ws.checkouts || []) ids.add(c.repo);
@@ -6719,7 +6727,7 @@ var DashboardScreen = class extends Component {
   // while its branches are still checked out. The id check disambiguates
   // overlapping targets (e.g. master vs master(e), whose branches are a subset)
   isActive(tgt) {
-    return tgt.id === this.server.lastTarget() && this._checkedOut(tgt);
+    return tgt.id === this.server.lastWorkspace() && this._checkedOut(tgt);
   }
   // can't switch branches with uncommitted work, or to branches not present
   _targetDirty(tgt) {
@@ -6736,14 +6744,14 @@ var DashboardScreen = class extends Component {
   }
   activateTitle(tgt) {
     if (this._targetDirty(tgt)) return "commit or stash changes first \u2014 the working tree is dirty";
-    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
-    return "stop the server, switch to this target and check out its branches";
+    if (!this._targetPresent(tgt)) return "some of this workspace's branches are missing locally";
+    return "stop the server, switch to this workspace and check out its branches";
   }
   // tooltip for the clickable target name — clicking an inactive, applyable target
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
     if (this.isWt(tgt)) return "worktree workspace \u2014 click to open it in the Workspaces screen";
-    if (this.isActive(tgt)) return "this target is active";
+    if (this.isActive(tgt)) return "this workspace is loaded";
     if (this.canActivate(tgt)) return "click to apply \u2014 " + this.activateTitle(tgt);
     return this.activateTitle(tgt);
   }
@@ -7296,7 +7304,7 @@ var EventLog = class extends Component {
   router = plugin(RouterPlugin);
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true);
@@ -7338,7 +7346,7 @@ var EventLog = class extends Component {
   // become laid out before revealing it.
   jump(anchor) {
     const s = this.server.status();
-    const loaded = s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
+    const loaded = s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
     if (loaded) this.worktree.select(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");
@@ -8429,7 +8437,7 @@ var MbMenu = class extends Component {
 // static/src/prs_screen/prs.js
 var PrsScreen = class extends Component {
   static components = { SearchBox, Panel };
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
@@ -8815,7 +8823,7 @@ var ServerScreen = class extends Component {
         <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
         <div t-else="" class="launch-form">
           <div class="launch-field">
-            <label>Target</label>
+            <label>Workspace</label>
             <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
               <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
             </select>
@@ -8863,7 +8871,7 @@ var ServerScreen = class extends Component {
   // last used target id if it still exists, else the first one
   _initialTarget() {
     const ids = this.targets.map((t2) => t2.id);
-    const last = this.server.lastTarget();
+    const last = this.server.lastWorkspace();
     return ids.includes(last) ? last : ids[0] || "";
   }
   status() {
@@ -9061,7 +9069,7 @@ var TemplatesScreen = class extends Component {
     });
     if (!res) return;
     const tpl = {
-      id: newTargetId(),
+      id: newWorkspaceId(),
       name: res.name.trim(),
       checkouts: repoBranchList.parse(res.config.trim()),
       db: (res.db || "").trim(),
@@ -9075,7 +9083,7 @@ var TemplatesScreen = class extends Component {
     const names = new Set(this.templates.map((t2) => t2.name));
     let name = tpl.name;
     for (let i = 2; names.has(name); i++) name = `${tpl.name} (${i})`;
-    this._write([...this.templates, { ...tpl, id: newTargetId(), name }]);
+    this._write([...this.templates, { ...tpl, id: newWorkspaceId(), name }]);
   }
   async remove(tpl) {
     const ok = await this.dialogs.open({
@@ -9184,10 +9192,10 @@ var CLAUDE_MODELS = [
 ];
 var ClaudePlugin = class extends Plugin {
   static sequence = 6;
-  // after WorktreePlugin (5), whose wtRepos() it reuses
+  // after WorkspacePlugin (5), whose wtRepos() it reuses
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
   convos = signal({});
@@ -9317,7 +9325,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   // a worktree slot's addons paths come from its checkout
   // the text/state filters are global — shared between the standalone screen and
   // the Workspaces pane (acceptable: one user, one focus at a time)
@@ -9759,7 +9767,7 @@ var TestsPane = class extends Component {
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
-  wt = plugin(WorktreePlugin);
+  wt = plugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");
@@ -10171,7 +10179,7 @@ var CodePane = class extends Component {
   }
   // one row per checkout, joined with live git state + its PR
   get rows() {
-    const view = this.store.targetView(this.props.ws);
+    const view = this.store.workspaceView(this.props.ws);
     const byRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
     const prIndex = this.code.groups().prIndex;
     return (view.checkouts || []).map((c) => {
@@ -10363,7 +10371,7 @@ var WorkspacesScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  wt = plugin(WorktreePlugin);
+  wt = plugin(WorkspacePlugin);
   config = plugin(ConfigPlugin);
   code = plugin(CodePlugin);
   db = plugin(DatabasePlugin);
@@ -10430,7 +10438,7 @@ var WorkspacesScreen = class extends Component {
   // last activated one (a browser-side fact — see targets_screen isActive)
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
   }
   isLoaded(ws) {
     return !this.isWt(ws) && ws.id === this.activeId;
@@ -10679,7 +10687,7 @@ var Topbar = class extends Component {
   // activation guards read the live branch state
   store = plugin(StorePlugin);
   // running worktree servers for the switcher menu
-  wt = plugin(WorktreePlugin);
+  wt = plugin(WorkspacePlugin);
   router = plugin(RouterPlugin);
   journalIcon = m(ICONS.journal);
   version = `v${VERSION}`;
@@ -10712,10 +10720,10 @@ var Topbar = class extends Component {
     const s = this.server.status().state;
     return s === "running" || s === "starting";
   }
-  // the active target id: the running one while up, else the last-used one
+  // the loaded workspace id: the running one while up, else the last-used one
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
   }
   // the loaded workspace's display name (dimmed when the server is stopped)
   get target() {
@@ -10881,7 +10889,7 @@ var App = class extends Component {
     const running = this.server.status().state === "running";
     const win = window.open(running ? url : "about:blank", "_blank");
     if (running) return;
-    await this.server.start(this.server.lastTarget());
+    await this.server.start(this.server.lastWorkspace());
     const ok = await this.server.waitUntilRunning();
     if (win && !win.closed) {
       if (ok) win.location.href = url;
@@ -10906,7 +10914,7 @@ var PLUGINS = [
   TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,
-  WorktreePlugin,
+  WorkspacePlugin,
   ClaudePlugin,
   NightlyPlugin,
   MemoryPlugin

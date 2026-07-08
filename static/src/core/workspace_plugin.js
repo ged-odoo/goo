@@ -18,7 +18,7 @@ import { postJSON, worktreeDirFor } from "./utils.js";
 
 import { Plugin, plugin, signal } from "@odoo/owl";
 
-export class WorktreePlugin extends Plugin {
+export class WorkspacePlugin extends Plugin {
   static sequence = 5;
 
   config = plugin(ConfigPlugin);
@@ -54,12 +54,12 @@ export class WorktreePlugin extends Plugin {
     return (tgt.location || (tgt.worktree ? "worktree" : "main")) === "worktree"; // transient
   }
 
-  worktreeTargets() {
+  worktreeWorkspaces() {
     return (this.config.config.workspaces || []).filter((w) => this.isWorktree(w));
   }
 
   selected() {
-    return this.worktreeTargets().find((t) => t.id === this.selectedId()) || null;
+    return this.worktreeWorkspaces().find((t) => t.id === this.selectedId()) || null;
   }
 
   select(id) {
@@ -73,7 +73,7 @@ export class WorktreePlugin extends Plugin {
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)
   worktreeBranches() {
     const s = new Set();
-    for (const t of this.worktreeTargets())
+    for (const t of this.worktreeWorkspaces())
       for (const c of t.checkouts || []) if (c.branch) s.add(c.branch);
     return s;
   }
@@ -153,7 +153,10 @@ export class WorktreePlugin extends Plugin {
 
   // hydrate existence + current server state for every worktree workspace
   async load() {
-    const workspaces = this.worktreeTargets().map((t) => ({ id: t.id, dirPath: this.dirPath(t) }));
+    const workspaces = this.worktreeWorkspaces().map((t) => ({
+      id: t.id,
+      dirPath: this.dirPath(t),
+    }));
     if (!workspaces.length) return;
     try {
       const res = await postJSON("/api/workspace/list", { workspaces });
@@ -284,8 +287,8 @@ export class WorktreePlugin extends Plugin {
   async startServer(tgt) {
     if (this.running(tgt)) return;
     if (!this.hasCommunity(tgt))
-      return this._error("Cannot start worktree server", "this target has no community repo");
-    const eid = this.eventLog.begin(`starting worktree server (${tgt.name})`);
+      return this._error("Cannot start the server", "this workspace has no community repo");
+    const eid = this.eventLog.begin(`starting server (${tgt.name})`);
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
@@ -297,12 +300,12 @@ export class WorktreePlugin extends Plugin {
       delete this._startEids[tgt.id];
       this.eventLog.finish(eid, "error");
       this._merge(tgt.id, { state: "stopped" });
-      this._error("Could not start the worktree server", e.message);
+      this._error("Could not start the server", e.message);
     }
   }
 
   async stopServer(tgt) {
-    this.eventLog.add(`stopping worktree server (${tgt.name})`);
+    this.eventLog.add(`stopping server (${tgt.name})`);
     // optimistic feedback only BEFORE the POST: the backend stop is synchronous and
     // may itself restart the server (a stop mid-run finalizes the run and resumes
     // the server it interrupted), so a merge after the reply would clobber the
@@ -323,9 +326,12 @@ export class WorktreePlugin extends Plugin {
 
   async remove(tgt) {
     if (this.running(tgt))
-      return this._error("Stop the server first", "Stop the worktree server before removing it.");
+      return this._error(
+        "Stop the server first",
+        "Stop the workspace's server before removing it.",
+      );
     const res = await this.dialogs.open({
-      title: `Remove worktree "${tgt.name}"?`,
+      title: `Remove workspace "${tgt.name}"?`,
       message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.`,
       fields: [
         { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false },
@@ -338,7 +344,7 @@ export class WorktreePlugin extends Plugin {
       mainPath,
       worktreePath,
     }));
-    this.eventLog.add(`removing worktree ${tgt.name}`);
+    this.eventLog.add(`removing workspace ${tgt.name} (worktree)`);
     try {
       await postJSON("/api/workspace/remove", {
         workspace: tgt.id,

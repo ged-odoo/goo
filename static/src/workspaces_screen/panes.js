@@ -9,7 +9,7 @@ import { AssetsPlugin } from "../assets_screen/assets_plugin.js";
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { TestsPlugin, slotFor } from "../core/tests_plugin.js";
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { AssetsAnalysis, bundleBase } from "../assets_screen/analysis.js";
 import { ICONS, LogConsole, SearchBox, m } from "../core/common.js";
 import { formatBytes } from "../core/utils.js";
@@ -54,7 +54,7 @@ export class TestsPane extends Component {
   tests = plugin(TestsPlugin);
   server = plugin(ServerPlugin);
   config = plugin(ConfigPlugin);
-  wt = plugin(WorktreePlugin);
+  wt = plugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");

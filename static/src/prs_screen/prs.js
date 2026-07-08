@@ -6,13 +6,13 @@ import { ConfigPlugin } from "../core/config_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { ReviewPlugin } from "../core/review_plugin.js";
 import { RouterPlugin } from "../core/router_plugin.js";
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { ICONS, SearchBox, appBus, m, mbCategory } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 
 export class PrsScreen extends Component {
   static components = { SearchBox, Panel };
-  worktree = plugin(WorktreePlugin); // "wt" badge on PR branches owned by a worktree
+  worktree = plugin(WorkspacePlugin); // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
       <Panel title="'PRs'">

@@ -5,7 +5,7 @@
 // stable ports).
 
 import { BASE_BRANCH_RE } from "../core/config.js";
-import { newTargetId } from "../core/config_plugin.js";
+import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 import { postJSON, repoBranchList } from "../core/utils.js";
 
@@ -149,7 +149,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   // main-located: persist canonically (the workspaces key — spread the existing
   // array so stable ports survive), then branches / activation / db clone
   const ws = {
-    id: newTargetId(),
+    id: newWorkspaceId(),
     name: res.name.trim(),
     favorite: !!res.fav,
     db: (res.db || "").trim(),

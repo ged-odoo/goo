@@ -1,6 +1,6 @@
 // List a database's asset-bundle attachments (ir_attachment under /web/assets/…)
 // and force a fresh pregeneration of them. The database is chosen explicitly in the
-// Assets screen; it defaults to the active target's db but isn't tied to it.
+// Assets pane; the pane forces it to its workspace's db.
 
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { DatabasePlugin } from "../core/database_plugin.js";

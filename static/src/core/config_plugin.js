@@ -43,7 +43,7 @@ const STATE_KEYS = {
 };
 
 // a stable, unique id for a new target (referenced internally so renaming is safe)
-export function newTargetId() {
+export function newWorkspaceId() {
   return crypto.randomUUID
     ? crypto.randomUUID()
     : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

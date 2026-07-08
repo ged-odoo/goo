@@ -5,7 +5,7 @@ import { CodePlugin } from "../core/code_plugin.js";
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { DirtyBadge, ICONS, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { CommitsDialog } from "../core/dialogs.js";
@@ -14,7 +14,7 @@ import { pushBranchesDialog } from "../core/dialogs.js";
 
 export class BranchesScreen extends Component {
   static components = { SearchBox, DirtyBadge, Panel };
-  worktree = plugin(WorktreePlugin); // "wt" badge on branches owned by a worktree
+  worktree = plugin(WorkspacePlugin); // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
       <Panel title="'Branches'">

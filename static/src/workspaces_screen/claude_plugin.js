@@ -8,7 +8,7 @@
 
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { postJSON } from "../core/utils.js";
@@ -27,11 +27,11 @@ export const CLAUDE_MODELS = [
 ];
 
 export class ClaudePlugin extends Plugin {
-  static sequence = 6; // after WorktreePlugin (5), whose wtRepos() it reuses
+  static sequence = 6; // after WorkspacePlugin (5), whose wtRepos() it reuses
 
   config = plugin(ConfigPlugin);
   server = plugin(ServerPlugin);
-  worktree = plugin(WorktreePlugin);
+  worktree = plugin(WorkspacePlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
   convos = signal({}); // targetId -> { items: [...], state: "idle"|"running" }

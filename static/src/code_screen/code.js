@@ -114,7 +114,7 @@ export class CodeScreen extends Component {
   _repoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
     const current = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastTarget(),
+      (w) => w.id === this.server.lastWorkspace(),
     );
     for (const c of current?.checkouts || []) ids.add(c.repo);
     return ids;
@@ -131,7 +131,7 @@ export class CodeScreen extends Component {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
     const currentTarget = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastTarget(),
+      (w) => w.id === this.server.lastWorkspace(),
     );
     const visibleIds = new Set([
       ...(currentTarget?.checkouts || []).map((c) => c.repo),

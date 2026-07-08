@@ -25,12 +25,12 @@ export class ServerPlugin extends Plugin {
   output = new LogBuffer(); // the persistent server-log element
   logListeners = new Set(); // per-server log lines {server, line} — tests/addons/worktree buffers
   gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
-  worktreeListeners = new Set(); // WorktreePlugin updates per-worktree state from here
+  worktreeListeners = new Set(); // WorkspacePlugin updates per-worktree state from here
   claudeListeners = new Set(); // ClaudePlugin appends per-worktree chat items from here
   _startEid = null; // pending "starting server" timed event, resolved on the green dot
-  // the active target (last started or activated), server-persisted + reactive. The
+  // the active workspace (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
-  activeTarget = signal(this.config.getState("active_workspace", ""));
+  activeWorkspace = signal(this.config.getState("active_workspace", ""));
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);
@@ -78,7 +78,7 @@ export class ServerPlugin extends Plugin {
     es.onerror = () => this.store.mergeServer({ id: "main", state: "disconnected" });
     // one "server" event for every odoo (main + each worktree), keyed by id. Fold it
     // into the shared servers map; the main snapshot drives this plugin's start-event
-    // resolution, a worktree snapshot is relayed to WorktreePlugin (which resolves its
+    // resolution, a worktree snapshot is relayed to WorkspacePlugin (which resolves its
     // own per-target start events and reads the same map).
     es.addEventListener("server", (e) => {
       const snap = JSON.parse(e.data);
@@ -108,7 +108,7 @@ export class ServerPlugin extends Plugin {
       this.config.applyBroadcast(d);
       // active_workspace lives in a signal here too; follow the broadcast
       const at = (d.state || {}).active_workspace;
-      if (at !== undefined && at !== this.activeTarget()) this.activeTarget.set(at);
+      if (at !== undefined && at !== this.activeWorkspace()) this.activeWorkspace.set(at);
     });
     // backend-originated business events (e.g. a `goo --test-tags` CLI run) → event log.
     // A timed event carries an `id` + `status`: "start" opens a row with an animated
@@ -156,8 +156,8 @@ export class ServerPlugin extends Plugin {
     }
   }
 
-  lastTarget() {
-    return this.activeTarget();
+  lastWorkspace() {
+    return this.activeWorkspace();
   }
 
   // the state the UI should reflect: an optimistic "start" click reads as
@@ -171,12 +171,12 @@ export class ServerPlugin extends Plugin {
     return (this.config.config.workspaces || []).find((w) => w.id === id)?.name || id;
   }
 
-  setLastTarget(id) {
-    this.activeTarget.set(id);
+  setLastWorkspace(id) {
+    this.activeWorkspace.set(id);
     this.config.setState("active_workspace", id);
   }
 
-  // the command that would launch this target (built by the backend); "" if invalid
+  // the command that would launch this workspace (built by the backend); "" if invalid
   async previewCommand(targetId, otherArgs) {
     if (!this._hasTarget(targetId)) return "";
     try {
@@ -251,7 +251,7 @@ export class ServerPlugin extends Plugin {
   async _confirmBranches(targetId) {
     const target = (this.config.config.workspaces || []).find((w) => w.id === targetId);
     if (!target) return true;
-    // we only need this target's repos' current branch to compare against what it
+    // we only need this workspace's repos' current branch to compare against what it
     // wants — read just those (local git, a few subprocesses). A full code.load()
     // would also scan every *other* repo and fetch PRs from GitHub, and since the
     // launch form stays up until the start request fires (after this await), that
@@ -260,14 +260,16 @@ export class ServerPlugin extends Plugin {
     // the TargetView join computes current/matches per checkout; flag only the repos
     // whose current branch we actually know and which differ from the target's
     const off = this.store
-      .targetView(target)
+      .workspaceView(target)
       .checkouts.filter((c) => c.current !== undefined && !c.matches);
     if (!off.length) return true;
     const lines = off
-      .map(({ repo, branch, current }) => `${repo}: on "${current}" — target wants "${branch}"`)
+      .map(
+        ({ repo, branch, current }) => `${repo}: on "${current}" — the workspace wants "${branch}"`,
+      )
       .join("\n");
     const ok = await this.dialogs.open({
-      title: "Branches don't match this target",
+      title: "Branches don't match this workspace",
       message:
         `The checked-out branches differ from "${this._targetName(targetId)}":\n\n` +
         `${lines}\n\nStart with the current branches anyway?`,
@@ -278,11 +280,11 @@ export class ServerPlugin extends Plugin {
   }
 
   async start(targetId, otherArgs) {
-    if (!this._hasTarget(targetId)) return this.log(`[goo] no such target: "${targetId}"`);
+    if (!this._hasTarget(targetId)) return this.log(`[goo] no such workspace: "${targetId}"`);
     this.pending.set("start"); // immediate feedback, before the confirm/POST awaits
-    this._beginStart(`starting server (target: ${this._targetName(targetId)})`);
+    this._beginStart(`starting server (workspace: ${this._targetName(targetId)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
-    this.setLastTarget(targetId);
+    this.setLastWorkspace(targetId);
     await this._run(
       "/api/start",
       { workspace: targetId, overrides: this._overrides(otherArgs) },
@@ -293,9 +295,9 @@ export class ServerPlugin extends Plugin {
   async restart(targetId, otherArgs) {
     if (!this._hasTarget(targetId)) return;
     this.pending.set("restart"); // immediate feedback, before the confirm/POST awaits
-    this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
+    this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
-    this.setLastTarget(targetId);
+    this.setLastWorkspace(targetId);
     await this._run(
       "/api/restart",
       { workspace: targetId, overrides: this._overrides(otherArgs) },
@@ -306,9 +308,9 @@ export class ServerPlugin extends Plugin {
   // re-start the server on the last target (e.g. DatabasePlugin stops it for a db op,
   // then resumes). The backend rebuilds the launch config from the target id.
   async resume() {
-    const targetId = this.lastTarget();
+    const targetId = this.lastWorkspace();
     if (!this._hasTarget(targetId)) return;
-    this._beginStart(`restarting server (target: ${this._targetName(targetId)})`);
+    this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
 

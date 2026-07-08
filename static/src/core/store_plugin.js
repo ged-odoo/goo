@@ -9,7 +9,7 @@
 //     ReviewPlugin read (one mergebot map both screens share).
 //   runtime — live odoo processes/runs the backend owns and mirrors over SSE:
 //     OdooServer ("main" | target id) + Run records, each a `data` json snapshot.
-//     ServerPlugin/WorktreePlugin/Tests/Addons are action layers; `targetView` is the
+//     ServerPlugin/WorkspacePlugin/Tests/Addons are action layers; `workspaceView` is the
 //     derived join. (Real fields + the OdooServer→Target twin ride a later pass — the
 //     config models live in ConfigPlugin's ORM, this runtime state in StorePlugin's.)
 
@@ -261,7 +261,7 @@ export class StorePlugin extends Plugin {
   // the aggregate the UI orbits: a target joined with its checkouts' live git state
   // (current branch, does it match, dirty), its server, and the one-shot run holding
   // its slot. db/claude are filled in a later step.
-  targetView(tgt) {
+  workspaceView(tgt) {
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
       const rec = this.orm.getById(RepoStatus, repo);
       const current = rec ? rec.current() : undefined;

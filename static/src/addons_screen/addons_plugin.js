@@ -8,7 +8,7 @@ import { StorePlugin } from "../core/store_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { LogBuffer } from "../core/log_buffer.js";
 import { postJSON } from "../core/utils.js";
 import { slotFor } from "../core/tests_plugin.js";
@@ -24,7 +24,7 @@ export class AddonsPlugin extends Plugin {
   server = plugin(ServerPlugin);
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
-  worktree = plugin(WorktreePlugin); // a worktree slot's addons paths come from its checkout
+  worktree = plugin(WorkspacePlugin); // a worktree slot's addons paths come from its checkout
   // the text/state filters are global — shared between the standalone screen and
   // the Workspaces pane (acceptable: one user, one focus at a time)
   filter = signal("");

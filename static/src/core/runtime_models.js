@@ -2,7 +2,7 @@
 // over SSE. Fourth state conversion of the ORM rewrite: StorePlugin holds servers +
 // runs as records instead of plain Maps, keeping its accessors (server / serverFor /
 // mergeServer / dropServer / mergeRun / activeRun / latestRunOfKind) so ServerPlugin,
-// WorktreePlugin, Tests/Addons are unchanged.
+// WorkspacePlugin, Tests/Addons are unchanged.
 //
 // Each snapshot is carried as a single `data` json field (the exact ServerSnapshot /
 // RunSnapshot object). Spread-merge into it preserves the fields a partial SSE update

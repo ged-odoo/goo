@@ -7,7 +7,7 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { ICONS, LogConsole, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { attachXterm } from "../core/terminal.js";
@@ -189,7 +189,7 @@ export class CodePane extends Component {
 
   // one row per checkout, joined with live git state + its PR
   get rows() {
-    const view = this.store.targetView(this.props.ws);
+    const view = this.store.workspaceView(this.props.ws);
     const byRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
     const prIndex = this.code.groups().prIndex;
     return (view.checkouts || []).map((c) => {
@@ -409,7 +409,7 @@ export class WorkspacesScreen extends Component {
       </div>
     </section>`;
 
-  wt = plugin(WorktreePlugin);
+  wt = plugin(WorkspacePlugin);
   config = plugin(ConfigPlugin);
   code = plugin(CodePlugin);
   db = plugin(DatabasePlugin);
@@ -489,7 +489,9 @@ export class WorkspacesScreen extends Component {
   // last activated one (a browser-side fact — see targets_screen isActive)
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting"
+      ? s.workspace
+      : this.server.lastWorkspace();
   }
 
   isLoaded(ws) {

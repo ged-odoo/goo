@@ -36,7 +36,7 @@ export class ServerScreen extends Component {
         <LogConsole t-elif="!this.stopped" title="'Server log'" buffer="this.server.output" bare="true"/>
         <div t-else="" class="launch-form">
           <div class="launch-field">
-            <label>Target</label>
+            <label>Workspace</label>
             <select t-att-value="this.target()" t-on-change="ev => this.target.set(ev.target.value)">
               <option t-foreach="this.targets" t-as="tgt" t-key="tgt.id" t-att-value="tgt.id" t-out="tgt.name"/>
             </select>
@@ -89,7 +89,7 @@ export class ServerScreen extends Component {
   // last used target id if it still exists, else the first one
   _initialTarget() {
     const ids = this.targets.map((t) => t.id);
-    const last = this.server.lastTarget();
+    const last = this.server.lastWorkspace();
     return ids.includes(last) ? last : ids[0] || "";
   }
 

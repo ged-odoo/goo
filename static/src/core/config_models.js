@@ -204,7 +204,7 @@ export class Workspace extends Model {
     this._configPlugin().touch();
   }
 
-  // ── action: stop the server, switch to this target, check out its branches ────
+  // ── action: stop the server, switch to this workspace, check out its branches ─
   async activate() {
     const { server, code, eventLog } = withScope(this, () => ({
       server: plugin(ServerPlugin),
@@ -224,7 +224,7 @@ export class Workspace extends Model {
     // guard (mirrors canActivate): not already active, all branches present, none dirty
     const s = server.status();
     const activeId =
-      s.state === "running" || s.state === "starting" ? s.workspace : server.lastTarget();
+      s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
     if (this.id === activeId) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
@@ -233,12 +233,12 @@ export class Workspace extends Model {
       .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
     const switched = repos.filter((r) => repoMap[r.repo]?.current !== r.branch);
-    eventLog.add(`activating target ${this.name()}`);
+    eventLog.add(`activating workspace ${this.name()}`);
     for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
     // stop the server and switch branches concurrently (independent ops)
     const stopping = s.state === "running" || s.state === "starting" ? server.stop() : null;
     await Promise.all([stopping, code.checkout(repos)]);
-    server.setLastTarget(this.id);
+    server.setLastWorkspace(this.id);
   }
 }
 

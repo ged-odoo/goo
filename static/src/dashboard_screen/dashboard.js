@@ -9,7 +9,7 @@ import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ReviewPlugin } from "../core/review_plugin.js";
 import { RouterPlugin } from "../core/router_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
-import { WorktreePlugin } from "../core/worktree_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { DirtyBadge, ICONS, appBus, m, mbCategory } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
@@ -143,7 +143,7 @@ export class DashboardScreen extends Component {
   dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
   review = plugin(ReviewPlugin); // starred branch groups + their reviewed PRs
-  worktree = plugin(WorktreePlugin); // "wt" badge on worktree targets
+  worktree = plugin(WorkspacePlugin); // "wt" badge on worktree targets
   router = plugin(RouterPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
@@ -176,7 +176,7 @@ export class DashboardScreen extends Component {
   // the "current" target: the one being worked on (last activated), regardless
   // of whether its branches are still checked out
   isCurrent(tgt) {
-    return tgt.id === this.server.lastTarget();
+    return tgt.id === this.server.lastWorkspace();
   }
 
   async menuDelete(tgt) {
@@ -321,7 +321,7 @@ export class DashboardScreen extends Component {
   _dashRepoIds() {
     const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
     const current = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastTarget(),
+      (w) => w.id === this.server.lastWorkspace(),
     );
     for (const c of current?.checkouts || []) ids.add(c.repo);
     for (const ws of this.workspaces) for (const c of ws.checkouts || []) ids.add(c.repo);
@@ -562,7 +562,7 @@ export class DashboardScreen extends Component {
   // while its branches are still checked out. The id check disambiguates
   // overlapping targets (e.g. master vs master(e), whose branches are a subset)
   isActive(tgt) {
-    return tgt.id === this.server.lastTarget() && this._checkedOut(tgt);
+    return tgt.id === this.server.lastWorkspace() && this._checkedOut(tgt);
   }
 
   // can't switch branches with uncommitted work, or to branches not present
@@ -586,15 +586,15 @@ export class DashboardScreen extends Component {
 
   activateTitle(tgt) {
     if (this._targetDirty(tgt)) return "commit or stash changes first — the working tree is dirty";
-    if (!this._targetPresent(tgt)) return "some of this target's branches are missing locally";
-    return "stop the server, switch to this target and check out its branches";
+    if (!this._targetPresent(tgt)) return "some of this workspace's branches are missing locally";
+    return "stop the server, switch to this workspace and check out its branches";
   }
 
   // tooltip for the clickable target name — clicking an inactive, applyable target
   // applies it (replaces the old "Apply" button); otherwise say why it can't be
   nameTitle(tgt) {
     if (this.isWt(tgt)) return "worktree workspace — click to open it in the Workspaces screen";
-    if (this.isActive(tgt)) return "this target is active";
+    if (this.isActive(tgt)) return "this workspace is loaded";
     if (this.canActivate(tgt)) return "click to apply — " + this.activateTitle(tgt);
     return this.activateTitle(tgt);
   }

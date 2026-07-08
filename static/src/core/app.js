@@ -7,7 +7,7 @@ import { CodePlugin } from "./code_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
-import { WorktreePlugin } from "./worktree_plugin.js";
+import { WorkspacePlugin } from "./workspace_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 import { BranchesScreen } from "../branches_screen/branches.js";
 import { CodeScreen } from "../code_screen/code.js";
@@ -83,7 +83,7 @@ export class Topbar extends Component {
   eventLog = plugin(EventLogPlugin);
   code = plugin(CodePlugin); // activation guards read the live branch state
   store = plugin(StorePlugin); // running worktree servers for the switcher menu
-  wt = plugin(WorktreePlugin);
+  wt = plugin(WorkspacePlugin);
   router = plugin(RouterPlugin);
   journalIcon = m(ICONS.journal);
 
@@ -126,10 +126,12 @@ export class Topbar extends Component {
     return s === "running" || s === "starting";
   }
 
-  // the active target id: the running one while up, else the last-used one
+  // the loaded workspace id: the running one while up, else the last-used one
   get activeId() {
     const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastTarget();
+    return s.state === "running" || s.state === "starting"
+      ? s.workspace
+      : this.server.lastWorkspace();
   }
 
   // the loaded workspace's display name (dimmed when the server is stopped)
@@ -347,7 +349,7 @@ export class App extends Component {
     // open the tab now (inside the click gesture) to avoid popup blockers
     const win = window.open(running ? url : "about:blank", "_blank");
     if (running) return;
-    await this.server.start(this.server.lastTarget());
+    await this.server.start(this.server.lastWorkspace());
     const ok = await this.server.waitUntilRunning();
     if (win && !win.closed) {
       if (ok) win.location.href = url;

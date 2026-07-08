@@ -16,7 +16,7 @@ import { AssetsPlugin } from "./assets_screen/assets_plugin.js";
 import { ReviewPlugin } from "./core/review_plugin.js";
 import { DialogPlugin } from "./core/dialog_plugin.js";
 import { UpdatePlugin } from "./core/update_plugin.js";
-import { WorktreePlugin } from "./core/worktree_plugin.js";
+import { WorkspacePlugin } from "./core/workspace_plugin.js";
 import { ClaudePlugin } from "./workspaces_screen/claude_plugin.js";
 import { NightlyPlugin } from "./nightly_screen/nightly_plugin.js";
 import { MemoryPlugin } from "./memory_screen/memory_plugin.js";
@@ -36,7 +36,7 @@ const PLUGINS = [
   TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,
-  WorktreePlugin,
+  WorkspacePlugin,
   ClaudePlugin,
   NightlyPlugin,
   MemoryPlugin,

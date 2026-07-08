@@ -6,7 +6,7 @@
 // everything workspace-shaped.
 
 import { Component, plugin, signal, xml } from "@odoo/owl";
-import { ConfigPlugin, newTargetId } from "../core/config_plugin.js";
+import { ConfigPlugin, newWorkspaceId } from "../core/config_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ICONS, appBus, m } from "../core/common.js";
@@ -133,7 +133,7 @@ export class TemplatesScreen extends Component {
     });
     if (!res) return;
     const tpl = {
-      id: newTargetId(),
+      id: newWorkspaceId(),
       name: res.name.trim(),
       checkouts: repoBranchList.parse(res.config.trim()),
       db: (res.db || "").trim(),
@@ -148,7 +148,7 @@ export class TemplatesScreen extends Component {
     const names = new Set(this.templates.map((t) => t.name));
     let name = tpl.name;
     for (let i = 2; names.has(name); i++) name = `${tpl.name} (${i})`;
-    this._write([...this.templates, { ...tpl, id: newTargetId(), name }]);
+    this._write([...this.templates, { ...tpl, id: newWorkspaceId(), name }]);
   }
 
   async remove(tpl) {
