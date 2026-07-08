@@ -4069,14 +4069,14 @@ a.commit-detail-hash svg {
 }
 
 /* two columns — worktree list | detail — filling the content area */
-.wt-content {
+.content.wt-content {
   display: grid;
   grid-template-columns: minmax(220px, 300px) 1fr;
   grid-template-rows: minmax(0, 1fr);
-  gap: 16px;
+  gap: 0;
   min-height: 0;
   overflow: hidden;
-  padding-bottom: 22px;
+  padding: 0; /* full-bleed: the list column sticks to the left edge, full height */
 }
 
 .wt-list {
@@ -4085,9 +4085,8 @@ a.commit-detail-hash svg {
   gap: 8px;
   min-height: 0;
   background: var(--l-card);
-  border: 1px solid var(--l-line);
-  border-radius: 12px;
-  padding: 10px;
+  border-right: 1px solid var(--l-line);
+  padding: 12px 10px;
 }
 /* the list column header: search + compact create buttons (no screen panel — the
    list and detail fill the whole area, per the Workspaces design) */
@@ -4232,6 +4231,7 @@ a.commit-detail-hash svg {
   gap: 14px;
   min-height: 0;
   min-width: 0;
+  padding: 18px 30px 22px; /* was the .content padding, now full-bleed */
 }
 .wt-detail-empty {
   display: flex;
