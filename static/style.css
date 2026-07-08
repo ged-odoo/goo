@@ -4231,13 +4231,15 @@ a.commit-detail-hash svg {
   gap: 14px;
   min-height: 0;
   min-width: 0;
-  padding: 18px 30px 22px; /* was the .content padding, now full-bleed */
+  /* no padding here — each child (head / actions / panes) carries its own, so
+     a full-width band or hairline can bleed to the column edges */
 }
 .wt-detail-empty {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
+  margin: 18px 30px 22px;
   border: 1px dashed var(--l-line);
   border-radius: 13px;
 }
@@ -4245,6 +4247,7 @@ a.commit-detail-hash svg {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 18px 30px 0;
 }
 .wt-detail-head h2 {
   margin: 0;
@@ -4309,6 +4312,7 @@ a.commit-detail-hash svg {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  padding: 0 30px;
 }
 .wt-sp {
   flex: 1;
@@ -4320,6 +4324,7 @@ a.commit-detail-hash svg {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  padding: 0 30px 22px;
 }
 /* underline tabs on a hairline, per the Workspaces design (not pill buttons) */
 .wt-tabs {
