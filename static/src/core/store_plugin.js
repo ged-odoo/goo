@@ -278,4 +278,15 @@ export class StorePlugin extends Plugin {
       claude: null,
     };
   }
+
+  // intent vs reality: the checkouts of a main-located workspace whose configured
+  // branch is NOT what the repo actually has checked out right now. Empty for
+  // worktrees (their checkout IS the workspace, immune by construction) and for
+  // repos whose git state hasn't loaded yet (current unknown — don't claim drift
+  // before knowing). Only meaningful for the LOADED workspace — a non-loaded one's
+  // branches naturally differ; callers gate on that.
+  drift(ws) {
+    if (ws.location === "worktree") return [];
+    return this.workspaceView(ws).checkouts.filter((c) => c.current !== undefined && !c.matches);
+  }
 }

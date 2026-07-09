@@ -205,7 +205,10 @@ export class Workspace extends Model {
   }
 
   // ── action: stop the server, switch to this workspace, check out its branches ─
-  async activate() {
+  // restore: re-checkout even when this workspace is already the active one — the
+  // recovery path when a manual `git checkout` drifted the main checkout away from
+  // the workspace's branches (the guards on missing/dirty branches still apply).
+  async activate({ restore = false } = {}) {
     const { server, code, eventLog } = withScope(this, () => ({
       server: plugin(ServerPlugin),
       code: plugin(CodePlugin),
@@ -225,7 +228,7 @@ export class Workspace extends Model {
     const s = server.status();
     const activeId =
       s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
-    if (this.id === activeId) return;
+    if (this.id === activeId && !restore) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
     const pathByRepo = code.groups().pathByRepo;

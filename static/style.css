@@ -349,6 +349,12 @@ a {
   background: var(--amber);
   box-shadow: 0 0 0 3px var(--amber-bg);
 }
+/* the loaded workspace's checkout drifted (manual git checkout outside goo) —
+   the badge's claim is stale; amber wins over the live green (defined after it) */
+.nav-target.drift .dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-bg);
+}
 .nav-target .t-name {
   color: var(--text);
   font-weight: 600;
@@ -4306,6 +4312,11 @@ a.commit-detail-hash svg {
 .wt-dot-active {
   background: #000;
 }
+/* the loaded workspace whose branches no longer match the main checkout */
+.wt-dot-drift {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-bg);
+}
 @keyframes wt-pulse {
   50% {
     opacity: 0.35;
@@ -4368,6 +4379,33 @@ a.commit-detail-hash svg {
 .ws-wt-tag {
   color: var(--l-text-mid);
   background: var(--l-panel);
+}
+/* the loaded workspace's claim is stale: a manual checkout drifted the main tree */
+.ws-drift-tag {
+  color: var(--amber);
+  background: var(--amber-bg);
+}
+/* the Code pane stacks the drift banner above the checkout list */
+.ws-code-pane {
+  flex-direction: column;
+  gap: 10px;
+}
+/* drift banner: what diverged + the Restore / Adopt reconcile actions */
+.ws-drift-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--amber);
+  border-radius: 9px;
+  background: var(--amber-bg);
+  font-size: 12.5px;
+  color: var(--l-text);
+}
+.ws-drift-strip .ws-drift-text b,
+.ws-drift-strip .ws-drift-text {
+  min-width: 0;
 }
 .wt-meta {
   display: flex;

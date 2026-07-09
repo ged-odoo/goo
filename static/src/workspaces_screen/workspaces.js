@@ -533,7 +533,7 @@ export class WorkspacesScreen extends Component {
             <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
             <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
                     t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
-                    t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '')">
+                    t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
               <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
               <span class="wt-item-name" t-out="ws.name"/>
               <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
@@ -551,6 +551,7 @@ export class WorkspacesScreen extends Component {
                 <h2 t-out="this.sel.name"/>
                 <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
                 <span t-if="this.isLoaded(this.sel)" class="ws-loaded-tag" title="this workspace occupies the main checkout">loaded</span>
+                <span t-if="this.isDrifted(this.sel)" class="ws-loaded-tag ws-drift-tag" t-att-title="this.driftText(this.sel)">drifted</span>
                 <span t-if="this.isWt(this.sel)" class="ws-loaded-tag ws-wt-tag" title="worktree workspace — its own checkout + port">worktree</span>
                 <span class="wt-sp"/>
                 <div class="dash-kebab-wrap">
@@ -588,7 +589,16 @@ export class WorkspacesScreen extends Component {
               </div>
             </div>
             <div class="wt-panes">
-              <div class="wt-pane" t-if="this.pane() === 'code'">
+              <div class="wt-pane ws-code-pane" t-if="this.pane() === 'code'">
+                <div t-if="this.isDrifted(this.sel)" class="ws-drift-strip">
+                  <span class="ws-drift-text">checkout drift: <t t-out="this.driftText(this.sel)"/></span>
+                  <span class="wt-sp"/>
+                  <button class="pbtn" t-att-disabled="!!this.restoreBlocked(this.sel)" t-att-title="this.restoreTitle(this.sel)" t-on-click="() => this.restore(this.sel)">Restore branches</button>
+                  <t t-set="adopt" t-value="this.adoptTarget(this.sel)"/>
+                  <button t-if="adopt" class="pbtn" t-att-title="'the current checkout matches ' + adopt.name + ' — make it the loaded workspace instead'" t-on-click="() => this.switchToMatch(adopt)" t-out="'Switch to ' + adopt.name"/>
+                  <button t-else="" class="pbtn" title="the terminal detour is the new truth — rewrite this workspace's branches to what is actually checked out" t-on-click="() => this.adopt(this.sel)">Adopt current branches</button>
+                  <button class="pbtn" title="keep this workspace as is and save the currently checked-out branches as a new workspace" t-on-click="() => this.saveDriftAsWorkspace(this.sel)">Save as new workspace…</button>
+                </div>
                 <CodePane t-key="this.sel.id" ws="this.sel"/>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'log'">
@@ -602,11 +612,11 @@ export class WorkspacesScreen extends Component {
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'tests'">
                 <TestsPane t-if="this.canRunHere(this.sel)" t-key="this.sel.id" ws="this.sel"/>
-                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it first to run tests against its database and checkout.</div>
+                <div t-else="" class="ws-pane-hint dim" t-out="this.runHint(this.sel, 'This workspace is not loaded — Start it first to run tests against its database and checkout.')"/>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'addons'">
                 <AddonsPane t-if="this.canRunHere(this.sel)" t-key="this.sel.id" ws="this.sel"/>
-                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — Start it first to browse and install its modules.</div>
+                <div t-else="" class="ws-pane-hint dim" t-out="this.runHint(this.sel, 'This workspace is not loaded — Start it first to browse and install its modules.')"/>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'assets'">
                 <AssetsPane t-if="this.sel.db" t-key="this.sel.id" ws="this.sel"/>
@@ -614,7 +624,7 @@ export class WorkspacesScreen extends Component {
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'claude'">
                 <ClaudeChat t-if="this.canRunHere(this.sel)" t-key="this.sel.id" target="this.sel" inMain="!this.isWt(this.sel)"/>
-                <div t-else="" class="ws-pane-hint dim">This workspace isn't loaded — load it first, or use a worktree workspace to let Claude work in isolation.</div>
+                <div t-else="" class="ws-pane-hint dim" t-out="this.runHint(this.sel, 'This workspace is not loaded — load it first, or use a worktree workspace to let Claude work in isolation.')"/>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'terminal'">
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
@@ -880,11 +890,35 @@ export class WorkspacesScreen extends Component {
     return !this.isWt(ws) && ws.id === this.activeId;
   }
 
+  // ── checkout drift (intent vs reality, loaded main-located workspaces only) ──
+  // the loaded workspace claims the main checkout; a manual `git checkout` in a
+  // terminal silently breaks that claim. driftOf lists the mismatched checkouts.
+  driftOf(ws) {
+    return this.isLoaded(ws) ? this.store.drift(ws) : [];
+  }
+
+  isDrifted(ws) {
+    return this.driftOf(ws).length > 0;
+  }
+
+  driftText(ws) {
+    return this.driftOf(ws)
+      .map((c) => `${c.repo} is on ${c.current || "?"}, expected ${c.branch}`)
+      .join(" · ");
+  }
+
   // whether runs (tests/addons) and Claude can act on this workspace here: a
-  // worktree always (its own checkout), a main-located one only when loaded —
-  // running against another workspace's checked-out code would mislead
+  // worktree always (its own checkout), a main-located one only when loaded AND
+  // not drifted — running against code that isn't the workspace's would mislead
   canRunHere(ws) {
-    return this.isWt(ws) || this.isLoaded(ws);
+    return this.isWt(ws) || (this.isLoaded(ws) && !this.isDrifted(ws));
+  }
+
+  // the hint shown in a gated pane (tests / addons / claude) when it can't run here
+  runHint(ws, hint) {
+    if (this.isDrifted(ws))
+      return "The main checkout no longer matches this workspace — Restore its branches first (see the drift banner on the Code tab).";
+    return hint;
   }
 
   // serverFor: the main slot when it runs this workspace, else its own entry
@@ -901,11 +935,13 @@ export class WorkspacesScreen extends Component {
     return "wt-dot-" + this.stateOf(ws);
   }
 
-  // the list-row dot: a starting/running server keeps its live colour; otherwise a
+  // the list-row dot: a starting/running server keeps its live colour; a loaded
+  // workspace whose checkout drifted goes amber (the claim is stale); otherwise a
   // worktree workspace or the loaded (active) one gets a solid black dot, and any
   // other (stopped, inactive) workspace stays faint.
   listDotClass(ws) {
     if (this.isLive(ws)) return this.dotClass(ws);
+    if (this.isDrifted(ws)) return "wt-dot-drift";
     if (this.isWt(ws) || this.isLoaded(ws)) return "wt-dot-active";
     return this.dotClass(ws);
   }
@@ -941,6 +977,8 @@ export class WorkspacesScreen extends Component {
   // its branches locally + clean working trees (activate() silently no-ops else).
   _startBlocked(ws) {
     if (this.isLive(ws)) return "already running";
+    if (this.isDrifted(ws))
+      return "the main checkout drifted away from this workspace — Restore its branches first";
     if (this.isWt(ws) || this.isLoaded(ws)) return "";
     const repos = this.repoMap;
     const cos = ws.checkouts || [];
@@ -994,6 +1032,90 @@ export class WorkspacesScreen extends Component {
   async activate(ws) {
     if (!this.canActivate(ws)) return;
     await this.config.workspace(ws.id)?.activate();
+  }
+
+  // ── drift reconciliation (the strip's Restore / Adopt buttons) ────────────────
+  // Restore: the workspace is right, the terminal detour was temporary — re-check
+  // out its branches (stopping the server if it runs). Same guards as activate.
+  restoreBlocked(ws) {
+    const repos = this.repoMap;
+    const cos = ws.checkouts || [];
+    if (!cos.every(({ repo, branch }) => repos[repo]?.branches.has(branch)))
+      return "some of this workspace's branches are missing locally";
+    if (cos.some(({ repo }) => repos[repo]?.dirty))
+      return "commit or stash changes first — a working tree is dirty";
+    return "";
+  }
+
+  restoreTitle(ws) {
+    return (
+      this.restoreBlocked(ws) ||
+      (this.isLive(ws)
+        ? "stop the server and check out this workspace's branches again"
+        : "check out this workspace's branches again")
+    );
+  }
+
+  async restore(ws) {
+    if (this.restoreBlocked(ws)) return;
+    await this.config.workspace(ws.id)?.activate({ restore: true });
+  }
+
+  // Adopt: what's checked out is the new truth. If it exactly matches another
+  // main-located workspace, switching to that one is the honest move; otherwise
+  // rewrite this workspace's checkouts to the actual branches.
+  adoptTarget(ws) {
+    const repos = this.repoMap;
+    return (
+      (this.config.config.workspaces || []).find(
+        (w) =>
+          w.id !== ws.id &&
+          w.location !== "worktree" &&
+          (w.checkouts || []).length > 0 &&
+          (w.checkouts || []).every(({ repo, branch }) => repos[repo]?.current === branch),
+      ) || null
+    );
+  }
+
+  switchToMatch(other) {
+    return this.config.workspace(other.id)?.activate();
+  }
+
+  adopt(ws) {
+    const repos = this.repoMap;
+    this.config.workspace(ws.id)?.applyEdit({
+      name: ws.name,
+      db: ws.db || "",
+      on_create_args: ws.on_create_args || "",
+      checkouts: (ws.checkouts || []).map(({ repo, branch }) => ({
+        repo,
+        branch: repos[repo]?.current || branch,
+      })),
+    });
+  }
+
+  // Save-as: keep this workspace untouched and open the create dialog prefilled
+  // with the ACTUAL checked-out branches — the terminal detour becomes its own
+  // workspace. Named after the drifted feature branch; "create branches" defaults
+  // off (the branches exist — they're checked out). Activating it (the dialog's
+  // default) also resolves the drift: the new workspace matches reality.
+  saveDriftAsWorkspace(ws) {
+    const repos = this.repoMap;
+    const checkouts = (ws.checkouts || []).map(({ repo, branch }) => ({
+      repo,
+      branch: repos[repo]?.current || branch,
+    }));
+    const feature =
+      checkouts.map((c) => c.branch).find((b) => !BASE_BRANCH_RE.test(b)) ||
+      checkouts[0]?.branch ||
+      "";
+    return startCreateWorkspace(this._dialogPlugins(), {
+      name: feature,
+      config: repoBranchList.format(checkouts),
+      db: feature,
+      template: "",
+      createBranches: false,
+    });
   }
 
   // ── actions ──────────────────────────────────────────────────────────────────
