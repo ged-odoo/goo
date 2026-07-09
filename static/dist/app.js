@@ -9820,9 +9820,10 @@ var WorkspacesScreen = class extends Component {
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '')">
               <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
               <span class="wt-item-name" t-out="ws.name"/>
+              <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+              <span class="wt-sp"/>
               <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
               <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
-              <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
             </button>
           </div>
         </div>

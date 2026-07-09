@@ -4266,7 +4266,9 @@ a.commit-detail-hash svg {
   background: var(--l-accent-soft);
 }
 .wt-item-name {
-  flex: 1;
+  /* hug the name so the wt badge sits right next to it (the wt-sp spacer
+     after the badge takes the stretch); still shrinks + ellipsizes */
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
