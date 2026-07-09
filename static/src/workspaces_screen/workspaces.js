@@ -120,105 +120,66 @@ export class ClaudeChat extends Component {
 
 // ─────────────────────────── Code pane ───────────────────────────
 
-// The selected workspace's code view: a repository sync strip (one chip per repo
-// with sync health + per-repo actions: rebase, push, editor, terminal, commits,
-// WIP, discard), one card per checkout (branch, checked-out badge, last commit,
-// PR) and the deduped list of its pull requests. Data comes from CodePlugin,
-// loaded narrowed to the workspace's repos on selection. The repo strip absorbed
-// the retired standalone Code screen.
+// The selected workspace's code view: one unified row per checkout — repo + branch,
+// sync health (with an inline Rebase when behind), last commit, its PR (number /
+// state / CI) and a per-checkout actions menu (rebase, push, editor, terminal,
+// commits, WIP, discard). Replaces the old repo strip + branches + PR sections
+// (which showed the same facts three times). Data comes from CodePlugin, loaded
+// narrowed to the workspace's repos on selection.
 
 export class CodePane extends Component {
   static components = { DirtyBadge };
   static template = xml`
     <div class="ws-code">
-      <div t-if="this.repos.length" class="dash-repos ws-repos">
-        <div class="dash-repos-label">
-          <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
-          <span>Repos</span>
-        </div>
-        <div class="dash-repos-chips">
-          <div t-foreach="this.repos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
-            <span class="dash-chip-name" t-out="r.id"/>
-            <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
-            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
-            <span class="dash-chip-div"/>
-            <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
-            <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
-            <div class="dash-kebab-wrap">
-              <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
-              <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
-                <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
-                <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
-                <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
-                <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
-                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
-                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.code.openEditor(r.path, r.id)">Open with editor</button>
-                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
-                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
-                <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
-              </div>
+      <div class="ws-sec">
+        <span>Checkouts</span>
+        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
+        <span class="wt-sp"/>
+        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)"><span class="restart"/></button>
+        <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
+        <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
+      </div>
+
+      <div t-if="!this.checkoutRows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>
+
+      <div class="ws-co" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
+        <div class="ws-co-line">
+          <span class="ws-repo-tag" t-out="r.repo"/>
+          <span class="ws-branch" t-att-title="r.branch" t-out="r.branch"/>
+          <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
+          <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
+          <span t-if="r.missing" class="ws-missing dim">not found locally</span>
+          <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
+            <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
+          </span>
+          <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
+          <span class="wt-sp"/>
+          <t t-if="r.pr">
+            <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
+            <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
+            <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
+            <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
+                  t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+              <span class="dash-ci-dot"/><t t-out="ci.label"/>
+            </span>
+          </t>
+          <div class="dash-kebab-wrap" t-if="r.entry">
+            <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
+            <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
+              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canRebase" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.rebaseRepo(r.entry))">Fetch &amp; rebase</button>
+              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushRepo(r.entry))">Push</button>
+              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushForceRepo(r.entry))">Push (force)</button>
+              <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.code.openEditor(r.path, r.repo))">Open with editor</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
+              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.code.wipCommit(r.path, r.repo))">WIP commit</button>
+              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.code.discard(r.path, r.repo))">Discard changes</button>
             </div>
           </div>
         </div>
-        <div class="dash-repos-actions">
-          <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
-            <t t-out="this.codeIcon"/>Edit
-          </button>
-          <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-            <span class="restart"/>Fetch &amp; rebase all
-          </button>
-        </div>
-      </div>
-
-      <div class="ws-sec">
-        <span>Branches</span>
-        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
-        <button class="pbtn ws-refresh" title="refresh branches + pull requests" t-on-click="() => this.load(true)"><span class="restart"/></button>
-      </div>
-      <div class="ws-card" t-foreach="this.rows" t-as="r" t-key="r.key">
-        <div class="ws-card-main">
-          <div class="ws-card-head">
-            <span class="ws-branch" t-out="r.branch"/>
-            <span class="ws-repo-tag" t-out="r.repo"/>
-            <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
-            <span t-if="r.dirty" class="ws-dirty" title="the working tree has uncommitted changes">dirty</span>
-            <span t-if="r.missing" class="ws-missing dim">branch not found locally</span>
-          </div>
-          <div t-if="r.subject" class="ws-commit dim">
-            <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
-          </div>
-        </div>
-        <div t-if="r.pr" class="ws-pr-row">
-          <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-          <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
-          <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
-          <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
-                t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-            <span class="dash-ci-dot"/><t t-out="ci.label"/>
-          </span>
-        </div>
-      </div>
-      <div t-if="!this.rows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>
-
-      <div class="ws-sec">
-        <span>Pull requests</span>
-        <span class="dim ws-sec-meta" t-out="this.prsMeta"/>
-      </div>
-      <div t-if="!this.prs.length" class="dim ws-empty-note">No pull requests for this workspace's branches.</div>
-      <div class="ws-card ws-pr-card" t-foreach="this.prs" t-as="pr" t-key="pr.key">
-        <div class="ws-card-main">
-          <div class="ws-card-head">
-            <a class="pr-link" t-att-href="pr.url" target="_blank" t-out="'#' + pr.number"/>
-            <span class="ws-pr-title" t-out="pr.title"/>
-          </div>
-        </div>
-        <div class="ws-pr-row">
-          <span class="pr-state" t-att-class="this.prCls(pr)" t-out="this.prLabel(pr)"/>
-          <t t-set="ci" t-value="this.ciBadge(pr)"/>
-          <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
-                t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-            <span class="dash-ci-dot"/><t t-out="ci.label"/>
-          </span>
+        <div t-if="r.subject" class="ws-commit dim">
+          <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
         </div>
       </div>
     </div>`;
@@ -229,10 +190,9 @@ export class CodePane extends Component {
   config = plugin(ConfigPlugin);
   dialogs = plugin(DialogPlugin);
   eventLog = plugin(EventLogPlugin);
-  addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
-  codeIcon = m(ICONS.code); // "Edit" (open all repos in the editor)
-  chevronIcon = m(ICONS.chevron); // the repo chip's dropdown caret
-  menuId = signal(""); // id of the repo chip whose action menu is open ("" = none)
+  codeIcon = m(ICONS.code); // "Editor" toolbar button
+  kebabIcon = m(ICONS.kebab); // the per-checkout actions menu
+  menuId = signal(""); // key of the checkout whose action menu is open ("" = none)
 
   setup() {
     // load branches + PRs narrowed to this workspace's repos (merging, so other
@@ -295,30 +255,13 @@ export class CodePane extends Component {
     return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
   }
 
-  // commit tooltip: the last-commit date before the title
-  commitTip(row) {
-    const subject = row.subject || "—";
-    return row.date ? `${timeAgo(row.date)} · ${subject}` : subject;
-  }
-
-  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
-  // base) is the headline; missing/unreadable repos read as an error, and a repo we
-  // have no branch data for yet stays neutral rather than claiming "up to date".
-  chipClass(r) {
-    if (r.error) return "chip-err";
-    if (!r.current) return "chip-unknown";
-    return r.behind ? "chip-behind" : "chip-ok";
-  }
-
-  syncText(r) {
-    if (r.error) return "error";
-    if (!r.current) return "—";
+  // per-checkout sync health text/tooltip (only shown when the checkout is actually
+  // the repo's current branch, so the behind/ahead counts describe THIS branch)
+  syncTextRow(r) {
     return r.behind ? `${r.behind} behind` : "up to date";
   }
 
-  syncTitle(r) {
-    if (r.error) return r.error;
-    if (!r.current) return "branch state not loaded yet";
+  syncTitleRow(r) {
     if (r.behind) {
       const ahead = r.ahead ? ` · ${r.ahead} ahead` : "";
       return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
@@ -441,36 +384,50 @@ export class CodePane extends Component {
     window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
 
-  // one row per checkout, joined with live git state + its PR
-  get rows() {
+  // one row per checkout, joined with live git state, sync counts, its PR, and the
+  // rich repo entry (for the actions menu). Sync + rebase/push are only meaningful
+  // when this checkout is the repo's current branch (c.matches) — the behind/ahead
+  // counts and the repo's actions are for whatever is actually checked out.
+  get checkoutRows() {
     const view = this.store.workspaceView(this.props.ws);
-    const byRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
+    const gitByRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
+    const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
     const prIndex = this.code.groups().prIndex;
     return (view.checkouts || []).map((c) => {
-      const repo = byRepo.get(c.repo);
-      const b = (repo?.branches || []).find((x) => x.name === c.branch);
+      const git = gitByRepo.get(c.repo);
+      const b = (git?.branches || []).find((x) => x.name === c.branch);
+      const entry = entryByRepo.get(c.repo) || null;
+      const checkedOut = !!c.matches;
       return {
         key: branchKey(c.repo, c.branch),
         repo: c.repo,
         branch: c.branch,
-        checkedOut: !!c.matches,
+        checkedOut,
         dirty: !!(c.matches && c.dirty),
-        missing: !!repo && !b,
+        missing: !!git && !b,
         subject: b?.subject || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
+        path: entry?.path || "",
+        base: entry?.base || this._baseBranch(c.branch),
+        behind: checkedOut ? entry?.behind || 0 : 0,
+        ahead: checkedOut ? entry?.ahead || 0 : 0,
+        canRebase: checkedOut && !!entry && this.canRebaseRepo(entry),
+        canPush: checkedOut && !!entry && this.canPushRepo(entry),
+        entry, // the rich repo entry (this.repos) the actions menu operates on
       };
     });
   }
 
-  get prs() {
-    const seen = new Set();
-    return this.rows.map((r) => r.pr).filter((pr) => pr && !seen.has(pr.key) && seen.add(pr.key));
+  // fetch + rebase this checkout's branch (its repo entry) onto its base
+  rebaseCheckout(r) {
+    if (r.entry) this.rebaseRepo(r.entry);
   }
 
-  get prsMeta() {
-    const n = this.prs.length;
-    return n ? `${n} pull request${n === 1 ? "" : "s"}` : "";
+  // run a menu action then close the checkout's actions menu
+  menuAct(fn) {
+    this.menuId.set("");
+    fn();
   }
 
   prCls(pr) {
@@ -587,27 +544,35 @@ export class WorkspacesScreen extends Component {
         <div class="wt-detail">
           <t t-if="this.sel">
             <div class="wt-detail-head">
-              <h2 t-out="this.sel.name"/>
+              <div class="wt-head-row">
+                <h2 t-out="this.sel.name"/>
+                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
+                <span t-if="this.isLoaded(this.sel)" class="ws-loaded-tag" title="this workspace occupies the main checkout">loaded</span>
+                <span t-if="this.isWt(this.sel)" class="ws-loaded-tag ws-wt-tag" title="worktree workspace — its own checkout + port">worktree</span>
+                <span class="wt-sp"/>
+                <div class="dash-kebab-wrap">
+                  <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
+                  <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
+                    <button class="dash-menu-item" title="edit name / branches / database / args" t-on-click="() => this.headMenu(() => this.edit(this.sel))">Edit workspace…</button>
+                    <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
+                  </div>
+                </div>
+              </div>
               <div class="wt-meta">
                 <span>branch <b t-out="this.branchOf(this.sel)"/></span>
-                <span>db <b t-out="this.sel.db"/></span>
+                <span>db <b t-out="this.sel.db || '—'"/></span>
                 <span t-if="this.portOf(this.sel)">port <b t-out="this.portOf(this.sel)"/></span>
-                <span t-if="this.isLoaded(this.sel)" class="ws-loaded-tag" title="this workspace occupies the main checkout">loaded</span>
-                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
               </div>
             </div>
             <div class="wt-detail-actions">
+              <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+              <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+              <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" title="restart the server" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
               <button t-if="!this.isWt(this.sel)" class="pbtn" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
-              <button class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-              <button class="pbtn stop" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
-              <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
               <span class="wt-sp"/>
-              <button class="pbtn" title="edit name / branches / database / args" t-on-click="() => this.edit(this.sel)">Edit</button>
-              <button class="pbtn" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
-              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button class="pbtn" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-              <span class="wt-sp"/>
-              <button class="pbtn danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.remove(this.sel)">Remove</button>
+              <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
+              <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
             </div>
             <div class="wt-panes">
               <div class="wt-tabs">
@@ -669,6 +634,7 @@ export class WorkspacesScreen extends Component {
   externalIcon = m(ICONS.external);
   codeIcon = m(ICONS.code);
   branchIcon = m(ICONS.branches);
+  kebabIcon = m(ICONS.kebab);
   icons = {
     code: m(ICONS.code),
     journal: m(ICONS.journal),
@@ -682,9 +648,14 @@ export class WorkspacesScreen extends Component {
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
   pane = signal("code");
   query = signal(""); // the list search
+  menuOpen = signal(false); // the header's Edit/Remove overflow menu
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+    // close the header overflow menu on any outside click
+    const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
     // open with a selection: when nothing (or a removed workspace) is selected,
     // default to the first configured one — never override an existing selection
     // (e.g. the event log's [jump] selects the loaded workspace before navigating)
@@ -1047,6 +1018,12 @@ export class WorkspacesScreen extends Component {
 
   open(url) {
     if (url) window.open(url, "_blank", "noopener");
+  }
+
+  // run a header-menu action then close the overflow menu
+  headMenu(fn) {
+    this.menuOpen.set(false);
+    fn();
   }
 
   removeBlocked(ws) {

@@ -952,6 +952,18 @@ section.hidden {
   padding-left: 10px;
   padding-right: 10px;
 }
+/* quieter, borderless variant for secondary "open" actions (Editor / links / tools)
+   — sits back so the primary lifecycle buttons lead */
+.pbtn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--l-text-dim);
+}
+.pbtn.ghost:hover:not(:disabled) {
+  background: var(--l-panel);
+  border-color: transparent;
+  color: var(--l-text);
+}
 .pbtn:hover:not(:disabled) {
   color: var(--l-text);
   border-color: var(--l-text-faint);
@@ -4320,14 +4332,30 @@ a.commit-detail-hash svg {
 .wt-detail-head {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   padding: 18px 30px 0;
+}
+/* identity line: name + state pill + tags on the left, overflow kebab on the right */
+.wt-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 .wt-detail-head h2 {
   margin: 0;
   font-size: 18px;
   font-weight: 650;
   color: var(--l-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.ws-wt-tag {
+  color: var(--l-text-mid);
+  background: var(--l-panel);
 }
 .wt-meta {
   display: flex;
@@ -4481,6 +4509,77 @@ a.commit-detail-hash svg {
 .ws-refresh {
   margin-left: auto;
   padding: 3px 8px;
+}
+/* Code-tab toolbar buttons (refresh / Editor / Fetch & rebase all) */
+.ws-tool {
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.ws-tool .restart {
+  margin: 0;
+}
+/* one unified checkout row: identity + sync + PR on the first line, commit below */
+.ws-co {
+  border: 1px solid var(--l-line);
+  background: var(--l-card);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.ws-co-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ws-co-line .ws-branch {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+/* sync health chip: green "up to date" / amber "N behind" */
+.ws-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--l-text-mid);
+}
+.ws-sync-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--l-green);
+}
+.ws-sync.ok {
+  color: var(--green);
+}
+.ws-sync.ok .ws-sync-dot {
+  background: var(--green);
+}
+.ws-sync.behind {
+  color: var(--amber);
+}
+.ws-sync.behind .ws-sync-dot {
+  background: var(--amber);
+}
+.ws-rebase-inline {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+  border: 1px solid var(--l-accent-line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.ws-rebase-inline:hover {
+  filter: brightness(0.97);
+}
+.ws-co .ws-commit {
+  margin-top: 6px;
+  padding-left: 1px;
 }
 .ws-card {
   display: flex;
