@@ -1,4 +1,13 @@
-import { Component, computed, onWillStart, onWillUnmount, plugin, useEffect, xml } from "@odoo/owl";
+import {
+  Component,
+  computed,
+  onWillStart,
+  onWillUnmount,
+  plugin,
+  signal,
+  useEffect,
+  xml,
+} from "@odoo/owl";
 import { VERSION } from "./config.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
@@ -10,7 +19,6 @@ import { StorePlugin } from "./store_plugin.js";
 import { WorkspacePlugin } from "./workspace_plugin.js";
 import { UpdatePlugin } from "./update_plugin.js";
 import { BranchesScreen } from "../branches_screen/branches.js";
-import { CodeScreen } from "../code_screen/code.js";
 import { DirtyMenu, ICONS, NAV, m, mergedTabIds } from "./common.js";
 import { ConfigScreen } from "../config_screen/config.js";
 import { DashboardScreen } from "../dashboard_screen/dashboard.js";
@@ -206,19 +214,46 @@ export class Topbar extends Component {
 
 // ─────────────────────────── Sidebar ───────────────────────────
 
+const SIDEBAR_COLLAPSED_KEY = "oo-sidebar-collapsed";
+
 export class Sidebar extends Component {
   static template = xml`
-    <nav class="sidebar">
+    <nav class="sidebar" t-att-class="{collapsed: this.collapsed()}">
       <button t-foreach="this.nav" t-as="item" t-key="item.id" class="nav-item"
               t-att-class="{active: this.router.section() === item.id}"
+              t-att-title="this.collapsed() ? item.label : ''"
               t-on-click="() => this.router.go(item.id)">
         <t t-out="this.icon(item.icon)"/>
-        <t t-out="item.label"/>
+        <span class="nav-label" t-out="item.label"/>
+      </button>
+      <div class="nav-spacer"/>
+      <button class="nav-item nav-collapse" t-att-title="this.collapsed() ? 'Expand sidebar' : 'Collapse sidebar'"
+              t-on-click="() => this.toggleCollapsed()">
+        <t t-out="this.collapseIcon"/>
+        <span class="nav-label">Collapse</span>
       </button>
     </nav>`;
 
   router = plugin(RouterPlugin);
   config = plugin(ConfigPlugin);
+  collapseIcon = m(ICONS.collapse);
+  collapsed = signal(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+
+  setup() {
+    // reflect the collapse state on <html> so the --sidebar-width override cascades
+    // to both the body grid and the topbar (which mirror the same column), and
+    // persist it across reloads. owl3's useEffect tracks the body → reruns on toggle.
+    useEffect(() => {
+      const on = this.collapsed();
+      document.documentElement.classList.toggle("sidebar-collapsed", on);
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? "1" : "0");
+    });
+    onWillUnmount(() => document.documentElement.classList.remove("sidebar-collapsed"));
+  }
+
+  toggleCollapsed() {
+    this.collapsed.set(!this.collapsed());
+  }
 
   // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
   // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from
@@ -251,7 +286,6 @@ export class Sidebar extends Component {
 
 export const SCREENS = {
   dashboard: DashboardScreen,
-  code: CodeScreen,
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -269,7 +303,6 @@ export class App extends Component {
     Topbar,
     Sidebar,
     DashboardScreen,
-    CodeScreen,
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,

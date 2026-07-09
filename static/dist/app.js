@@ -131,7 +131,6 @@ var DEFAULT_CONFIG = {
 };
 var SECTIONS = [
   "dashboard",
-  "code",
   "workspaces",
   "branches",
   "prs",
@@ -3277,6 +3276,8 @@ var ALIASES = {
   worktree: "workspaces",
   server: "workspaces",
   // the loaded workspace's Server-logs tab superseded it
+  code: "workspaces",
+  // the repo sync strip moved to the workspace's Code tab
   targets: "config",
   // template management lives on the Configuration screen
   templates: "config",
@@ -3771,11 +3772,13 @@ var ICONS = {
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
   worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
   nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
-  memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`
+  memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`,
+  // sidebar collapse/expand toggle: a double chevron (points left; CSS flips it
+  // when collapsed so it points right = "expand")
+  collapse: `<svg viewBox="0 0 24 24"><polyline points="13 17 8 12 13 7"/><polyline points="18 17 13 12 18 7"/></svg>`
 };
 var NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
-  { id: "code", label: "Code", icon: ICONS.code },
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
@@ -4614,449 +4617,6 @@ var BranchesScreen = class extends Component {
   }
   prState(p) {
     return p.draft && p.state === "open" ? "draft" : p.state;
-  }
-};
-
-// static/src/core/terminal_plugin.js
-var TerminalPlugin = class extends Plugin {
-  open = signal(false);
-  toggle() {
-    this.open.set(!this.open());
-  }
-};
-
-// static/src/core/terminal.js
-var _xtermReady = null;
-function loadXterm() {
-  if (!_xtermReady) {
-    _xtermReady = new Promise((resolve, reject) => {
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = "/static/lib/xterm/xterm.css";
-      document.head.appendChild(link);
-      const s1 = document.createElement("script");
-      s1.src = "/static/lib/xterm/xterm.js";
-      s1.onload = () => {
-        const s2 = document.createElement("script");
-        s2.src = "/static/lib/xterm/addon-fit.js";
-        s2.onload = resolve;
-        s2.onerror = reject;
-        document.head.appendChild(s2);
-      };
-      s1.onerror = reject;
-      document.head.appendChild(s1);
-    });
-  }
-  return _xtermReady;
-}
-async function attachXterm(el, wsUrl, focusOnOpen = false) {
-  await loadXterm();
-  const term = new Terminal({
-    cursorBlink: true,
-    fontSize: 13,
-    fontFamily: "var(--mono, monospace)"
-  });
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
-  term.open(el);
-  await new Promise((r) => requestAnimationFrame(r));
-  fit.fit();
-  if (focusOnOpen) term.focus();
-  const ws = new WebSocket(wsUrl);
-  ws.binaryType = "arraybuffer";
-  const sendSize = () => {
-    if (ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-  };
-  ws.onopen = sendSize;
-  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
-  const onData = term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
-  });
-  const ro = new ResizeObserver(() => {
-    fit.fit();
-    sendSize();
-  });
-  ro.observe(el);
-  return () => {
-    ro.disconnect();
-    onData.dispose?.();
-    try {
-      ws.close();
-    } catch {
-    }
-    term.dispose();
-  };
-}
-var TerminalPanel = class extends Component {
-  static template = xml`
-    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title">Terminal</span>
-        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  term = plugin(TerminalPlugin);
-  container = signal.ref(HTMLElement);
-  _dispose = null;
-  _termOpen = false;
-  // guard against double-open on re-renders
-  setup() {
-    this.drag = useDragResize();
-    onWillUnmount(() => this._closeTerminal());
-    useEffect(() => {
-      const el = this.container();
-      if (el) {
-        this._openTerminal(el);
-      } else {
-        this._closeTerminal();
-      }
-    });
-  }
-  async _openTerminal(el) {
-    if (this._termOpen) return;
-    this._termOpen = true;
-    try {
-      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
-      if (this.container() !== el) {
-        dispose();
-        return;
-      }
-      this._dispose = dispose;
-    } catch (e) {
-      this._termOpen = false;
-    }
-  }
-  _closeTerminal() {
-    if (!this._termOpen) return;
-    this._termOpen = false;
-    this._dispose?.();
-    this._dispose = null;
-  }
-};
-var TerminalDialog = class extends Component {
-  static template = xml`
-    <div class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
-        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  props = props({ done: t.function(), path: t.string(), label: t.string() });
-  container = signal.ref(HTMLElement);
-  _dispose = null;
-  setup() {
-    this.drag = useDragResize();
-    useEffect(() => {
-      const el = this.container();
-      if (!el) return;
-      let live = true;
-      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
-      attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
-      return () => {
-        live = false;
-        this._dispose?.();
-        this._dispose = null;
-      };
-    });
-    const onKey = (e) => {
-      if (e.key !== "Escape") return;
-      const el = this.container();
-      if (el && el.contains(document.activeElement)) return;
-      this.done(null);
-    };
-    document.addEventListener("keydown", onKey);
-    onWillUnmount(() => document.removeEventListener("keydown", onKey));
-  }
-  get label() {
-    return this.props.label || this.props.path;
-  }
-  done(result) {
-    this.props.done(result);
-  }
-};
-
-// static/src/code_screen/code.js
-var CodeScreen = class extends Component {
-  static components = { DirtyBadge, Panel };
-  static template = xml`
-    <section>
-      <Panel title="'Code'">
-        <t t-set-slot="top-right">
-          <span class="meta" t-out="this.stamp"/>
-          <button class="pbtn" t-on-click="() => this._load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-        </t>
-        <t t-set-slot="bottom-left">
-          <span class="dash-subtitle">Manage the main repository checkouts — switch branches, rebase, push and open them.</span>
-        </t>
-      </Panel>
-      <div class="content">
-        <div t-att-class="{busy: this.code.busy()}">
-          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim" t-out="e.id + ': ' + e.error"/>
-          <div class="dash-layout">
-          <!-- repositories sync strip: the repo list collapses to one row of chips,
-               each carrying its sync health (up to date / N behind). Per-repo actions
-               live in the chip's menu. -->
-          <div t-if="this.favRepos.length" class="dash-repos">
-            <div class="dash-repos-label">
-              <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
-              <span>Repos</span>
-            </div>
-            <div class="dash-repos-chips">
-              <div t-foreach="this.favRepos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
-                <span class="dash-chip-name" t-out="r.id"/>
-                <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
-                <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
-                <span class="dash-chip-div"/>
-                <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
-                <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
-                <div class="dash-kebab-wrap">
-                  <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
-                  <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
-                    <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
-                    <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
-                    <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.code.openEditor(r.path, r.id)">Open with editor</button>
-                    <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
-                    <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
-                    <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="dash-repos-actions">
-              <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
-                <t t-out="this.codeIcon"/>Edit
-              </button>
-              <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
-                <t t-out="this.refreshIcon"/>Fetch &amp; rebase all
-              </button>
-            </div>
-          </div>
-          <div t-elif="this.code.error()" class="dim" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-else="" class="dim">No repositories — mark repos as favorite in the Configuration tab to manage them here.</div>
-          </div><!-- /.dash-layout -->
-        </div>
-      </div>
-    </section>`;
-  code = plugin(CodePlugin);
-  config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
-  refreshIcon = m(ICONS.refresh);
-  addonsIcon = m(ICONS.addons);
-  // "Repos" sync-strip label icon
-  codeIcon = m(ICONS.code);
-  // "Edit" (open all repos in the editor)
-  chevronIcon = m(ICONS.chevron);
-  // the repo chip's dropdown caret
-  menuId = signal("");
-  // id of the repo chip whose action menu is open ("" = none)
-  setup() {
-    this._load(false);
-    const closeMenu = () => this.menuId() && this.menuId.set("");
-    onMounted(() => document.addEventListener("click", closeMenu));
-    onWillUnmount(() => document.removeEventListener("click", closeMenu));
-  }
-  toggleMenu(id) {
-    this.menuId.set(this.menuId() === id ? "" : id);
-  }
-  get stamp() {
-    if (this.code.loading()) return "refreshing\u2026";
-    return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
-  }
-  get errors() {
-    return this.code.groups().errors;
-  }
-  // repo ids shown by the strip — favorite repos plus the current workspace's repos.
-  // Narrow both the branch and PR fetch to these (the only repos this screen shows).
-  _repoIds() {
-    const ids = new Set(this.config.config.repos.filter((r) => r.favorite).map((r) => r.id));
-    const current = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastWorkspace()
-    );
-    for (const c of current?.checkouts || []) ids.add(c.repo);
-    return ids;
-  }
-  _load(force) {
-    const ids = this._repoIds();
-    this.code.load(force, ids, ids);
-  }
-  // repositories shown in the strip: union of the active workspace's repos and the
-  // favorite repositories, in config order
-  get favRepos() {
-    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
-    const groups = this.code.groups();
-    const currentTarget = (this.config.config.workspaces || []).find(
-      (w) => w.id === this.server.lastWorkspace()
-    );
-    const visibleIds = /* @__PURE__ */ new Set([
-      ...(currentTarget?.checkouts || []).map((c) => c.repo),
-      ...this.config.config.repos.filter((r) => r.favorite).map((r) => r.id)
-    ]);
-    return this.config.config.repos.filter((r) => visibleIds.has(r.id)).map((r) => {
-      const b = byId[r.id] || {};
-      const current = b.current || "";
-      const github = groups.githubByRepo[r.id] || "";
-      const pr = groups.prIndex[`${r.id}:${current}`] || null;
-      return {
-        id: r.id,
-        current,
-        dirty: !!b.dirty,
-        subject: b.head_subject || "",
-        remote: !!b.head_remote,
-        // the current branch has a remote-tracking ref
-        date: b.head_date || "",
-        ahead: b.ahead || 0,
-        // commits ahead of the base (target) branch
-        behind: b.behind || 0,
-        // commits behind the base (target) branch
-        base: this._baseBranch(current),
-        error: b.error || "",
-        github,
-        path: groups.pathByRepo[r.id] || "",
-        pr,
-        // a work branch that's pushed and PR-less can have a PR opened for it
-        canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
-      };
-    });
-  }
-  // the canonical base branch a branch derives from: master-owl-update -> master,
-  // 19.0-some-fix -> 19.0 (defaults to master)
-  _baseBranch(branch) {
-    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
-  }
-  // commit tooltip: the last-commit date before the title
-  commitTip(row) {
-    const subject = row.subject || "\u2014";
-    return row.date ? `${timeAgo(row.date)} \xB7 ${subject}` : subject;
-  }
-  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
-  // base) is the headline; missing/unreadable repos read as an error, and a repo we
-  // have no branch data for yet stays neutral rather than claiming "up to date".
-  chipClass(r) {
-    if (r.error) return "chip-err";
-    if (!r.current) return "chip-unknown";
-    return r.behind ? "chip-behind" : "chip-ok";
-  }
-  syncText(r) {
-    if (r.error) return "error";
-    if (!r.current) return "\u2014";
-    return r.behind ? `${r.behind} behind` : "up to date";
-  }
-  syncTitle(r) {
-    if (r.error) return r.error;
-    if (!r.current) return "branch state not loaded yet";
-    if (r.behind) {
-      const ahead = r.ahead ? ` \xB7 ${r.ahead} ahead` : "";
-      return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
-    }
-    return `up to date with ${r.base}`;
-  }
-  // fetch+rebase a single repo's current branch onto its canonical base branch
-  canRebaseRepo(r) {
-    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
-  }
-  rebaseRepoTitle(r) {
-    if (r.error) return r.error;
-    if (r.dirty) return "commit or stash changes first \u2014 the working tree is dirty";
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
-  }
-  async rebaseRepo(r) {
-    if (!this.canRebaseRepo(r)) return;
-    await this.code.rebase([
-      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
-    ]);
-  }
-  // push a single repo's current branch to the dev remote
-  canPushRepo(r) {
-    return !!r.current && !r.error && !!r.github && !!r.path;
-  }
-  pushRepoTitle(r) {
-    if (r.error) return r.error;
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `push ${r.current} to the dev remote (odoo-dev)`;
-  }
-  pushRepo(r) {
-    if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Push "${r.current}"?`,
-      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`
-    });
-  }
-  pushForceRepo(r) {
-    if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Force-push "${r.current}"?`,
-      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
-      force: true
-    });
-  }
-  // every shown repository whose current branch can be fetched + rebased
-  get rebasableRepos() {
-    return this.favRepos.filter((r) => this.canRebaseRepo(r));
-  }
-  canRebaseAll() {
-    return this.rebasableRepos.length > 0;
-  }
-  rebaseAllTitle() {
-    const n = this.rebasableRepos.length;
-    if (!n)
-      return "nothing to rebase \u2014 repositories are dirty, missing, or have no canonical remote";
-    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
-  }
-  // fetch + rebase every shown repo's current branch onto its base, in one call
-  async rebaseAll() {
-    const repos = this.rebasableRepos.map((r) => ({
-      repo: r.id,
-      base: this._baseBranch(r.current),
-      github: r.github,
-      path: r.path
-    }));
-    if (repos.length) await this.code.rebase(repos);
-  }
-  // local checkout folders of every shown repo, for "Edit" (open them all at once)
-  get editorPaths() {
-    return this.favRepos.map((r) => r.path).filter(Boolean);
-  }
-  editAllTitle() {
-    const n = this.editorPaths.length;
-    if (!n) return "no local repository folders to open";
-    const editor = (this.config.config.editor || "code").trim();
-    return `open ${n} repositor${n === 1 ? "y" : "ies"} in ${editor}`;
-  }
-  // open every shown repo's folder in the configured editor, all in one window
-  openAllEditors() {
-    const paths = this.editorPaths;
-    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
-  }
-  // open a modal bash terminal in this repo's directory
-  openTerminal(r) {
-    if (!r.path) return;
-    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
-  }
-  // show the last commits on this repo's current branch
-  openCommits(r) {
-    if (!r.path) return;
-    this.dialogs.openComponent(CommitsDialog, {
-      path: r.path,
-      ref: r.current || "",
-      label: `${r.id} \xB7 ${r.current || "?"}`,
-      github: r.github || ""
-    });
-  }
-  // open GitHub's PR-creation page for this repo's current branch
-  openPr(r) {
-    this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
-    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
 };
 
@@ -8813,6 +8373,169 @@ var PrsScreen = class extends Component {
   }
 };
 
+// static/src/core/terminal_plugin.js
+var TerminalPlugin = class extends Plugin {
+  open = signal(false);
+  toggle() {
+    this.open.set(!this.open());
+  }
+};
+
+// static/src/core/terminal.js
+var _xtermReady = null;
+function loadXterm() {
+  if (!_xtermReady) {
+    _xtermReady = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/static/lib/xterm/xterm.css";
+      document.head.appendChild(link);
+      const s1 = document.createElement("script");
+      s1.src = "/static/lib/xterm/xterm.js";
+      s1.onload = () => {
+        const s2 = document.createElement("script");
+        s2.src = "/static/lib/xterm/addon-fit.js";
+        s2.onload = resolve;
+        s2.onerror = reject;
+        document.head.appendChild(s2);
+      };
+      s1.onerror = reject;
+      document.head.appendChild(s1);
+    });
+  }
+  return _xtermReady;
+}
+async function attachXterm(el, wsUrl, focusOnOpen = false) {
+  await loadXterm();
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "var(--mono, monospace)"
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(el);
+  await new Promise((r) => requestAnimationFrame(r));
+  fit.fit();
+  if (focusOnOpen) term.focus();
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+  const sendSize = () => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  ws.onopen = sendSize;
+  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+  const onData = term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+  });
+  const ro = new ResizeObserver(() => {
+    fit.fit();
+    sendSize();
+  });
+  ro.observe(el);
+  return () => {
+    ro.disconnect();
+    onData.dispose?.();
+    try {
+      ws.close();
+    } catch {
+    }
+    term.dispose();
+  };
+}
+var TerminalPanel = class extends Component {
+  static template = xml`
+    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title">Terminal</span>
+        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
+      </div>
+      <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+  term = plugin(TerminalPlugin);
+  container = signal.ref(HTMLElement);
+  _dispose = null;
+  _termOpen = false;
+  // guard against double-open on re-renders
+  setup() {
+    this.drag = useDragResize();
+    onWillUnmount(() => this._closeTerminal());
+    useEffect(() => {
+      const el = this.container();
+      if (el) {
+        this._openTerminal(el);
+      } else {
+        this._closeTerminal();
+      }
+    });
+  }
+  async _openTerminal(el) {
+    if (this._termOpen) return;
+    this._termOpen = true;
+    try {
+      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
+      if (this.container() !== el) {
+        dispose();
+        return;
+      }
+      this._dispose = dispose;
+    } catch (e) {
+      this._termOpen = false;
+    }
+  }
+  _closeTerminal() {
+    if (!this._termOpen) return;
+    this._termOpen = false;
+    this._dispose?.();
+    this._dispose = null;
+  }
+};
+var TerminalDialog = class extends Component {
+  static template = xml`
+    <div class="term-panel" t-ref="this.drag.handle">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
+        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
+      </div>
+      <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  container = signal.ref(HTMLElement);
+  _dispose = null;
+  setup() {
+    this.drag = useDragResize();
+    useEffect(() => {
+      const el = this.container();
+      if (!el) return;
+      let live = true;
+      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+      attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
+      return () => {
+        live = false;
+        this._dispose?.();
+        this._dispose = null;
+      };
+    });
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      const el = this.container();
+      if (el && el.contains(document.activeElement)) return;
+      this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+  }
+  get label() {
+    return this.props.label || this.props.path;
+  }
+  done(result) {
+    this.props.done(result);
+  }
+};
+
 // static/src/workspaces_screen/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
@@ -9742,8 +9465,48 @@ var ClaudeChat = class extends Component {
   }
 };
 var CodePane = class extends Component {
+  static components = { DirtyBadge };
   static template = xml`
     <div class="ws-code">
+      <div t-if="this.repos.length" class="dash-repos ws-repos">
+        <div class="dash-repos-label">
+          <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
+          <span>Repos</span>
+        </div>
+        <div class="dash-repos-chips">
+          <div t-foreach="this.repos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
+            <span class="dash-chip-name" t-out="r.id"/>
+            <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
+            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
+            <span class="dash-chip-div"/>
+            <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
+            <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
+            <div class="dash-kebab-wrap">
+              <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
+              <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
+                <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
+                <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
+                <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
+                <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.code.openEditor(r.path, r.id)">Open with editor</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
+                <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="dash-repos-actions">
+          <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
+            <t t-out="this.codeIcon"/>Edit
+          </button>
+          <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+            <span class="restart"/>Fetch &amp; rebase all
+          </button>
+        </div>
+      </div>
+
       <div class="ws-sec">
         <span>Branches</span>
         <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
@@ -9799,14 +9562,194 @@ var CodePane = class extends Component {
   props = props({ ws: t.any() });
   code = plugin(CodePlugin);
   store = plugin(StorePlugin);
+  config = plugin(ConfigPlugin);
+  dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
+  addonsIcon = m(ICONS.addons);
+  // "Repos" sync-strip label icon
+  codeIcon = m(ICONS.code);
+  // "Edit" (open all repos in the editor)
+  chevronIcon = m(ICONS.chevron);
+  // the repo chip's dropdown caret
+  menuId = signal("");
+  // id of the repo chip whose action menu is open ("" = none)
   setup() {
     useEffect(() => {
       this.load(false);
     });
+    const closeMenu = () => this.menuId() && this.menuId.set("");
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
   }
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
     if (ids.size) this.code.load(force, ids, ids);
+  }
+  toggleMenu(id) {
+    this.menuId.set(this.menuId() === id ? "" : id);
+  }
+  // repositories shown in the sync strip: this workspace's repos, in config order,
+  // joined with live git state (current branch, sync counts) and their PRs
+  get repos() {
+    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    const groups = this.code.groups();
+    const repoIds = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    return this.config.config.repos.filter((r) => repoIds.has(r.id)).map((r) => {
+      const b = byId[r.id] || {};
+      const current = b.current || "";
+      const github = groups.githubByRepo[r.id] || "";
+      const pr = groups.prIndex[`${r.id}:${current}`] || null;
+      return {
+        id: r.id,
+        current,
+        dirty: !!b.dirty,
+        subject: b.head_subject || "",
+        remote: !!b.head_remote,
+        // the current branch has a remote-tracking ref
+        date: b.head_date || "",
+        ahead: b.ahead || 0,
+        // commits ahead of the base (target) branch
+        behind: b.behind || 0,
+        // commits behind the base (target) branch
+        base: this._baseBranch(current),
+        error: b.error || "",
+        github,
+        path: groups.pathByRepo[r.id] || "",
+        pr,
+        // a work branch that's pushed and PR-less can have a PR opened for it
+        canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
+      };
+    });
+  }
+  // the canonical base branch a branch derives from: master-owl-update -> master,
+  // 19.0-some-fix -> 19.0 (defaults to master)
+  _baseBranch(branch) {
+    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+  }
+  // commit tooltip: the last-commit date before the title
+  commitTip(row) {
+    const subject = row.subject || "\u2014";
+    return row.date ? `${timeAgo(row.date)} \xB7 ${subject}` : subject;
+  }
+  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
+  // base) is the headline; missing/unreadable repos read as an error, and a repo we
+  // have no branch data for yet stays neutral rather than claiming "up to date".
+  chipClass(r) {
+    if (r.error) return "chip-err";
+    if (!r.current) return "chip-unknown";
+    return r.behind ? "chip-behind" : "chip-ok";
+  }
+  syncText(r) {
+    if (r.error) return "error";
+    if (!r.current) return "\u2014";
+    return r.behind ? `${r.behind} behind` : "up to date";
+  }
+  syncTitle(r) {
+    if (r.error) return r.error;
+    if (!r.current) return "branch state not loaded yet";
+    if (r.behind) {
+      const ahead = r.ahead ? ` \xB7 ${r.ahead} ahead` : "";
+      return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
+    }
+    return `up to date with ${r.base}`;
+  }
+  // fetch+rebase a single repo's current branch onto its canonical base branch
+  canRebaseRepo(r) {
+    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
+  }
+  rebaseRepoTitle(r) {
+    if (r.error) return r.error;
+    if (r.dirty) return "commit or stash changes first \u2014 the working tree is dirty";
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
+  }
+  async rebaseRepo(r) {
+    if (!this.canRebaseRepo(r)) return;
+    await this.code.rebase([
+      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
+    ]);
+  }
+  // push a single repo's current branch to the dev remote
+  canPushRepo(r) {
+    return !!r.current && !r.error && !!r.github && !!r.path;
+  }
+  pushRepoTitle(r) {
+    if (r.error) return r.error;
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `push ${r.current} to the dev remote (odoo-dev)`;
+  }
+  pushRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Push "${r.current}"?`,
+      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`
+    });
+  }
+  pushForceRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Force-push "${r.current}"?`,
+      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+      force: true
+    });
+  }
+  // every shown repository whose current branch can be fetched + rebased
+  get rebasableRepos() {
+    return this.repos.filter((r) => this.canRebaseRepo(r));
+  }
+  canRebaseAll() {
+    return this.rebasableRepos.length > 0;
+  }
+  rebaseAllTitle() {
+    const n = this.rebasableRepos.length;
+    if (!n)
+      return "nothing to rebase \u2014 repositories are dirty, missing, or have no canonical remote";
+    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
+  }
+  // fetch + rebase every shown repo's current branch onto its base, in one call
+  async rebaseAll() {
+    const repos = this.rebasableRepos.map((r) => ({
+      repo: r.id,
+      base: this._baseBranch(r.current),
+      github: r.github,
+      path: r.path
+    }));
+    if (repos.length) await this.code.rebase(repos);
+  }
+  // local checkout folders of every shown repo, for "Edit" (open them all at once)
+  get editorPaths() {
+    return this.repos.map((r) => r.path).filter(Boolean);
+  }
+  editAllTitle() {
+    const n = this.editorPaths.length;
+    if (!n) return "no local repository folders to open";
+    const editor = (this.config.config.editor || "code").trim();
+    return `open ${n} repositor${n === 1 ? "y" : "ies"} in ${editor}`;
+  }
+  // open every shown repo's folder in the configured editor, all in one window
+  openAllEditors() {
+    const paths = this.editorPaths;
+    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
+  }
+  // open a modal bash terminal in this repo's directory
+  openTerminal(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
+  }
+  // show the last commits on this repo's current branch
+  openCommits(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: r.path,
+      ref: r.current || "",
+      label: `${r.id} \xB7 ${r.current || "?"}`,
+      github: r.github || ""
+    });
+  }
+  // open GitHub's PR-creation page for this repo's current branch
+  openPr(r) {
+    this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
+    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
   // one row per checkout, joined with live git state + its PR
   get rows() {
@@ -9916,8 +9859,10 @@ var WorkspacesScreen = class extends Component {
             <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
                     t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '')">
-              <span class="wt-dot" t-att-class="this.dotClass(ws)"/>
+              <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
               <span class="wt-item-name" t-out="ws.name"/>
+              <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
+              <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
               <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
             </button>
           </div>
@@ -9935,6 +9880,7 @@ var WorkspacesScreen = class extends Component {
               </div>
             </div>
             <div class="wt-detail-actions">
+              <button t-if="!this.isWt(this.sel)" class="pbtn" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
               <button class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
               <button class="pbtn stop" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
               <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
@@ -10034,6 +9980,133 @@ var WorkspacesScreen = class extends Component {
       this.pane.set(pane);
       this.wt.requestedPane.set("");
     });
+    useEffect(() => {
+      const ids = this._listRepoIds();
+      if (ids.size) this.code.load(false, ids, ids);
+      const branches = this._runbotBranches();
+      if (branches.length) this.code.loadRunbot(branches);
+      const prs = this._prs();
+      if (prs.length) this.code.loadMergebot(prs);
+    });
+  }
+  // every repo referenced by any workspace's checkouts (for the list-wide load)
+  _listRepoIds() {
+    const ids = /* @__PURE__ */ new Set();
+    for (const ws of this.config.config.workspaces || [])
+      for (const c of ws.checkouts || []) ids.add(c.repo);
+    return ids;
+  }
+  // ── list badges (runbot/CI + mergebot) — mirrors the dashboard's per-target
+  // badges, scoped to a workspace's checkouts ───────────────────────────────────
+  // one row per checkout with its local + remote/PR state
+  wsRows(ws) {
+    const repos = this.repoMap;
+    const groups = this.code.groups();
+    return (ws.checkouts || []).map(({ repo, branch }) => {
+      const r = repos[repo];
+      const b = r && r.branches.get(branch);
+      return {
+        repo,
+        branch,
+        github: groups.githubByRepo[repo] || "",
+        present: !!b,
+        synced: !!b && b.synced,
+        // local tip matches the remote ref (has a real bundle)
+        pr: groups.prIndex[branchKey(repo, branch)] || null
+      };
+    });
+  }
+  // branches needing the scraped runbot fallback: present, ours, pushed (or a base
+  // branch), and not already covered by a PR's GitHub CI rollup
+  _runbotBranches() {
+    const seen = /* @__PURE__ */ new Set();
+    for (const ws of this.config.config.workspaces || [])
+      for (const row of this.wsRows(ws)) {
+        if (!row.present || this.code.isExternalRepo(row.github)) continue;
+        if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
+        const ci = row.pr && row.pr.ci;
+        if (ci && ci.checks && ci.checks.length) continue;
+        seen.add(row.branch);
+      }
+    return [...seen];
+  }
+  // the unique {github, number} of every PR across the list (for mergebot)
+  _prs() {
+    const seen = /* @__PURE__ */ new Set();
+    const prs = [];
+    for (const ws of this.config.config.workspaces || [])
+      for (const row of this.wsRows(ws)) {
+        if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
+        const key = `${row.github}#${row.pr.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        prs.push({ github: row.github, number: row.pr.number });
+      }
+    return prs;
+  }
+  // a bundle is per branch name (shared across a workspace's repos): prefer the
+  // feature (non-base) branch, else the base
+  bundleBranch(ws) {
+    const branches = (ws.checkouts || []).map((c) => c.branch).filter(Boolean);
+    return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
+  }
+  // the present row representing the workspace's bundle (bundle-branch row, else the
+  // first present one) — drives the single CI badge
+  bundleRow(ws) {
+    const present = this.wsRows(ws).filter((r) => r.present);
+    const branch = this.bundleBranch(ws);
+    return present.find((r) => r.branch === branch) || present[0] || null;
+  }
+  // the workspace's runbot/CI status: {cls, title} or null when there's no signal
+  // yet. Prefers the PR's GitHub CI rollup; falls back to the scraped runbot bundle.
+  wsCiStatus(ws) {
+    const row = this.bundleRow(ws);
+    if (!row) return null;
+    const ci = row.pr && row.pr.ci;
+    if (ci && ci.checks && ci.checks.length) {
+      const pending = ci.checks.some((c) => c.state === "pending");
+      if (ci.overall === "failure") return { cls: "fail", title: "a CI check failed" };
+      if (ci.overall === "success") return { cls: "pass", title: "all CI checks passing" };
+      if (ci.overall === "pending" || pending) return { cls: "run", title: "CI running" };
+      return null;
+    }
+    const s = this.code.runbot()[row.branch] || null;
+    const result = s && s.result || "";
+    if (result === "success") return { cls: "pass", title: "runbot passing" };
+    if (result === "failure") return { cls: "fail", title: "runbot failing" };
+    if (s && s.running) return { cls: "run", title: "runbot running" };
+    return null;
+  }
+  // aggregate mergebot status for a workspace: the most-blocking state across its PRs
+  // that have a scraped state. {cls, label} or null when none.
+  mbStatus(ws) {
+    let worst = null;
+    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+    for (const row of this.wsRows(ws)) {
+      if (!row.pr || !row.github) continue;
+      const state = this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
+      if (!state) continue;
+      const cand = { cls: mbCategory(state), label: state };
+      if (!worst || RANK[cand.cls] < RANK[worst.cls]) worst = cand;
+    }
+    return worst;
+  }
+  // the two trailing status dots: a colour class per status (empty = neutral/unknown)
+  ciDotClass(ws) {
+    const s = this.wsCiStatus(ws);
+    return s ? "s-" + s.cls : "";
+  }
+  mbDotClass(ws) {
+    const s = this.mbStatus(ws);
+    return s ? "s-" + s.cls : "";
+  }
+  ciDotTitle(ws) {
+    const s = this.wsCiStatus(ws);
+    return s ? "runbot: " + s.title : "runbot: no status";
+  }
+  mbDotTitle(ws) {
+    const s = this.mbStatus(ws);
+    return s ? "mergebot: " + s.label : "mergebot: no status";
   }
   // ── list / selection ─────────────────────────────────────────────────────────
   // reads the canonical `workspaces` array — it carries `location` and the stable
@@ -10082,6 +10155,14 @@ var WorkspacesScreen = class extends Component {
   dotClass(ws) {
     return "wt-dot-" + this.stateOf(ws);
   }
+  // the list-row dot: a starting/running server keeps its live colour; otherwise a
+  // worktree workspace or the loaded (active) one gets a solid black dot, and any
+  // other (stopped, inactive) workspace stays faint.
+  listDotClass(ws) {
+    if (this.isLive(ws)) return this.dotClass(ws);
+    if (this.isWt(ws) || this.isLoaded(ws)) return "wt-dot-active";
+    return this.dotClass(ws);
+  }
   isLive(ws) {
     const s = this.stateOf(ws);
     return s === "running" || s === "starting";
@@ -10126,6 +10207,31 @@ var WorkspacesScreen = class extends Component {
     if (blocked) return blocked;
     if (this.isWt(ws)) return "start this workspace's server on its own port";
     return this.isLoaded(ws) ? "start the main server" : "load this workspace (check out its branches) and start the main server";
+  }
+  // ── activation (load without starting) ───────────────────────────────────────
+  // main-located only: check out this workspace's branches + make it the loaded
+  // workspace, without starting the main server. Blocked for the same reasons a
+  // cold Start is (missing/dirty branches), and a no-op once it's the loaded one.
+  _activateBlocked(ws) {
+    if (this.isWt(ws)) return "worktree workspaces don't share the main checkout";
+    if (this.isLoaded(ws)) return "already the loaded workspace";
+    const repos = this.repoMap;
+    const cos = ws.checkouts || [];
+    if (!cos.every(({ repo, branch }) => repos[repo]?.branches.has(branch)))
+      return "some of this workspace's branches are missing locally";
+    if (cos.some(({ repo }) => repos[repo]?.dirty))
+      return "commit or stash changes first \u2014 the working tree is dirty";
+    return "";
+  }
+  canActivate(ws) {
+    return !this._activateBlocked(ws);
+  }
+  activateTitle(ws) {
+    return this._activateBlocked(ws) || "check out this workspace's branches and make it the loaded workspace (without starting the server)";
+  }
+  async activate(ws) {
+    if (!this.canActivate(ws)) return;
+    await this.config.workspace(ws.id)?.activate();
   }
   // ── actions ──────────────────────────────────────────────────────────────────
   async start(ws) {
@@ -10403,18 +10509,39 @@ var Topbar = class extends Component {
     else if (s === "stopped") this.server.start(this.activeId);
   }
 };
+var SIDEBAR_COLLAPSED_KEY = "oo-sidebar-collapsed";
 var Sidebar = class extends Component {
   static template = xml`
-    <nav class="sidebar">
+    <nav class="sidebar" t-att-class="{collapsed: this.collapsed()}">
       <button t-foreach="this.nav" t-as="item" t-key="item.id" class="nav-item"
               t-att-class="{active: this.router.section() === item.id}"
+              t-att-title="this.collapsed() ? item.label : ''"
               t-on-click="() => this.router.go(item.id)">
         <t t-out="this.icon(item.icon)"/>
-        <t t-out="item.label"/>
+        <span class="nav-label" t-out="item.label"/>
+      </button>
+      <div class="nav-spacer"/>
+      <button class="nav-item nav-collapse" t-att-title="this.collapsed() ? 'Expand sidebar' : 'Collapse sidebar'"
+              t-on-click="() => this.toggleCollapsed()">
+        <t t-out="this.collapseIcon"/>
+        <span class="nav-label">Collapse</span>
       </button>
     </nav>`;
   router = plugin(RouterPlugin);
   config = plugin(ConfigPlugin);
+  collapseIcon = m(ICONS.collapse);
+  collapsed = signal(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+  setup() {
+    useEffect(() => {
+      const on = this.collapsed();
+      document.documentElement.classList.toggle("sidebar-collapsed", on);
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? "1" : "0");
+    });
+    onWillUnmount(() => document.documentElement.classList.remove("sidebar-collapsed"));
+  }
+  toggleCollapsed() {
+    this.collapsed.set(!this.collapsed());
+  }
   // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
   // the built-in NAV. Unknown configured ids are dropped; NAV tabs missing from
   // config slot in at their natural position (see mergedTabIds); Config is always
@@ -10435,7 +10562,6 @@ var Sidebar = class extends Component {
 };
 var SCREENS = {
   dashboard: DashboardScreen,
-  code: CodeScreen,
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -10452,7 +10578,6 @@ var App = class extends Component {
     Topbar,
     Sidebar,
     DashboardScreen,
-    CodeScreen,
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,

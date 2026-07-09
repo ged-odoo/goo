@@ -1,4 +1,14 @@
-import { Component, onMounted, plugin, props, signal, t, useEffect, xml } from "@odoo/owl";
+import {
+  Component,
+  onMounted,
+  onWillUnmount,
+  plugin,
+  props,
+  signal,
+  t,
+  useEffect,
+  xml,
+} from "@odoo/owl";
 import { ClaudePlugin } from "./claude_plugin.js";
 import { CodePlugin } from "../core/code_plugin.js";
 import { ConfigPlugin } from "../core/config_plugin.js";
@@ -8,8 +18,10 @@ import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
 import { WorkspacePlugin } from "../core/workspace_plugin.js";
-import { ICONS, LogConsole, SearchBox, appBus, m } from "../core/common.js";
-import { attachXterm } from "../core/terminal.js";
+import { BASE_BRANCH_RE } from "../core/config.js";
+import { DirtyBadge, ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.js";
+import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
+import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo } from "../core/utils.js";
 import {
@@ -108,13 +120,56 @@ export class ClaudeChat extends Component {
 
 // ─────────────────────────── Code pane ───────────────────────────
 
-// The selected workspace's code view: one card per checkout (branch, checked-out
-// badge, last commit, PR) and the deduped list of its pull requests. Data comes
-// from CodePlugin, loaded narrowed to the workspace's repos on selection.
+// The selected workspace's code view: a repository sync strip (one chip per repo
+// with sync health + per-repo actions: rebase, push, editor, terminal, commits,
+// WIP, discard), one card per checkout (branch, checked-out badge, last commit,
+// PR) and the deduped list of its pull requests. Data comes from CodePlugin,
+// loaded narrowed to the workspace's repos on selection. The repo strip absorbed
+// the retired standalone Code screen.
 
 export class CodePane extends Component {
+  static components = { DirtyBadge };
   static template = xml`
     <div class="ws-code">
+      <div t-if="this.repos.length" class="dash-repos ws-repos">
+        <div class="dash-repos-label">
+          <span class="dash-repos-icon"><t t-out="this.addonsIcon"/></span>
+          <span>Repos</span>
+        </div>
+        <div class="dash-repos-chips">
+          <div t-foreach="this.repos" t-as="r" t-key="r.id" class="dash-chip" t-att-class="this.chipClass(r)" t-att-title="this.commitTip(r)" t-on-click.stop="() => this.toggleMenu('repo:' + r.id)">
+            <span class="dash-chip-name" t-out="r.id"/>
+            <span class="dash-chip-branch" t-att-title="r.current" t-out="r.current || '—'"/>
+            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.id"/>
+            <span class="dash-chip-div"/>
+            <span class="dash-chip-sync" t-att-title="this.syncTitle(r)"><span class="dash-chip-dot"/><t t-out="this.syncText(r)"/></span>
+            <button t-if="r.behind and this.canRebaseRepo(r)" class="dash-chip-rebase" t-att-title="this.rebaseRepoTitle(r)" t-on-click.stop="() => this.rebaseRepo(r)">Rebase</button>
+            <div class="dash-kebab-wrap">
+              <span class="dash-chip-caret" t-att-class="{open: this.menuId() === 'repo:' + r.id}"><t t-out="this.chevronIcon"/></span>
+              <div t-if="this.menuId() === 'repo:' + r.id" class="dash-menu">
+                <button class="dash-menu-item" t-att-disabled="!this.canRebaseRepo(r)" t-att-title="this.rebaseRepoTitle(r)" t-on-click="() => this.rebaseRepo(r)">Fetch &amp; rebase</button>
+                <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushRepo(r)">Push</button>
+                <button class="dash-menu-item" t-att-disabled="!this.canPushRepo(r)" t-att-title="this.pushRepoTitle(r)" t-on-click="() => this.pushForceRepo(r)">Push (force)</button>
+                <button t-if="r.canPr" class="dash-menu-item" t-on-click="() => this.openPr(r)">Open PR</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openTerminal(r)">Open in terminal</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.code.openEditor(r.path, r.id)">Open with editor</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.openCommits(r)">See commits</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.code.wipCommit(r.path, r.id)">WIP commit</button>
+                <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.code.discard(r.path, r.id)">Discard changes</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="dash-repos-actions">
+          <button class="dash-rebase" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()">
+            <t t-out="this.codeIcon"/>Edit
+          </button>
+          <button class="dash-rebase" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()">
+            <span class="restart"/>Fetch &amp; rebase all
+          </button>
+        </div>
+      </div>
+
       <div class="ws-sec">
         <span>Branches</span>
         <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
@@ -171,6 +226,13 @@ export class CodePane extends Component {
   props = props({ ws: t.any() });
   code = plugin(CodePlugin);
   store = plugin(StorePlugin);
+  config = plugin(ConfigPlugin);
+  dialogs = plugin(DialogPlugin);
+  eventLog = plugin(EventLogPlugin);
+  addonsIcon = m(ICONS.addons); // "Repos" sync-strip label icon
+  codeIcon = m(ICONS.code); // "Edit" (open all repos in the editor)
+  chevronIcon = m(ICONS.chevron); // the repo chip's dropdown caret
+  menuId = signal(""); // id of the repo chip whose action menu is open ("" = none)
 
   setup() {
     // load branches + PRs narrowed to this workspace's repos (merging, so other
@@ -179,11 +241,204 @@ export class CodePane extends Component {
     useEffect(() => {
       this.load(false);
     });
+    // close the repo chip menu on any outside click
+    const closeMenu = () => this.menuId() && this.menuId.set("");
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
   }
 
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
     if (ids.size) this.code.load(force, ids, ids);
+  }
+
+  toggleMenu(id) {
+    this.menuId.set(this.menuId() === id ? "" : id);
+  }
+
+  // repositories shown in the sync strip: this workspace's repos, in config order,
+  // joined with live git state (current branch, sync counts) and their PRs
+  get repos() {
+    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    const groups = this.code.groups();
+    const repoIds = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    return this.config.config.repos
+      .filter((r) => repoIds.has(r.id))
+      .map((r) => {
+        const b = byId[r.id] || {};
+        const current = b.current || "";
+        const github = groups.githubByRepo[r.id] || "";
+        const pr = groups.prIndex[`${r.id}:${current}`] || null;
+        return {
+          id: r.id,
+          current,
+          dirty: !!b.dirty,
+          subject: b.head_subject || "",
+          remote: !!b.head_remote, // the current branch has a remote-tracking ref
+          date: b.head_date || "",
+          ahead: b.ahead || 0, // commits ahead of the base (target) branch
+          behind: b.behind || 0, // commits behind the base (target) branch
+          base: this._baseBranch(current),
+          error: b.error || "",
+          github,
+          path: groups.pathByRepo[r.id] || "",
+          pr,
+          // a work branch that's pushed and PR-less can have a PR opened for it
+          canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
+        };
+      });
+  }
+
+  // the canonical base branch a branch derives from: master-owl-update -> master,
+  // 19.0-some-fix -> 19.0 (defaults to master)
+  _baseBranch(branch) {
+    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+  }
+
+  // commit tooltip: the last-commit date before the title
+  commitTip(row) {
+    const subject = row.subject || "—";
+    return row.date ? `${timeAgo(row.date)} · ${subject}` : subject;
+  }
+
+  // sync-strip chip: state class + health text. "behind" (needs a rebase onto its
+  // base) is the headline; missing/unreadable repos read as an error, and a repo we
+  // have no branch data for yet stays neutral rather than claiming "up to date".
+  chipClass(r) {
+    if (r.error) return "chip-err";
+    if (!r.current) return "chip-unknown";
+    return r.behind ? "chip-behind" : "chip-ok";
+  }
+
+  syncText(r) {
+    if (r.error) return "error";
+    if (!r.current) return "—";
+    return r.behind ? `${r.behind} behind` : "up to date";
+  }
+
+  syncTitle(r) {
+    if (r.error) return r.error;
+    if (!r.current) return "branch state not loaded yet";
+    if (r.behind) {
+      const ahead = r.ahead ? ` · ${r.ahead} ahead` : "";
+      return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
+    }
+    return `up to date with ${r.base}`;
+  }
+
+  // fetch+rebase a single repo's current branch onto its canonical base branch
+  canRebaseRepo(r) {
+    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
+  }
+
+  rebaseRepoTitle(r) {
+    if (r.error) return r.error;
+    if (r.dirty) return "commit or stash changes first — the working tree is dirty";
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
+  }
+
+  async rebaseRepo(r) {
+    if (!this.canRebaseRepo(r)) return;
+    await this.code.rebase([
+      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path },
+    ]);
+  }
+
+  // push a single repo's current branch to the dev remote
+  canPushRepo(r) {
+    return !!r.current && !r.error && !!r.github && !!r.path;
+  }
+
+  pushRepoTitle(r) {
+    if (r.error) return r.error;
+    if (!r.github || !r.path) return "no canonical repo configured for this repository";
+    return `push ${r.current} to the dev remote (odoo-dev)`;
+  }
+
+  pushRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Push "${r.current}"?`,
+      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
+    });
+  }
+
+  pushForceRepo(r) {
+    if (!this.canPushRepo(r)) return;
+    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
+      title: `Force-push "${r.current}"?`,
+      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+      force: true,
+    });
+  }
+
+  // every shown repository whose current branch can be fetched + rebased
+  get rebasableRepos() {
+    return this.repos.filter((r) => this.canRebaseRepo(r));
+  }
+
+  canRebaseAll() {
+    return this.rebasableRepos.length > 0;
+  }
+
+  rebaseAllTitle() {
+    const n = this.rebasableRepos.length;
+    if (!n)
+      return "nothing to rebase — repositories are dirty, missing, or have no canonical remote";
+    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
+  }
+
+  // fetch + rebase every shown repo's current branch onto its base, in one call
+  async rebaseAll() {
+    const repos = this.rebasableRepos.map((r) => ({
+      repo: r.id,
+      base: this._baseBranch(r.current),
+      github: r.github,
+      path: r.path,
+    }));
+    if (repos.length) await this.code.rebase(repos);
+  }
+
+  // local checkout folders of every shown repo, for "Edit" (open them all at once)
+  get editorPaths() {
+    return this.repos.map((r) => r.path).filter(Boolean);
+  }
+
+  editAllTitle() {
+    const n = this.editorPaths.length;
+    if (!n) return "no local repository folders to open";
+    const editor = (this.config.config.editor || "code").trim();
+    return `open ${n} repositor${n === 1 ? "y" : "ies"} in ${editor}`;
+  }
+
+  // open every shown repo's folder in the configured editor, all in one window
+  openAllEditors() {
+    const paths = this.editorPaths;
+    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
+  }
+
+  // open a modal bash terminal in this repo's directory
+  openTerminal(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
+  }
+
+  // show the last commits on this repo's current branch
+  openCommits(r) {
+    if (!r.path) return;
+    this.dialogs.openComponent(CommitsDialog, {
+      path: r.path,
+      ref: r.current || "",
+      label: `${r.id} · ${r.current || "?"}`,
+      github: r.github || "",
+    });
+  }
+
+  // open GitHub's PR-creation page for this repo's current branch
+  openPr(r) {
+    this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
+    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
 
   // one row per checkout, joined with live git state + its PR
@@ -321,8 +576,10 @@ export class WorkspacesScreen extends Component {
             <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
                     t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '')">
-              <span class="wt-dot" t-att-class="this.dotClass(ws)"/>
+              <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
               <span class="wt-item-name" t-out="ws.name"/>
+              <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
+              <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
               <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
             </button>
           </div>
@@ -340,6 +597,7 @@ export class WorkspacesScreen extends Component {
               </div>
             </div>
             <div class="wt-detail-actions">
+              <button t-if="!this.isWt(this.sel)" class="pbtn" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
               <button class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
               <button class="pbtn stop" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
               <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
@@ -450,6 +708,149 @@ export class WorkspacesScreen extends Component {
       this.pane.set(pane);
       this.wt.requestedPane.set(""); // one re-run with "" then settles
     });
+    // badge data for the whole list: PRs + branches for every workspace's repos,
+    // then runbot (bundle branches without a PR CI rollup) + mergebot (their PRs).
+    // Mirrors the dashboard's loader, but scoped to ALL workspaces since the list
+    // shows them all. Cache-aware; the repo-id union is small (repos are shared).
+    useEffect(() => {
+      const ids = this._listRepoIds();
+      if (ids.size) this.code.load(false, ids, ids);
+      const branches = this._runbotBranches();
+      if (branches.length) this.code.loadRunbot(branches);
+      const prs = this._prs();
+      if (prs.length) this.code.loadMergebot(prs);
+    });
+  }
+
+  // every repo referenced by any workspace's checkouts (for the list-wide load)
+  _listRepoIds() {
+    const ids = new Set();
+    for (const ws of this.config.config.workspaces || [])
+      for (const c of ws.checkouts || []) ids.add(c.repo);
+    return ids;
+  }
+
+  // ── list badges (runbot/CI + mergebot) — mirrors the dashboard's per-target
+  // badges, scoped to a workspace's checkouts ───────────────────────────────────
+  // one row per checkout with its local + remote/PR state
+  wsRows(ws) {
+    const repos = this.repoMap;
+    const groups = this.code.groups();
+    return (ws.checkouts || []).map(({ repo, branch }) => {
+      const r = repos[repo];
+      const b = r && r.branches.get(branch);
+      return {
+        repo,
+        branch,
+        github: groups.githubByRepo[repo] || "",
+        present: !!b,
+        synced: !!b && b.synced, // local tip matches the remote ref (has a real bundle)
+        pr: groups.prIndex[branchKey(repo, branch)] || null,
+      };
+    });
+  }
+
+  // branches needing the scraped runbot fallback: present, ours, pushed (or a base
+  // branch), and not already covered by a PR's GitHub CI rollup
+  _runbotBranches() {
+    const seen = new Set();
+    for (const ws of this.config.config.workspaces || [])
+      for (const row of this.wsRows(ws)) {
+        if (!row.present || this.code.isExternalRepo(row.github)) continue;
+        if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
+        const ci = row.pr && row.pr.ci;
+        if (ci && ci.checks && ci.checks.length) continue;
+        seen.add(row.branch);
+      }
+    return [...seen];
+  }
+
+  // the unique {github, number} of every PR across the list (for mergebot)
+  _prs() {
+    const seen = new Set();
+    const prs = [];
+    for (const ws of this.config.config.workspaces || [])
+      for (const row of this.wsRows(ws)) {
+        if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
+        const key = `${row.github}#${row.pr.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        prs.push({ github: row.github, number: row.pr.number });
+      }
+    return prs;
+  }
+
+  // a bundle is per branch name (shared across a workspace's repos): prefer the
+  // feature (non-base) branch, else the base
+  bundleBranch(ws) {
+    const branches = (ws.checkouts || []).map((c) => c.branch).filter(Boolean);
+    return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
+  }
+
+  // the present row representing the workspace's bundle (bundle-branch row, else the
+  // first present one) — drives the single CI badge
+  bundleRow(ws) {
+    const present = this.wsRows(ws).filter((r) => r.present);
+    const branch = this.bundleBranch(ws);
+    return present.find((r) => r.branch === branch) || present[0] || null;
+  }
+
+  // the workspace's runbot/CI status: {cls, title} or null when there's no signal
+  // yet. Prefers the PR's GitHub CI rollup; falls back to the scraped runbot bundle.
+  wsCiStatus(ws) {
+    const row = this.bundleRow(ws);
+    if (!row) return null;
+    const ci = row.pr && row.pr.ci;
+    if (ci && ci.checks && ci.checks.length) {
+      const pending = ci.checks.some((c) => c.state === "pending");
+      if (ci.overall === "failure") return { cls: "fail", title: "a CI check failed" };
+      if (ci.overall === "success") return { cls: "pass", title: "all CI checks passing" };
+      if (ci.overall === "pending" || pending) return { cls: "run", title: "CI running" };
+      return null;
+    }
+    // fallback: scraped runbot bundle status
+    const s = this.code.runbot()[row.branch] || null;
+    const result = (s && s.result) || "";
+    if (result === "success") return { cls: "pass", title: "runbot passing" };
+    if (result === "failure") return { cls: "fail", title: "runbot failing" };
+    if (s && s.running) return { cls: "run", title: "runbot running" };
+    return null;
+  }
+
+  // aggregate mergebot status for a workspace: the most-blocking state across its PRs
+  // that have a scraped state. {cls, label} or null when none.
+  mbStatus(ws) {
+    let worst = null;
+    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+    for (const row of this.wsRows(ws)) {
+      if (!row.pr || !row.github) continue;
+      const state = this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
+      if (!state) continue;
+      const cand = { cls: mbCategory(state), label: state };
+      if (!worst || RANK[cand.cls] < RANK[worst.cls]) worst = cand;
+    }
+    return worst;
+  }
+
+  // the two trailing status dots: a colour class per status (empty = neutral/unknown)
+  ciDotClass(ws) {
+    const s = this.wsCiStatus(ws);
+    return s ? "s-" + s.cls : "";
+  }
+
+  mbDotClass(ws) {
+    const s = this.mbStatus(ws);
+    return s ? "s-" + s.cls : "";
+  }
+
+  ciDotTitle(ws) {
+    const s = this.wsCiStatus(ws);
+    return s ? "runbot: " + s.title : "runbot: no status";
+  }
+
+  mbDotTitle(ws) {
+    const s = this.mbStatus(ws);
+    return s ? "mergebot: " + s.label : "mergebot: no status";
   }
 
   // ── list / selection ─────────────────────────────────────────────────────────
@@ -511,6 +912,15 @@ export class WorkspacesScreen extends Component {
     return "wt-dot-" + this.stateOf(ws);
   }
 
+  // the list-row dot: a starting/running server keeps its live colour; otherwise a
+  // worktree workspace or the loaded (active) one gets a solid black dot, and any
+  // other (stopped, inactive) workspace stays faint.
+  listDotClass(ws) {
+    if (this.isLive(ws)) return this.dotClass(ws);
+    if (this.isWt(ws) || this.isLoaded(ws)) return "wt-dot-active";
+    return this.dotClass(ws);
+  }
+
   isLive(ws) {
     const s = this.stateOf(ws);
     return s === "running" || s === "starting";
@@ -563,6 +973,38 @@ export class WorkspacesScreen extends Component {
     return this.isLoaded(ws)
       ? "start the main server"
       : "load this workspace (check out its branches) and start the main server";
+  }
+
+  // ── activation (load without starting) ───────────────────────────────────────
+  // main-located only: check out this workspace's branches + make it the loaded
+  // workspace, without starting the main server. Blocked for the same reasons a
+  // cold Start is (missing/dirty branches), and a no-op once it's the loaded one.
+  _activateBlocked(ws) {
+    if (this.isWt(ws)) return "worktree workspaces don't share the main checkout";
+    if (this.isLoaded(ws)) return "already the loaded workspace";
+    const repos = this.repoMap;
+    const cos = ws.checkouts || [];
+    if (!cos.every(({ repo, branch }) => repos[repo]?.branches.has(branch)))
+      return "some of this workspace's branches are missing locally";
+    if (cos.some(({ repo }) => repos[repo]?.dirty))
+      return "commit or stash changes first — the working tree is dirty";
+    return "";
+  }
+
+  canActivate(ws) {
+    return !this._activateBlocked(ws);
+  }
+
+  activateTitle(ws) {
+    return (
+      this._activateBlocked(ws) ||
+      "check out this workspace's branches and make it the loaded workspace (without starting the server)"
+    );
+  }
+
+  async activate(ws) {
+    if (!this.canActivate(ws)) return;
+    await this.config.workspace(ws.id)?.activate();
   }
 
   // ── actions ──────────────────────────────────────────────────────────────────

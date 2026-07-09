@@ -603,6 +603,57 @@ a {
 .nav-item svg .knob {
   fill: var(--bg-sidebar);
 }
+
+/* ── collapsible sidebar ──
+   the shared --sidebar-width drives both the body grid and the topbar column, so
+   overriding it on <html>.sidebar-collapsed slides the whole left column down to
+   icon width. The width change animates (both grids transition their columns). */
+.body,
+.topbar {
+  transition: grid-template-columns 0.18s ease;
+}
+:root.sidebar-collapsed {
+  --sidebar-width: 62px;
+}
+/* the label + topbar extras that don't fit the icon rail */
+:root.sidebar-collapsed .logo .version,
+:root.sidebar-collapsed .nav-update {
+  display: none;
+}
+.nav-label {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.sidebar.collapsed {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.sidebar.collapsed .nav-label {
+  display: none;
+}
+.sidebar.collapsed .nav-item.active::before {
+  left: -8px;
+}
+/* push the collapse toggle to the bottom of the rail */
+.nav-spacer {
+  flex: 1 1 auto;
+  min-height: 8px;
+}
+.nav-collapse {
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.nav-collapse svg {
+  transition: transform 0.18s ease;
+}
+.sidebar.collapsed .nav-collapse svg {
+  transform: rotate(180deg);
+}
 /* ───────────────── MAIN (light) ───────────────── */
 
 main {
@@ -4064,7 +4115,7 @@ a.commit-detail-hash svg {
 /* two columns — worktree list | detail — filling the content area */
 .content.wt-content {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) 1fr;
+  grid-template-columns: minmax(250px, 340px) 1fr;
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
   min-height: 0;
@@ -4170,6 +4221,31 @@ a.commit-detail-hash svg {
   font: inherit;
   color: var(--l-text);
 }
+/* the two trailing status dots (after the name): runbot then mergebot. Neutral grey
+   when there's no status; coloured by the run/pass/fail (CI) or mergebot category. */
+.wt-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--l-line);
+}
+.wt-status-dot.s-pass,
+.wt-status-dot.s-ready,
+.wt-status-dot.s-merged {
+  background: var(--l-green);
+}
+.wt-status-dot.s-fail,
+.wt-status-dot.s-blocked {
+  background: var(--l-red);
+}
+.wt-status-dot.s-run,
+.wt-status-dot.s-progress {
+  background: var(--l-amber);
+}
+.wt-status-dot.s-other {
+  background: var(--l-text-faint);
+}
 .wt-item:hover {
   border-color: var(--l-accent-line);
 }
@@ -4210,6 +4286,11 @@ a.commit-detail-hash svg {
 }
 .wt-dot-stopped {
   background: var(--l-text-faint);
+}
+/* solid black dot: the loaded (active) workspace + any worktree, when its server
+   isn't starting/up (a live server keeps the green/amber state colour instead) */
+.wt-dot-active {
+  background: #000;
 }
 @keyframes wt-pulse {
   50% {

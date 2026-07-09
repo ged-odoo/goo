@@ -9,6 +9,7 @@ import { Plugin, signal } from "@odoo/owl";
 const ALIASES = {
   worktree: "workspaces",
   server: "workspaces", // the loaded workspace's Server-logs tab superseded it
+  code: "workspaces", // the repo sync strip moved to the workspace's Code tab
   targets: "config", // template management lives on the Configuration screen
   templates: "config",
   tests: "workspaces",

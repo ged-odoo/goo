@@ -58,11 +58,13 @@ export const ICONS = {
   worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
   nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
   memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`,
+  // sidebar collapse/expand toggle: a double chevron (points left; CSS flips it
+  // when collapsed so it points right = "expand")
+  collapse: `<svg viewBox="0 0 24 24"><polyline points="13 17 8 12 13 7"/><polyline points="18 17 13 12 18 7"/></svg>`,
 };
 
 export const NAV = [
   { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
-  { id: "code", label: "Code", icon: ICONS.code },
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
