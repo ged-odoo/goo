@@ -9956,9 +9956,15 @@ var WorkspacesScreen = class extends Component {
       this.pane.set(pane);
       this.wt.requestedPane.set("");
     });
+    let loadedIds = "";
     useEffect(() => {
       const ids = this._listRepoIds();
-      if (ids.size) this.code.load(false, ids, ids);
+      const key = [...ids].sort().join(",");
+      if (!ids.size || key === loadedIds) return;
+      loadedIds = key;
+      untrack(() => this.code.load(false, ids, ids));
+    });
+    useEffect(() => {
       const branches = this._runbotBranches();
       if (branches.length) this.code.loadRunbot(branches);
       const prs = this._prs();

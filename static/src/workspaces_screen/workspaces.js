@@ -6,6 +6,7 @@ import {
   props,
   signal,
   t,
+  untrack,
   useEffect,
   xml,
 } from "@odoo/owl";
@@ -682,13 +683,27 @@ export class WorkspacesScreen extends Component {
       this.pane.set(pane);
       this.wt.requestedPane.set(""); // one re-run with "" then settles
     });
-    // badge data for the whole list: PRs + branches for every workspace's repos,
-    // then runbot (bundle branches without a PR CI rollup) + mergebot (their PRs).
-    // Mirrors the dashboard's loader, but scoped to ALL workspaces since the list
-    // shows them all. Cache-aware; the repo-id union is small (repos are shared).
+    // badge data for the whole list, in two effects with different loop-safety.
+    //
+    // (1) PRs + branches for every workspace's repos. code.load() may NOT be
+    // tracked by the effect: it rewrites branchRepos/groups (git reads are
+    // volatile — every load yields fresh objects), so tracking its internal reads
+    // would re-trigger the effect forever. The body therefore only tracks the
+    // config read (_listRepoIds), guards on the repo-set key so unrelated config
+    // touches don't reload, and untracks the load() call itself.
+    let loadedIds = "";
     useEffect(() => {
       const ids = this._listRepoIds();
-      if (ids.size) this.code.load(false, ids, ids);
+      const key = [...ids].sort().join(",");
+      if (!ids.size || key === loadedIds) return;
+      loadedIds = key;
+      untrack(() => this.code.load(false, ids, ids));
+    });
+    // (2) runbot (bundle branches without a PR CI rollup) + mergebot (their PRs)
+    // — body-tracked so it re-runs as branches/PRs stream in. Safe: both loaders
+    // dedup against what's already held/in-flight (the dashboard's pattern), so
+    // once everything is fetched they no-op and the effect settles.
+    useEffect(() => {
       const branches = this._runbotBranches();
       if (branches.length) this.code.loadRunbot(branches);
       const prs = this._prs();
