@@ -569,10 +569,15 @@ export class WorkspacesScreen extends Component {
               </div>
             </div>
             <div class="wt-detail-actions">
-              <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-              <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+              <!-- one primary slot: a main-located workspace that isn't loaded offers
+                   Activate (check out its branches first); once loaded — and always
+                   for worktrees — the slot is the Start/Stop toggle -->
+              <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
+              <t t-else="">
+                <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+              </t>
               <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" title="restart the server" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
-              <button t-if="!this.isWt(this.sel)" class="pbtn" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
               <span class="wt-sp"/>
               <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
               <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
