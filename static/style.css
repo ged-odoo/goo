@@ -4314,11 +4314,21 @@ a.commit-detail-hash svg {
 .wt-detail {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
   min-height: 0;
   min-width: 0;
-  /* no padding here — each child (head / actions / panes) carries its own, so
-     a full-width band or hairline can bleed to the column edges */
+  /* no padding here — the top band + panes carry their own, so the band's panel
+     fill and hairline bleed to the column edges */
+}
+/* the header band (identity + actions + tabs): a panel-coloured strip matching the
+   other screens' Panel header, capped by a hairline the active tab underline sits on */
+.wt-detail-top {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 30px 0;
+  background: var(--l-panel);
+  border-bottom: 1px solid var(--l-panel-line);
 }
 .wt-detail-empty {
   display: flex;
@@ -4333,7 +4343,7 @@ a.commit-detail-hash svg {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 18px 30px 0;
+  padding: 0;
 }
 /* identity line: name + state pill + tags on the left, overflow kebab on the right */
 .wt-head-row {
@@ -4414,28 +4424,26 @@ a.commit-detail-hash svg {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 0 30px;
+  padding: 0;
 }
 .wt-sp {
   flex: 1;
 }
 
-/* the log / Claude panes fill the rest of the detail column */
+/* the pane content fills the rest of the detail column, below the header band */
 .wt-panes {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 30px 22px;
+  padding: 14px 30px 22px;
 }
-/* underline tabs on a hairline, per the Workspaces design (not pill buttons) */
+/* underline tabs sitting on the header band's bottom hairline (not pill buttons) */
 .wt-tabs {
   display: flex;
   flex-wrap: wrap; /* 7 icon+label tabs must not overflow a narrow detail column */
   align-items: center;
   gap: 2px;
-  margin-bottom: 10px;
-  border-bottom: 1px solid var(--l-line);
 }
 .wt-tab {
   display: inline-flex;

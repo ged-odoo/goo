@@ -9828,6 +9828,7 @@ var WorkspacesScreen = class extends Component {
         </div>
         <div class="wt-detail">
           <t t-if="this.sel">
+            <div class="wt-detail-top">
             <div class="wt-detail-head">
               <div class="wt-head-row">
                 <h2 t-out="this.sel.name"/>
@@ -9859,8 +9860,7 @@ var WorkspacesScreen = class extends Component {
               <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
             </div>
-            <div class="wt-panes">
-              <div class="wt-tabs">
+            <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
@@ -9869,6 +9869,8 @@ var WorkspacesScreen = class extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.pane.set('terminal')"><t t-out="this.icons.terminal"/>Terminal</button>
               </div>
+            </div>
+            <div class="wt-panes">
               <div class="wt-pane" t-if="this.pane() === 'code'">
                 <CodePane t-key="this.sel.id" ws="this.sel"/>
               </div>
