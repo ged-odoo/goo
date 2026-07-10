@@ -216,6 +216,96 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
   });
 }
 
+// Adopt the current checkout: turn whatever is checked out in the main server
+// repos (community/enterprise — the ones a workspace may launch) into a
+// main-located workspace, one click, no form. The checkout already matches by
+// construction, so "activating" is just recording it as the loaded workspace —
+// no git, no dirty-tree guard (nothing gets checked out). If a workspace for
+// these exact branches already exists, it is selected instead of duplicated.
+export async function adoptCurrentCheckout(plugins) {
+  const { config, dialogs, code, eventLog, wt, server } = plugins;
+  const fail = (message) =>
+    dialogs.open({ title: "Adopt current checkout", message, okLabel: "OK", cancelLabel: null });
+
+  // fresh local git state, scoped to the server repos (no PR/runbot/mergebot)
+  await code.loadBranches(new Set(["community", "enterprise"]));
+  const byId = Object.fromEntries(code.branchRepos().map((r) => [r.id, r]));
+  const checkouts = [];
+  for (const id of ["community", "enterprise"]) {
+    const cur = byId[id]?.current;
+    if (cur && cur !== "(detached)") checkouts.push({ repo: id, branch: cur });
+  }
+  if (!checkouts.some((c) => c.repo === "community")) {
+    const why = code.error() ? ` (${code.error()})` : " (detached HEAD?)";
+    return fail(`couldn't read the community checkout${why} — check out a branch there first`);
+  }
+
+  // make `ws` the loaded workspace without touching git; a main server running
+  // another workspace must stop first (same semantics as activate())
+  const makeLoaded = async (ws) => {
+    const s = server.status();
+    const busy = s.state === "running" || s.state === "starting";
+    const activeId = busy ? s.workspace : server.lastWorkspace();
+    if (ws.id === activeId) return;
+    if (busy) {
+      const running = (config.config.workspaces || []).find((w) => w.id === activeId);
+      const ok = await dialogs.open({
+        title: "Adopt current checkout",
+        message: `The main server is running${running ? ` workspace "${running.name}"` : ""} — stop it and make "${ws.name}" the loaded workspace?`,
+        okLabel: "Stop & adopt",
+      });
+      if (!ok) return;
+      await server.stop();
+    }
+    server.setLastWorkspace(ws.id);
+    config.workspace(ws.id)?.touchActivity();
+  };
+
+  // an existing main-located workspace already describing this exact checkout —
+  // switching to it is the honest move (same predicate as the drift strip's Adopt)
+  const existing = config.config.workspaces || [];
+  const match = existing.find(
+    (w) =>
+      w.location !== "worktree" &&
+      (w.checkouts || []).length > 0 &&
+      (w.checkouts || []).every(({ repo, branch }) => byId[repo]?.current === branch),
+  );
+  if (match) {
+    eventLog.add(`adopting current checkout → existing workspace ${match.name}`);
+    await makeLoaded(match);
+    wt.select(match.id);
+    return;
+  }
+
+  // named after the feature branch (16.0-owl-fix beats its 16.0 base); a name
+  // collision with different checkouts gets a numeric suffix
+  const feature =
+    checkouts.map((c) => c.branch).find((b) => !BASE_BRANCH_RE.test(b)) || checkouts[0].branch;
+  let name = feature;
+  const names = new Set(existing.map((w) => w.name));
+  for (let i = 2; names.has(name); i++) name = `${feature}-${i}`;
+
+  const now = new Date().toISOString();
+  const ws = {
+    id: newWorkspaceId(),
+    name,
+    created_at: now,
+    last_activity: now,
+    favorite: false,
+    db: name,
+    on_create_args: "",
+    demo_data: true,
+    location: "main",
+    worktree: null,
+    port: null,
+    checkouts,
+  };
+  eventLog.add(`creating workspace ${ws.name} from the current checkout`);
+  config.updateConfig({ workspaces: [...existing, ws] });
+  await makeLoaded(ws);
+  wt.select(ws.id);
+}
+
 // Delete a main-located workspace via a confirmation dialog that can also
 // (optionally) delete its local/remote branches (non-base ones that exist),
 // close its open PRs and drop its database. (Worktree workspaces go through

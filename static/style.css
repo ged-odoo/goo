@@ -3774,6 +3774,16 @@ a.commit-detail-hash svg {
 .wt-empty {
   padding: 10px 4px;
 }
+/* first-run call to action: adopt the current checkout / open the create form */
+.wt-empty-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.wt-empty-cta p {
+  margin: 0 0 4px;
+}
 .wt-item {
   display: flex;
   align-items: center;

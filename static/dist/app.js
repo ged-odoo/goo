@@ -8094,6 +8094,72 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   }
   wt.select(ws.id);
 }
+async function adoptCurrentCheckout(plugins) {
+  const { config, dialogs, code, eventLog, wt, server } = plugins;
+  const fail = (message) => dialogs.open({ title: "Adopt current checkout", message, okLabel: "OK", cancelLabel: null });
+  await code.loadBranches(/* @__PURE__ */ new Set(["community", "enterprise"]));
+  const byId = Object.fromEntries(code.branchRepos().map((r) => [r.id, r]));
+  const checkouts = [];
+  for (const id of ["community", "enterprise"]) {
+    const cur = byId[id]?.current;
+    if (cur && cur !== "(detached)") checkouts.push({ repo: id, branch: cur });
+  }
+  if (!checkouts.some((c) => c.repo === "community")) {
+    const why = code.error() ? ` (${code.error()})` : " (detached HEAD?)";
+    return fail(`couldn't read the community checkout${why} \u2014 check out a branch there first`);
+  }
+  const makeLoaded = async (ws2) => {
+    const s = server.status();
+    const busy = s.state === "running" || s.state === "starting";
+    const activeId = busy ? s.workspace : server.lastWorkspace();
+    if (ws2.id === activeId) return;
+    if (busy) {
+      const running = (config.config.workspaces || []).find((w) => w.id === activeId);
+      const ok = await dialogs.open({
+        title: "Adopt current checkout",
+        message: `The main server is running${running ? ` workspace "${running.name}"` : ""} \u2014 stop it and make "${ws2.name}" the loaded workspace?`,
+        okLabel: "Stop & adopt"
+      });
+      if (!ok) return;
+      await server.stop();
+    }
+    server.setLastWorkspace(ws2.id);
+    config.workspace(ws2.id)?.touchActivity();
+  };
+  const existing = config.config.workspaces || [];
+  const match = existing.find(
+    (w) => w.location !== "worktree" && (w.checkouts || []).length > 0 && (w.checkouts || []).every(({ repo, branch }) => byId[repo]?.current === branch)
+  );
+  if (match) {
+    eventLog.add(`adopting current checkout \u2192 existing workspace ${match.name}`);
+    await makeLoaded(match);
+    wt.select(match.id);
+    return;
+  }
+  const feature = checkouts.map((c) => c.branch).find((b) => !BASE_BRANCH_RE.test(b)) || checkouts[0].branch;
+  let name = feature;
+  const names = new Set(existing.map((w) => w.name));
+  for (let i = 2; names.has(name); i++) name = `${feature}-${i}`;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const ws = {
+    id: newWorkspaceId(),
+    name,
+    created_at: now,
+    last_activity: now,
+    favorite: false,
+    db: name,
+    on_create_args: "",
+    demo_data: true,
+    location: "main",
+    worktree: null,
+    port: null,
+    checkouts
+  };
+  eventLog.add(`creating workspace ${ws.name} from the current checkout`);
+  config.updateConfig({ workspaces: [...existing, ws] });
+  await makeLoaded(ws);
+  wt.select(ws.id);
+}
 async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, isActive, dialogs }) {
   if (isActive) return;
   const groups = code.groups();
@@ -9385,6 +9451,7 @@ var WorkspacesScreen = class extends Component {
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
             <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
+            <button class="wt-new" title="adopt current checkout — turn the branches checked out in your repos into a workspace" t-on-click="() => this.adoptCheckout()"><t t-out="this.adoptIcon"/></button>
             <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
               <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
               <t t-else="" t-out="this.refreshIcon"/>
@@ -9401,7 +9468,14 @@ var WorkspacesScreen = class extends Component {
             </div>
           </div>
           <div class="wt-list-items">
-            <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
+            <div t-if="!this.list.length" class="wt-empty dim">
+              <t t-if="this.query()">No workspace matches.</t>
+              <div t-else="" class="wt-empty-cta">
+                <p>No workspaces yet.</p>
+                <button class="pbtn primary" title="turn the branches currently checked out in your repos into a workspace — no form, one click" t-on-click="() => this.adoptCheckout()">Adopt current checkout</button>
+                <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
+              </div>
+            </div>
             <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
                     t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
@@ -9538,6 +9612,7 @@ var WorkspacesScreen = class extends Component {
   sortIcon = m(ICONS.sort);
   checkIcon = m(ICONS.check);
   refreshIcon = m(ICONS.refresh);
+  adoptIcon = m(ICONS.target);
   refreshingStatuses = signal(false);
   // the list's status-refresh spinner
   orderOptions = WORKSPACE_ORDER_OPTIONS;
@@ -10179,11 +10254,15 @@ var WorkspacesScreen = class extends Component {
       db: this.db,
       code: this.code,
       eventLog: this.eventLog,
-      wt: this.wt
+      wt: this.wt,
+      server: this.server
     };
   }
   create() {
     return startCreateWorkspace(this._dialogPlugins());
+  }
+  adoptCheckout() {
+    return adoptCurrentCheckout(this._dialogPlugins());
   }
 };
 

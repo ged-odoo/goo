@@ -25,7 +25,7 @@ import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo } from "../core/utils.js";
-import { deleteWorkspaceDialog, startCreateWorkspace } from "./dialogs.js";
+import { adoptCurrentCheckout, deleteWorkspaceDialog, startCreateWorkspace } from "./dialogs.js";
 import { AddonsPane, AssetsPane, TestsPane } from "./panes.js";
 
 export class ClaudeChat extends Component {
@@ -606,6 +606,7 @@ export class WorkspacesScreen extends Component {
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
             <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
+            <button class="wt-new" title="adopt current checkout — turn the branches checked out in your repos into a workspace" t-on-click="() => this.adoptCheckout()"><t t-out="this.adoptIcon"/></button>
             <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
               <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
               <t t-else="" t-out="this.refreshIcon"/>
@@ -622,7 +623,14 @@ export class WorkspacesScreen extends Component {
             </div>
           </div>
           <div class="wt-list-items">
-            <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
+            <div t-if="!this.list.length" class="wt-empty dim">
+              <t t-if="this.query()">No workspace matches.</t>
+              <div t-else="" class="wt-empty-cta">
+                <p>No workspaces yet.</p>
+                <button class="pbtn primary" title="turn the branches currently checked out in your repos into a workspace — no form, one click" t-on-click="() => this.adoptCheckout()">Adopt current checkout</button>
+                <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
+              </div>
+            </div>
             <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
                     t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
@@ -760,6 +768,7 @@ export class WorkspacesScreen extends Component {
   sortIcon = m(ICONS.sort);
   checkIcon = m(ICONS.check);
   refreshIcon = m(ICONS.refresh);
+  adoptIcon = m(ICONS.target);
   refreshingStatuses = signal(false); // the list's status-refresh spinner
   orderOptions = WORKSPACE_ORDER_OPTIONS;
   icons = {
@@ -1538,11 +1547,16 @@ export class WorkspacesScreen extends Component {
       code: this.code,
       eventLog: this.eventLog,
       wt: this.wt,
+      server: this.server,
     };
   }
 
   create() {
     return startCreateWorkspace(this._dialogPlugins());
+  }
+
+  adoptCheckout() {
+    return adoptCurrentCheckout(this._dialogPlugins());
   }
 }
 
