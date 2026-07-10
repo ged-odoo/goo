@@ -111,6 +111,15 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // force-refresh the given runbot branches + mergebot PRs: arms the one-shot
+  // flags so both loaders re-ask everything (server cache bypassed) and update
+  // the held records in place — the badges stay visible throughout. Resolves
+  // when both re-scrapes have landed (drives the list's refresh spinner).
+  async refreshStatuses(branches, prs) {
+    this._mbRefresh = this._rbRefresh = true;
+    await Promise.all([this.loadRunbot(branches || []), this.loadMergebot(prs || [])]);
+  }
+
   reposWithGithub() {
     return this.config.config.repos.map((r) => ({
       ...r,

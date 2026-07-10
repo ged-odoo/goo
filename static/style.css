@@ -4273,6 +4273,16 @@ a.commit-detail-hash svg {
   stroke: currentColor;
   stroke-width: 2;
 }
+/* the status-refresh button's in-flight spinner (replaces its icon while running) */
+.wt-refresh-spin {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--l-accent-soft);
+  border-top-color: var(--l-accent);
+  animation: goo-spin 0.8s linear infinite;
+}
 .wt-list-items {
   display: flex;
   flex-direction: column;

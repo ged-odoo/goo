@@ -606,6 +606,10 @@ export class WorkspacesScreen extends Component {
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
             <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
+            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
+              <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
+              <t t-else="" t-out="this.refreshIcon"/>
+            </button>
             <div class="wt-order-wrap">
               <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
                 <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
@@ -755,6 +759,8 @@ export class WorkspacesScreen extends Component {
   kebabIcon = m(ICONS.kebab);
   sortIcon = m(ICONS.sort);
   checkIcon = m(ICONS.check);
+  refreshIcon = m(ICONS.refresh);
+  refreshingStatuses = signal(false); // the list's status-refresh spinner
   orderOptions = WORKSPACE_ORDER_OPTIONS;
   icons = {
     code: m(ICONS.code),
@@ -901,6 +907,18 @@ export class WorkspacesScreen extends Component {
         prs.push({ github: row.github, number: row.pr.number });
       }
     return prs;
+  }
+
+  // the list header's ⟳: force-refresh every workspace's runbot/mergebot status,
+  // spinning until both re-scrapes land (badges stay visible, update in place)
+  async refreshStatuses() {
+    if (this.refreshingStatuses()) return;
+    this.refreshingStatuses.set(true);
+    try {
+      await this.code.refreshStatuses(this._runbotBranches(), this._prs());
+    } finally {
+      this.refreshingStatuses.set(false);
+    }
   }
 
   // a bundle is per branch name (shared across a workspace's repos): prefer the
