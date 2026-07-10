@@ -174,9 +174,6 @@ export class CodePane extends Component {
             </span>
             <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
           </div>
-          <div t-if="r.subject" class="ws-commit dim ws-co-sec">
-            <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
-          </div>
           <div t-if="!this.isBaseBranch(r.branch)" class="ws-co-pr ws-co-sec">
             <t t-if="r.pr">
               <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
@@ -186,6 +183,9 @@ export class CodePane extends Component {
               <span class="dim">no pull request</span>
               <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
             </t>
+          </div>
+          <div t-if="r.subject" class="ws-commit dim ws-co-sec">
+            <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
           </div>
         </div>
       </div>
