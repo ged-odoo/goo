@@ -81,10 +81,10 @@ export class StorePlugin extends Plugin {
 
   // upsert lookup that ignores deleted records. The ORM's delete() leaves
   // table.datapoints[id] in place and getById reads that registry, so after a
-  // delete (e.g. clearExternal on a forced refresh) getById returns the dead
-  // record — an upsert keyed on it writes into a record that records() excludes,
-  // and the value silently vanishes (the disappearing-mergebot-badge bug). Look
-  // the id up among the ACTIVE records instead; create() re-registers it cleanly.
+  // delete (e.g. the authoritative drops below) getById returns the dead record —
+  // an upsert keyed on it writes into a record that records() excludes, and the
+  // value silently vanishes (the disappearing-mergebot-badge bug). Look the id
+  // up among the ACTIVE records instead; create() re-registers it cleanly.
   _live(M, id) {
     return this.orm.records(M).find((r) => r.id === id) || null;
   }
@@ -168,12 +168,6 @@ export class StorePlugin extends Plugin {
       if (rec) rec.status.set(v);
       else this.orm.create(RunbotStatus, { id: k, status: v });
     }
-  }
-
-  // clear the mergebot / runbot records so a forced refresh re-displays fresh badges
-  clearExternal() {
-    for (const m of this.orm.records(MergebotStatus)) this.orm.delete(m);
-    for (const r of this.orm.records(RunbotStatus)) this.orm.delete(r);
   }
 
   // ── optimistic local edits (no server round-trip) ─────────────────────────────

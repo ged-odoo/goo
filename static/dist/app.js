@@ -1192,10 +1192,10 @@ var StorePlugin = class extends Plugin {
   // ── observed writers — preserve the step-4 semantics over records ─────────────
   // upsert lookup that ignores deleted records. The ORM's delete() leaves
   // table.datapoints[id] in place and getById reads that registry, so after a
-  // delete (e.g. clearExternal on a forced refresh) getById returns the dead
-  // record — an upsert keyed on it writes into a record that records() excludes,
-  // and the value silently vanishes (the disappearing-mergebot-badge bug). Look
-  // the id up among the ACTIVE records instead; create() re-registers it cleanly.
+  // delete (e.g. the authoritative drops below) getById returns the dead record —
+  // an upsert keyed on it writes into a record that records() excludes, and the
+  // value silently vanishes (the disappearing-mergebot-badge bug). Look the id
+  // up among the ACTIVE records instead; create() re-registers it cleanly.
   _live(M, id) {
     return this.orm.records(M).find((r) => r.id === id) || null;
   }
@@ -1274,11 +1274,6 @@ var StorePlugin = class extends Plugin {
       if (rec) rec.status.set(v);
       else this.orm.create(RunbotStatus, { id: k, status: v });
     }
-  }
-  // clear the mergebot / runbot records so a forced refresh re-displays fresh badges
-  clearExternal() {
-    for (const m2 of this.orm.records(MergebotStatus)) this.orm.delete(m2);
-    for (const r of this.orm.records(RunbotStatus)) this.orm.delete(r);
   }
   // ── optimistic local edits (no server round-trip) ─────────────────────────────
   // drop a branch from a repo's snapshot after a local delete, without a refetch
@@ -1689,8 +1684,13 @@ var CodePlugin = class extends Plugin {
   // chip so a long fetch doesn't read as a silent failure. Session-local: it
   // tracks the ops THIS browser started.
   working = signal({});
-  _refreshExternal = false;
-  // true during a forced load: ask the server to bypass its cache
+  // one-shot refresh flags, armed by a forced load(): the next mergebot / runbot
+  // fetch re-asks EVERYTHING it's given (server cache bypassed) instead of only the
+  // unknown keys, updating the held records in place — stale-while-revalidate, so
+  // the badges never blink out during a refresh. Consumed by the fetch that acts on
+  // them, so the have-based dedup (the loop guard) resumes right after.
+  _mbRefresh = false;
+  _rbRefresh = false;
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
   // hydrate the store from the instant-paint cache once, so a reload doesn't flash
@@ -1704,16 +1704,18 @@ var CodePlugin = class extends Plugin {
   }
   // mergebot state for the given PRs. Only fetch what we don't already hold and
   // isn't already in flight — that `have`-based dedup is what stops the dashboard
-  // effect (which re-runs when the signal updates) from looping. A forced refresh
-  // clears the signal in load() and passes refresh:true so the server re-scrapes.
+  // effect (which re-runs when the signal updates) from looping. An armed one-shot
+  // refresh widens the batch to every given PR (held ones included) and asks the
+  // server to re-scrape; the held badges stay visible and update in place.
   async loadMergebot(prs) {
-    const refresh = this._refreshExternal;
+    const refresh = this._mbRefresh;
     const have = this.mergebot();
     const todo = prs.filter((p) => {
       const k = `${p.github}#${p.number}`;
-      return !(k in have) && !this.store.mbPending.has(k);
+      return (refresh || !(k in have)) && !this.store.mbPending.has(k);
     });
     if (!todo.length) return;
+    this._mbRefresh = false;
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
@@ -1728,12 +1730,14 @@ var CodePlugin = class extends Plugin {
       keys.forEach((k) => this.store.mbPending.delete(k));
     }
   }
-  // runbot status for the given branches — same dedup as loadMergebot
+  // runbot status for the given branches — same dedup + one-shot refresh as
+  // loadMergebot
   async loadRunbot(branches) {
-    const refresh = this._refreshExternal;
+    const refresh = this._rbRefresh;
     const have = this.runbot();
-    const todo = branches.filter((b) => !(b in have) && !this.store.rbPending.has(b));
+    const todo = branches.filter((b) => (refresh || !(b in have)) && !this.store.rbPending.has(b));
     if (!todo.length) return;
+    this._rbRefresh = false;
     todo.forEach((b) => this.store.rbPending.add(b));
     try {
       const res = await postJSON("/api/runbot", { branches: todo, refresh });
@@ -1775,8 +1779,7 @@ var CodePlugin = class extends Plugin {
   async load(force = false, prRepoIds = null, branchRepoIds = null) {
     this.loading.set(true);
     this.error.set("");
-    this._refreshExternal = force;
-    if (force) this.store.clearExternal();
+    if (force) this._mbRefresh = this._rbRefresh = true;
     const at = Date.now();
     const repos = this.reposWithGithub();
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
