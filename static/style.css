@@ -4435,6 +4435,7 @@ a.commit-detail-hash svg {
   text-overflow: ellipsis;
   flex: 0 1 auto;
   min-width: 0;
+  user-select: all;
 }
 .ws-wt-tag {
   color: var(--l-text-mid);
@@ -4478,6 +4479,7 @@ a.commit-detail-hash svg {
 .wt-meta b {
   color: var(--l-text-mid);
   font-weight: 600;
+  user-select: all;
 }
 /* state pill — reuses the wt-dot-<state> class from dotClass() */
 .wt-state {
