@@ -4276,11 +4276,11 @@ a.commit-detail-hash svg {
 .wt-list-items {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 4px;
+  margin-inline: -10px;
 }
 .wt-empty {
   padding: 10px 4px;
@@ -4290,10 +4290,11 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 12px;
-  border: 1px solid var(--l-line);
-  border-radius: 10px;
-  background: var(--l-card);
+  padding: 9px 15px;
+  border: 0;
+  border-bottom: 1px solid var(--l-line-soft);
+  border-radius: 0;
+  background: transparent;
   text-align: left;
   cursor: pointer;
   font: inherit;
@@ -4325,9 +4326,10 @@ a.commit-detail-hash svg {
   background: var(--l-text-faint);
 }
 .wt-item:hover {
-  border-color: var(--l-accent-line);
+  background: var(--l-panel);
 }
 .wt-item.selected {
+  border-top: 1px solid var(--l-accent-line);
   border-color: var(--l-accent-line);
   background: var(--l-accent-soft);
 }
