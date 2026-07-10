@@ -25,7 +25,7 @@ export class DatabasePlugin extends Plugin {
     // refresh the list whenever the server reaches "running": odoo creates its
     // database on launch, so a start/restart may have added one. Without this the
     // list only updates on a visit to the Databases screen (or its 60s cache TTL),
-    // leaving stale views elsewhere — e.g. the dashboard's "Drop database" item.
+    // leaving stale views elsewhere — e.g. a workspace's "Drop database" item.
     useEffect(() => this._onStatus(this.server.status()));
   }
 

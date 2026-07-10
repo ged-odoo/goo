@@ -185,11 +185,6 @@ export class Workspace extends Model {
     return withScope(this, () => plugin(ConfigPlugin));
   }
 
-  toggleFavorite() {
-    this.favorite.set(!this.favorite());
-    this._configPlugin().touch();
-  }
-
   toggleDemoData() {
     this.demo_data.set(!this.demo_data());
     this._configPlugin().touch();

@@ -21,7 +21,6 @@ import { UpdatePlugin } from "./update_plugin.js";
 import { BranchesScreen } from "../branches_screen/branches.js";
 import { DirtyMenu, ICONS, NAV, m, mergedTabIds } from "./common.js";
 import { ConfigScreen } from "../config_screen/config.js";
-import { DashboardScreen } from "../dashboard_screen/dashboard.js";
 import { DatabasesScreen } from "../databases_screen/databases.js";
 import { EventLog } from "./event_log.js";
 import { MemoryScreen } from "../memory_screen/memory.js";
@@ -294,7 +293,6 @@ export class Sidebar extends Component {
 // its rows + scroll position) lives on the plugin and survives unmount.
 
 export const SCREENS = {
-  dashboard: DashboardScreen,
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
@@ -311,7 +309,6 @@ export class App extends Component {
   static components = {
     Topbar,
     Sidebar,
-    DashboardScreen,
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,
@@ -351,7 +348,7 @@ export class App extends Component {
   server = plugin(ServerPlugin);
   update = plugin(UpdatePlugin);
   // the active screen's component class (a class, not an instance)
-  currentScreen = computed(() => SCREENS[this.router.section()] || DashboardScreen);
+  currentScreen = computed(() => SCREENS[this.router.section()] || WorkspacesScreen);
   setup() {
     // load the real server state before the first render, so a reload of a running
     // server shows "Stop" straight away instead of flashing "Start" → "Stop"

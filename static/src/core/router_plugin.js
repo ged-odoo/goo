@@ -7,6 +7,7 @@ import { Plugin, signal } from "@odoo/owl";
 // retired section ids → their successor (stale bookmarks/links keep working)
 // retired sections redirect: old bookmarks/bundles keep working
 const ALIASES = {
+  dashboard: "workspaces", // the monitoring grid retired; Workspaces is the home screen
   worktree: "workspaces",
   server: "workspaces", // the loaded workspace's Server-logs tab superseded it
   code: "workspaces", // the repo sync strip moved to the workspace's Code tab
@@ -27,7 +28,7 @@ export class RouterPlugin extends Plugin {
   _fromHash() {
     const raw = location.hash.replace("#", "");
     const s = ALIASES[raw] || raw;
-    return SECTIONS.includes(s) ? s : "dashboard";
+    return SECTIONS.includes(s) ? s : "workspaces";
   }
 
   go(section) {

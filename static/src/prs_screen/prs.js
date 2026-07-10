@@ -116,7 +116,7 @@ export class PrsScreen extends Component {
   _reviewLoaded = false; // lazy-load guard for the Reviewing segment
 
   setup() {
-    this.code.load(); // Mine data (also fed to the Dashboard); the common default
+    this.code.load(); // Mine data (also fed to the Workspaces badges); the common default
     if (this.mode() === "reviewing") {
       this._reviewLoaded = true;
       this.review.load();

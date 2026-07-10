@@ -59,8 +59,8 @@ export class CodePlugin extends Plugin {
   }
 
   // mergebot state for the given PRs. Only fetch what we don't already hold and
-  // isn't already in flight — that `have`-based dedup is what stops the dashboard
-  // effect (which re-runs when the signal updates) from looping. An armed one-shot
+  // isn't already in flight — that `have`-based dedup is what stops the screens'
+  // load effects (which re-run when the signal updates) from looping. An armed one-shot
   // refresh widens the batch to every given PR (held ones included) and asks the
   // server to re-scrape; the held badges stay visible and update in place.
   async loadMergebot(prs) {
@@ -149,9 +149,9 @@ export class CodePlugin extends Plugin {
   // cached server-side, so we simply request everything and let the backend decide
   // freshness. `force` (the manual Refresh) passes refresh:true to bypass the cache.
   // `prRepoIds` / `branchRepoIds` (Sets) narrow the PR / branch fetches to those repo
-  // ids — the dashboard only shows a subset (its favorite/target repos), so there's
+  // ids — a screen often only shows a subset of the repos, so there's
   // no point reading the rest: PR fetches hit GitHub, and each branch read is ~8 git
-  // subprocesses. null = every repo (the Branches/PRs/Targets tabs, which show all).
+  // subprocesses. null = every repo (the Branches/PRs tabs, which show all).
   async load(force = false, prRepoIds = null, branchRepoIds = null) {
     this.loading.set(true);
     this.error.set("");
@@ -205,8 +205,8 @@ export class CodePlugin extends Plugin {
     const at = Date.now();
     try {
       const b = await postJSON("/api/code/branches", { repos: req });
-      // merge when narrowed (the Targets kebab loads a single target's repos): must
-      // not clobber the other repos' branch state that the dashboard/branches rely on
+      // merge when narrowed (a scoped load reads a single workspace's repos): must
+      // not clobber the other repos' branch state that the workspaces/branches rely on
       this.store.mergeRepoStatus(b.repos, at, { authoritative: !branchRepoIds });
     } catch (e) {
       this.error.set(e.message);
@@ -346,7 +346,7 @@ export class CodePlugin extends Plugin {
   // for just those repos. A checkout only changes their local working tree, so we
   // refresh only them (merging into the view) and leave every other repo alone —
   // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
-  // unaffected, so we keep those from the cache (the dashboard lazily fills any new).
+  // unaffected, so we keep those from the cache (the screens lazily fill any new).
   async checkout(repos) {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);

@@ -1315,7 +1315,7 @@ class GitService:
                 # uncommitted changes in the working tree (only the current branch)
                 st = self.io.run(["git", "-C", path, "status", "--porcelain"], timeout=10)
                 entry["dirty"] = bool(st.stdout.strip())
-                # HEAD's sha + last commit subject + date (for the dashboard summary)
+                # HEAD's sha + last commit subject + date (for the branch summaries)
                 hl = self.io.run(
                     ["git", "-C", path, "log", "-1", "--format=%H%n%s%n%cI"], timeout=10
                 )

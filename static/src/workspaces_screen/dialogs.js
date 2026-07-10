@@ -1,8 +1,8 @@
-// The shared workspace dialogs: the unified create form (template picker +
-// location), create-from-remote-branch, and delete-with-cleanup. Used by the
-// Workspaces screen and the dashboard cards. Every write goes to the canonical
-// `workspaces` key (full records spread — the legacy `targets` view drops the
-// stable ports).
+// The shared workspace dialogs and actions: the unified create form (template
+// picker + location), create-from-remote-branch, adopt-current-checkout, and
+// delete-with-cleanup. Used by the Workspaces screen. Every write goes to the
+// canonical `workspaces` key (full records spread — the legacy `targets` view
+// drops the stable ports).
 
 import { BASE_BRANCH_RE } from "../core/config.js";
 import { newWorkspaceId } from "../core/config_plugin.js";
@@ -119,7 +119,6 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         },
       },
       { key: "demoData", type: "checkbox", label: "Demo data", value: true },
-      { key: "fav", type: "checkbox", label: "Favorite", value: false },
       {
         key: "createBranches",
         type: "checkbox",
@@ -152,7 +151,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       baseId: tpl?.id || "",
       on_create_args: (res.args || "").trim(),
       demo_data: !!res.demoData,
-      favorite: !!res.fav,
+      favorite: false,
     });
     return;
   }
@@ -165,7 +164,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
     name: res.name.trim(),
     created_at: now,
     last_activity: now,
-    favorite: !!res.fav,
+    favorite: false,
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
     demo_data: !!res.demoData,
@@ -219,9 +218,8 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
 
 // Delete a main-located workspace via a confirmation dialog that can also
 // (optionally) delete its local/remote branches (non-base ones that exist),
-// close its open PRs and drop its database. Shared by the Workspaces screen and
-// the dashboard card menu. (Worktree workspaces go through wt.remove — the
-// backend owns their on-disk cleanup.)
+// close its open PRs and drop its database. (Worktree workspaces go through
+// wt.remove — the backend owns their on-disk cleanup.)
 export async function deleteWorkspaceDialog(
   ws,
   { config, code, db, eventLog, repoMap, isActive, dialogs },

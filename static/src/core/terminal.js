@@ -138,7 +138,7 @@ export class TerminalPanel extends Component {
 
 // ─────────────────────────── Terminal dialog ───────────────────────────
 // A draggable, resizable floating terminal running bash in a given directory
-// (opened from the Dashboard repo list). Backed by /api/shell, so it works
+// (opened from the workspace Code tab). Backed by /api/shell, so it works
 // regardless of the Odoo server; shares the term-panel chrome + useDragResize
 // with the server-tab TerminalPanel.
 
@@ -194,5 +194,5 @@ export class TerminalDialog extends Component {
 
 // ─────────────────────────── Commits dialog ───────────────────────────
 // A draggable, resizable floating window listing the last commits on a repo's
-// current branch (opened from the Dashboard repo list). Shares the term-panel
+// current branch (opened from the workspace Code tab). Shares the term-panel
 // chrome + useDragResize with the terminal windows.

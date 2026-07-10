@@ -122,7 +122,7 @@ export class StorePlugin extends Plugin {
   }
 
   // fold a PR fetch into PrRepo records. Authoritative only over the repos it requested
-  // (scopeIds), so a narrowed dashboard/target load merges into — rather than replaces
+  // (scopeIds), so a narrowed workspace-scoped load merges into — rather than replaces
   // — the full list, while a full load still drops repos that left the config.
   mergePrRepos(repos, at, scopeIds) {
     for (const raw of repos) {

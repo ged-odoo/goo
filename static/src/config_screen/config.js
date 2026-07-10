@@ -699,6 +699,7 @@ export const SPECS = {
     key: "repos",
     title: "Repositories",
     itemName: "repository",
+    carry: ["favorite"], // legacy flag: no UI reads it anymore, but stored configs round-trip
     fields: [
       { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
       {
@@ -722,13 +723,6 @@ export const SPECS = {
         optional: true,
         title:
           "a repo outside the odoo CI ecosystem (e.g. odoo/owl) — skip its mergebot/runbot lookups",
-      },
-      {
-        key: "favorite",
-        name: "favorite",
-        type: "checkbox",
-        optional: true,
-        title: "favorite repositories appear in the dashboard summary",
       },
     ],
     validate(repos, config) {

@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = {
   // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
   // keeps it in lockstep with the db on drop/rename/clone. Empty = leave it alone.
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
-  editor: "code", // command used by the dashboard's "Open with editor" action
+  editor: "code", // command used by the "Open with editor" actions
   auto_open_event_log: false, // open the event log overlay when new events arrive
   // launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets
   // through the odoo_bundler Rust extension (must be built into the venv)
@@ -109,7 +109,6 @@ export const DEFAULT_CONFIG = {
 };
 
 export const SECTIONS = [
-  "dashboard",
   "workspaces",
   "branches",
   "prs",

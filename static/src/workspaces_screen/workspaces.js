@@ -841,7 +841,7 @@ export class WorkspacesScreen extends Component {
     });
     // (2) runbot (bundle branches without a PR CI rollup) + mergebot (their PRs)
     // — body-tracked so it re-runs as branches/PRs stream in. Safe: both loaders
-    // dedup against what's already held/in-flight (the dashboard's pattern), so
+    // dedup against what's already held/in-flight (CodePlugin's `have` pattern), so
     // once everything is fetched they no-op and the effect settles.
     useEffect(() => {
       const branches = this._runbotBranches();
@@ -859,8 +859,7 @@ export class WorkspacesScreen extends Component {
     return ids;
   }
 
-  // ── list badges (runbot/CI + mergebot) — mirrors the dashboard's per-target
-  // badges, scoped to a workspace's checkouts ───────────────────────────────────
+  // ── list badges (runbot/CI + mergebot), scoped to a workspace's checkouts ────
   // one row per checkout with its local + remote/PR state
   wsRows(ws) {
     const repos = this.repoMap;
@@ -1415,7 +1414,7 @@ export class WorkspacesScreen extends Component {
   // ── drop the workspace's database (header ⋮ menu) ─────────────────────────────
   // guarded: the db must exist and the workspace's server must be stopped — the
   // server runs ON that database, so dropping under it is forbidden rather than
-  // silently stopping it (unlike the dashboard's stop-then-drop flow)
+  // silently stopping it
   dbExists(ws) {
     return !!ws.db && this.db.databases().some((d) => d.name === ws.db);
   }

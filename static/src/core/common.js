@@ -29,7 +29,6 @@ export function mbCategory(s) {
 }
 
 export const ICONS = {
-  dashboard: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-.6 4"/><polyline points="20 4 20 11 13 11"/></svg>`,
   clear: `<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13"/></svg>`,
   copy: `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
@@ -65,7 +64,6 @@ export const ICONS = {
 };
 
 export const NAV = [
-  { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
@@ -227,10 +225,7 @@ export class DirtyMenu extends Component {
   }
 }
 
-// ─────────────────────────── Dashboard screen ───────────────────────────
-
-// Per-target view of the code state: for each target, the git/runbot/PR state
-// of every repo:branch in its config. Reuses CodePlugin's branch + PR data.
+// ─────────────────────────── Shared helpers ───────────────────────────
 
 export function loadScript(src, isLoaded) {
   return new Promise((resolve, reject) => {
