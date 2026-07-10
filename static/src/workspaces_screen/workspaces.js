@@ -150,8 +150,8 @@ export class CodePane extends Component {
               <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
               <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
                 <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canRebase" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.rebaseRepo(r.entry))">Fetch &amp; rebase</button>
-                <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushRepo(r.entry))">Push</button>
-                <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushForceRepo(r.entry))">Push (force)</button>
+                <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushRow(r))">Push</button>
+                <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushForceRow(r))">Push (force)</button>
                 <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
@@ -295,40 +295,39 @@ export class CodePane extends Component {
     ]);
   }
 
-  // push a single repo's current branch to the dev remote
-  canPushRepo(r) {
-    return !!r.current && !r.error && !!r.github && !!r.path;
+  // push a checkout's branch to the dev remote. Git pushes an explicit branch name
+  // (git push dev <branch>), so this works whether or not it's checked out — the
+  // guard is only that the branch exists locally and the repo is configured.
+  pushRowTitle(r) {
+    if (r.entry?.error) return r.entry.error;
+    if (!r.entry?.github || !r.path) return "no canonical repo configured for this repository";
+    if (!r.canPush) return "the branch does not exist locally";
+    return `push ${r.branch} to the dev remote (odoo-dev)`;
   }
 
-  pushRepoTitle(r) {
-    if (r.error) return r.error;
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `push ${r.current} to the dev remote (odoo-dev)`;
-  }
-
-  async pushRepo(r) {
-    if (!this.canPushRepo(r)) return;
+  async pushRow(r) {
+    if (!r.canPush) return;
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      [{ path: r.path, branch: r.current }],
+      [{ path: r.path, branch: r.branch }],
       {
-        title: `Push "${r.current}"?`,
-        message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
+        title: `Push "${r.branch}"?`,
+        message: `Push ${r.branch} (${r.repo}) to the dev remote (odoo-dev)?`,
       },
     );
     if (pushed) this.touchActivity();
   }
 
-  async pushForceRepo(r) {
-    if (!this.canPushRepo(r)) return;
+  async pushForceRow(r) {
+    if (!r.canPush) return;
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      [{ path: r.path, branch: r.current }],
+      [{ path: r.path, branch: r.branch }],
       {
-        title: `Force-push "${r.current}"?`,
-        message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+        title: `Force-push "${r.branch}"?`,
+        message: `Force-push ${r.branch} (${r.repo}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
         force: true,
       },
     );
@@ -449,7 +448,8 @@ export class CodePane extends Component {
         behind: checkedOut ? entry?.behind || 0 : 0,
         ahead: checkedOut ? entry?.ahead || 0 : 0,
         canRebase: checkedOut && !!entry && this.canRebaseRepo(entry),
-        canPush: checkedOut && !!entry && this.canPushRepo(entry),
+        // push works on any local branch (explicit refspec) — checkout not required
+        canPush: !!(b && entry && !entry.error && entry.github && entry.path),
         entry, // the rich repo entry (this.repos) the actions menu operates on
       };
     });
