@@ -179,7 +179,6 @@ export class CodePane extends Component {
           <div t-if="!this.isBaseBranch(r.branch)" class="ws-co-pr ws-co-sec">
             <t t-if="r.pr">
               <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-              <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
               <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
               <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
                     t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
@@ -487,14 +486,6 @@ export class CodePane extends Component {
   discard(r) {
     this.touchActivity();
     return this.code.discard(r.path, r.repo);
-  }
-
-  prCls(pr) {
-    return pr.draft && pr.state === "open" ? "draft" : pr.state;
-  }
-
-  prLabel(pr) {
-    return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 
   // CI badge from the PR's GitHub status rollup (reduction of the dashboard's)
