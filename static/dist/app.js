@@ -10014,7 +10014,6 @@ var WorkspacesScreen = class extends Component {
                 <span t-if="this.isDrifted(this.sel)" class="ws-loaded-tag ws-drift-tag" t-att-title="this.driftText(this.sel)">drifted</span>
                 <span t-if="this.isWt(this.sel)" class="ws-loaded-tag ws-wt-tag" title="worktree workspace — its own checkout + port">worktree</span>
                 <span class="wt-sp"/>
-                <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
                 <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
                 <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
                 <div class="dash-kebab-wrap">
@@ -10098,7 +10097,6 @@ var WorkspacesScreen = class extends Component {
   server = plugin(ServerPlugin);
   store = plugin(StorePlugin);
   externalIcon = m(ICONS.external);
-  codeIcon = m(ICONS.code);
   kebabIcon = m(ICONS.kebab);
   sortIcon = m(ICONS.sort);
   checkIcon = m(ICONS.check);
@@ -10585,13 +10583,6 @@ var WorkspacesScreen = class extends Component {
   openTerminalPane(ws) {
     this.pane.set("terminal");
     if (this.termUrl) this.config.workspace(ws.id)?.touchActivity();
-  }
-  openEditor(ws) {
-    if (this.isWt(ws)) return this.wt.openEditor(ws);
-    this.config.workspace(ws.id)?.touchActivity();
-    const g = this.code.groups();
-    const paths = (ws.checkouts || []).map((c) => g.pathByRepo[c.repo]).filter(Boolean);
-    if (paths.length) this.code.openEditorPaths(paths, ws.name);
   }
   odooUrl(ws) {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
