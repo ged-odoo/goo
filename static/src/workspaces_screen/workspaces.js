@@ -142,7 +142,9 @@ export class CodePane extends Component {
         <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
           <div class="ws-co-head">
             <span class="ws-repo-tag" t-out="r.repo"/>
-            <span class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
+            <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
+               t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
+            <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
             <span class="wt-sp"/>
             <div class="dash-kebab-wrap" t-if="r.entry">
               <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
@@ -442,6 +444,7 @@ export class CodePane extends Component {
         checkedOut,
         dirty: !!(c.matches && c.dirty),
         missing: !!git && !b,
+        remote: !!(b && b.remote), // the branch has a remote-tracking ref
         subject: b?.subject || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
