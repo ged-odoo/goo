@@ -4120,7 +4120,7 @@ a.commit-detail-hash svg {
    column when the detail is narrow */
 .ws-co-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 480px));
+  grid-template-columns: repeat(auto-fill, minmax(390px, 520px));
   gap: 10px;
 }
 .ws-co-card {
