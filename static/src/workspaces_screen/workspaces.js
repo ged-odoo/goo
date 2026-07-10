@@ -179,11 +179,7 @@ export class CodePane extends Component {
           <div t-if="!this.isBaseBranch(r.branch)" class="ws-co-pr ws-co-sec">
             <t t-if="r.pr">
               <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-              <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
-              <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
-                    t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-                <span class="dash-ci-dot"/><t t-out="ci.label"/>
-              </span>
+              <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
             </t>
             <t t-else="">
               <span class="dim">no pull request</span>
@@ -488,30 +484,10 @@ export class CodePane extends Component {
     return this.code.discard(r.path, r.repo);
   }
 
-  // CI badge from the PR's GitHub status rollup (reduction of the dashboard's)
-  ciBadge(pr) {
-    const ci = pr && pr.ci;
-    if (!ci || !ci.checks || !ci.checks.length) return null;
-    const pending = ci.checks.some((c) => c.state === "pending");
-    let badge;
-    if (ci.overall === "failure") badge = { cls: "fail", label: "ko", title: "a CI check failed" };
-    else if (ci.overall === "success")
-      badge = { cls: "pass", label: "ok", title: "all CI checks passing" };
-    else if (ci.overall === "pending" || pending)
-      badge = { cls: "run", label: "running", title: "CI running" };
-    else badge = { cls: "unknown", label: "—", title: "no CI status" };
-    badge.checks = ci.checks;
-    return badge;
-  }
-
-  showCiMenu(ev, checks) {
-    if (!checks || !checks.length) return;
-    const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
-  }
-
-  hideCiMenu() {
-    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
+  // the PR's GitHub state for the pill: open / draft / closed / merged (the
+  // runbot/CI signal lives in the workspace header, not per card)
+  prState(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 }
 
