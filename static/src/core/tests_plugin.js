@@ -179,6 +179,7 @@ export class TestsPlugin extends Plugin {
   // run tests against a workspace's slot (the Tests pane passes its workspace)
   async run(tags, ws) {
     if (!tags.trim() || !ws) return;
+    this.config.workspace(ws.id)?.touchActivity();
     const slotId = slotFor(ws);
     const targetId = ws.id;
     const s = this.slot(slotId);

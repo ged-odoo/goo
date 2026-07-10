@@ -270,6 +270,7 @@ export class ServerPlugin extends Plugin {
     this.pending.set("start"); // immediate feedback, before the confirm/POST awaits
     this._beginStart(`starting server (workspace: ${this._targetName(targetId)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
+    this.config.workspace(targetId)?.touchActivity();
     this.setLastWorkspace(targetId);
     await this._run(
       "/api/start",
@@ -283,6 +284,7 @@ export class ServerPlugin extends Plugin {
     this.pending.set("restart"); // immediate feedback, before the confirm/POST awaits
     this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     if (!(await this._confirmBranches(targetId))) return this._cancelStart();
+    this.config.workspace(targetId)?.touchActivity();
     this.setLastWorkspace(targetId);
     await this._run(
       "/api/restart",
@@ -300,7 +302,8 @@ export class ServerPlugin extends Plugin {
     await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
 
-  async stop() {
+  async stop({ trackActivity = true } = {}) {
+    if (trackActivity) this.config.workspace(this.lastWorkspace())?.touchActivity();
     this.pending.set("stop"); // immediate feedback, before the POST round-trip
     this.eventLog.add("stopping server");
     await this._run("/api/stop", undefined, "stop");

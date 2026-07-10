@@ -2430,6 +2430,7 @@ Start with the current branches anyway?`,
     this.pending.set("start");
     this._beginStart(`starting server (workspace: ${this._targetName(targetId)})`);
     if (!await this._confirmBranches(targetId)) return this._cancelStart();
+    this.config.workspace(targetId)?.touchActivity();
     this.setLastWorkspace(targetId);
     await this._run(
       "/api/start",
@@ -2442,6 +2443,7 @@ Start with the current branches anyway?`,
     this.pending.set("restart");
     this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     if (!await this._confirmBranches(targetId)) return this._cancelStart();
+    this.config.workspace(targetId)?.touchActivity();
     this.setLastWorkspace(targetId);
     await this._run(
       "/api/restart",
@@ -2457,7 +2459,8 @@ Start with the current branches anyway?`,
     this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
-  async stop() {
+  async stop({ trackActivity = true } = {}) {
+    if (trackActivity) this.config.workspace(this.lastWorkspace())?.touchActivity();
     this.pending.set("stop");
     this.eventLog.add("stopping server");
     await this._run("/api/stop", void 0, "stop");
@@ -2570,6 +2573,10 @@ var repoUrls = {
 var Workspace = class extends Model {
   static id = "workspace";
   name = fields.char();
+  created_at = fields.char();
+  // ISO timestamp; immutable after creation
+  last_activity = fields.char();
+  // ISO timestamp; intentional workspace actions only
   favorite = fields.bool();
   db = fields.char();
   on_create_args = fields.char();
@@ -2612,6 +2619,10 @@ var Workspace = class extends Model {
     this.demo_data.set(!this.demo_data());
     this._configPlugin().touch();
   }
+  touchActivity() {
+    this.last_activity.set((/* @__PURE__ */ new Date()).toISOString());
+    this._configPlugin().touch();
+  }
   // commit an inline edit onto the target (favorite/demo_data untouched — each is
   // toggled directly via its own checkbox).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
@@ -2620,7 +2631,7 @@ var Workspace = class extends Model {
     this.db.set(db);
     this.on_create_args.set(on_create_args);
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
-    this._configPlugin().touch();
+    this.touchActivity();
   }
   // ── action: stop the server, switch to this workspace, check out its branches ─
   // restore: re-checkout even when this workspace is already the active one — the
@@ -2646,12 +2657,13 @@ var Workspace = class extends Model {
     if (this.id === activeId && !restore) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
+    this.touchActivity();
     const pathByRepo = code.groups().pathByRepo;
     const repos = cos.map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch })).filter((r) => r.path);
     const switched = repos.filter((r) => repoMap[r.repo]?.current !== r.branch);
     eventLog.add(`activating workspace ${this.name()}`);
     for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
-    const stopping = s.state === "running" || s.state === "starting" ? server.stop() : null;
+    const stopping = s.state === "running" || s.state === "starting" ? server.stop({ trackActivity: false }) : null;
     await Promise.all([stopping, code.checkout(repos)]);
     server.setLastWorkspace(this.id);
   }
@@ -2689,6 +2701,8 @@ function workspaceFromTarget(t2) {
   return {
     id: t2.id,
     name: t2.name ?? "",
+    created_at: t2.created_at ?? "",
+    last_activity: t2.last_activity ?? "",
     favorite: !!t2.favorite,
     db: t2.db ?? "",
     on_create_args: t2.on_create_args ?? "",
@@ -2739,6 +2753,8 @@ function workspaceData(w) {
   return {
     id: w.id,
     name: w.name ?? "",
+    created_at: w.created_at ?? "",
+    last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
@@ -2795,6 +2811,8 @@ function toConfig(orm) {
   out.workspaces = workspaces.map((w) => ({
     id: w.id,
     name: w.name(),
+    created_at: w.created_at(),
+    last_activity: w.last_activity(),
     favorite: w.favorite(),
     db: w.db(),
     on_create_args: w.on_create_args(),
@@ -2869,13 +2887,21 @@ function reconcileWorkspaces(orm, desired) {
       for (const k of ["name", "favorite", "db", "on_create_args", "demo_data", "worktree"]) {
         rec[k].set(d[k]);
       }
+      if ("created_at" in w) rec.created_at.set(d.created_at);
+      if ("last_activity" in w) rec.last_activity.set(d.last_activity);
       rec.location.set(d.location);
       if ("port" in w) rec.port.set(d.port);
       reconcileCheckouts(orm, w);
     },
     (o, w) => {
       const port = w.port ?? (workspaceData(w).location === "worktree" ? nextFreePort(o) : 0);
-      createWorkspace(o, { ...w, port });
+      const created_at = w.created_at || (/* @__PURE__ */ new Date()).toISOString();
+      createWorkspace(o, {
+        ...w,
+        port,
+        created_at,
+        last_activity: w.last_activity || created_at
+      });
     }
   );
   const live = new Set(desired.map((w) => w.id));
@@ -2886,11 +2912,23 @@ function reconcileWorkspaces(orm, desired) {
   const have = orm.records(Workspace).map((r) => r.id);
   const want = desired.map((w) => w.id);
   if (have.join("\n") !== want.join("\n")) {
-    const portById = new Map(orm.records(Workspace).map((r) => [r.id, r.port()]));
+    const existing = new Map(
+      orm.records(Workspace).map((r) => [
+        r.id,
+        { port: r.port(), created_at: r.created_at(), last_activity: r.last_activity() }
+      ])
+    );
     for (const c of orm.records(Checkout)) orm.delete(c);
     for (const r of orm.records(Workspace)) orm.delete(r);
     for (const w of desired) {
-      createWorkspace(orm, { ...w, port: w.port ?? portById.get(w.id) ?? 0 });
+      const old = existing.get(w.id);
+      const created_at = w.created_at || old?.created_at || (/* @__PURE__ */ new Date()).toISOString();
+      createWorkspace(orm, {
+        ...w,
+        port: w.port ?? old?.port ?? 0,
+        created_at,
+        last_activity: w.last_activity || old?.last_activity || created_at
+      });
     }
   }
 }
@@ -3003,7 +3041,19 @@ function migrateToWorkspaces(config, state) {
   const renamed = state?.active_workspace === void 0 && state?.active_target !== void 0;
   const tabsBefore = JSON.stringify(config?.tabs ?? null);
   ({ config, state } = migrateConfigState(config, state));
-  const cleaned = renamed || JSON.stringify(config.tabs ?? null) !== tabsBefore;
+  let cleaned = renamed || JSON.stringify(config.tabs ?? null) !== tabsBefore;
+  if (Array.isArray(config.workspaces) && config.workspaces.some((w) => !w.created_at || !w.last_activity)) {
+    const end2 = Date.now();
+    const n = config.workspaces.length;
+    config = {
+      ...config,
+      workspaces: config.workspaces.map((w, i) => {
+        const created_at = w.created_at || new Date(end2 - (n - 1 - i)).toISOString();
+        return { ...w, created_at, last_activity: w.last_activity || created_at };
+      })
+    };
+    cleaned = true;
+  }
   const targets = Array.isArray(config.targets) ? config.targets : [];
   if (Array.isArray(config.workspaces) && config.workspaces.length || !targets.length) {
     return { config, state, changed: cleaned };
@@ -3021,6 +3071,11 @@ function migrateToWorkspaces(config, state) {
     }
     return w;
   });
+  const end = Date.now();
+  for (const [i, w] of workspaces.entries()) {
+    w.created_at ||= new Date(end - (workspaces.length - 1 - i)).toISOString();
+    w.last_activity ||= w.created_at;
+  }
   const seen = /* @__PURE__ */ new Set();
   const templates = targets.filter(
     (t2) => (t2.checkouts || []).length && t2.checkouts.every((c) => BASE_BRANCH_RE.test(c.branch))
@@ -3487,9 +3542,12 @@ var WorkspacePlugin = class extends Plugin {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
     const id = this._newId(name);
+    const now = (/* @__PURE__ */ new Date()).toISOString();
     const ws = {
       id,
       name,
+      created_at: now,
+      last_activity: now,
       favorite,
       db: dbName,
       on_create_args,
@@ -3543,6 +3601,7 @@ var WorkspacePlugin = class extends Plugin {
     if (!this.hasCommunity(tgt))
       return this._error("Cannot start the server", "this workspace has no community repo");
     const eid = this.eventLog.begin(`starting server (${tgt.name})`);
+    this.config.workspace(tgt.id)?.touchActivity();
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
@@ -3556,6 +3615,7 @@ var WorkspacePlugin = class extends Plugin {
     }
   }
   async stopServer(tgt) {
+    this.config.workspace(tgt.id)?.touchActivity();
     this.eventLog.add(`stopping server (${tgt.name})`);
     this._merge(tgt.id, { state: "stopping" });
     try {
@@ -3618,6 +3678,7 @@ var WorkspacePlugin = class extends Plugin {
   // open the worktree's repo folders in the configured editor (all in one window);
   // works whether or not the server is running — it's just the checkout on disk
   openEditor(tgt) {
+    this.config.workspace(tgt.id)?.touchActivity();
     const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
     if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
   }
@@ -3772,6 +3833,7 @@ var ICONS = {
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
   assets: `<svg viewBox="0 0 24 24"><polygon points="12 2 22 7 12 12 2 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
   config: `<svg viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4" class="knob"/><circle cx="9" cy="16" r="2.4" class="knob"/></svg>`,
+  sort: `<svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="14" y2="6"/><line x1="4" y1="12" x2="11" y2="12"/><line x1="4" y1="18" x2="8" y2="18"/><line x1="18" y1="5" x2="18" y2="19"/><polyline points="15 16 18 19 21 16"/></svg>`,
   kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
   chevron: `<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`,
   check: `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`,
@@ -4234,10 +4296,11 @@ ${c.body}` : c.subject;
   }
 };
 async function pushBranchesDialog(code, dialogs, branches, { title, message, force = false }) {
-  if (!branches.length) return;
+  if (!branches.length) return false;
   const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
-  if (!ok) return;
+  if (!ok) return false;
   for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
+  return true;
 }
 
 // static/src/branches_screen/branches.js
@@ -5710,9 +5773,12 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     });
     return;
   }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
   const ws = {
     id: newWorkspaceId(),
     name: res.name.trim(),
+    created_at: now,
+    last_activity: now,
     favorite: !!res.fav,
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
@@ -5739,25 +5805,6 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     await db.cloneStoppingServer(res.cloneDb, ws.db);
   }
   wt.select(ws.id);
-}
-async function createWorkspaceFromRemoteBranch(plugins) {
-  const { code, dialogs } = plugins;
-  const res = await dialogs.openComponent(RemoteBranchDialog);
-  if (!res) return;
-  const { branch, repos } = res;
-  const pathByRepo = code.groups().pathByRepo;
-  for (const repoId of repos) {
-    const path = pathByRepo[repoId];
-    if (!path) continue;
-    await postJSON("/api/code/remote-branch/fetch", { path, branch });
-  }
-  await startCreateWorkspace(plugins, {
-    name: branch,
-    config: repos.map((r) => `${r}:${branch}`).join(","),
-    db: branch,
-    template: "",
-    createBranches: false
-  });
 }
 async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, isActive, dialogs }) {
   if (isActive) return;
@@ -6016,15 +6063,16 @@ var DashboardScreen = class extends Component {
   canPushTarget(tgt) {
     return this._pushableBranches(tgt).length > 0;
   }
-  menuPush(tgt) {
+  async menuPush(tgt) {
     this.menuId.set("");
     const branches = this._pushableBranches(tgt);
     if (!branches.length) return;
     const n = branches.length;
-    return pushBranchesDialog(this.code, this.dialogs, branches, {
+    const pushed = await pushBranchesDialog(this.code, this.dialogs, branches, {
       title: `Push ${n} branch${n === 1 ? "" : "es"}?`,
       message: `Push ${n} branch${n === 1 ? "" : "es"} of "${tgt.name}" to the dev remote (odoo-dev)?`
     });
+    if (pushed) this.config.workspace(tgt.id)?.touchActivity();
   }
   menuRemoveFavorite(tgt) {
     this.menuId.set("");
@@ -6839,6 +6887,7 @@ var TestsPlugin = class extends Plugin {
   // run tests against a workspace's slot (the Tests pane passes its workspace)
   async run(tags, ws) {
     if (!tags.trim() || !ws) return;
+    this.config.workspace(ws.id)?.touchActivity();
     const slotId = slotFor(ws);
     const targetId = ws.id;
     const s = this.slot(slotId);
@@ -8655,6 +8704,7 @@ var ClaudePlugin = class extends Plugin {
     if (!text || this.running(tgt.id)) return;
     const dirs = this._dirsFor(tgt);
     if (!dirs) return;
+    this.config.workspace(tgt.id)?.touchActivity();
     this._append(tgt.id, { role: "user", text });
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
@@ -8842,6 +8892,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
       okLabel: verb
     });
     if (!ok) return;
+    this.config.workspace(ws.id)?.touchActivity();
     s.output.clear();
     s.pending.set(true);
     s.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}\u2026`);
@@ -9268,7 +9319,7 @@ var AssetsPane = class extends Component {
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
           <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
           <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
-                  t-on-click="() => this.assets.generate(this.wsForGenerate)" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
+                  t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
           <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
         </div>
         <div t-if="this.assets.loading()" class="dim ws-empty-note">Loading bundles…</div>
@@ -9298,6 +9349,7 @@ var AssetsPane = class extends Component {
     </div>`;
   props = props({ ws: t.any() });
   assets = plugin(AssetsPlugin);
+  config = plugin(ConfigPlugin);
   search = signal("");
   showJs = signal(true);
   // include .js bundles
@@ -9326,6 +9378,10 @@ var AssetsPane = class extends Component {
   // one (a worktree) — the backend then builds the shell cmd from its copies
   get wsForGenerate() {
     return this.props.ws.location === "worktree" ? this.props.ws : null;
+  }
+  generate() {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
+    return this.assets.generate(this.wsForGenerate);
   }
   get mismatch() {
     return this.assets.loadedDb() !== this.props.ws.db;
@@ -9378,6 +9434,7 @@ var AssetsPane = class extends Component {
   // the clicked attachment's kind so the total matches its row size: any .css/.css.map
   // → css, everything else (.min.js, .js.map, …) → js.
   analyze(b) {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
     const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
     this.assets.analyze(bundleBase(b.name), kind);
   }
@@ -9520,11 +9577,11 @@ var CodePane = class extends Component {
               <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushRepo(r.entry))">Push</button>
               <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushForceRepo(r.entry))">Push (force)</button>
               <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
-              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.code.openEditor(r.path, r.repo))">Open with editor</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
-              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.code.wipCommit(r.path, r.repo))">WIP commit</button>
-              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.code.discard(r.path, r.repo))">Discard changes</button>
+              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
+              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
             </div>
           </div>
         </div>
@@ -9622,6 +9679,7 @@ var CodePane = class extends Component {
   }
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
+    this.touchActivity();
     await this.code.rebase([
       { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
     ]);
@@ -9635,20 +9693,32 @@ var CodePane = class extends Component {
     if (!r.github || !r.path) return "no canonical repo configured for this repository";
     return `push ${r.current} to the dev remote (odoo-dev)`;
   }
-  pushRepo(r) {
+  async pushRepo(r) {
     if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Push "${r.current}"?`,
-      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`
-    });
+    const pushed = await pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      [{ path: r.path, branch: r.current }],
+      {
+        title: `Push "${r.current}"?`,
+        message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`
+      }
+    );
+    if (pushed) this.touchActivity();
   }
-  pushForceRepo(r) {
+  async pushForceRepo(r) {
     if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Force-push "${r.current}"?`,
-      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
-      force: true
-    });
+    const pushed = await pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      [{ path: r.path, branch: r.current }],
+      {
+        title: `Force-push "${r.current}"?`,
+        message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+        force: true
+      }
+    );
+    if (pushed) this.touchActivity();
   }
   // every shown repository whose current branch can be fetched + rebased
   get rebasableRepos() {
@@ -9671,7 +9741,10 @@ var CodePane = class extends Component {
       github: r.github,
       path: r.path
     }));
-    if (repos.length) await this.code.rebase(repos);
+    if (repos.length) {
+      this.touchActivity();
+      await this.code.rebase(repos);
+    }
   }
   // local checkout folders of every shown repo, for "Edit" (open them all at once)
   get editorPaths() {
@@ -9686,16 +9759,26 @@ var CodePane = class extends Component {
   // open every shown repo's folder in the configured editor, all in one window
   openAllEditors() {
     const paths = this.editorPaths;
-    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
+    if (paths.length) {
+      this.touchActivity();
+      this.code.openEditorPaths(paths, "all repositories");
+    }
   }
   // open a modal bash terminal in this repo's directory
   openTerminal(r) {
     if (!r.path) return;
+    this.touchActivity();
     this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
+  }
+  openRepoEditor(r) {
+    if (!r.path) return;
+    this.touchActivity();
+    this.code.openEditor(r.path, r.repo);
   }
   // show the last commits on this repo's current branch
   openCommits(r) {
     if (!r.path) return;
+    this.touchActivity();
     this.dialogs.openComponent(CommitsDialog, {
       path: r.path,
       ref: r.current || "",
@@ -9705,6 +9788,7 @@ var CodePane = class extends Component {
   }
   // open GitHub's PR-creation page for this repo's current branch
   openPr(r) {
+    this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
     window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
@@ -9751,6 +9835,17 @@ var CodePane = class extends Component {
   menuAct(fn) {
     this.menuId.set("");
     fn();
+  }
+  touchActivity() {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
+  }
+  wipCommit(r) {
+    this.touchActivity();
+    return this.code.wipCommit(r.path, r.repo);
+  }
+  discard(r) {
+    this.touchActivity();
+    return this.code.discard(r.path, r.repo);
   }
   prCls(pr) {
     return pr.draft && pr.state === "open" ? "draft" : pr.state;
@@ -9806,6 +9901,23 @@ var TerminalPane = class extends Component {
     );
   }
 };
+var WORKSPACE_ORDER_KEY = "goo-workspace-order";
+var WORKSPACE_ORDER_OPTIONS = [
+  { value: "config", label: "Configured order", short: "Configured" },
+  { value: "name", label: "Name (A\u2013Z)", short: "Name" },
+  { value: "created", label: "Creation date (newest)", short: "Created" },
+  { value: "recent", label: "Most recent activity", short: "Recent" },
+  { value: "mergebot", label: "Mergebot (blocked first)", short: "Mergebot" }
+];
+var WORKSPACE_ORDERS = new Set(WORKSPACE_ORDER_OPTIONS.map((option) => option.value));
+function savedWorkspaceOrder() {
+  try {
+    const value = localStorage.getItem(WORKSPACE_ORDER_KEY) || "config";
+    return WORKSPACE_ORDERS.has(value) ? value : "config";
+  } catch {
+    return "config";
+  }
+}
 var WorkspacesScreen = class extends Component {
   static components = {
     LogConsole,
@@ -9824,7 +9936,16 @@ var WorkspacesScreen = class extends Component {
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
             <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
-            <button class="wt-new" title="fetch a remote branch and create a workspace on it" t-on-click="() => this.createFromRemoteBranch()"><t t-out="this.branchIcon"/></button>
+            <div class="wt-order-wrap">
+              <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
+                <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
+              </button>
+              <div t-if="this.orderMenuOpen()" class="dash-menu wt-order-menu" t-on-click.stop="">
+                <button t-foreach="this.orderOptions" t-as="option" t-key="option.value" class="dash-menu-item" t-att-class="{selected: option.value === this.order()}" t-on-click="() => this.chooseOrder(option.value)">
+                  <span class="wt-order-check"><t t-if="option.value === this.order()" t-out="this.checkIcon"/></span><t t-out="option.label"/>
+                </button>
+              </div>
+            </div>
           </div>
           <div class="wt-list-items">
             <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
@@ -9845,12 +9966,39 @@ var WorkspacesScreen = class extends Component {
             <div class="wt-detail-top">
             <div class="wt-detail-head">
               <div class="wt-head-row">
+                <!-- one primary slot: a main-located workspace that isn't loaded offers
+                     Activate (check out its branches first); once loaded — and always
+                     for worktrees — the slot is the Start/Stop toggle -->
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
+                <t t-else="">
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                </t>
                 <h2 t-out="this.sel.name"/>
-                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
+                <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
+                <t t-if="ci">
+                  <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
+                  <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                    <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                  </a>
+                  <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                    <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                  </span>
+                </t>
+                <t t-set="mb" t-value="this.mbStatus(this.sel)"/>
+                <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
+                  <span class="dash-ci-dot"/><t t-out="mb.label"/>
+                </a>
+                <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
                 <span t-if="this.isLoaded(this.sel)" class="ws-loaded-tag" title="this workspace occupies the main checkout">loaded</span>
                 <span t-if="this.isDrifted(this.sel)" class="ws-loaded-tag ws-drift-tag" t-att-title="this.driftText(this.sel)">drifted</span>
                 <span t-if="this.isWt(this.sel)" class="ws-loaded-tag ws-wt-tag" title="worktree workspace — its own checkout + port">worktree</span>
                 <span class="wt-sp"/>
+                <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
+                <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+                <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
                 <div class="dash-kebab-wrap">
                   <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -9865,21 +10013,6 @@ var WorkspacesScreen = class extends Component {
                 <span t-if="this.portOf(this.sel)">port <b t-out="this.portOf(this.sel)"/></span>
               </div>
             </div>
-            <div class="wt-detail-actions">
-              <!-- one primary slot: a main-located workspace that isn't loaded offers
-                   Activate (check out its branches first); once loaded — and always
-                   for worktrees — the slot is the Start/Stop toggle -->
-              <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
-              <t t-else="">
-                <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
-              </t>
-              <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" title="restart the server" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
-              <span class="wt-sp"/>
-              <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
-              <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-            </div>
             <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
@@ -9887,7 +10020,7 @@ var WorkspacesScreen = class extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.pane.set('terminal')"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
               </div>
             </div>
             <div class="wt-panes">
@@ -9948,8 +10081,10 @@ var WorkspacesScreen = class extends Component {
   store = plugin(StorePlugin);
   externalIcon = m(ICONS.external);
   codeIcon = m(ICONS.code);
-  branchIcon = m(ICONS.branches);
   kebabIcon = m(ICONS.kebab);
+  sortIcon = m(ICONS.sort);
+  checkIcon = m(ICONS.check);
+  orderOptions = WORKSPACE_ORDER_OPTIONS;
   icons = {
     code: m(ICONS.code),
     journal: m(ICONS.journal),
@@ -9963,11 +10098,17 @@ var WorkspacesScreen = class extends Component {
   pane = signal("code");
   query = signal("");
   // the list search
+  order = signal(savedWorkspaceOrder());
+  // config | name | created | recent | mergebot
+  orderMenuOpen = signal(false);
   menuOpen = signal(false);
   // the header's Edit/Remove overflow menu
   setup() {
     this.db.load();
-    const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
+    const closeMenu = () => {
+      if (this.menuOpen()) this.menuOpen.set(false);
+      if (this.orderMenuOpen()) this.orderMenuOpen.set(false);
+    };
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
     const first = (this.config.config.workspaces || [])[0];
@@ -10067,39 +10208,81 @@ var WorkspacesScreen = class extends Component {
     const branch = this.bundleBranch(ws);
     return present.find((r) => r.branch === branch) || present[0] || null;
   }
-  // the workspace's runbot/CI status: {cls, title} or null when there's no signal
-  // yet. Prefers the PR's GitHub CI rollup; falls back to the scraped runbot bundle.
+  // the workspace's runbot/CI badge. Prefers the PR's GitHub CI rollup; falls back
+  // to the scraped runbot bundle.
   wsCiStatus(ws) {
     const row = this.bundleRow(ws);
     if (!row) return null;
     const ci = row.pr && row.pr.ci;
     if (ci && ci.checks && ci.checks.length) {
       const pending = ci.checks.some((c) => c.state === "pending");
-      if (ci.overall === "failure") return { cls: "fail", title: "a CI check failed" };
-      if (ci.overall === "success") return { cls: "pass", title: "all CI checks passing" };
-      if (ci.overall === "pending" || pending) return { cls: "run", title: "CI running" };
-      return null;
+      let badge2;
+      if (ci.overall === "failure")
+        badge2 = { cls: "fail", label: "ko", title: "a CI check failed" };
+      else if (ci.overall === "success")
+        badge2 = { cls: "pass", label: "ok", title: "all CI checks passing" };
+      else if (ci.overall === "pending" || pending)
+        badge2 = { cls: "run", label: "running", title: "CI running" };
+      else badge2 = { cls: "unknown", label: "\u2014", title: "no CI status" };
+      badge2.running = pending && (ci.overall === "success" || ci.overall === "failure");
+      badge2.checks = ci.checks;
+      return badge2;
     }
     const s = this.code.runbot()[row.branch] || null;
     const result = s && s.result || "";
-    if (result === "success") return { cls: "pass", title: "runbot passing" };
-    if (result === "failure") return { cls: "fail", title: "runbot failing" };
-    if (s && s.running) return { cls: "run", title: "runbot running" };
-    return null;
+    const running = !!(s && s.running);
+    let badge;
+    if (result === "success") badge = { cls: "pass", label: "ok", title: "passing" };
+    else if (result === "failure") badge = { cls: "fail", label: "ko", title: "failing" };
+    else if (running) badge = { cls: "run", label: "running", title: "running" };
+    else badge = { cls: "unknown", label: "\u2014", title: "unknown" };
+    badge.running = running && !!result;
+    if (badge.running) badge.title += " \u2014 still running";
+    return badge;
   }
   // aggregate mergebot status for a workspace: the most-blocking state across its PRs
-  // that have a scraped state. {cls, label} or null when none.
+  // that have a scraped state. The rows drive the per-repository hover breakdown.
   mbStatus(ws) {
-    let worst = null;
+    const rows = [];
     const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
     for (const row of this.wsRows(ws)) {
       if (!row.pr || !row.github) continue;
       const state = this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
       if (!state) continue;
-      const cand = { cls: mbCategory(state), label: state };
-      if (!worst || RANK[cand.cls] < RANK[worst.cls]) worst = cand;
+      rows.push({
+        repo: row.repo,
+        state,
+        detail: this.code.mbDetails()[`${row.github}#${row.pr.number}`] || "",
+        cls: mbCategory(state),
+        url: this.code.mergebotUrl(row.github, row.pr.number)
+      });
     }
-    return worst;
+    if (!rows.length) return null;
+    const worst = rows.reduce((a, b) => RANK[a.cls] <= RANK[b.cls] ? a : b);
+    return { cls: worst.cls, label: worst.state, url: rows[0].url, rows };
+  }
+  runbotUrl(ws) {
+    const branch = this.bundleBranch(ws);
+    const scraped = branch && this.code.runbot()[branch]?.url;
+    if (scraped) return scraped;
+    const checks = this.bundleRow(ws)?.pr?.ci?.checks || [];
+    return checks.find((c) => c.context === "ci/runbot")?.url || "";
+  }
+  showCiMenu(ev, checks) {
+    if (!checks || !checks.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
+  }
+  hideCiMenu() {
+    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
+  }
+  showMbMenu(ev, rows) {
+    if (!rows || !rows.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("mb-menu", { detail: { rect, rows } }));
+  }
+  hideMbMenu() {
+    appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
   }
   // the two trailing status dots: a colour class per status (empty = neutral/unknown)
   ciDotClass(ws) {
@@ -10119,15 +10302,47 @@ var WorkspacesScreen = class extends Component {
     return s ? "mergebot: " + s.label : "mergebot: no status";
   }
   // ── list / selection ─────────────────────────────────────────────────────────
+  setOrder(value) {
+    value = WORKSPACE_ORDERS.has(value) ? value : "config";
+    this.order.set(value);
+    try {
+      localStorage.setItem(WORKSPACE_ORDER_KEY, value);
+    } catch {
+    }
+  }
+  chooseOrder(value) {
+    this.setOrder(value);
+    this.orderMenuOpen.set(false);
+  }
+  get orderLabel() {
+    return WORKSPACE_ORDER_OPTIONS.find((option) => option.value === this.order())?.short || "Order";
+  }
   // reads the canonical `workspaces` array — it carries `location` and the stable
   // `port` (the legacy `targets` view drops both by design)
   get list() {
     const all = this.config.config.workspaces || [];
     const q = this.query().trim().toLowerCase();
-    if (!q) return all;
-    return all.filter(
+    const rows = (q ? all.filter(
       (ws) => `${ws.name} ${this.branchOf(ws)} ${ws.db || ""}`.toLowerCase().includes(q)
-    );
+    ) : all).map((ws, index) => ({ ws, index }));
+    const order = this.order();
+    if (order === "name") {
+      rows.sort(
+        (a, b) => a.ws.name.localeCompare(b.ws.name, void 0, { numeric: true, sensitivity: "base" }) || a.index - b.index
+      );
+    } else if (order === "created" || order === "recent") {
+      const field = order === "created" ? "created_at" : "last_activity";
+      rows.sort((a, b) => {
+        const aTime = Date.parse(a.ws[field] || a.ws.created_at || "") || 0;
+        const bTime = Date.parse(b.ws[field] || b.ws.created_at || "") || 0;
+        return bTime - aTime || a.index - b.index;
+      });
+    } else if (order === "mergebot") {
+      const rank = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+      const statusRank = new Map(rows.map(({ ws }) => [ws.id, rank[this.mbStatus(ws)?.cls] ?? 5]));
+      rows.sort((a, b) => statusRank.get(a.ws.id) - statusRank.get(b.ws.id) || a.index - b.index);
+    }
+    return rows.map(({ ws }) => ws);
   }
   get sel() {
     return (this.config.config.workspaces || []).find((w) => w.id === this.wt.selectedId()) || null;
@@ -10338,11 +10553,13 @@ var WorkspacesScreen = class extends Component {
   stop(ws) {
     return this.isWt(ws) ? this.wt.stopServer(ws) : this.server.stop();
   }
-  restart(ws) {
-    return this.isWt(ws) ? this.wt.restartServer(ws) : this.server.restart(ws.id);
+  openTerminalPane(ws) {
+    this.pane.set("terminal");
+    if (this.termUrl) this.config.workspace(ws.id)?.touchActivity();
   }
   openEditor(ws) {
     if (this.isWt(ws)) return this.wt.openEditor(ws);
+    this.config.workspace(ws.id)?.touchActivity();
     const g = this.code.groups();
     const paths = (ws.checkouts || []).map((c) => g.pathByRepo[c.repo]).filter(Boolean);
     if (paths.length) this.code.openEditorPaths(paths, ws.name);
@@ -10359,6 +10576,11 @@ var WorkspacesScreen = class extends Component {
   }
   open(url) {
     if (url) window.open(url, "_blank", "noopener");
+  }
+  openWorkspaceUrl(ws, url) {
+    if (!url) return;
+    this.config.workspace(ws.id)?.touchActivity();
+    this.open(url);
   }
   // run a header-menu action then close the overflow menu
   headMenu(fn) {
@@ -10449,9 +10671,6 @@ var WorkspacesScreen = class extends Component {
   }
   create() {
     return startCreateWorkspace(this._dialogPlugins());
-  }
-  createFromRemoteBranch() {
-    return createWorkspaceFromRemoteBranch(this._dialogPlugins());
   }
 };
 

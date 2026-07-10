@@ -146,6 +146,8 @@ export const repoUrls = {
 export class Workspace extends Model {
   static id = "workspace";
   name = fields.char();
+  created_at = fields.char(); // ISO timestamp; immutable after creation
+  last_activity = fields.char(); // ISO timestamp; intentional workspace actions only
   favorite = fields.bool();
   db = fields.char();
   on_create_args = fields.char();
@@ -193,6 +195,11 @@ export class Workspace extends Model {
     this._configPlugin().touch();
   }
 
+  touchActivity() {
+    this.last_activity.set(new Date().toISOString());
+    this._configPlugin().touch();
+  }
+
   // commit an inline edit onto the target (favorite/demo_data untouched — each is
   // toggled directly via its own checkbox).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
@@ -201,7 +208,7 @@ export class Workspace extends Model {
     this.db.set(db);
     this.on_create_args.set(on_create_args);
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
-    this._configPlugin().touch();
+    this.touchActivity();
   }
 
   // ── action: stop the server, switch to this workspace, check out its branches ─
@@ -231,6 +238,7 @@ export class Workspace extends Model {
     if (this.id === activeId && !restore) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
+    this.touchActivity();
     const pathByRepo = code.groups().pathByRepo;
     const repos = cos
       .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
@@ -239,7 +247,10 @@ export class Workspace extends Model {
     eventLog.add(`activating workspace ${this.name()}`);
     for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
     // stop the server and switch branches concurrently (independent ops)
-    const stopping = s.state === "running" || s.state === "starting" ? server.stop() : null;
+    const stopping =
+      s.state === "running" || s.state === "starting"
+        ? server.stop({ trackActivity: false })
+        : null;
     await Promise.all([stopping, code.checkout(repos)]);
     server.setLastWorkspace(this.id);
   }
@@ -289,6 +300,8 @@ export function workspaceFromTarget(t) {
   return {
     id: t.id,
     name: t.name ?? "",
+    created_at: t.created_at ?? "",
+    last_activity: t.last_activity ?? "",
     favorite: !!t.favorite,
     db: t.db ?? "",
     on_create_args: t.on_create_args ?? "",
@@ -354,6 +367,8 @@ function workspaceData(w) {
   return {
     id: w.id,
     name: w.name ?? "",
+    created_at: w.created_at ?? "",
+    last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
@@ -414,6 +429,8 @@ export function toConfig(orm) {
   out.workspaces = workspaces.map((w) => ({
     id: w.id,
     name: w.name(),
+    created_at: w.created_at(),
+    last_activity: w.last_activity(),
     favorite: w.favorite(),
     db: w.db(),
     on_create_args: w.on_create_args(),
@@ -499,13 +516,21 @@ function reconcileWorkspaces(orm, desired) {
       for (const k of ["name", "favorite", "db", "on_create_args", "demo_data", "worktree"]) {
         rec[k].set(d[k]);
       }
+      if ("created_at" in w) rec.created_at.set(d.created_at);
+      if ("last_activity" in w) rec.last_activity.set(d.last_activity);
       rec.location.set(d.location);
       if ("port" in w) rec.port.set(d.port); // absent key = keep the stable port
       reconcileCheckouts(orm, w);
     },
     (o, w) => {
       const port = w.port ?? (workspaceData(w).location === "worktree" ? nextFreePort(o) : 0);
-      createWorkspace(o, { ...w, port });
+      const created_at = w.created_at || new Date().toISOString();
+      createWorkspace(o, {
+        ...w,
+        port,
+        created_at,
+        last_activity: w.last_activity || created_at,
+      });
     },
   );
   // a deleted workspace's checkouts must go too (o2m is unlinked, not cascade-deleted)
@@ -522,11 +547,25 @@ function reconcileWorkspaces(orm, desired) {
   const have = orm.records(Workspace).map((r) => r.id);
   const want = desired.map((w) => w.id);
   if (have.join("\n") !== want.join("\n")) {
-    const portById = new Map(orm.records(Workspace).map((r) => [r.id, r.port()]));
+    const existing = new Map(
+      orm
+        .records(Workspace)
+        .map((r) => [
+          r.id,
+          { port: r.port(), created_at: r.created_at(), last_activity: r.last_activity() },
+        ]),
+    );
     for (const c of orm.records(Checkout)) orm.delete(c);
     for (const r of orm.records(Workspace)) orm.delete(r);
     for (const w of desired) {
-      createWorkspace(orm, { ...w, port: w.port ?? portById.get(w.id) ?? 0 });
+      const old = existing.get(w.id);
+      const created_at = w.created_at || old?.created_at || new Date().toISOString();
+      createWorkspace(orm, {
+        ...w,
+        port: w.port ?? old?.port ?? 0,
+        created_at,
+        last_activity: w.last_activity || old?.last_activity || created_at,
+      });
     }
   }
 }

@@ -198,6 +198,7 @@ export class AddonsPlugin extends Plugin {
       okLabel: verb,
     });
     if (!ok) return;
+    this.config.workspace(ws.id)?.touchActivity();
     // if a real server is up on the slot the backend stops it for the one-shot run
     // and resumes it when the run ends (resume-after is backend-owned)
     s.output.clear();

@@ -148,9 +148,12 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
 
   // main-located: persist canonically (the workspaces key — spread the existing
   // array so stable ports survive), then branches / activation / db clone
+  const now = new Date().toISOString();
   const ws = {
     id: newWorkspaceId(),
     name: res.name.trim(),
+    created_at: now,
+    last_activity: now,
     favorite: !!res.fav,
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),

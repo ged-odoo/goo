@@ -138,7 +138,25 @@ export function migrateToWorkspaces(config, state) {
   const renamed = state?.active_workspace === undefined && state?.active_target !== undefined;
   const tabsBefore = JSON.stringify(config?.tabs ?? null);
   ({ config, state } = migrateConfigState(config, state));
-  const cleaned = renamed || JSON.stringify(config.tabs ?? null) !== tabsBefore;
+  let cleaned = renamed || JSON.stringify(config.tabs ?? null) !== tabsBefore;
+  // Creation/activity timestamps arrived after the workspace migration. Existing
+  // arrays were append-ordered, so preserve that best-known chronology while
+  // backfilling them: the first entry is oldest and the last one newest.
+  if (
+    Array.isArray(config.workspaces) &&
+    config.workspaces.some((w) => !w.created_at || !w.last_activity)
+  ) {
+    const end = Date.now();
+    const n = config.workspaces.length;
+    config = {
+      ...config,
+      workspaces: config.workspaces.map((w, i) => {
+        const created_at = w.created_at || new Date(end - (n - 1 - i)).toISOString();
+        return { ...w, created_at, last_activity: w.last_activity || created_at };
+      }),
+    };
+    cleaned = true;
+  }
   const targets = Array.isArray(config.targets) ? config.targets : [];
   if ((Array.isArray(config.workspaces) && config.workspaces.length) || !targets.length) {
     return { config, state, changed: cleaned };
@@ -157,6 +175,11 @@ export function migrateToWorkspaces(config, state) {
     }
     return w;
   });
+  const end = Date.now();
+  for (const [i, w] of workspaces.entries()) {
+    w.created_at ||= new Date(end - (workspaces.length - 1 - i)).toISOString();
+    w.last_activity ||= w.created_at;
+  }
   const seen = new Set();
   const templates = targets
     .filter(
@@ -235,8 +258,8 @@ export async function loadServerConfig() {
 }
 
 // POST the migrated blob back, rev-checked. A 409 means another tab migrated (or
-// wrote) concurrently: re-run the migration on the server's copy — deterministic, so
-// if it already carries workspaces this is a no-op and we adopt theirs — and retry
+// wrote) concurrently: re-run the migration on the server's copy; if it already
+// carries the migrated workspace fields this is a no-op and we adopt theirs — and retry
 // once. Network failure → boot from the migrated blob in memory (same resilience as
 // the rest of boot).
 async function _writeBackMigration(rev, config, state, retry = true) {

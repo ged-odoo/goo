@@ -25,11 +25,7 @@ import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo } from "../core/utils.js";
-import {
-  createWorkspaceFromRemoteBranch,
-  deleteWorkspaceDialog,
-  startCreateWorkspace,
-} from "./dialogs.js";
+import { deleteWorkspaceDialog, startCreateWorkspace } from "./dialogs.js";
 import { AddonsPane, AssetsPane, TestsPane } from "./panes.js";
 
 export class ClaudeChat extends Component {
@@ -171,11 +167,11 @@ export class CodePane extends Component {
               <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushRepo(r.entry))">Push</button>
               <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushForceRepo(r.entry))">Push (force)</button>
               <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
-              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.code.openEditor(r.path, r.repo))">Open with editor</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
-              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.code.wipCommit(r.path, r.repo))">WIP commit</button>
-              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.code.discard(r.path, r.repo))">Discard changes</button>
+              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
+              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
             </div>
           </div>
         </div>
@@ -284,6 +280,7 @@ export class CodePane extends Component {
 
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
+    this.touchActivity();
     await this.code.rebase([
       { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path },
     ]);
@@ -300,21 +297,33 @@ export class CodePane extends Component {
     return `push ${r.current} to the dev remote (odoo-dev)`;
   }
 
-  pushRepo(r) {
+  async pushRepo(r) {
     if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Push "${r.current}"?`,
-      message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
-    });
+    const pushed = await pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      [{ path: r.path, branch: r.current }],
+      {
+        title: `Push "${r.current}"?`,
+        message: `Push ${r.current} (${r.id}) to the dev remote (odoo-dev)?`,
+      },
+    );
+    if (pushed) this.touchActivity();
   }
 
-  pushForceRepo(r) {
+  async pushForceRepo(r) {
     if (!this.canPushRepo(r)) return;
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: r.path, branch: r.current }], {
-      title: `Force-push "${r.current}"?`,
-      message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
-      force: true,
-    });
+    const pushed = await pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      [{ path: r.path, branch: r.current }],
+      {
+        title: `Force-push "${r.current}"?`,
+        message: `Force-push ${r.current} (${r.id}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+        force: true,
+      },
+    );
+    if (pushed) this.touchActivity();
   }
 
   // every shown repository whose current branch can be fetched + rebased
@@ -341,7 +350,10 @@ export class CodePane extends Component {
       github: r.github,
       path: r.path,
     }));
-    if (repos.length) await this.code.rebase(repos);
+    if (repos.length) {
+      this.touchActivity();
+      await this.code.rebase(repos);
+    }
   }
 
   // local checkout folders of every shown repo, for "Edit" (open them all at once)
@@ -359,18 +371,29 @@ export class CodePane extends Component {
   // open every shown repo's folder in the configured editor, all in one window
   openAllEditors() {
     const paths = this.editorPaths;
-    if (paths.length) this.code.openEditorPaths(paths, "all repositories");
+    if (paths.length) {
+      this.touchActivity();
+      this.code.openEditorPaths(paths, "all repositories");
+    }
   }
 
   // open a modal bash terminal in this repo's directory
   openTerminal(r) {
     if (!r.path) return;
+    this.touchActivity();
     this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
+  }
+
+  openRepoEditor(r) {
+    if (!r.path) return;
+    this.touchActivity();
+    this.code.openEditor(r.path, r.repo);
   }
 
   // show the last commits on this repo's current branch
   openCommits(r) {
     if (!r.path) return;
+    this.touchActivity();
     this.dialogs.openComponent(CommitsDialog, {
       path: r.path,
       ref: r.current || "",
@@ -381,6 +404,7 @@ export class CodePane extends Component {
 
   // open GitHub's PR-creation page for this repo's current branch
   openPr(r) {
+    this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
     window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
   }
@@ -429,6 +453,20 @@ export class CodePane extends Component {
   menuAct(fn) {
     this.menuId.set("");
     fn();
+  }
+
+  touchActivity() {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
+  }
+
+  wipCommit(r) {
+    this.touchActivity();
+    return this.code.wipCommit(r.path, r.repo);
+  }
+
+  discard(r) {
+    this.touchActivity();
+    return this.code.discard(r.path, r.repo);
   }
 
   prCls(pr) {
@@ -508,6 +546,25 @@ export class TerminalPane extends Component {
 // i.e. checks out its branches, then starts the main server on :8069); a worktree
 // workspace runs concurrently from its own checkout on its own stable port.
 
+const WORKSPACE_ORDER_KEY = "goo-workspace-order";
+const WORKSPACE_ORDER_OPTIONS = [
+  { value: "config", label: "Configured order", short: "Configured" },
+  { value: "name", label: "Name (A–Z)", short: "Name" },
+  { value: "created", label: "Creation date (newest)", short: "Created" },
+  { value: "recent", label: "Most recent activity", short: "Recent" },
+  { value: "mergebot", label: "Mergebot (blocked first)", short: "Mergebot" },
+];
+const WORKSPACE_ORDERS = new Set(WORKSPACE_ORDER_OPTIONS.map((option) => option.value));
+
+function savedWorkspaceOrder() {
+  try {
+    const value = localStorage.getItem(WORKSPACE_ORDER_KEY) || "config";
+    return WORKSPACE_ORDERS.has(value) ? value : "config";
+  } catch {
+    return "config";
+  }
+}
+
 export class WorkspacesScreen extends Component {
   static components = {
     LogConsole,
@@ -527,7 +584,16 @@ export class WorkspacesScreen extends Component {
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
             <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
-            <button class="wt-new" title="fetch a remote branch and create a workspace on it" t-on-click="() => this.createFromRemoteBranch()"><t t-out="this.branchIcon"/></button>
+            <div class="wt-order-wrap">
+              <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
+                <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
+              </button>
+              <div t-if="this.orderMenuOpen()" class="dash-menu wt-order-menu" t-on-click.stop="">
+                <button t-foreach="this.orderOptions" t-as="option" t-key="option.value" class="dash-menu-item" t-att-class="{selected: option.value === this.order()}" t-on-click="() => this.chooseOrder(option.value)">
+                  <span class="wt-order-check"><t t-if="option.value === this.order()" t-out="this.checkIcon"/></span><t t-out="option.label"/>
+                </button>
+              </div>
+            </div>
           </div>
           <div class="wt-list-items">
             <div t-if="!this.list.length" class="wt-empty dim" t-out="this.query() ? 'No workspace matches.' : 'No workspaces yet. Create one to get started.'"/>
@@ -548,12 +614,39 @@ export class WorkspacesScreen extends Component {
             <div class="wt-detail-top">
             <div class="wt-detail-head">
               <div class="wt-head-row">
+                <!-- one primary slot: a main-located workspace that isn't loaded offers
+                     Activate (check out its branches first); once loaded — and always
+                     for worktrees — the slot is the Start/Stop toggle -->
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
+                <t t-else="">
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                </t>
                 <h2 t-out="this.sel.name"/>
-                <span class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
+                <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
+                <t t-if="ci">
+                  <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
+                  <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                    <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                  </a>
+                  <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                    <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                  </span>
+                </t>
+                <t t-set="mb" t-value="this.mbStatus(this.sel)"/>
+                <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
+                  <span class="dash-ci-dot"/><t t-out="mb.label"/>
+                </a>
+                <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
                 <span t-if="this.isLoaded(this.sel)" class="ws-loaded-tag" title="this workspace occupies the main checkout">loaded</span>
                 <span t-if="this.isDrifted(this.sel)" class="ws-loaded-tag ws-drift-tag" t-att-title="this.driftText(this.sel)">drifted</span>
                 <span t-if="this.isWt(this.sel)" class="ws-loaded-tag ws-wt-tag" title="worktree workspace — its own checkout + port">worktree</span>
                 <span class="wt-sp"/>
+                <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
+                <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+                <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
                 <div class="dash-kebab-wrap">
                   <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -568,21 +661,6 @@ export class WorkspacesScreen extends Component {
                 <span t-if="this.portOf(this.sel)">port <b t-out="this.portOf(this.sel)"/></span>
               </div>
             </div>
-            <div class="wt-detail-actions">
-              <!-- one primary slot: a main-located workspace that isn't loaded offers
-                   Activate (check out its branches first); once loaded — and always
-                   for worktrees — the slot is the Start/Stop toggle -->
-              <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
-              <t t-else="">
-                <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
-              </t>
-              <button class="pbtn" t-att-disabled="!this.isLive(this.sel)" title="restart the server" t-on-click="() => this.restart(this.sel)"><span class="restart"/>Restart</button>
-              <span class="wt-sp"/>
-              <button class="pbtn ghost" title="open the workspace's repos in the editor" t-on-click="() => this.openEditor(this.sel)"><t t-out="this.codeIcon"/>Editor</button>
-              <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.open(this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.open(this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-            </div>
             <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
@@ -590,7 +668,7 @@ export class WorkspacesScreen extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.pane.set('terminal')"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
               </div>
             </div>
             <div class="wt-panes">
@@ -652,8 +730,10 @@ export class WorkspacesScreen extends Component {
   store = plugin(StorePlugin);
   externalIcon = m(ICONS.external);
   codeIcon = m(ICONS.code);
-  branchIcon = m(ICONS.branches);
   kebabIcon = m(ICONS.kebab);
+  sortIcon = m(ICONS.sort);
+  checkIcon = m(ICONS.check);
+  orderOptions = WORKSPACE_ORDER_OPTIONS;
   icons = {
     code: m(ICONS.code),
     journal: m(ICONS.journal),
@@ -667,12 +747,17 @@ export class WorkspacesScreen extends Component {
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
   pane = signal("code");
   query = signal(""); // the list search
+  order = signal(savedWorkspaceOrder()); // config | name | created | recent | mergebot
+  orderMenuOpen = signal(false);
   menuOpen = signal(false); // the header's Edit/Remove overflow menu
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
     // close the header overflow menu on any outside click
-    const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
+    const closeMenu = () => {
+      if (this.menuOpen()) this.menuOpen.set(false);
+      if (this.orderMenuOpen()) this.orderMenuOpen.set(false);
+    };
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
     // open with a selection: when nothing (or a removed workspace) is selected,
@@ -799,41 +884,88 @@ export class WorkspacesScreen extends Component {
     return present.find((r) => r.branch === branch) || present[0] || null;
   }
 
-  // the workspace's runbot/CI status: {cls, title} or null when there's no signal
-  // yet. Prefers the PR's GitHub CI rollup; falls back to the scraped runbot bundle.
+  // the workspace's runbot/CI badge. Prefers the PR's GitHub CI rollup; falls back
+  // to the scraped runbot bundle.
   wsCiStatus(ws) {
     const row = this.bundleRow(ws);
     if (!row) return null;
     const ci = row.pr && row.pr.ci;
     if (ci && ci.checks && ci.checks.length) {
       const pending = ci.checks.some((c) => c.state === "pending");
-      if (ci.overall === "failure") return { cls: "fail", title: "a CI check failed" };
-      if (ci.overall === "success") return { cls: "pass", title: "all CI checks passing" };
-      if (ci.overall === "pending" || pending) return { cls: "run", title: "CI running" };
-      return null;
+      let badge;
+      if (ci.overall === "failure")
+        badge = { cls: "fail", label: "ko", title: "a CI check failed" };
+      else if (ci.overall === "success")
+        badge = { cls: "pass", label: "ok", title: "all CI checks passing" };
+      else if (ci.overall === "pending" || pending)
+        badge = { cls: "run", label: "running", title: "CI running" };
+      else badge = { cls: "unknown", label: "—", title: "no CI status" };
+      badge.running = pending && (ci.overall === "success" || ci.overall === "failure");
+      badge.checks = ci.checks;
+      return badge;
     }
     // fallback: scraped runbot bundle status
     const s = this.code.runbot()[row.branch] || null;
     const result = (s && s.result) || "";
-    if (result === "success") return { cls: "pass", title: "runbot passing" };
-    if (result === "failure") return { cls: "fail", title: "runbot failing" };
-    if (s && s.running) return { cls: "run", title: "runbot running" };
-    return null;
+    const running = !!(s && s.running);
+    let badge;
+    if (result === "success") badge = { cls: "pass", label: "ok", title: "passing" };
+    else if (result === "failure") badge = { cls: "fail", label: "ko", title: "failing" };
+    else if (running) badge = { cls: "run", label: "running", title: "running" };
+    else badge = { cls: "unknown", label: "—", title: "unknown" };
+    badge.running = running && !!result;
+    if (badge.running) badge.title += " — still running";
+    return badge;
   }
 
   // aggregate mergebot status for a workspace: the most-blocking state across its PRs
-  // that have a scraped state. {cls, label} or null when none.
+  // that have a scraped state. The rows drive the per-repository hover breakdown.
   mbStatus(ws) {
-    let worst = null;
+    const rows = [];
     const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
     for (const row of this.wsRows(ws)) {
       if (!row.pr || !row.github) continue;
       const state = this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
       if (!state) continue;
-      const cand = { cls: mbCategory(state), label: state };
-      if (!worst || RANK[cand.cls] < RANK[worst.cls]) worst = cand;
+      rows.push({
+        repo: row.repo,
+        state,
+        detail: this.code.mbDetails()[`${row.github}#${row.pr.number}`] || "",
+        cls: mbCategory(state),
+        url: this.code.mergebotUrl(row.github, row.pr.number),
+      });
     }
-    return worst;
+    if (!rows.length) return null;
+    const worst = rows.reduce((a, b) => (RANK[a.cls] <= RANK[b.cls] ? a : b));
+    return { cls: worst.cls, label: worst.state, url: rows[0].url, rows };
+  }
+
+  runbotUrl(ws) {
+    const branch = this.bundleBranch(ws);
+    const scraped = branch && this.code.runbot()[branch]?.url;
+    if (scraped) return scraped;
+    const checks = this.bundleRow(ws)?.pr?.ci?.checks || [];
+    return checks.find((c) => c.context === "ci/runbot")?.url || "";
+  }
+
+  showCiMenu(ev, checks) {
+    if (!checks || !checks.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
+  }
+
+  hideCiMenu() {
+    appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
+  }
+
+  showMbMenu(ev, rows) {
+    if (!rows || !rows.length) return;
+    const rect = ev.currentTarget.getBoundingClientRect();
+    appBus.dispatchEvent(new CustomEvent("mb-menu", { detail: { rect, rows } }));
+  }
+
+  hideMbMenu() {
+    appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
   }
 
   // the two trailing status dots: a colour class per status (empty = neutral/unknown)
@@ -858,15 +990,59 @@ export class WorkspacesScreen extends Component {
   }
 
   // ── list / selection ─────────────────────────────────────────────────────────
+  setOrder(value) {
+    value = WORKSPACE_ORDERS.has(value) ? value : "config";
+    this.order.set(value);
+    try {
+      localStorage.setItem(WORKSPACE_ORDER_KEY, value);
+    } catch {
+      /* browser storage can be disabled; the in-memory preference still works */
+    }
+  }
+
+  chooseOrder(value) {
+    this.setOrder(value);
+    this.orderMenuOpen.set(false);
+  }
+
+  get orderLabel() {
+    return (
+      WORKSPACE_ORDER_OPTIONS.find((option) => option.value === this.order())?.short || "Order"
+    );
+  }
+
   // reads the canonical `workspaces` array — it carries `location` and the stable
   // `port` (the legacy `targets` view drops both by design)
   get list() {
     const all = this.config.config.workspaces || []; // every workspace, config order
     const q = this.query().trim().toLowerCase();
-    if (!q) return all;
-    return all.filter((ws) =>
-      `${ws.name} ${this.branchOf(ws)} ${ws.db || ""}`.toLowerCase().includes(q),
-    );
+    const rows = (
+      q
+        ? all.filter((ws) =>
+            `${ws.name} ${this.branchOf(ws)} ${ws.db || ""}`.toLowerCase().includes(q),
+          )
+        : all
+    ).map((ws, index) => ({ ws, index }));
+    const order = this.order();
+    if (order === "name") {
+      rows.sort(
+        (a, b) =>
+          a.ws.name.localeCompare(b.ws.name, undefined, { numeric: true, sensitivity: "base" }) ||
+          a.index - b.index,
+      );
+    } else if (order === "created" || order === "recent") {
+      const field = order === "created" ? "created_at" : "last_activity";
+      rows.sort((a, b) => {
+        const aTime = Date.parse(a.ws[field] || a.ws.created_at || "") || 0;
+        const bTime = Date.parse(b.ws[field] || b.ws.created_at || "") || 0;
+        return bTime - aTime || a.index - b.index;
+      });
+    } else if (order === "mergebot") {
+      const rank = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+      const statusRank = new Map(rows.map(({ ws }) => [ws.id, rank[this.mbStatus(ws)?.cls] ?? 5]));
+      rows.sort((a, b) => statusRank.get(a.ws.id) - statusRank.get(b.ws.id) || a.index - b.index);
+    }
+    return rows.map(({ ws }) => ws);
   }
 
   get sel() {
@@ -1138,12 +1314,14 @@ export class WorkspacesScreen extends Component {
     return this.isWt(ws) ? this.wt.stopServer(ws) : this.server.stop();
   }
 
-  restart(ws) {
-    return this.isWt(ws) ? this.wt.restartServer(ws) : this.server.restart(ws.id);
+  openTerminalPane(ws) {
+    this.pane.set("terminal");
+    if (this.termUrl) this.config.workspace(ws.id)?.touchActivity();
   }
 
   openEditor(ws) {
     if (this.isWt(ws)) return this.wt.openEditor(ws);
+    this.config.workspace(ws.id)?.touchActivity();
     const g = this.code.groups();
     const paths = (ws.checkouts || []).map((c) => g.pathByRepo[c.repo]).filter(Boolean);
     if (paths.length) this.code.openEditorPaths(paths, ws.name);
@@ -1163,6 +1341,12 @@ export class WorkspacesScreen extends Component {
 
   open(url) {
     if (url) window.open(url, "_blank", "noopener");
+  }
+
+  openWorkspaceUrl(ws, url) {
+    if (!url) return;
+    this.config.workspace(ws.id)?.touchActivity();
+    this.open(url);
   }
 
   // run a header-menu action then close the overflow menu
@@ -1266,10 +1450,6 @@ export class WorkspacesScreen extends Component {
 
   create() {
     return startCreateWorkspace(this._dialogPlugins());
-  }
-
-  createFromRemoteBranch() {
-    return createWorkspaceFromRemoteBranch(this._dialogPlugins());
   }
 }
 

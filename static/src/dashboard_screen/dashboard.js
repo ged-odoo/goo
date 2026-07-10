@@ -218,15 +218,16 @@ export class DashboardScreen extends Component {
     return this._pushableBranches(tgt).length > 0;
   }
 
-  menuPush(tgt) {
+  async menuPush(tgt) {
     this.menuId.set("");
     const branches = this._pushableBranches(tgt);
     if (!branches.length) return;
     const n = branches.length;
-    return pushBranchesDialog(this.code, this.dialogs, branches, {
+    const pushed = await pushBranchesDialog(this.code, this.dialogs, branches, {
       title: `Push ${n} branch${n === 1 ? "" : "es"}?`,
       message: `Push ${n} branch${n === 1 ? "" : "es"} of "${tgt.name}" to the dev remote (odoo-dev)?`,
     });
+    if (pushed) this.config.workspace(tgt.id)?.touchActivity();
   }
 
   menuRemoveFavorite(tgt) {

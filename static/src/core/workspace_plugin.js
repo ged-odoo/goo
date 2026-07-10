@@ -222,9 +222,12 @@ export class WorkspacePlugin extends Plugin {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
     const id = this._newId(name);
+    const now = new Date().toISOString();
     const ws = {
       id,
       name,
+      created_at: now,
+      last_activity: now,
       favorite,
       db: dbName,
       on_create_args,
@@ -289,6 +292,7 @@ export class WorkspacePlugin extends Plugin {
     if (!this.hasCommunity(tgt))
       return this._error("Cannot start the server", "this workspace has no community repo");
     const eid = this.eventLog.begin(`starting server (${tgt.name})`);
+    this.config.workspace(tgt.id)?.touchActivity();
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
@@ -305,6 +309,7 @@ export class WorkspacePlugin extends Plugin {
   }
 
   async stopServer(tgt) {
+    this.config.workspace(tgt.id)?.touchActivity();
     this.eventLog.add(`stopping server (${tgt.name})`);
     // optimistic feedback only BEFORE the POST: the backend stop is synchronous and
     // may itself restart the server (a stop mid-run finalizes the run and resumes
@@ -380,6 +385,7 @@ export class WorkspacePlugin extends Plugin {
   // open the worktree's repo folders in the configured editor (all in one window);
   // works whether or not the server is running — it's just the checkout on disk
   openEditor(tgt) {
+    this.config.workspace(tgt.id)?.touchActivity();
     const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
     if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
   }

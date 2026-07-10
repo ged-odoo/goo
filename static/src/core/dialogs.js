@@ -225,8 +225,9 @@ export async function pushBranchesDialog(
   branches,
   { title, message, force = false },
 ) {
-  if (!branches.length) return;
+  if (!branches.length) return false;
   const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
-  if (!ok) return;
+  if (!ok) return false;
   for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
+  return true;
 }

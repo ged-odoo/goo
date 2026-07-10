@@ -136,6 +136,7 @@ export class ClaudePlugin extends Plugin {
     if (!text || this.running(tgt.id)) return;
     const dirs = this._dirsFor(tgt);
     if (!dirs) return;
+    this.config.workspace(tgt.id)?.touchActivity();
     this._append(tgt.id, { role: "user", text }); // optimistic; backend keeps its own copy
     this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {

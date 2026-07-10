@@ -218,7 +218,7 @@ export class AssetsPane extends Component {
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
           <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
           <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
-                  t-on-click="() => this.assets.generate(this.wsForGenerate)" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
+                  t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
           <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
         </div>
         <div t-if="this.assets.loading()" class="dim ws-empty-note">Loading bundles…</div>
@@ -249,6 +249,7 @@ export class AssetsPane extends Component {
 
   props = props({ ws: t.any() });
   assets = plugin(AssetsPlugin);
+  config = plugin(ConfigPlugin);
   search = signal("");
   showJs = signal(true); // include .js bundles
   showCss = signal(true); // include .css bundles
@@ -279,6 +280,11 @@ export class AssetsPane extends Component {
   // one (a worktree) — the backend then builds the shell cmd from its copies
   get wsForGenerate() {
     return this.props.ws.location === "worktree" ? this.props.ws : null;
+  }
+
+  generate() {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
+    return this.assets.generate(this.wsForGenerate);
   }
 
   get mismatch() {
@@ -341,6 +347,7 @@ export class AssetsPane extends Component {
   // the clicked attachment's kind so the total matches its row size: any .css/.css.map
   // → css, everything else (.min.js, .js.map, …) → js.
   analyze(b) {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
     const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
     this.assets.analyze(bundleBase(b.name), kind);
   }
