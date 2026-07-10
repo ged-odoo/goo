@@ -68,7 +68,15 @@ export class CodePlugin extends Plugin {
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.store.mergeMergebot(res.states, res.details || {});
+      // don't pin blanks: a state the scrape couldn't produce (fresh PR not yet
+      // indexed, transient mergebot failure) must stay re-askable — a stored ""
+      // satisfies the `k in have` dedup forever and permanently blanks the badge
+      // for the session (the server likewise doesn't cache 404/transient blanks)
+      const states = Object.fromEntries(Object.entries(res.states || {}).filter(([, v]) => v));
+      const details = Object.fromEntries(
+        Object.entries(res.details || {}).filter(([k]) => k in states),
+      );
+      this.store.mergeMergebot(states, details);
     } catch {
       /* leave states blank on failure */
     } finally {

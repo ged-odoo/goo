@@ -1709,7 +1709,11 @@ var CodePlugin = class extends Plugin {
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.store.mergeMergebot(res.states, res.details || {});
+      const states = Object.fromEntries(Object.entries(res.states || {}).filter(([, v]) => v));
+      const details = Object.fromEntries(
+        Object.entries(res.details || {}).filter(([k]) => k in states)
+      );
+      this.store.mergeMergebot(states, details);
     } catch {
     } finally {
       keys.forEach((k) => this.store.mbPending.delete(k));
