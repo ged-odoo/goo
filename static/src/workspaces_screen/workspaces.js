@@ -661,6 +661,7 @@ export class WorkspacesScreen extends Component {
                   <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
                     <button class="dash-menu-item" title="edit name / branches / database / args" t-on-click="() => this.headMenu(() => this.edit(this.sel))">Edit workspace…</button>
+                    <button class="dash-menu-item danger" t-att-disabled="!this.canDropDb(this.sel)" t-att-title="this.dropDbTitle(this.sel)" t-on-click="() => this.headMenu(() => this.dropDb(this.sel))">Drop database</button>
                     <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
                   </div>
                 </div>
@@ -1380,6 +1381,43 @@ export class WorkspacesScreen extends Component {
   headMenu(fn) {
     this.menuOpen.set(false);
     fn();
+  }
+
+  // ── drop the workspace's database (header ⋮ menu) ─────────────────────────────
+  // guarded: the db must exist and the workspace's server must be stopped — the
+  // server runs ON that database, so dropping under it is forbidden rather than
+  // silently stopping it (unlike the dashboard's stop-then-drop flow)
+  dbExists(ws) {
+    return !!ws.db && this.db.databases().some((d) => d.name === ws.db);
+  }
+
+  canDropDb(ws) {
+    return this.dbExists(ws) && !this.isLive(ws);
+  }
+
+  dropDbTitle(ws) {
+    if (!ws.db) return "no database set for this workspace";
+    if (!this.dbExists(ws)) return `database "${ws.db}" does not exist`;
+    if (this.isLive(ws)) return "stop the server first — it is running on this database";
+    return `drop database "${ws.db}"`;
+  }
+
+  async dropDb(ws) {
+    if (!this.canDropDb(ws)) return;
+    const res = await this.dialogs.open({
+      title: `Drop "${ws.db}"?`,
+      message: "This permanently deletes the database. This cannot be undone.",
+      okLabel: "Drop",
+    });
+    if (!res) return;
+    const error = await this.db.drop(ws.db);
+    if (error)
+      await this.dialogs.open({
+        title: "Drop failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null,
+      });
   }
 
   removeBlocked(ws) {
