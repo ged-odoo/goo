@@ -79,6 +79,16 @@ export class StorePlugin extends Plugin {
 
   // ── observed writers — preserve the step-4 semantics over records ─────────────
 
+  // upsert lookup that ignores deleted records. The ORM's delete() leaves
+  // table.datapoints[id] in place and getById reads that registry, so after a
+  // delete (e.g. clearExternal on a forced refresh) getById returns the dead
+  // record — an upsert keyed on it writes into a record that records() excludes,
+  // and the value silently vanishes (the disappearing-mergebot-badge bug). Look
+  // the id up among the ACTIVE records instead; create() re-registers it cleanly.
+  _live(M, id) {
+    return this.orm.records(M).find((r) => r.id === id) || null;
+  }
+
   // fold a branch-state fetch into RepoStatus records. `at` is the request-start
   // timestamp: stamping when the read was *requested* makes "latest wins" order a full
   // scan behind a targeted refresh that raced it. A full fetch (authoritative) drops
@@ -86,7 +96,7 @@ export class StorePlugin extends Plugin {
   mergeRepoStatus(repos, at, { authoritative } = {}) {
     for (const raw of repos) {
       const fetchedAt = raw.fetchedAt ?? at;
-      const rec = this.orm.getById(RepoStatus, raw.id);
+      const rec = this._live(RepoStatus, raw.id);
       if (!rec) {
         this.orm.create(RepoStatus, {
           id: raw.id,
@@ -117,7 +127,7 @@ export class StorePlugin extends Plugin {
   mergePrRepos(repos, at, scopeIds) {
     for (const raw of repos) {
       const fetchedAt = raw.fetchedAt ?? at;
-      const rec = this.orm.getById(PrRepo, raw.id);
+      const rec = this._live(PrRepo, raw.id);
       if (!rec) {
         this.orm.create(PrRepo, {
           id: raw.id,
@@ -141,12 +151,12 @@ export class StorePlugin extends Plugin {
 
   mergeMergebot(states, details) {
     for (const [k, v] of Object.entries(states || {})) {
-      const rec = this.orm.getById(MergebotStatus, k);
+      const rec = this._live(MergebotStatus, k);
       if (rec) rec.state.set(v);
       else this.orm.create(MergebotStatus, { id: k, state: v, detail: (details || {})[k] ?? null });
     }
     for (const [k, v] of Object.entries(details || {})) {
-      const rec = this.orm.getById(MergebotStatus, k);
+      const rec = this._live(MergebotStatus, k);
       if (rec) rec.detail.set(v);
       else this.orm.create(MergebotStatus, { id: k, state: (states || {})[k] ?? "", detail: v });
     }
@@ -154,7 +164,7 @@ export class StorePlugin extends Plugin {
 
   mergeRunbot(states) {
     for (const [k, v] of Object.entries(states || {})) {
-      const rec = this.orm.getById(RunbotStatus, k);
+      const rec = this._live(RunbotStatus, k);
       if (rec) rec.status.set(v);
       else this.orm.create(RunbotStatus, { id: k, status: v });
     }
