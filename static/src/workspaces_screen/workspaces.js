@@ -142,6 +142,7 @@ export class CodePane extends Component {
         <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
           <div class="ws-co-head">
             <span class="ws-repo-tag" t-out="r.repo"/>
+            <span class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
             <span class="wt-sp"/>
             <div class="dash-kebab-wrap" t-if="r.entry">
               <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
@@ -158,11 +159,13 @@ export class CodePane extends Component {
               </div>
             </div>
           </div>
-          <div class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
           <div class="ws-co-badges">
+            <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
+              <span class="ws-sync-dot"/>working…
+            </span>
             <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
             <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
-            <span t-if="r.missing" class="ws-missing dim">not found locally</span>
+            <span t-if="r.missing and !this.code.repoWorking(r.repo)" class="ws-missing dim">not found locally</span>
             <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
               <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
             </span>
@@ -171,7 +174,7 @@ export class CodePane extends Component {
           <div t-if="r.subject" class="ws-commit dim ws-co-sec">
             <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
           </div>
-          <div class="ws-co-pr ws-co-sec">
+          <div t-if="!this.isBaseBranch(r.branch)" class="ws-co-pr ws-co-sec">
             <t t-if="r.pr">
               <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
               <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
@@ -181,7 +184,10 @@ export class CodePane extends Component {
                 <span class="dash-ci-dot"/><t t-out="ci.label"/>
               </span>
             </t>
-            <span t-else="" class="dim">no pull request</span>
+            <t t-else="">
+              <span class="dim">no pull request</span>
+              <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
+            </t>
           </div>
         </div>
       </div>
@@ -439,6 +445,7 @@ export class CodePane extends Component {
         subject: b?.subject || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
+        github: entry?.github || "",
         path: entry?.path || "",
         base: entry?.base || this._baseBranch(c.branch),
         behind: checkedOut ? entry?.behind || 0 : 0,
@@ -453,6 +460,10 @@ export class CodePane extends Component {
   // fetch + rebase this checkout's branch (its repo entry) onto its base
   rebaseCheckout(r) {
     if (r.entry) this.rebaseRepo(r.entry);
+  }
+
+  isBaseBranch(branch) {
+    return BASE_BRANCH_RE.test(branch);
   }
 
   // run a menu action then close the checkout's actions menu

@@ -1675,6 +1675,11 @@ var CodePlugin = class extends Plugin {
   loading = signal(false);
   error = signal("");
   busy = signal(false);
+  // repo id -> count of slow git operations in flight (branch create incl. its
+  // remote fetch, checkout, rebase) — drives the Code tab's per-card "working…"
+  // chip so a long fetch doesn't read as a silent failure. Session-local: it
+  // tracks the ops THIS browser started.
+  working = signal({});
   _refreshExternal = false;
   // true during a forced load: ask the server to bypass its cache
   // grouped, sorted view model — recomputed only when its inputs change
@@ -1917,7 +1922,9 @@ var CodePlugin = class extends Plugin {
   // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
   // unaffected, so we keep those from the cache (the dashboard lazily fills any new).
   async checkout(repos) {
+    const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
+    this._beginWork(ids);
     try {
       const res = await postJSON("/api/code/checkout", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
@@ -1926,11 +1933,11 @@ var CodePlugin = class extends Plugin {
           "Checkout failed",
           failed.map((r) => `${r.branch}: ${r.error}`).join("\n")
         );
-      const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
-      await (ids.size ? this.refreshBranches(ids) : this.load(false));
+      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(false));
     } catch (e) {
       this._errorDialog("Checkout failed", e.message);
     } finally {
+      this._endWork(ids);
       this.busy.set(false);
     }
   }
@@ -1940,7 +1947,9 @@ var CodePlugin = class extends Plugin {
   // list / runbot / mergebot reflect the pushed branch, which a local rebase hasn't
   // touched, so we leave those as-is rather than re-querying everything.
   async rebase(repos) {
+    const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
+    this._beginWork(ids);
     try {
       const res = await postJSON("/api/code/rebase", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
@@ -1952,12 +1961,12 @@ var CodePlugin = class extends Plugin {
           failed.map((r) => `${r.repo}: ${r.error}`).join("\n")
         );
       }
-      const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
-      await (ids.size ? this.refreshBranches(ids) : this.load(true));
+      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(true));
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
       this._errorDialog("Fetch & rebase failed", e.message);
     } finally {
+      this._endWork(ids);
       this.busy.set(false);
     }
   }
@@ -2014,6 +2023,25 @@ ${res.remote_error}`,
   // (the slow part) and never run the per-branch creates back-to-back.
   // specs: [{ path, name, startPoint, freshStart? }]. freshStart asks the backend
   // to prefer a freshly fetched canonical-remote branch over the local start point.
+  // per-repo in-flight bookkeeping for the slow git operations (counted, so
+  // overlapping operations on one repo keep the flag up until the last one ends)
+  _beginWork(ids) {
+    const w = { ...this.working() };
+    for (const id of ids) w[id] = (w[id] || 0) + 1;
+    this.working.set(w);
+  }
+  _endWork(ids) {
+    const w = { ...this.working() };
+    for (const id of ids) {
+      if ((w[id] = (w[id] || 1) - 1) <= 0) delete w[id];
+    }
+    this.working.set(w);
+  }
+  // is a slow git operation (branch create/fetch, checkout, rebase) running for
+  // this repo in this session?
+  repoWorking(id) {
+    return !!this.working()[id];
+  }
   async createBranches(specs) {
     const repoByPath = new Map(this.config.config.repos.map((r) => [r.path, r]));
     const branches = (specs || []).filter((s) => s.path && s.name && repoByPath.has(s.path)).map((s) => {
@@ -2028,7 +2056,9 @@ ${res.remote_error}`,
       };
     });
     if (!branches.length) return;
+    const ids = [...new Set(branches.map((b) => b.repo))];
     this.busy.set(true);
+    this._beginWork(ids);
     try {
       for (const b of branches) {
         const repo = repoByPath.get(b.path);
@@ -2041,11 +2071,11 @@ ${res.remote_error}`,
           "Create branch failed",
           failed.map((r) => `${r.name}: ${r.error}`).join("\n")
         );
-      const ids = new Set(branches.map((b) => repoByPath.get(b.path).id));
-      await this.refreshBranches(ids);
+      await this.refreshBranches(new Set(ids));
     } catch (e) {
       this._errorDialog("Create branch failed", e.message);
     } finally {
+      this._endWork(ids);
       this.busy.set(false);
     }
   }
@@ -5662,6 +5692,7 @@ var ReviewPlugin = class extends Plugin {
 };
 
 // static/src/workspaces_screen/dialogs.js
+var baseBranchOf = (branch) => (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 async function startCreateWorkspace(plugins, prefill = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   await db.load();
@@ -5776,6 +5807,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
   );
+  for (const c of checkouts)
+    if (!startPointByRepo[c.repo]) startPointByRepo[c.repo] = baseBranchOf(c.branch);
   if (res.location === "worktree") {
     await wt.createWorktree({
       name: res.name.trim(),
@@ -9570,6 +9603,7 @@ var CodePane = class extends Component {
         <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
           <div class="ws-co-head">
             <span class="ws-repo-tag" t-out="r.repo"/>
+            <span class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
             <span class="wt-sp"/>
             <div class="dash-kebab-wrap" t-if="r.entry">
               <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
@@ -9586,11 +9620,13 @@ var CodePane = class extends Component {
               </div>
             </div>
           </div>
-          <div class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
           <div class="ws-co-badges">
+            <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
+              <span class="ws-sync-dot"/>working…
+            </span>
             <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
             <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
-            <span t-if="r.missing" class="ws-missing dim">not found locally</span>
+            <span t-if="r.missing and !this.code.repoWorking(r.repo)" class="ws-missing dim">not found locally</span>
             <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
               <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
             </span>
@@ -9599,7 +9635,7 @@ var CodePane = class extends Component {
           <div t-if="r.subject" class="ws-commit dim ws-co-sec">
             <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
           </div>
-          <div class="ws-co-pr ws-co-sec">
+          <div t-if="!this.isBaseBranch(r.branch)" class="ws-co-pr ws-co-sec">
             <t t-if="r.pr">
               <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
               <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
@@ -9609,7 +9645,10 @@ var CodePane = class extends Component {
                 <span class="dash-ci-dot"/><t t-out="ci.label"/>
               </span>
             </t>
-            <span t-else="" class="dim">no pull request</span>
+            <t t-else="">
+              <span class="dim">no pull request</span>
+              <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
+            </t>
           </div>
         </div>
       </div>
@@ -9840,6 +9879,7 @@ var CodePane = class extends Component {
         subject: b?.subject || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
+        github: entry?.github || "",
         path: entry?.path || "",
         base: entry?.base || this._baseBranch(c.branch),
         behind: checkedOut ? entry?.behind || 0 : 0,
@@ -9854,6 +9894,9 @@ var CodePane = class extends Component {
   // fetch + rebase this checkout's branch (its repo entry) onto its base
   rebaseCheckout(r) {
     if (r.entry) this.rebaseRepo(r.entry);
+  }
+  isBaseBranch(branch) {
+    return BASE_BRANCH_RE.test(branch);
   }
   // run a menu action then close the checkout's actions menu
   menuAct(fn) {

@@ -4659,6 +4659,13 @@ a.commit-detail-hash svg {
   font-size: 12px;
   margin-top: auto; /* pins the PR row to the card bottom when heights differ */
 }
+.ws-pr-create {
+  color: var(--l-accent);
+  text-decoration: none;
+}
+.ws-pr-create:hover {
+  text-decoration: underline;
+}
 /* sync health chip: green "up to date" / amber "N behind" */
 .ws-sync {
   display: inline-flex;
@@ -4685,6 +4692,14 @@ a.commit-detail-hash svg {
 }
 .ws-sync.behind .ws-sync-dot {
   background: var(--amber);
+}
+/* a slow git op (fetch / branch create / checkout / rebase) runs for this repo */
+.ws-sync.working {
+  color: var(--amber);
+}
+.ws-sync.working .ws-sync-dot {
+  background: var(--amber);
+  animation: wt-pulse 1s ease-in-out infinite;
 }
 .ws-rebase-inline {
   flex: 0 0 auto;

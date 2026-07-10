@@ -9,6 +9,11 @@ import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 import { postJSON, repoBranchList } from "../core/utils.js";
 
+// the canonical base branch a work branch's name derives from: 16.0-owl-fix →
+// 16.0, saas-19.4-x → saas-19.4, anything else → master
+const baseBranchOf = (branch) =>
+  (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+
 // Create a workspace through the unified dialog (validated before it closes).
 // plugins: { config, dialogs, db, code, eventLog, wt }. `prefill` seeds the form
 // (the remote-branch flow passes the fetched branch): { name, config, db,
@@ -130,6 +135,12 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
   );
+  // a repo the template doesn't cover (or no template at all) forks from the base
+  // its branch name derives from — 16.0-owl-fix → 16.0. Both create paths resolve
+  // the start point on the canonical remote (fresh fetch → fork from FETCH_HEAD),
+  // so no up-to-date local base branch is needed.
+  for (const c of checkouts)
+    if (!startPointByRepo[c.repo]) startPointByRepo[c.repo] = baseBranchOf(c.branch);
 
   if (res.location === "worktree") {
     await wt.createWorktree({

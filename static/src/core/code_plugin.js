@@ -33,6 +33,11 @@ export class CodePlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   busy = signal(false);
+  // repo id -> count of slow git operations in flight (branch create incl. its
+  // remote fetch, checkout, rebase) — drives the Code tab's per-card "working…"
+  // chip so a long fetch doesn't read as a silent failure. Session-local: it
+  // tracks the ops THIS browser started.
+  working = signal({});
   _refreshExternal = false; // true during a forced load: ask the server to bypass its cache
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
@@ -315,7 +320,9 @@ export class CodePlugin extends Plugin {
   // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
   // unaffected, so we keep those from the cache (the dashboard lazily fills any new).
   async checkout(repos) {
+    const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
+    this._beginWork(ids);
     try {
       const res = await postJSON("/api/code/checkout", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
@@ -324,11 +331,11 @@ export class CodePlugin extends Plugin {
           "Checkout failed",
           failed.map((r) => `${r.branch}: ${r.error}`).join("\n"),
         );
-      const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
-      await (ids.size ? this.refreshBranches(ids) : this.load(false));
+      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(false));
     } catch (e) {
       this._errorDialog("Checkout failed", e.message);
     } finally {
+      this._endWork(ids);
       this.busy.set(false);
     }
   }
@@ -339,7 +346,9 @@ export class CodePlugin extends Plugin {
   // list / runbot / mergebot reflect the pushed branch, which a local rebase hasn't
   // touched, so we leave those as-is rather than re-querying everything.
   async rebase(repos) {
+    const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
+    this._beginWork(ids);
     // the backend logs each repo's fetch then rebase phase as it happens (via SSE
     // events), so there's nothing to pre-log here
     try {
@@ -353,12 +362,12 @@ export class CodePlugin extends Plugin {
           failed.map((r) => `${r.repo}: ${r.error}`).join("\n"),
         );
       }
-      const ids = new Set(repos.map((r) => r.repo).filter(Boolean));
-      await (ids.size ? this.refreshBranches(ids) : this.load(true));
+      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(true));
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
       this._errorDialog("Fetch & rebase failed", e.message);
     } finally {
+      this._endWork(ids);
       this.busy.set(false);
     }
   }
@@ -417,6 +426,28 @@ export class CodePlugin extends Plugin {
   // (the slow part) and never run the per-branch creates back-to-back.
   // specs: [{ path, name, startPoint, freshStart? }]. freshStart asks the backend
   // to prefer a freshly fetched canonical-remote branch over the local start point.
+  // per-repo in-flight bookkeeping for the slow git operations (counted, so
+  // overlapping operations on one repo keep the flag up until the last one ends)
+  _beginWork(ids) {
+    const w = { ...this.working() };
+    for (const id of ids) w[id] = (w[id] || 0) + 1;
+    this.working.set(w);
+  }
+
+  _endWork(ids) {
+    const w = { ...this.working() };
+    for (const id of ids) {
+      if ((w[id] = (w[id] || 1) - 1) <= 0) delete w[id];
+    }
+    this.working.set(w);
+  }
+
+  // is a slow git operation (branch create/fetch, checkout, rebase) running for
+  // this repo in this session?
+  repoWorking(id) {
+    return !!this.working()[id];
+  }
+
   async createBranches(specs) {
     const repoByPath = new Map(this.config.config.repos.map((r) => [r.path, r]));
     const branches = (specs || [])
@@ -433,7 +464,9 @@ export class CodePlugin extends Plugin {
         };
       });
     if (!branches.length) return;
+    const ids = [...new Set(branches.map((b) => b.repo))];
     this.busy.set(true);
+    this._beginWork(ids);
     try {
       for (const b of branches) {
         const repo = repoByPath.get(b.path);
@@ -446,11 +479,11 @@ export class CodePlugin extends Plugin {
           "Create branch failed",
           failed.map((r) => `${r.name}: ${r.error}`).join("\n"),
         );
-      const ids = new Set(branches.map((b) => repoByPath.get(b.path).id));
-      await this.refreshBranches(ids);
+      await this.refreshBranches(new Set(ids));
     } catch (e) {
       this._errorDialog("Create branch failed", e.message);
     } finally {
+      this._endWork(ids);
       this.busy.set(false);
     }
   }
