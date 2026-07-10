@@ -606,7 +606,6 @@ export class WorkspacesScreen extends Component {
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
             <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
-            <button class="wt-new" title="adopt current checkout — turn the branches checked out in your repos into a workspace" t-on-click="() => this.adoptCheckout()"><t t-out="this.adoptIcon"/></button>
             <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
               <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
               <t t-else="" t-out="this.refreshIcon"/>
@@ -768,7 +767,6 @@ export class WorkspacesScreen extends Component {
   sortIcon = m(ICONS.sort);
   checkIcon = m(ICONS.check);
   refreshIcon = m(ICONS.refresh);
-  adoptIcon = m(ICONS.target);
   refreshingStatuses = signal(false); // the list's status-refresh spinner
   orderOptions = WORKSPACE_ORDER_OPTIONS;
   icons = {
