@@ -9063,17 +9063,17 @@ var CodePane = class extends Component {
               </div>
             </div>
           </div>
-          <div t-if="!this.isBaseBranch(r.branch)" class="ws-co-pr">
-            <t t-if="r.pr">
-              <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-              <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
-            </t>
-            <t t-else="">
-              <span class="dim">no pull request</span>
-              <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
-            </t>
-          </div>
           <div class="ws-co-badges">
+            <t t-if="!this.isBaseBranch(r.branch)">
+              <t t-if="r.pr">
+                <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
+                <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
+              </t>
+              <t t-else="">
+                <span class="dim">no pull request</span>
+                <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
+              </t>
+            </t>
             <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
               <span class="ws-sync-dot"/>working…
             </span>

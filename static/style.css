@@ -4150,17 +4150,10 @@ a.commit-detail-hash svg {
   gap: 8px;
   min-height: 18px; /* keeps cards aligned when one has no badges (missing branch) */
 }
-/* commit + PR sections sit under a hairline each */
+/* the commit section sits under a hairline */
 .ws-co-sec {
   border-top: 1px solid var(--l-line-soft);
   padding-top: 7px;
-}
-.ws-co-pr {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  margin-top: auto; /* pins the PR row to the card bottom when heights differ */
 }
 .ws-pr-create {
   color: var(--l-accent);
