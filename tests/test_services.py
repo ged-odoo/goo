@@ -292,6 +292,23 @@ class MergebotServiceTest(unittest.TestCase):
         self.assertEqual(states, {"odoo/owl#5": ""})
         self.assertEqual(unsupported, ["odoo/owl"])
 
+    def test_404_blank_is_not_cached(self):
+        # a fresh PR 404s until mergebot indexes it (minutes) — pinning that blank
+        # for the full TTL would hide the real state for hours. The 404 must be
+        # re-fetched on the next ask; a real state stays cached.
+        io = FakeIO(
+            http={
+                "pull/1": ("", "HTTP Error 404: Not Found"),
+                "pull/2": ('<div class="alert alert-success">merged</div>', None),
+            }
+        )
+        svc = services.MergebotService(io, TTLCache(ttl=3600))
+        prs = [{"github": "odoo/odoo", "number": 1}, {"github": "odoo/odoo", "number": 2}]
+        svc.statuses(prs)
+        svc.statuses(prs)
+        self.assertEqual(len([u for u in io.http_calls if "pull/1" in u]), 2)  # re-fetched
+        self.assertEqual(len([u for u in io.http_calls if "pull/2" in u]), 1)  # cached
+
     def test_reachable_sibling_keeps_repo_supported(self):
         # one PR 404s but another in the same repo loads → repo is NOT unsupported
         io = FakeIO(

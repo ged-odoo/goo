@@ -437,6 +437,13 @@ class MergebotService:
             elif supported:
                 reachable.add(p["github"])
             else:
+                # 404 — the repo may genuinely not be on mergebot, OR the PR is just
+                # too fresh to be indexed (a new PR appears within minutes). Report it
+                # for this batch's unsupported bookkeeping, but drop the cache entry:
+                # pinning the blank for the full TTL (8h) would hide the real state
+                # long after mergebot picks the PR up. Callers dedup per session, so
+                # the re-asks stay cheap.
+                self.cache.invalidate(key)
                 missing.add(p["github"])
         unsupported = sorted(missing - reachable)
         return states, details, unsupported
