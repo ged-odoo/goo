@@ -4612,23 +4612,52 @@ a.commit-detail-hash svg {
 .ws-tool .restart {
   margin: 0;
 }
-/* one unified checkout row: identity + sync + PR on the first line, commit below */
-.ws-co {
+/* checkout cards, side by side: fixed-ish width columns so two repos sit next to
+   each other on a wide screen instead of two sparse full-width rows; wraps to one
+   column when the detail is narrow */
+.ws-co-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 480px));
+  gap: 10px;
+}
+.ws-co-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
   border: 1px solid var(--l-line);
   background: var(--l-card);
   border-radius: 10px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  padding: 11px 14px 12px;
 }
-.ws-co-line {
+.ws-co-head {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
-.ws-co-line .ws-branch {
+.ws-co-branch {
+  font-size: 13px;
   min-width: 0;
-  flex: 0 1 auto;
+}
+.ws-co-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px; /* keeps cards aligned when one has no badges (missing branch) */
+}
+/* commit + PR sections sit under a hairline each */
+.ws-co-sec {
+  border-top: 1px solid var(--l-line-soft);
+  padding-top: 7px;
+}
+.ws-co-pr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-top: auto; /* pins the PR row to the card bottom when heights differ */
 }
 /* sync health chip: green "up to date" / amber "N behind" */
 .ws-sync {
@@ -4671,9 +4700,9 @@ a.commit-detail-hash svg {
 .ws-rebase-inline:hover {
   filter: brightness(0.97);
 }
-.ws-co .ws-commit {
-  margin-top: 6px;
-  padding-left: 1px;
+.ws-co-card .ws-commit {
+  white-space: normal; /* let the subject wrap inside the card instead of clipping */
+  margin-top: 0;
 }
 .ws-card {
   display: flex;

@@ -130,53 +130,59 @@ export class CodePane extends Component {
     <div class="ws-code">
       <div class="ws-sec">
         <span>Checkouts</span>
-        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
-        <span class="wt-sp"/>
         <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)">Refresh</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
+        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
       </div>
 
       <div t-if="!this.checkoutRows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>
 
-      <div class="ws-co" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
-        <div class="ws-co-line">
-          <span class="ws-repo-tag" t-out="r.repo"/>
-          <span class="ws-branch" t-att-title="r.branch" t-out="r.branch"/>
-          <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
-          <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
-          <span t-if="r.missing" class="ws-missing dim">not found locally</span>
-          <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
-            <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
-          </span>
-          <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
-          <span class="wt-sp"/>
-          <t t-if="r.pr">
-            <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-            <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
-            <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
-            <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
-                  t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-              <span class="dash-ci-dot"/><t t-out="ci.label"/>
-            </span>
-          </t>
-          <div class="dash-kebab-wrap" t-if="r.entry">
-            <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
-            <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
-              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canRebase" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.rebaseRepo(r.entry))">Fetch &amp; rebase</button>
-              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushRepo(r.entry))">Push</button>
-              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushForceRepo(r.entry))">Push (force)</button>
-              <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
-              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
-              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
-              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
-              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
-              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
+      <div class="ws-co-grid">
+        <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
+          <div class="ws-co-head">
+            <span class="ws-repo-tag" t-out="r.repo"/>
+            <span class="wt-sp"/>
+            <div class="dash-kebab-wrap" t-if="r.entry">
+              <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
+              <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
+                <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canRebase" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.rebaseRepo(r.entry))">Fetch &amp; rebase</button>
+                <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushRepo(r.entry))">Push</button>
+                <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.pushForceRepo(r.entry))">Push (force)</button>
+                <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
+                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
+                <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
+              </div>
             </div>
           </div>
-        </div>
-        <div t-if="r.subject" class="ws-commit dim">
-          <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
+          <div class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
+          <div class="ws-co-badges">
+            <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
+            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
+            <span t-if="r.missing" class="ws-missing dim">not found locally</span>
+            <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
+              <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
+            </span>
+            <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
+          </div>
+          <div t-if="r.subject" class="ws-commit dim ws-co-sec">
+            <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
+          </div>
+          <div class="ws-co-pr ws-co-sec">
+            <t t-if="r.pr">
+              <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
+              <span class="pr-state" t-att-class="this.prCls(r.pr)" t-out="this.prLabel(r.pr)"/>
+              <t t-set="ci" t-value="this.ciBadge(r.pr)"/>
+              <span t-if="ci" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.title"
+                    t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                <span class="dash-ci-dot"/><t t-out="ci.label"/>
+              </span>
+            </t>
+            <span t-else="" class="dim">no pull request</span>
+          </div>
         </div>
       </div>
     </div>`;
@@ -655,7 +661,8 @@ export class WorkspacesScreen extends Component {
                 </div>
               </div>
               <div class="wt-meta">
-                <span>branch <b t-out="this.branchOf(this.sel)"/></span>
+                <t t-set="br" t-value="this.branchSummary(this.sel)"/>
+                <span t-att-title="br.title"><t t-out="br.label"/> <b t-out="br.value"/></span>
                 <span>db <b t-out="this.sel.db || '—'"/></span>
                 <span t-if="this.portOf(this.sel)">port <b t-out="this.portOf(this.sel)"/></span>
               </div>
@@ -1067,6 +1074,17 @@ export class WorkspacesScreen extends Component {
 
   branchOf(ws) {
     return (ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch) || "";
+  }
+
+  // the header's branch chip: the shared branch name when every checkout agrees
+  // (the usual convention), else just the distinct-name count — one label can't
+  // honestly name two branches (the Code tab's cards carry the per-repo detail).
+  // The tooltip always spells out the full repo:branch mapping.
+  branchSummary(ws) {
+    const names = [...new Set((ws.checkouts || []).map((c) => c.branch))];
+    const title = (ws.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
+    if (names.length <= 1) return { label: "branch", value: names[0] || "—", title };
+    return { label: "", value: `${names.length} branches`, title };
   }
 
   // ── per-location server state ────────────────────────────────────────────────
