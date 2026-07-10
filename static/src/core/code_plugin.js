@@ -415,12 +415,23 @@ export class CodePlugin extends Plugin {
   // checking any out, then re-read branch state for just the affected repos. Creating
   // a local branch never touches PRs/runbot/mergebot, so we skip that whole refresh
   // (the slow part) and never run the per-branch creates back-to-back.
-  // specs: [{ path, name, startPoint }]
+  // specs: [{ path, name, startPoint, freshStart? }]. freshStart asks the backend
+  // to prefer a freshly fetched canonical-remote branch over the local start point.
   async createBranches(specs) {
     const repoByPath = new Map(this.config.config.repos.map((r) => [r.path, r]));
     const branches = (specs || [])
       .filter((s) => s.path && s.name && repoByPath.has(s.path))
-      .map((s) => ({ path: s.path, name: s.name, start_point: s.startPoint }));
+      .map((s) => {
+        const repo = repoByPath.get(s.path);
+        return {
+          path: s.path,
+          name: s.name,
+          start_point: s.startPoint,
+          fresh_start: !!s.freshStart,
+          github: repo.github,
+          repo: repo.id,
+        };
+      });
     if (!branches.length) return;
     this.busy.set(true);
     try {

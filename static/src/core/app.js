@@ -171,7 +171,7 @@ export class Topbar extends Component {
   }
 
   openWorktree(id) {
-    this.wt.select(id);
+    this.wt.selectOnOpen(id);
     this.router.go("workspaces");
   }
 

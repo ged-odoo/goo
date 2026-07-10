@@ -1422,8 +1422,58 @@ class GitService:
         self.notify(checking, event_id=eid, status="done")
         return True, None
 
+    def fresh_start_point(self, path, branch, github=None, repo=""):
+        """Resolve a workspace branch's start point. If the canonical remote has
+        <branch>, fetch it and return FETCH_HEAD so branch/worktree creation starts
+        from the freshly fetched commit. If the branch is local-only, return its
+        local name unchanged. A remote lookup/fetch error is not silently treated
+        as local-only: doing so could create a workspace from stale local state."""
+        if not path or not branch:
+            return None, "missing path or start point"
+        p = os.path.expanduser(path)
+        remote = self.main_remote(p, github)
+        label = repo or os.path.basename(p)
+        self.io.log_request(f"git ls-remote {remote} {branch}  (workspace base {label})")
+        try:
+            exists = self.io.run(
+                ["git", "-C", p, "ls-remote", "--exit-code", "--heads", remote, branch],
+                timeout=30,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+        # --exit-code uses 2 for a successful query with no matching refs: this is
+        # the expected local-only branch case.
+        if exists.returncode == 2 or (exists.returncode == 0 and not exists.stdout.strip()):
+            return branch, None
+        if exists.returncode != 0:
+            return None, (exists.stderr.strip() or "remote branch lookup failed").split("\n")[0]
+
+        eid = uuid.uuid4().hex
+        fetching = f"fetching {branch} ({label})"
+        self.notify(fetching, event_id=eid, status="start")
+        try:
+            fetched = self.io.run(["git", "-C", p, "fetch", remote, branch], timeout=180)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(fetching, event_id=eid, status="error")
+            return None, str(e)
+        if fetched.returncode != 0:
+            self.notify(fetching, event_id=eid, status="error")
+            error = (fetched.stderr.strip() or "git fetch failed").split("\n")[0]
+            return None, error
+        self.notify(fetching, event_id=eid, status="done")
+        return "FETCH_HEAD", None
+
     def worktree_add(
-        self, main_path, worktree_path, branch, repo="", new_branch=False, start_point=None
+        self,
+        main_path,
+        worktree_path,
+        branch,
+        repo="",
+        new_branch=False,
+        start_point=None,
+        fresh_start=False,
+        github=None,
     ):
         """Add a git worktree at <worktree_path>, linked to the repo at <main_path>
         (sharing its .git); git creates intermediate dirs. With new_branch, create
@@ -1436,6 +1486,10 @@ class GitService:
         if new_branch and not start_point:
             return False, "missing start point for the new branch"
         p = os.path.expanduser(main_path)
+        if new_branch and fresh_start:
+            start_point, error = self.fresh_start_point(p, start_point, github, repo)
+            if error:
+                return False, error
         wp = os.path.expanduser(worktree_path)
         label = repo or os.path.basename(p)
         eid = uuid.uuid4().hex
@@ -1478,11 +1532,15 @@ class GitService:
         self.notify(removing, event_id=eid, status="done")
         return True, None
 
-    def create_branch(self, path, name, start_point):
+    def create_branch(self, path, name, start_point, fresh_start=False, github=None, repo=""):
         """Create a new local branch <name> at <start_point> WITHOUT checking it
         out (working tree / current branch untouched). Returns (ok, error)."""
         if not path or not name or not start_point:
             return False, "missing path, name or start point"
+        if fresh_start:
+            start_point, error = self.fresh_start_point(path, start_point, github, repo)
+            if error:
+                return False, error
         try:
             r = self.io.run(
                 ["git", "-C", os.path.expanduser(path), "branch", name, start_point], timeout=10

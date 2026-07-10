@@ -132,7 +132,7 @@ export class CodePane extends Component {
         <span>Checkouts</span>
         <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
         <span class="wt-sp"/>
-        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)"><span class="restart"/></button>
+        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)">Refresh</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
       </div>
@@ -760,11 +760,23 @@ export class WorkspacesScreen extends Component {
     };
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
-    // open with a selection: when nothing (or a removed workspace) is selected,
-    // default to the first configured one — never override an existing selection
-    // (e.g. the event log's [jump] selects the loaded workspace before navigating)
-    const first = (this.config.config.workspaces || [])[0];
-    if (!this.sel && first) this.wt.select(first.id);
+    // An explicit cross-screen jump wins once; an ordinary return starts on the
+    // first workspace in the user's saved ordering rather than reviving the last
+    // selection from a previous visit.
+    const requested = this.wt.requestedSelection();
+    const selected = requested && this.list.find((ws) => ws.id === requested);
+    const first = selected || this.list[0];
+    if (first) this.wt.select(first.id);
+    this.wt.requestedSelection.set("");
+    // A jump can target Workspaces while this screen is already mounted (setting
+    // the same hash does not remount it). Consume that request reactively too so
+    // it cannot leak into the next ordinary visit.
+    useEffect(() => {
+      const id = this.wt.requestedSelection();
+      if (!id) return;
+      if (this.list.some((ws) => ws.id === id)) this.wt.select(id);
+      this.wt.requestedSelection.set("");
+    });
     // keep the selected workspace's git state fresh (drives the Start guard + the
     // checked-out badges) — a scoped, cheap branch scan when the selection (read
     // via this.sel — owl3's useEffect tracks the body) changes
@@ -1003,6 +1015,8 @@ export class WorkspacesScreen extends Component {
   chooseOrder(value) {
     this.setOrder(value);
     this.orderMenuOpen.set(false);
+    const first = this.list[0];
+    if (first) this.wt.select(first.id);
   }
 
   get orderLabel() {

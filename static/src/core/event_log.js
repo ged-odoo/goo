@@ -89,7 +89,7 @@ export class EventLog extends Component {
     const s = this.server.status();
     const loaded =
       s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
-    if (loaded) this.worktree.select(loaded);
+    if (loaded) this.worktree.selectOnOpen(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");
     let tries = 0;

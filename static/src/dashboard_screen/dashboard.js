@@ -154,7 +154,7 @@ export class DashboardScreen extends Component {
   menuId = signal(""); // id of the card whose kebab menu is open ("" = none)
 
   openWorktree(tgt) {
-    this.worktree.select(tgt.id);
+    this.worktree.selectOnOpen(tgt.id);
     this.router.go("workspaces");
   }
 

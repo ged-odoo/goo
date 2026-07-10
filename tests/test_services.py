@@ -1017,6 +1017,88 @@ class GitServiceTest(unittest.TestCase):
         )
         self.assertEqual(services.GitService(io).main_remote("/r", "odoo/odoo"), "upstream")
 
+    def test_create_branch_fetches_remote_start_point_first(self):
+        notes = []
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(stdout="origin/master\n"),
+                "ls-remote --exit-code --heads origin master": completed(
+                    stdout="abc123\trefs/heads/master\n"
+                ),
+                "fetch origin master": completed(),
+            }
+        )
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, err = svc.create_branch(
+            "/r", "master-feature", "master", fresh_start=True, repo="community"
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertIn("branch master-feature FETCH_HEAD", " ".join(io.run_calls[-1]))
+        self.assertEqual(
+            notes,
+            [
+                ("fetching master (community)", "start"),
+                ("fetching master (community)", "done"),
+            ],
+        )
+
+    def test_worktree_uses_local_start_point_when_remote_branch_is_absent(self):
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(stdout="origin/master\n"),
+                "ls-remote --exit-code --heads origin local-base": completed(returncode=2),
+            }
+        )
+        ok, err = services.GitService(io).worktree_add(
+            "/r",
+            "/wt/feature",
+            "feature",
+            new_branch=True,
+            start_point="local-base",
+            fresh_start=True,
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertIn("worktree add -b feature /wt/feature local-base", " ".join(io.run_calls[-1]))
+        self.assertFalse(any(" fetch " in f" {' '.join(c)} " for c in io.run_calls))
+
+    def test_remote_start_lookup_failure_does_not_fall_back_to_local(self):
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(stdout="origin/master\n"),
+                "ls-remote --exit-code --heads origin master": completed(
+                    returncode=128, stderr="could not read from remote"
+                ),
+            }
+        )
+        ok, err = services.GitService(io).create_branch("/r", "feature", "master", fresh_start=True)
+        self.assertFalse(ok)
+        self.assertIn("could not read", err)
+        self.assertFalse(any(" branch feature " in f" {' '.join(c)} " for c in io.run_calls))
+
+    def test_remote_start_fetch_failure_does_not_use_stale_local_branch(self):
+        notes = []
+        io = FakeIO(
+            runs={
+                "master@{upstream}": completed(stdout="origin/master\n"),
+                "ls-remote --exit-code --heads origin master": completed(
+                    stdout="abc123\trefs/heads/master\n"
+                ),
+                "fetch origin master": completed(returncode=1, stderr="fetch failed"),
+            }
+        )
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, err = svc.create_branch("/r", "feature", "master", fresh_start=True)
+        self.assertFalse(ok)
+        self.assertEqual(err, "fetch failed")
+        self.assertEqual(notes[-1], ("fetching master (r)", "error"))
+        self.assertFalse(any(" branch feature " in f" {' '.join(c)} " for c in io.run_calls))
+
     def test_fetch_rebase_notifies_phases(self):
         notes = []
         io = FakeIO(runs={"master@{upstream}": completed(stdout="origin/master\n")})

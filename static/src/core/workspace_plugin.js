@@ -28,6 +28,7 @@ export class WorkspacePlugin extends Plugin {
   eventLog = plugin(EventLogPlugin);
   dialogs = plugin(DialogPlugin);
   selectedId = signal(""); // the workspace selected in the Workspaces screen
+  requestedSelection = signal(""); // one-shot explicit target for the next screen open
   // one-shot: a detail pane the Workspaces screen should open on its next render
   // (set by the event log's [jump] — survives the screen not being mounted yet)
   requestedPane = signal("");
@@ -68,6 +69,11 @@ export class WorkspacePlugin extends Plugin {
     // workspace's log is the shared main-server buffer)
     if (id && this.isWorktree((this.config.config.workspaces || []).find((w) => w.id === id)))
       this._primeLogs(id);
+  }
+
+  selectOnOpen(id) {
+    this.requestedSelection.set(id);
+    this.select(id);
   }
 
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)

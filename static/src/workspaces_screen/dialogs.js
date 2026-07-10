@@ -172,6 +172,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         path: pathByRepo[c.repo],
         name: c.branch,
         startPoint: startPointByRepo[c.repo],
+        freshStart: true,
       })),
     );
   }

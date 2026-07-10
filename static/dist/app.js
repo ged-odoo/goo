@@ -2012,10 +2012,21 @@ ${res.remote_error}`,
   // checking any out, then re-read branch state for just the affected repos. Creating
   // a local branch never touches PRs/runbot/mergebot, so we skip that whole refresh
   // (the slow part) and never run the per-branch creates back-to-back.
-  // specs: [{ path, name, startPoint }]
+  // specs: [{ path, name, startPoint, freshStart? }]. freshStart asks the backend
+  // to prefer a freshly fetched canonical-remote branch over the local start point.
   async createBranches(specs) {
     const repoByPath = new Map(this.config.config.repos.map((r) => [r.path, r]));
-    const branches = (specs || []).filter((s) => s.path && s.name && repoByPath.has(s.path)).map((s) => ({ path: s.path, name: s.name, start_point: s.startPoint }));
+    const branches = (specs || []).filter((s) => s.path && s.name && repoByPath.has(s.path)).map((s) => {
+      const repo = repoByPath.get(s.path);
+      return {
+        path: s.path,
+        name: s.name,
+        start_point: s.startPoint,
+        fresh_start: !!s.freshStart,
+        github: repo.github,
+        repo: repo.id
+      };
+    });
     if (!branches.length) return;
     this.busy.set(true);
     try {
@@ -3381,6 +3392,8 @@ var WorkspacePlugin = class extends Plugin {
   dialogs = plugin(DialogPlugin);
   selectedId = signal("");
   // the workspace selected in the Workspaces screen
+  requestedSelection = signal("");
+  // one-shot explicit target for the next screen open
   // one-shot: a detail pane the Workspaces screen should open on its next render
   // (set by the event log's [jump] — survives the screen not being mounted yet)
   requestedPane = signal("");
@@ -3414,6 +3427,10 @@ var WorkspacePlugin = class extends Plugin {
     this.selectedId.set(id);
     if (id && this.isWorktree((this.config.config.workspaces || []).find((w) => w.id === id)))
       this._primeLogs(id);
+  }
+  selectOnOpen(id) {
+    this.requestedSelection.set(id);
+    this.select(id);
   }
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)
   worktreeBranches() {
@@ -5796,7 +5813,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       checkouts.map((c) => ({
         path: pathByRepo[c.repo],
         name: c.branch,
-        startPoint: startPointByRepo[c.repo]
+        startPoint: startPointByRepo[c.repo],
+        freshStart: true
       }))
     );
   }
@@ -6010,7 +6028,7 @@ var DashboardScreen = class extends Component {
   menuId = signal("");
   // id of the card whose kebab menu is open ("" = none)
   openWorktree(tgt) {
-    this.worktree.select(tgt.id);
+    this.worktree.selectOnOpen(tgt.id);
     this.router.go("workspaces");
   }
   startCreate() {
@@ -6989,7 +7007,7 @@ var EventLog = class extends Component {
   jump(anchor) {
     const s = this.server.status();
     const loaded = s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
-    if (loaded) this.worktree.select(loaded);
+    if (loaded) this.worktree.selectOnOpen(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");
     let tries = 0;
@@ -9542,7 +9560,7 @@ var CodePane = class extends Component {
         <span>Checkouts</span>
         <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
         <span class="wt-sp"/>
-        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)"><span class="restart"/></button>
+        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)">Refresh</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
       </div>
@@ -10111,8 +10129,17 @@ var WorkspacesScreen = class extends Component {
     };
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
-    const first = (this.config.config.workspaces || [])[0];
-    if (!this.sel && first) this.wt.select(first.id);
+    const requested = this.wt.requestedSelection();
+    const selected = requested && this.list.find((ws) => ws.id === requested);
+    const first = selected || this.list[0];
+    if (first) this.wt.select(first.id);
+    this.wt.requestedSelection.set("");
+    useEffect(() => {
+      const id = this.wt.requestedSelection();
+      if (!id) return;
+      if (this.list.some((ws) => ws.id === id)) this.wt.select(id);
+      this.wt.requestedSelection.set("");
+    });
     useEffect(() => {
       const ws = this.sel;
       if (!ws) return;
@@ -10313,6 +10340,8 @@ var WorkspacesScreen = class extends Component {
   chooseOrder(value) {
     this.setOrder(value);
     this.orderMenuOpen.set(false);
+    const first = this.list[0];
+    if (first) this.wt.select(first.id);
   }
   get orderLabel() {
     return WORKSPACE_ORDER_OPTIONS.find((option) => option.value === this.order())?.short || "Order";
@@ -10795,7 +10824,7 @@ var Topbar = class extends Component {
     await this.config.workspace(ws.id)?.activate();
   }
   openWorktree(id) {
-    this.wt.select(id);
+    this.wt.selectOnOpen(id);
     this.router.go("workspaces");
   }
   get stateClass() {

@@ -1742,7 +1742,14 @@ class Handler(BaseHTTPRequestHandler):
             # create each branch in parallel — independent working trees, so a
             # multi-repo target's branches are created in one create's time, not the sum
             def mk(b):
-                ok, error = GIT.create_branch(b.get("path"), b.get("name"), b.get("start_point"))
+                ok, error = GIT.create_branch(
+                    b.get("path"),
+                    b.get("name"),
+                    b.get("start_point"),
+                    fresh_start=bool(b.get("fresh_start")),
+                    github=b.get("github"),
+                    repo=b.get("repo", ""),
+                )
                 return {"name": b.get("name"), "ok": ok, "error": error}
 
             if branches:
@@ -1828,6 +1835,8 @@ class Handler(BaseHTTPRequestHandler):
                     r.get("repo", ""),
                     new_branch=bool(r.get("newBranch")),
                     start_point=r.get("startPoint"),
+                    fresh_start=True,
+                    github=r.get("github"),
                 )
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
