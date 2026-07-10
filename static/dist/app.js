@@ -9598,6 +9598,7 @@ var CodePane = class extends Component {
         <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)">Refresh</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
+        <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
         <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
       </div>
 
@@ -9664,6 +9665,8 @@ var CodePane = class extends Component {
   // "Editor" toolbar button
   kebabIcon = m(ICONS.kebab);
   // the per-checkout actions menu
+  pushIcon = m(ICONS.push);
+  // the "Push all" toolbar button
   menuId = signal("");
   // key of the checkout whose action menu is open ("" = none)
   setup() {
@@ -9809,6 +9812,35 @@ var CodePane = class extends Component {
       this.touchActivity();
       await this.code.rebase(repos);
     }
+  }
+  // every pushable work-branch checkout — base branches (master/16.0/…) are
+  // excluded: bulk-pushing those to the dev fork is never what "push all" means
+  get pushableRows() {
+    return this.checkoutRows.filter((r) => r.canPush && !this.isBaseBranch(r.branch));
+  }
+  canPushAll() {
+    return this.pushableRows.length > 0;
+  }
+  pushAllTitle() {
+    const rows = this.pushableRows;
+    if (!rows.length)
+      return "nothing to push \u2014 no local work branches (base branches are never bulk-pushed)";
+    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to the dev remote (odoo-dev)`;
+  }
+  // push every work-branch checkout to the dev remote, one confirm for the batch
+  async pushAll() {
+    const rows = this.pushableRows;
+    if (!rows.length) return;
+    const pushed = await pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      rows.map((r) => ({ path: r.path, branch: r.branch })),
+      {
+        title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
+        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to the dev remote (odoo-dev)?`
+      }
+    );
+    if (pushed) this.touchActivity();
   }
   // local checkout folders of every shown repo, for "Edit" (open them all at once)
   get editorPaths() {
