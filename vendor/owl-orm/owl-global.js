@@ -22,7 +22,7 @@ export const untrack = owl.untrack;
 export const Component = owl.Component;
 export const xml = owl.xml;
 export const markup = owl.markup;
-export const props = owl.props;
+export const useProps = owl.useProps;
 export const t = owl.t;
 export const mount = owl.mount;
 export const EventBus = owl.EventBus;
@@ -37,4 +37,4 @@ export const useApp = owl.useApp;
 
 // app: plugin system
 export const Plugin = owl.Plugin;
-export const plugin = owl.plugin;
+export const usePlugin = owl.usePlugin;

@@ -11,7 +11,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-import { Plugin, plugin, useEffect, signal } from "@odoo/owl";
+import { Plugin, usePlugin, useEffect, signal } from "@odoo/owl";
 
 const HISTORY_MAX = 10;
 
@@ -23,10 +23,10 @@ export function slotFor(ws) {
 export class TestsPlugin extends Plugin {
   static sequence = 3;
 
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin); // one-shot runs live in the shared store's runs map
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // one-shot runs live in the shared store's runs map
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   history = signal(this._readHistory()); // last test tags run, most recent first (global)
   _failSeq = 0; // monotonic id source for failure-row anchors (global, never reset)
   _slots = new Map(); // slotId -> per-slot run/console state

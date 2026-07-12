@@ -62,6 +62,7 @@ var owl = (() => {
     props: () => props,
     providePlugins: () => providePlugins,
     proxy: () => proxy,
+    shallowEqual: () => shallowEqual,
     signal: () => signal,
     status: () => status,
     t: () => types2,
@@ -69,8 +70,11 @@ var owl = (() => {
     types: () => types2,
     untrack: () => untrack,
     useApp: () => useApp2,
+    useConfig: () => useConfig,
     useEffect: () => useEffect,
     useListener: () => useListener,
+    usePlugin: () => usePlugin,
+    useProps: () => useProps,
     useScope: () => useScope,
     validateType: () => validateType,
     whenReady: () => whenReady,
@@ -102,6 +106,26 @@ var owl = (() => {
       }
     };
   }
+  function neverEqual() {
+    return false;
+  }
+  function toEqualsFn(equals) {
+    if (equals === false) {
+      return neverEqual;
+    }
+    if (!equals) {
+      return Object.is;
+    }
+    return (a, b) => {
+      const previousComputation = currentComputation;
+      currentComputation = void 0;
+      try {
+        return equals(a, b);
+      } finally {
+        currentComputation = previousComputation;
+      }
+    };
+  }
   var ComputationState = /* @__PURE__ */ ((ComputationState2) => {
     ComputationState2[ComputationState2["EXECUTED"] = 0] = "EXECUTED";
     ComputationState2[ComputationState2["STALE"] = 1] = "STALE";
@@ -112,6 +136,7 @@ var owl = (() => {
   var observers = [];
   var immediateObservers = [];
   var currentComputation;
+  var pendingDisposals = /* @__PURE__ */ new Set();
   function createComputation(compute, isDerived, state = 1, immediate = false) {
     return {
       state,
@@ -142,6 +167,9 @@ var owl = (() => {
         }
       }
       ctx.state = 1;
+      if (ctx.isDerived && ctx.observers.size === 0) {
+        pendingDisposals.add(ctx);
+      }
     }
     if (immediateObservers.length) {
       const toRun = immediateObservers;
@@ -158,6 +186,15 @@ var owl = (() => {
     observers = [];
     for (let i = 0; i < pending.length; i++) {
       updateComputation(pending[i]);
+    }
+    if (pendingDisposals.size !== 0) {
+      const candidates = pendingDisposals;
+      pendingDisposals = /* @__PURE__ */ new Set();
+      for (const computation of candidates) {
+        if (computation.observers.size === 0) {
+          disposeComputation(computation);
+        }
+      }
     }
   }
   function getCurrentComputation() {
@@ -221,12 +258,17 @@ var owl = (() => {
     let current;
     while (current = stack.pop()) {
       for (const observer of current.observers) {
+        if (observer.isDerived && observer.observers.size === 0) {
+          pendingDisposals.add(observer);
+        }
         if (observer.state) {
           continue;
         }
         observer.state = 2;
         if (observer.isDerived) {
           stack.push(observer);
+        } else if (observer.immediate) {
+          immediateObservers.push(observer);
         } else {
           observers.push(observer);
         }
@@ -265,16 +307,42 @@ var owl = (() => {
       this.pluginManager = app.pluginManager;
     }
     /**
-     * Pushes this scope on the stack for the duration of `callback`. Any code
-     * executed inside `callback` can reach this scope via `useScope()`.
+     * Pushes this scope on the stack for the duration of `fn`, invoking it with
+     * the given arguments. Any code executed synchronously inside `fn` can reach
+     * this scope via `useScope()`.
+     *
+     * If the scope is already dead when `run` is called, it throws an
+     * `OwlError` (a programming error — nothing should schedule work in a
+     * destroyed scope). This is deliberately *not* an AbortError.
+     *
+     * If `fn` returns a promise, `run` guards the await with the scope's
+     * lifetime: the returned promise rejects with an AbortError if the scope
+     * dies during the await. AbortError is part of the normal async workflow,
+     * unlike the up-front OwlError above. This does not allocate an
+     * AbortController — status checks are sufficient for guarding between awaits.
      */
-    run(callback) {
+    run(fn, ...args) {
+      if (this.status > STATUS.MOUNTED) {
+        throw new OwlError("Cannot run a callback in a destroyed scope");
+      }
       scopeStack.push(this);
+      let result;
       try {
-        return callback();
+        result = fn(...args);
       } finally {
         scopeStack.pop();
       }
+      if (result !== null && typeof result?.then === "function") {
+        return this._guard(result);
+      }
+      return result;
+    }
+    async _guard(p) {
+      const result = await p;
+      if (this.status > STATUS.MOUNTED) {
+        throw makeAbortError();
+      }
+      return result;
     }
     /**
      * An AbortSignal tied to this scope's lifetime. If the scope is already
@@ -292,20 +360,14 @@ var owl = (() => {
       return (this._controller ??= new AbortController()).signal;
     }
     /**
-     * Awaits `p`, throwing an AbortError if the scope is dead before or after
-     * the await. Unlike `until(signal, p)`, this does not allocate an
-     * AbortController — status checks are sufficient for guarding between
-     * awaits.
+     * Returns true once the scope has been fully destroyed, i.e. `finalize` has
+     * run: the abort signal is aborted, onDestroy callbacks have executed and
+     * computations are disposed. Note that a CANCELLED scope (abandoned before
+     * mount, but not yet finalized) is dead but not destroyed — to ask "is this
+     * scope dead?", check `status > STATUS.MOUNTED` instead.
      */
-    async until(p) {
-      if (this.status > STATUS.MOUNTED) {
-        throw makeAbortError();
-      }
-      const result = await p;
-      if (this.status > STATUS.MOUNTED) {
-        throw makeAbortError();
-      }
-      return result;
+    isDestroyed() {
+      return this.status >= STATUS.DESTROYED;
     }
     /**
      * Registers a callback to run when the scope is destroyed. If the scope is
@@ -429,18 +491,15 @@ var owl = (() => {
   function onReadTargetKey(target, key, atom) {
     onReadAtom(atom ?? getTargetKeyAtom(target, key));
   }
-  function onWriteTargetKey(target, key, atom) {
-    if (!atom) {
-      const keyToAtomItem = targetToKeysToAtomItem.get(target);
-      if (!keyToAtomItem) {
-        return;
-      }
-      if (!keyToAtomItem.has(key)) {
-        return;
-      }
-      atom = keyToAtomItem.get(key);
+  function onWriteTargetKey(target, key) {
+    const keyToAtomItem = targetToKeysToAtomItem.get(target);
+    if (!keyToAtomItem) {
+      return;
     }
-    onWriteAtom(atom);
+    if (!keyToAtomItem.has(key)) {
+      return;
+    }
+    onWriteAtom(keyToAtomItem.get(key));
   }
   var targets = /* @__PURE__ */ new WeakMap();
   var proxyCache = /* @__PURE__ */ new WeakMap();
@@ -497,18 +556,30 @@ var owl = (() => {
         const hadKey = objectHasOwnProperty.call(target, key);
         const originalValue = Reflect.get(target, key, receiver);
         const ret = Reflect.set(target, key, toRaw(value), receiver);
-        if (!hadKey && objectHasOwnProperty.call(target, key)) {
-          onWriteTargetKey(target, KEYCHANGES, atom);
-        }
-        if (originalValue !== Reflect.get(target, key, receiver) || key === "length" && Array.isArray(target)) {
-          onWriteTargetKey(target, key, atom);
+        const keyCreated = !hadKey && objectHasOwnProperty.call(target, key);
+        const valueChanged = originalValue !== Reflect.get(target, key, receiver);
+        if (atom) {
+          if (keyCreated || valueChanged) {
+            onWriteAtom(atom);
+          }
+        } else {
+          if (keyCreated) {
+            onWriteTargetKey(target, KEYCHANGES);
+          }
+          if (valueChanged || key === "length" && Array.isArray(target)) {
+            onWriteTargetKey(target, key);
+          }
         }
         return ret;
       },
       deleteProperty(target, key) {
         const ret = Reflect.deleteProperty(target, key);
-        onWriteTargetKey(target, KEYCHANGES, atom);
-        onWriteTargetKey(target, key, atom);
+        if (atom) {
+          onWriteAtom(atom);
+        } else {
+          onWriteTargetKey(target, KEYCHANGES);
+          onWriteTargetKey(target, key);
+        }
         return ret;
       },
       ownKeys(target) {
@@ -524,26 +595,26 @@ var owl = (() => {
   function makeKeyObserver(methodName, target, atom) {
     return (key) => {
       key = toRaw(key);
-      onReadTargetKey(target, key, atom);
+      onReadTargetKey(target, key, null);
       return possiblyReactive(target[methodName](key), atom);
     };
   }
   function makeIteratorObserver(methodName, target, atom) {
     return function* () {
-      onReadTargetKey(target, KEYCHANGES, atom);
+      onReadTargetKey(target, KEYCHANGES, null);
       const keys = target.keys();
       for (const item of target[methodName]()) {
         const key = keys.next().value;
-        onReadTargetKey(target, key, atom);
+        onReadTargetKey(target, key, null);
         yield possiblyReactive(item, atom);
       }
     };
   }
   function makeForEachObserver(target, atom) {
     return function forEach(forEachCb, thisArg) {
-      onReadTargetKey(target, KEYCHANGES, atom);
+      onReadTargetKey(target, KEYCHANGES, null);
       target.forEach(function(val, key, targetObj) {
-        onReadTargetKey(target, key, atom);
+        onReadTargetKey(target, key, null);
         forEachCb.call(
           thisArg,
           possiblyReactive(val, atom),
@@ -553,7 +624,7 @@ var owl = (() => {
       }, thisArg);
     };
   }
-  function delegateAndNotify(setterName, getterName, target, atom) {
+  function delegateAndNotify(setterName, getterName, target) {
     return (key, value) => {
       key = toRaw(key);
       const hadKey = target.has(key);
@@ -561,61 +632,61 @@ var owl = (() => {
       const ret = target[setterName](key, value);
       const hasKey = target.has(key);
       if (hadKey !== hasKey) {
-        onWriteTargetKey(target, KEYCHANGES, atom);
+        onWriteTargetKey(target, KEYCHANGES);
       }
       if (originalValue !== target[getterName](key)) {
-        onWriteTargetKey(target, key, atom);
+        onWriteTargetKey(target, key);
       }
       return ret;
     };
   }
-  function makeClearNotifier(target, atom) {
+  function makeClearNotifier(target) {
     return () => {
       const allKeys = [...target.keys()];
       target.clear();
-      onWriteTargetKey(target, KEYCHANGES, atom);
+      onWriteTargetKey(target, KEYCHANGES);
       for (const key of allKeys) {
-        onWriteTargetKey(target, key, atom);
+        onWriteTargetKey(target, key);
       }
     };
   }
   var rawTypeToFuncHandlers = {
     Set: (target, atom) => ({
       has: makeKeyObserver("has", target, atom),
-      add: delegateAndNotify("add", "has", target, atom),
-      delete: delegateAndNotify("delete", "has", target, atom),
+      add: delegateAndNotify("add", "has", target),
+      delete: delegateAndNotify("delete", "has", target),
       keys: makeIteratorObserver("keys", target, atom),
       values: makeIteratorObserver("values", target, atom),
       entries: makeIteratorObserver("entries", target, atom),
       [Symbol.iterator]: makeIteratorObserver(Symbol.iterator, target, atom),
       forEach: makeForEachObserver(target, atom),
-      clear: makeClearNotifier(target, atom),
+      clear: makeClearNotifier(target),
       get size() {
-        onReadTargetKey(target, KEYCHANGES, atom);
+        onReadTargetKey(target, KEYCHANGES, null);
         return target.size;
       }
     }),
     Map: (target, atom) => ({
       has: makeKeyObserver("has", target, atom),
       get: makeKeyObserver("get", target, atom),
-      set: delegateAndNotify("set", "get", target, atom),
-      delete: delegateAndNotify("delete", "has", target, atom),
+      set: delegateAndNotify("set", "get", target),
+      delete: delegateAndNotify("delete", "has", target),
       keys: makeIteratorObserver("keys", target, atom),
       values: makeIteratorObserver("values", target, atom),
       entries: makeIteratorObserver("entries", target, atom),
       [Symbol.iterator]: makeIteratorObserver(Symbol.iterator, target, atom),
       forEach: makeForEachObserver(target, atom),
-      clear: makeClearNotifier(target, atom),
+      clear: makeClearNotifier(target),
       get size() {
-        onReadTargetKey(target, KEYCHANGES, atom);
+        onReadTargetKey(target, KEYCHANGES, null);
         return target.size;
       }
     }),
     WeakMap: (target, atom) => ({
       has: makeKeyObserver("has", target, atom),
       get: makeKeyObserver("get", target, atom),
-      set: delegateAndNotify("set", "get", target, atom),
-      delete: delegateAndNotify("delete", "has", target, atom)
+      set: delegateAndNotify("set", "get", target),
+      delete: delegateAndNotify("delete", "has", target)
     })
   };
   function collectionsProxyHandler(target, targetRawType, atom) {
@@ -631,12 +702,13 @@ var owl = (() => {
       }
     });
   }
-  function buildSignal(value, set) {
+  function buildSignal(value, set, equals) {
     const atom = {
       type: "signal",
       value,
       observers: /* @__PURE__ */ new Set()
     };
+    const equalsFn = toEqualsFn(equals);
     let readValue = set(atom);
     const readSignal = () => {
       onReadAtom(atom);
@@ -644,7 +716,7 @@ var owl = (() => {
     };
     readSignal[atomSymbol] = atom;
     readSignal.set = function writeSignal(newValue) {
-      if (Object.is(atom.value, newValue)) {
+      if (equalsFn(atom.value, newValue)) {
         return;
       }
       atom.value = newValue;
@@ -662,20 +734,28 @@ var owl = (() => {
   function signalRef() {
     return buildSignal(null, (atom) => atom.value);
   }
-  function signalArray(initialValue) {
-    return buildSignal(initialValue, (atom) => proxifyTarget(atom.value, atom));
+  function signalArray(initialValue = [], options = {}) {
+    return buildSignal(initialValue, (atom) => proxifyTarget(atom.value, atom), options.equals);
   }
-  function signalObject(initialValue) {
-    return buildSignal(initialValue, (atom) => proxifyTarget(atom.value, atom));
+  function signalObject(initialValue = {}, options = {}) {
+    return buildSignal(initialValue, (atom) => proxifyTarget(atom.value, atom), options.equals);
   }
-  function signalMap(initialValue) {
-    return buildSignal(initialValue, (atom) => proxifyTarget(atom.value, atom));
+  function signalMap(initialValue = /* @__PURE__ */ new Map(), options = {}) {
+    return buildSignal(
+      initialValue,
+      (atom) => proxifyTarget(atom.value, atom),
+      options.equals
+    );
   }
-  function signalSet(initialValue) {
-    return buildSignal(initialValue, (atom) => proxifyTarget(atom.value, atom));
+  function signalSet(initialValue = /* @__PURE__ */ new Set(), options = {}) {
+    return buildSignal(
+      initialValue,
+      (atom) => proxifyTarget(atom.value, atom),
+      options.equals
+    );
   }
-  function signal(value) {
-    return buildSignal(value, (atom) => atom.value);
+  function signal(value, options = {}) {
+    return buildSignal(value, (atom) => atom.value, options.equals);
   }
   signal.trigger = triggerSignal;
   signal.ref = signalRef;
@@ -689,11 +769,17 @@ var owl = (() => {
     );
   }
   function computed(getter, options = {}) {
+    const equalsFn = toEqualsFn(options.equals);
+    let hasValue = false;
     const computation = createComputation(() => {
       const newValue = getter();
-      if (!Object.is(computation.value, newValue)) {
+      if (hasValue) {
+        if (equalsFn(computation.value, newValue)) {
+          return computation.value;
+        }
         onWriteAtom(computation);
       }
+      hasValue = true;
       return newValue;
     }, true);
     function readComputed() {
@@ -772,13 +858,25 @@ var owl = (() => {
     }
   }
   function asyncComputed(fetcher, options = {}) {
-    const value = signal(options.initial);
+    const value = signal(options.initial, { equals: options.equals });
     const loading = signal(false);
     const error = signal(null);
     const refreshTick = signal(0);
     const scope = getScope();
     let runId = 0;
     let runController = null;
+    let inFlight = false;
+    let pending = null;
+    function beginRun() {
+      loading.set(true);
+      inFlight = true;
+    }
+    function endRun() {
+      loading.set(false);
+      inFlight = false;
+      pending?.resolve();
+      pending = null;
+    }
     const stopEffect = effect(() => {
       refreshTick();
       const myRunId = ++runId;
@@ -791,7 +889,7 @@ var owl = (() => {
       if (scope?.abortSignal) {
         abortSignals.push(scope.abortSignal);
       }
-      loading.set(true);
+      beginRun();
       error.set(null);
       let promise;
       try {
@@ -799,27 +897,27 @@ var owl = (() => {
       } catch (e) {
         if (myRunId !== runId) return;
         if (isAbortError(e)) {
-          loading.set(false);
+          endRun();
           return;
         }
         error.set(e);
-        loading.set(false);
+        endRun();
         return;
       }
       promise.then(
         (result) => {
           if (myRunId !== runId) return;
           value.set(result);
-          loading.set(false);
+          endRun();
         },
         (e) => {
           if (myRunId !== runId) return;
           if (isAbortError(e)) {
-            loading.set(false);
+            endRun();
             return;
           }
           error.set(e);
-          loading.set(false);
+          endRun();
         }
       );
     });
@@ -827,6 +925,9 @@ var owl = (() => {
       stopEffect();
       runController?.abort();
       runController = null;
+      inFlight = false;
+      pending?.resolve();
+      pending = null;
     }
     scope?.onDestroy(dispose);
     const read = (() => value());
@@ -834,6 +935,16 @@ var owl = (() => {
     read.error = () => error();
     read.refresh = () => refreshTick.set(refreshTick() + 1);
     read.dispose = dispose;
+    read.currentPromise = () => {
+      if (!inFlight) {
+        return Promise.resolve();
+      }
+      if (!pending) {
+        let resolve;
+        pending = { promise: new Promise((res) => resolve = res), resolve };
+      }
+      return pending.promise;
+    };
     return read;
   }
   function safeReplacer(knownObjects, _key, value) {
@@ -903,6 +1014,7 @@ ${issueStrings}`);
   var shapeSymbol = /* @__PURE__ */ Symbol("shape");
   var elementTypeSymbol = /* @__PURE__ */ Symbol("elementType");
   var optionalSymbol = /* @__PURE__ */ Symbol("optional");
+  var intersectionSymbol = /* @__PURE__ */ Symbol("intersection");
   function getDefault(type) {
     return typeof type === "function" ? type[defaultSymbol] : void 0;
   }
@@ -944,6 +1056,14 @@ ${issueStrings}`);
     const inner = type[innerTypeSymbol] || type;
     if (typeof inner !== "function" || !value || typeof value !== "object") {
       return value;
+    }
+    const members = inner[intersectionSymbol];
+    if (members) {
+      let result2 = value;
+      for (const member of members) {
+        result2 = applyDefaultsRec(result2, member);
+      }
+      return result2;
     }
     const elementType = inner[elementTypeSymbol];
     if (elementType && Array.isArray(value)) {
@@ -1052,11 +1172,23 @@ ${issueStrings}`);
     });
   }
   function intersection(types22) {
-    return makeType(function validateIntersection(context) {
+    const validate = makeType(function validateIntersection(context) {
       for (const type of types22) {
         context.validate(type);
       }
     });
+    validate[intersectionSymbol] = types22;
+    validate.toShape = () => {
+      const shape = {};
+      for (const member of types22) {
+        const memberShape = typeof member.toShape === "function" ? member.toShape() : void 0;
+        if (memberShape && !Array.isArray(memberShape)) {
+          Object.assign(shape, memberShape);
+        }
+      }
+      return shape;
+    };
+    return validate;
   }
   function literalType(literal) {
     return makeType(function validateLiteral(context) {
@@ -1092,14 +1224,9 @@ ${issueStrings}`);
       }
     }
     const missingKeys = [];
-    const requiredKeys = [];
     for (const key of keys) {
-      const isOptional = isOptionalType(shape[key]);
-      if (!isOptional) {
-        requiredKeys.push(key);
-      }
       if (context.value[key] === void 0) {
-        if (!isOptional) {
+        if (!isOptionalType(shape[key])) {
           missingKeys.push(key);
         }
         continue;
@@ -1111,10 +1238,7 @@ ${issueStrings}`);
     if (missingKeys.length) {
       context.addIssue({
         message: "object value has missing keys",
-        missingKeys,
-        // only required keys are expected to be present (optional keys still
-        // appear in the unknown-keys issue below: they are known to the schema)
-        expectedKeys: requiredKeys
+        missingKeys
       });
     }
     if (isStrict) {
@@ -1127,8 +1251,7 @@ ${issueStrings}`);
       if (unknownKeys.length) {
         context.addIssue({
           message: "object value has unknown keys",
-          unknownKeys,
-          expectedKeys: keys
+          unknownKeys
         });
       }
     }
@@ -1140,6 +1263,7 @@ ${issueStrings}`);
     if (!Array.isArray(schema)) {
       validate[shapeSymbol] = schema;
     }
+    validate.toShape = () => schema;
     return validate;
   }
   function strictObjectType(schema) {
@@ -1149,6 +1273,7 @@ ${issueStrings}`);
     if (!Array.isArray(schema)) {
       validate[shapeSymbol] = schema;
     }
+    validate.toShape = () => schema;
     return validate;
   }
   function promiseType(type) {
@@ -1509,7 +1634,7 @@ ${issueStrings}`);
   function useApp() {
     return useScope().app;
   }
-  function plugin(pluginType) {
+  function usePlugin(pluginType) {
     const scope = useScope();
     let plugin2 = scope.pluginManager.getPluginById(pluginType.id);
     if (!plugin2) {
@@ -1519,9 +1644,11 @@ ${issueStrings}`);
         throw new OwlError(`Unknown plugin "${pluginType.id}"`);
       }
     }
-    return plugin2;
+    const scoped = pluginType.scoped;
+    return scoped ? scoped(plugin2, scope) : plugin2;
   }
-  function config(key, type) {
+  var plugin = usePlugin;
+  function useConfig(key, type) {
     const scope = useScope();
     if (!(scope instanceof PluginManager)) {
       throw new OwlError("Expected to be in a plugin scope");
@@ -1532,11 +1659,47 @@ ${issueStrings}`);
     const configValue = scope.config[key];
     return configValue === void 0 ? getDefault(type)?.() : configValue;
   }
+  var config = useConfig;
   var EventBus = class extends EventTarget {
     trigger(name, payload) {
       this.dispatchEvent(new CustomEvent(name, { detail: payload }));
     }
   };
+  function shallowEqual(a, b) {
+    if (Object.is(a, b)) {
+      return true;
+    }
+    if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
+      return false;
+    }
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+        return false;
+      }
+      for (let i = 0; i < a.length; i++) {
+        if (!Object.is(a[i], b[i])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    const protoA = Object.getPrototypeOf(a);
+    const protoB = Object.getPrototypeOf(b);
+    if (protoA !== Object.prototype && protoA !== null || protoB !== Object.prototype && protoB !== null) {
+      return false;
+    }
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) {
+      return false;
+    }
+    for (const key of keysA) {
+      if (!Object.prototype.hasOwnProperty.call(b, key) || !Object.is(a[key], b[key])) {
+        return false;
+      }
+    }
+    return true;
+  }
   var Markup = class extends String {
   };
   function htmlEscape(str) {
@@ -1576,7 +1739,7 @@ ${issueStrings}`);
   }
 
   // ../owl-runtime/dist/owl-runtime.es.js
-  var version = "3.0.0-alpha.36";
+  var version = "3.0.0-alpha.43";
   var fibersInError = /* @__PURE__ */ new WeakMap();
   var nodeErrorHandlers = /* @__PURE__ */ new WeakMap();
   function invokeErrorHandlers(node, error, finalize, markFibers) {
@@ -1666,7 +1829,7 @@ ${issueStrings}`);
       return false;
     }
   };
-  var txt = document.createTextNode("");
+  var txt = globalThis.document?.createTextNode("");
   var VToggler = class {
     key;
     child;
@@ -1969,9 +2132,11 @@ ${issueStrings}`);
         style.removeProperty(prop);
       }
     }
+    let changed = false;
     for (let prop in val) {
-      if (val[prop] !== oldVal[prop]) {
+      if (changed || val[prop] !== oldVal[prop]) {
         setStyleProp(style, prop, val[prop]);
+        changed = true;
       }
     }
     if (!style.cssText) {
@@ -3198,6 +3363,7 @@ ${issueStrings}`);
         return "destroyed";
     }
   }
+  var MAX_RENDER_ITERATIONS = 1e3;
   function makeChildFiber(node, parent) {
     let current = node.fiber;
     if (current) {
@@ -3210,6 +3376,7 @@ ${issueStrings}`);
     let current = node.fiber;
     if (current) {
       let root = current.root;
+      root.renderCount++;
       root.locked = true;
       root.setCounter(root.counter + 1 - cancelFibers(current.children));
       root.locked = false;
@@ -3304,6 +3471,15 @@ ${issueStrings}`);
       const node = this.node;
       const root = this.root;
       if (root) {
+        if (root.renderCount > MAX_RENDER_ITERATIONS) {
+          handleError({
+            node,
+            error: new OwlError(
+              `Maximum render iterations (${MAX_RENDER_ITERATIONS}) exceeded. Component "${node.componentName}" is stuck in a render loop: rendering it keeps triggering another render before the DOM is updated. A common cause is updating reactive state during render or setup() \u2014 e.g. calling a parent's state setter from a child's setup().`
+            )
+          });
+          return;
+        }
         const c = getCurrentComputation();
         removeSources(node.signalComputation);
         setComputation(node.signalComputation);
@@ -3326,6 +3502,9 @@ ${issueStrings}`);
   };
   var RootFiber = class extends Fiber {
     counter = 1;
+    // Number of times this (uncommitted) fiber has been recycled by makeRootFiber.
+    // Climbs without bound only in a render loop; see issue #1968.
+    renderCount = 0;
     // only add stuff in this if they have registered some hooks
     willPatch = [];
     patched = [];
@@ -3472,6 +3651,11 @@ ${issueStrings}`);
     willPatch = [];
     patched = [];
     signalComputation;
+    // t-ref signals bound to an element hosted by this component, mapped to their
+    // atom (so the element can be read without subscribing). Swept by isConnected
+    // after each patch and after this subtree is removed, to unset a ref pointing
+    // at a bulk-removed element (slot host, enclosing t-if) — see sweepRefs.
+    trackedRefs = null;
     constructor(C, props2, app, parent, parentKey) {
       super(app);
       this.parent = parent;
@@ -3580,9 +3764,15 @@ ${issueStrings}`);
     }
     destroy() {
       let shouldRemove = this.status === STATUS.MOUNTED;
-      this._destroy();
+      removalDepth++;
+      try {
+        this._destroy();
+      } finally {
+        removalDepth--;
+      }
       if (shouldRemove) {
         this.bdom.remove();
+        sweepRemovedRefs();
       }
     }
     _destroy() {
@@ -3592,11 +3782,41 @@ ${issueStrings}`);
           cb.call(component);
         }
       }
+      if (removalDepth && this.trackedRefs) {
+        (removed ||= []).push(this);
+      }
       for (let childKey in this.children) {
         this.children[childKey]._destroy();
       }
       this.finalize((e) => handleError({ error: e, node: this }));
       disposeComputation(this.signalComputation);
+    }
+    /**
+     * Unset any tracked t-ref whose element is no longer in the document, and stop
+     * tracking it (createRef re-registers it on the next render if the element
+     * comes back). `isConnected` is the discriminator: a ref the block's own
+     * remove() failed to clear (bulk removal) points at a detached element and is
+     * cleared, while a ref a surviving sibling just took over (t-if/t-else with a
+     * shared signal) points at a still-connected element and is left alone.
+     *
+     * Called after this component's dom settles: at the tail of `_patch` (before
+     * user `onPatched`), so an element removed in place is caught, and — for the
+     * nodes collected during `_destroy` — after a removed subtree is detached.
+     */
+    sweepRefs() {
+      const refs = this.trackedRefs;
+      if (!refs) {
+        return;
+      }
+      for (const [ref2, atom] of refs) {
+        const el = atom.value;
+        if (!el) {
+          refs.delete(ref2);
+        } else if (!el.isConnected) {
+          ref2.set(null);
+          refs.delete(ref2);
+        }
+      }
     }
     /**
      * Finds a child that has dom that is not yet updated, and update it. This
@@ -3613,7 +3833,14 @@ ${issueStrings}`);
           child.updateDom();
         }
       } else {
-        this.bdom.patch(this.fiber.bdom, false);
+        removalDepth++;
+        try {
+          this.bdom.patch(this.fiber.bdom, false);
+        } finally {
+          removalDepth--;
+        }
+        this.sweepRefs();
+        sweepRemovedRefs();
         this.fiber.appliedToDom = true;
         this.fiber = null;
       }
@@ -3640,6 +3867,14 @@ ${issueStrings}`);
     moveBeforeVNode(other, afterNode) {
       this.bdom.moveBeforeVNode(other ? other.bdom : null, afterNode);
     }
+    /**
+     * Register a t-ref signal bound to an element this component hosts, so its
+     * lifecycle can clear it (see sweepRefs / _destroy). Idempotent — re-tracking
+     * the same signal on each render just refreshes its atom.
+     */
+    trackRef(ref2, atom) {
+      (this.trackedRefs ||= /* @__PURE__ */ new Map()).set(ref2, atom);
+    }
     patch() {
       if (this.fiber && this.fiber.parent) {
         this._patch();
@@ -3653,7 +3888,14 @@ ${issueStrings}`);
       }
       const fiber = this.fiber;
       this.children = fiber.childrenMap;
-      this.bdom.patch(fiber.bdom, hasChildren);
+      removalDepth++;
+      try {
+        this.bdom.patch(fiber.bdom, hasChildren);
+      } finally {
+        removalDepth--;
+      }
+      this.sweepRefs();
+      sweepRemovedRefs();
       fiber.appliedToDom = true;
       this.fiber = null;
     }
@@ -3664,6 +3906,17 @@ ${issueStrings}`);
       this.bdom.remove();
     }
   };
+  var removalDepth = 0;
+  var removed = null;
+  function sweepRemovedRefs() {
+    if (removalDepth === 0 && removed) {
+      const nodes = removed;
+      removed = null;
+      for (let i = 0; i < nodes.length; i++) {
+        nodes[i].sweepRefs();
+      }
+    }
+  }
   function getComponentScope() {
     const scope = useScope();
     if (!(scope instanceof ComponentNode)) {
@@ -3721,10 +3974,7 @@ ${issueStrings}`);
       }
       this.processing = true;
       this.frame = 0;
-      for (let node of this.cancelledNodes) {
-        node._destroy();
-      }
-      this.cancelledNodes.clear();
+      this.processCancelledNodes();
       for (let fiber of this.tasks) {
         if (fiber.root !== fiber) {
           this.tasks.delete(fiber);
@@ -3754,6 +4004,17 @@ ${issueStrings}`);
         }
       }
       this.processing = false;
+    }
+    processCancelledNodes() {
+      for (let node of this.cancelledNodes) {
+        node._destroy();
+      }
+      this.cancelledNodes.clear();
+      for (let task of this.tasks) {
+        if (task.node.status === STATUS.DESTROYED) {
+          this.tasks.delete(task);
+        }
+      }
     }
   };
   var Component = class {
@@ -3819,7 +4080,7 @@ ${issueStrings}`);
     const n = parseFloat(val);
     return isNaN(n) ? val : n;
   }
-  function shallowEqual(l1, l2) {
+  function shallowEqual2(l1, l2) {
     for (let i = 0, l = l1.length; i < l; i++) {
       if (l1[i] !== l2[i]) {
         return false;
@@ -3865,7 +4126,7 @@ ${issueStrings}`);
     }
     return toggler(safeKey, block);
   }
-  function createRef(ref2) {
+  function createRef(ref2, node) {
     if (!ref2) {
       throw new OwlError(`Ref is undefined or null`);
     }
@@ -3880,6 +4141,9 @@ ${issueStrings}`);
       remove2 = atom ? (prevEl) => {
         if (atom.value === prevEl) ref2.set(null);
       } : () => ref2.set(null);
+      if (atom) {
+        node.trackRef(ref2, atom);
+      }
     } else {
       throw new OwlError(
         `Ref should implement either a 'set' function or 'add' and 'delete' functions`
@@ -4057,7 +4321,7 @@ ${issueStrings}`);
     callSlot,
     withKey,
     prepareList,
-    shallowEqual,
+    shallowEqual: shallowEqual2,
     toNumber,
     LazyValue,
     safeOutput,
@@ -4221,6 +4485,13 @@ ${issueStrings}`);
       let error = null;
       try {
         node = new ComponentNode(Root, props2, this, null, null);
+        const subConfig = config3;
+        if (subConfig.pluginManager) {
+          node.pluginManager = subConfig.pluginManager;
+        }
+        if (subConfig.onError) {
+          nodeErrorHandlers.set(node, [subConfig.onError]);
+        }
       } catch (e) {
         error = e;
         reject(e);
@@ -4281,14 +4552,16 @@ ${issueStrings}`);
         return promise;
       };
       const root = {
-        node,
+        get prepared() {
+          return fiber ? fiber.counter === 0 : false;
+        },
         promise,
         prepare,
         mount: mount3,
         destroy: () => {
           this.roots.delete(root);
           node?.destroy();
-          this.scheduler.processTasks();
+          this.scheduler.processCancelledNodes();
         }
       };
       this.roots.add(root);
@@ -4299,7 +4572,9 @@ ${issueStrings}`);
         root.destroy();
       }
       this.pluginManager.destroy();
-      this.scheduler.processTasks();
+      this.scheduler.processCancelledNodes();
+      this.scheduler.tasks.clear();
+      this.scheduler.delayedRenders = [];
       apps.delete(this);
       this.destroyed = true;
     }
@@ -4309,6 +4584,9 @@ ${issueStrings}`);
   };
   async function mount2(C, target, config3 = {}) {
     const app = new App(config3);
+    if (app.pluginManager.status < STATUS.MOUNTED) {
+      await app.pluginManager.ready;
+    }
     const root = app.createRoot(C, config3);
     return root.mount(target, config3);
   }
@@ -4504,7 +4782,8 @@ ${issueStrings}`);
     }
     return result;
   }
-  var props = Object.assign(makeProps, { static: staticProp });
+  var useProps = Object.assign(makeProps, { static: staticProp });
+  var props = useProps;
   var ErrorBoundary = class extends Component {
     static template = xml`
     <t t-if="this.props.error()">
@@ -4545,9 +4824,18 @@ ${issueStrings}`);
         if (!target) {
           return;
         }
-        root = app.createRoot(PortalContent, { props: { slots } });
-        root.node.pluginManager = portalNode.pluginManager;
-        nodeErrorHandlers.set(root.node, [forwardErrorToParent(portalNode)]);
+        root = app.createRoot(PortalContent, {
+          props: { slots },
+          // Forward the plugin chain from this Portal (createRoot defaults
+          // sub-roots to the app-level plugin manager) so `providePlugins`
+          // contributions from ancestors are visible inside the portaled content.
+          pluginManager: portalNode.pluginManager,
+          // Route errors from the portaled subtree back through Portal's parent
+          // chain so consumer `onError` handlers still catch them. Without this,
+          // sub-root errors would propagate to app._handleError and tear down
+          // the whole app.
+          onError: forwardErrorToParent(portalNode)
+        });
         root.mount(target);
         return tearDown;
       });
@@ -4582,13 +4870,18 @@ ${issueStrings}`);
     setup() {
       const suspenseNode = this.__owl__;
       const root = suspenseNode.app.createRoot(SuspenseHost, {
-        props: { slots: this.props.slots }
+        props: { slots: this.props.slots },
+        // Thread the plugin manager so `providePlugins` contributions from
+        // ancestors are visible inside the default slot. (createRoot defaults
+        // sub-roots to the app-level plugin manager; override here.) Destroy
+        // cascade is handled explicitly below via `onWillDestroy`.
+        pluginManager: suspenseNode.pluginManager,
+        // Route errors from the sub-root back into Suspense's parent chain so
+        // consumer `onError` handlers still catch descendant failures.
+        onError: forwardErrorToParent(suspenseNode)
       });
-      root.node.pluginManager = suspenseNode.pluginManager;
-      nodeErrorHandlers.set(root.node, [forwardErrorToParent(suspenseNode)]);
       root.prepare().then(() => this.prepared.set(true));
-      const fiber = root.node.fiber;
-      if (fiber && fiber.counter === 0) {
+      if (root.prepared) {
         this.prepared.set(true);
       }
       onMounted(() => this.mounted.set(true));
@@ -4631,8 +4924,8 @@ ${issueStrings}`);
   };
   var __info__ = {
     version: App.version,
-    date: "2026-06-12T11:02:40.056Z",
-    hash: "79873da1",
+    date: "2026-07-10T07:14:31.599Z",
+    hash: "f309e06e",
     url: "https://github.com/odoo/owl"
   };
 
@@ -6163,7 +6456,7 @@ ${code}`;
       if (ast.ref) {
         const refExpr = compileExpr(ast.ref);
         this.helpers.add("createRef");
-        const setRefStr = `createRef(${refExpr})`;
+        const setRefStr = `createRef(${refExpr}, node)`;
         const idx = block.insertData(setRefStr, "ref");
         attrs["block-ref"] = String(idx);
       }

@@ -26,7 +26,7 @@
 import { Model, ORM, fields } from "../../../vendor/owl-orm/index.ts";
 import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
 import { worktreeDirFor } from "./utils.js";
-// Plugin classes are imported for the models' action methods to resolve via plugin().
+// Plugin classes are imported for the models' action methods to resolve via usePlugin().
 // This makes config_models ↔ config_plugin / code_plugin a cycle, but every use is
 // call-time (inside a method), so the bindings are live by the time any method runs.
 import { ConfigPlugin } from "./config_plugin.js";
@@ -34,13 +34,13 @@ import { ServerPlugin } from "./server_plugin.js";
 import { CodePlugin } from "./code_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 
-import { plugin } from "@odoo/owl";
+import { usePlugin } from "@odoo/owl";
 
 export { ORM };
 
 // Resolve owl plugins from a record's own ORM scope, at call time. A config record is
 // seeded during ConfigPlugin construction — before higher-sequence plugins start — so a
-// field-initializer plugin() would resolve too early; running inside the record's stored
+// field-initializer usePlugin() would resolve too early; running inside the record's stored
 // scope (orm._ctx) at call time resolves against the fully-started plugin manager.
 function withScope(rec, fn) {
   const ctx = rec.orm._ctx;
@@ -182,7 +182,7 @@ export class Workspace extends Model {
 
   // ── mutations (edit records, persist via ConfigPlugin's existing save wire) ───
   _configPlugin() {
-    return withScope(this, () => plugin(ConfigPlugin));
+    return withScope(this, () => usePlugin(ConfigPlugin));
   }
 
   toggleDemoData() {
@@ -212,9 +212,9 @@ export class Workspace extends Model {
   // the workspace's branches (the guards on missing/dirty branches still apply).
   async activate({ restore = false } = {}) {
     const { server, code, eventLog } = withScope(this, () => ({
-      server: plugin(ServerPlugin),
-      code: plugin(CodePlugin),
-      eventLog: plugin(EventLogPlugin),
+      server: usePlugin(ServerPlugin),
+      code: usePlugin(CodePlugin),
+      eventLog: usePlugin(EventLogPlugin),
     }));
     // live git state per repo — for the guard + deciding which repos actually switch
     const repoMap = {};

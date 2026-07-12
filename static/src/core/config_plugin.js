@@ -337,7 +337,7 @@ export class ConfigPlugin extends Plugin {
 
   // seed a fresh ORM from the boot payload (field initializer, so config + state are
   // populated the moment the plugin is constructed — other plugins' field inits read
-  // getState right after `plugin(ConfigPlugin)` returns)
+  // getState right after `usePlugin(ConfigPlugin)` returns)
   _seedOrm() {
     const orm = new ORM();
     const { config, state } = normalizeConfigState(merge(this._b.config), this._b.state || {});

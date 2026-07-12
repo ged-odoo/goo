@@ -1,4 +1,4 @@
-import { Component, plugin, props, signal, t, xml } from "@odoo/owl";
+import { Component, usePlugin, useProps, signal, t, xml } from "@odoo/owl";
 import { PRESETS } from "../core/presets.js";
 import { ConfigPlugin, newWorkspaceId } from "../core/config_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
@@ -36,8 +36,8 @@ export class ListEditor extends Component {
       </div>
     </div>`;
 
-  props = props({ kind: t.string() });
-  config = plugin(ConfigPlugin);
+  props = useProps({ kind: t.string() });
+  config = usePlugin(ConfigPlugin);
   spec = SPECS[this.props.kind];
   rows = signal([]);
   msgText = signal("");
@@ -170,7 +170,7 @@ export class TabsEditor extends Component {
       </div>
     </div>`;
 
-  config = plugin(ConfigPlugin);
+  config = usePlugin(ConfigPlugin);
   dragIndex = signal(-1);
   dragOverIndex = signal(-1);
 
@@ -289,7 +289,7 @@ export class LinksEditor extends Component {
       </div>
     </div>`;
 
-  config = plugin(ConfigPlugin);
+  config = usePlugin(ConfigPlugin);
   items = signal([]); // [{label, href, _id} | {label, children:[{label, href, _id}], _id}]
   dragId = signal(0); // _id of the dragged row (0 = none)
   overId = signal(0); // row hovered as a "drop before" target
@@ -558,10 +558,10 @@ export class ConfigScreen extends Component {
       </div>
     </section>`;
 
-  config = plugin(ConfigPlugin);
-  update = plugin(UpdatePlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
+  update = usePlugin(UpdatePlugin);
+  dialogs = usePlugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   checking = signal(false);
   upToDate = signal(false); // brief green check by the button when already up to date

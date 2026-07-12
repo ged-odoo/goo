@@ -1,4 +1,4 @@
-import { Component, onPatched, plugin, signal, useEffect, xml } from "@odoo/owl";
+import { Component, onPatched, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { ConfigPlugin } from "./config_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { RouterPlugin } from "./router_plugin.js";
@@ -30,12 +30,12 @@ export class EventLog extends Component {
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  log = plugin(EventLogPlugin);
-  config = plugin(ConfigPlugin);
-  router = plugin(RouterPlugin);
-  tests = plugin(TestsPlugin);
-  server = plugin(ServerPlugin);
-  worktree = plugin(WorkspacePlugin);
+  log = usePlugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
+  router = usePlugin(RouterPlugin);
+  tests = usePlugin(TestsPlugin);
+  server = usePlugin(ServerPlugin);
+  worktree = usePlugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true); // follow the tail as new events arrive

@@ -3,7 +3,7 @@ import {
   computed,
   onWillStart,
   onWillUnmount,
-  plugin,
+  usePlugin,
   signal,
   useEffect,
   xml,
@@ -83,14 +83,14 @@ export class Topbar extends Component {
       </div>
     </header>`;
 
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  update = plugin(UpdatePlugin);
-  eventLog = plugin(EventLogPlugin);
-  code = plugin(CodePlugin); // activation guards read the live branch state
-  store = plugin(StorePlugin); // running worktree servers for the switcher menu
-  wt = plugin(WorkspacePlugin);
-  router = plugin(RouterPlugin);
+  server = usePlugin(ServerPlugin);
+  config = usePlugin(ConfigPlugin);
+  update = usePlugin(UpdatePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  code = usePlugin(CodePlugin); // activation guards read the live branch state
+  store = usePlugin(StorePlugin); // running worktree servers for the switcher menu
+  wt = usePlugin(WorkspacePlugin);
+  router = usePlugin(RouterPlugin);
   journalIcon = m(ICONS.journal);
 
   version = `v${VERSION}`;
@@ -243,8 +243,8 @@ export class Sidebar extends Component {
       </button>
     </nav>`;
 
-  router = plugin(RouterPlugin);
-  config = plugin(ConfigPlugin);
+  router = usePlugin(RouterPlugin);
+  config = usePlugin(ConfigPlugin);
   collapseIcon = m(ICONS.collapse);
   collapsed = signal(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
 
@@ -346,10 +346,10 @@ export class App extends Component {
       </div>
     </div>`;
 
-  dialogRoot = plugin(DialogPlugin).root;
-  router = plugin(RouterPlugin);
-  server = plugin(ServerPlugin);
-  update = plugin(UpdatePlugin);
+  dialogRoot = usePlugin(DialogPlugin).root;
+  router = usePlugin(RouterPlugin);
+  server = usePlugin(ServerPlugin);
+  update = usePlugin(UpdatePlugin);
   // the active screen's component class (a class, not an instance)
   currentScreen = computed(() => SCREENS[this.router.section()] || WorkspacesScreen);
   setup() {

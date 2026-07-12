@@ -1,4 +1,4 @@
-import { Component, props, t, xml } from "@odoo/owl";
+import { Component, useProps, t, xml } from "@odoo/owl";
 
 // ─────────────────────────── Panel (screen header) ───────────────────────────
 
@@ -33,7 +33,7 @@ export class Panel extends Component {
       </div>
     </div>`;
 
-  props = props({
+  props = useProps({
     title: t.string(),
     slots: t
       .object({

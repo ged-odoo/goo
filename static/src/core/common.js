@@ -4,8 +4,8 @@ import {
   markup,
   onMounted,
   onWillUnmount,
-  plugin,
-  props,
+  usePlugin,
+  useProps,
   signal,
   t,
   useEffect,
@@ -114,14 +114,14 @@ export class LogConsole extends Component {
       <div class="log-host" t-ref="this.host"/>
     </section>`;
 
-  props = props({
+  props = useProps({
     title: t.string(),
     buffer: t.any(),
     extraClass: t.string().optional(),
     bare: t.boolean().optional(),
   });
 
-  server = plugin(ServerPlugin);
+  server = usePlugin(ServerPlugin);
   host = signal.ref(HTMLElement);
   clearIcon = m(ICONS.clear);
 
@@ -162,7 +162,7 @@ export class SearchBox extends Component {
       <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
     </div>`;
 
-  props = props({ value: t.any() });
+  props = useProps({ value: t.any() });
 }
 
 // ─────────────────────────── Dirty badge + menu ──────────────────────────────
@@ -171,7 +171,7 @@ export class DirtyBadge extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
 
-  props = props({ path: t.string(), repo: t.string() });
+  props = useProps({ path: t.string(), repo: t.string() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
     appBus.dispatchEvent(
@@ -189,7 +189,7 @@ export class DirtyMenu extends Component {
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
 
-  code = plugin(CodePlugin);
+  code = usePlugin(CodePlugin);
   open = signal(false);
   _path = null;
   _repo = null;

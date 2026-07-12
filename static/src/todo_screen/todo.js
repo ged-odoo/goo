@@ -1,4 +1,4 @@
-import { Component, onMounted, onWillUnmount, plugin, signal, xml } from "@odoo/owl";
+import { Component, onMounted, onWillUnmount, usePlugin, signal, xml } from "@odoo/owl";
 import { ICONS, m } from "../core/common.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { Panel } from "../core/panel.js";
@@ -97,7 +97,7 @@ export class TodoScreen extends Component {
       </div>
     </section>`;
 
-  dialogs = plugin(DialogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   _stored = storedState(); // read once — lists + selected must come from the same snapshot
   lists = signal(this._stored.lists);
   selected = signal(this._stored.selected);

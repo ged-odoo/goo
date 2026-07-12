@@ -1,4 +1,4 @@
-import { Component, computed, plugin, signal, xml } from "@odoo/owl";
+import { Component, computed, usePlugin, signal, xml } from "@odoo/owl";
 import { formatBytes, timeAgo } from "../core/utils.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
@@ -63,8 +63,8 @@ export class DatabasesScreen extends Component {
       </div>
     </section>`;
 
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
+  db = usePlugin(DatabasePlugin);
+  dialogs = usePlugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   selected = signal(new Set()); // database names ticked for batch actions

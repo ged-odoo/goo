@@ -8,11 +8,11 @@ import { ServerPlugin } from "./server_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
 
-import { Plugin, plugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 export class UpdatePlugin extends Plugin {
-  server = plugin(ServerPlugin);
-  dialogs = plugin(DialogPlugin);
+  server = usePlugin(ServerPlugin);
+  dialogs = usePlugin(DialogPlugin);
   // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
   info = signal(null);
   applying = signal(false); // true while updating + restarting (drives an overlay)

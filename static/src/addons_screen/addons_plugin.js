@@ -13,18 +13,18 @@ import { LogBuffer } from "../core/log_buffer.js";
 import { postJSON } from "../core/utils.js";
 import { slotFor } from "../core/tests_plugin.js";
 
-import { Plugin, plugin, useEffect, signal, computed } from "@odoo/owl";
+import { Plugin, usePlugin, useEffect, signal, computed } from "@odoo/owl";
 
 export class AddonsPlugin extends Plugin {
   static sequence = 4;
   static MAX_ROWS = 200;
 
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin); // install/upgrade runs live in the shared store's runs map
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
-  worktree = plugin(WorkspacePlugin); // a worktree slot's addons paths come from its checkout
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // install/upgrade runs live in the shared store's runs map
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  worktree = usePlugin(WorkspacePlugin); // a worktree slot's addons paths come from its checkout
   // the text/state filters are global — shared between the standalone screen and
   // the Workspaces pane (acceptable: one user, one focus at a time)
   filter = signal("");

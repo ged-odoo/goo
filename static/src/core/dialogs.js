@@ -1,4 +1,13 @@
-import { Component, onMounted, onWillUnmount, plugin, props, signal, t, xml } from "@odoo/owl";
+import {
+  Component,
+  onMounted,
+  onWillUnmount,
+  usePlugin,
+  useProps,
+  signal,
+  t,
+  xml,
+} from "@odoo/owl";
 import { timeAgo } from "./utils.js";
 import { CodePlugin } from "./code_plugin.js";
 import { ConfigPlugin } from "./config_plugin.js";
@@ -35,8 +44,8 @@ export class RemoteBranchDialog extends Component {
       </div>
     </div>`;
 
-  props = props({ done: t.function() });
-  config = plugin(ConfigPlugin);
+  props = useProps({ done: t.function() });
+  config = usePlugin(ConfigPlugin);
   loading = signal(false);
   searched = signal(false);
   rows = signal([]);
@@ -147,7 +156,7 @@ export class CommitsDialog extends Component {
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  props = props({
+  props = useProps({
     done: t.function(),
     path: t.string(),
     label: t.string(),
@@ -155,7 +164,7 @@ export class CommitsDialog extends Component {
     github: t.string().optional(),
   });
 
-  code = plugin(CodePlugin);
+  code = usePlugin(CodePlugin);
   externalIcon = m(ICONS.external);
   commits = signal([]);
   loading = signal(true);

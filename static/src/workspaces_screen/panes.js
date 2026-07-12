@@ -3,7 +3,7 @@
 // the workspace id for a worktree). These replaced the standalone Tests / Addons
 // / Assets screens in Phase 5.
 
-import { Component, plugin, props, signal, t, untrack, useEffect, xml } from "@odoo/owl";
+import { Component, usePlugin, useProps, signal, t, untrack, useEffect, xml } from "@odoo/owl";
 import { AddonsPlugin } from "../addons_screen/addons_plugin.js";
 import { AssetsPlugin } from "../assets_screen/assets_plugin.js";
 import { ConfigPlugin } from "../core/config_plugin.js";
@@ -50,11 +50,11 @@ export class TestsPane extends Component {
       <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
     </div>`;
 
-  props = props({ ws: t.any() });
-  tests = plugin(TestsPlugin);
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  wt = plugin(WorkspacePlugin);
+  props = useProps({ ws: t.any() });
+  tests = usePlugin(TestsPlugin);
+  server = usePlugin(ServerPlugin);
+  config = usePlugin(ConfigPlugin);
+  wt = usePlugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");
@@ -158,8 +158,8 @@ export class AddonsPane extends Component {
                   t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
     </div>`;
 
-  props = props({ ws: t.any() });
-  addons = plugin(AddonsPlugin);
+  props = useProps({ ws: t.any() });
+  addons = usePlugin(AddonsPlugin);
 
   setup() {
     // load (and reload when the workspace's db changes) while mounted
@@ -247,9 +247,9 @@ export class AssetsPane extends Component {
       </t>
     </div>`;
 
-  props = props({ ws: t.any() });
-  assets = plugin(AssetsPlugin);
-  config = plugin(ConfigPlugin);
+  props = useProps({ ws: t.any() });
+  assets = usePlugin(AssetsPlugin);
+  config = usePlugin(ConfigPlugin);
   search = signal("");
   showJs = signal(true); // include .js bundles
   showCss = signal(true); // include .css bundles

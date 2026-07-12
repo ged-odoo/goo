@@ -6,14 +6,14 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { postJSON } from "./utils.js";
 
-import { Plugin, plugin, signal, useEffect } from "@odoo/owl";
+import { Plugin, usePlugin, signal, useEffect } from "@odoo/owl";
 
 export class DatabasePlugin extends Plugin {
   static sequence = 3;
 
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  config = plugin(ConfigPlugin);
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
   databases = signal([]); // view state; freshness is the server's job now
   at = signal(0);
   loading = signal(false);

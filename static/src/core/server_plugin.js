@@ -8,16 +8,16 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-import { Plugin, plugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 export class ServerPlugin extends Plugin {
   static sequence = 2;
 
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin); // the shared store — the main odoo lives in servers["main"]
-  eventLog = plugin(EventLogPlugin);
-  code = plugin(CodePlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // the shared store — the main odoo lives in servers["main"]
+  eventLog = usePlugin(EventLogPlugin);
+  code = usePlugin(CodePlugin);
+  dialogs = usePlugin(DialogPlugin);
   // optimistic in-flight action, for immediate button feedback in the gap between
   // a click and the first real status event: "start" | "stop" | "restart" | ""
   pending = signal("");

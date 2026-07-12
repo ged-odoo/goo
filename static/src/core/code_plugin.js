@@ -10,17 +10,17 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { postJSON } from "./utils.js";
 import { PullRequest, branchKey } from "./models.js";
 
-import { Plugin, plugin, signal, computed } from "@odoo/owl";
+import { Plugin, usePlugin, signal, computed } from "@odoo/owl";
 
 const PRS_CACHE_KEY = "oo-prs-cache";
 
 export class CodePlugin extends Plugin {
   static sequence = 3;
 
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin); // the shared observed store (branches/PRs/runbot/mergebot)
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // the shared observed store (branches/PRs/runbot/mergebot)
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   // observed state lives in the store, normalized by identity; these expose it in the
   // shapes the components already read — array views over the keyed maps, and the
   // shared runbot/mergebot signals (the same maps the Reviews screen reads).

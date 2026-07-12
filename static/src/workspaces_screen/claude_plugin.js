@@ -13,7 +13,7 @@ import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { postJSON } from "../core/utils.js";
 
-import { Plugin, plugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 // the model dropdown's choices. "" = don't pass --model, so the backend inherits the
 // claude CLI's default (the user's global Claude Code model). The rest are CLI
@@ -29,11 +29,11 @@ export const CLAUDE_MODELS = [
 export class ClaudePlugin extends Plugin {
   static sequence = 6; // after WorkspacePlugin (5), whose wtRepos() it reuses
 
-  config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  worktree = plugin(WorkspacePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  server = usePlugin(ServerPlugin);
+  worktree = usePlugin(WorkspacePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   convos = signal({}); // targetId -> { items: [...], state: "idle"|"running" }
   models = CLAUDE_MODELS;
   model = signal(this.config.getState("claude_model", "")); // chosen model, persisted

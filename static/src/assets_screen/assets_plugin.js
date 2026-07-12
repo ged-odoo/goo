@@ -8,15 +8,15 @@ import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { postJSON } from "../core/utils.js";
 
-import { Plugin, plugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 export class AssetsPlugin extends Plugin {
   static sequence = 6;
 
-  config = plugin(ConfigPlugin);
-  db = plugin(DatabasePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  db = usePlugin(DatabasePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
 
   bundles = signal([]);
   selectedDb = signal("");

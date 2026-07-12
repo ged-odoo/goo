@@ -1,5 +1,14 @@
 /* global Terminal, FitAddon */
-import { Component, onWillUnmount, plugin, props, signal, t, useEffect, xml } from "@odoo/owl";
+import {
+  Component,
+  onWillUnmount,
+  usePlugin,
+  useProps,
+  signal,
+  t,
+  useEffect,
+  xml,
+} from "@odoo/owl";
 import { TerminalPlugin } from "./terminal_plugin.js";
 import { useDragResize } from "./common.js";
 
@@ -95,7 +104,7 @@ export class TerminalPanel extends Component {
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  term = plugin(TerminalPlugin);
+  term = usePlugin(TerminalPlugin);
   container = signal.ref(HTMLElement);
   _dispose = null;
   _termOpen = false; // guard against double-open on re-renders
@@ -153,7 +162,7 @@ export class TerminalDialog extends Component {
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  props = useProps({ done: t.function(), path: t.string(), label: t.string() });
   container = signal.ref(HTMLElement);
   _dispose = null;
 

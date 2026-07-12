@@ -8,7 +8,7 @@ var untrack = owl.untrack;
 var Component = owl.Component;
 var xml = owl.xml;
 var markup = owl.markup;
-var props = owl.props;
+var useProps = owl.useProps;
 var t = owl.t;
 var mount = owl.mount;
 var EventBus = owl.EventBus;
@@ -19,7 +19,7 @@ var onWillUnmount = owl.onWillUnmount;
 var useEffect = owl.useEffect;
 var useApp = owl.useApp;
 var Plugin = owl.Plugin;
-var plugin = owl.plugin;
+var usePlugin = owl.usePlugin;
 
 // static/src/core/config.js
 var VERSION = "1.1.0";
@@ -1473,7 +1473,7 @@ var _seq = 0;
 var DialogPlugin = class extends Plugin {
   dialogs = signal.Array([]);
   // the mount location for the dialog container. Owned here; the main app binds
-  // it with t-ref (via `plugin(DialogPlugin).root`) to a DOM node, and the
+  // it with t-ref (via `usePlugin(DialogPlugin).root`) to a DOM node, and the
   // effect below mounts the container there once it exists.
   root = signal.ref(HTMLElement);
   setup() {
@@ -1488,18 +1488,18 @@ var DialogPlugin = class extends Plugin {
   }
   // low-level: mount component `C` with `props`. Returns a handle whose
   // `close()` removes the dialog. Each dialog gets a unique id.
-  add(C, props2 = {}) {
+  add(C, props = {}) {
     const id = ++_seq;
     const close = () => this.dialogs.set(this.dialogs().filter((d) => d.id !== id));
-    this.dialogs.set([...this.dialogs(), { id, Component: C, props: props2 }]);
+    this.dialogs.set([...this.dialogs(), { id, Component: C, props }]);
     return { id, close };
   }
   // promise-based: mount `C`, inject a `done(result)` prop that closes the
   // dialog and resolves the promise with `result`.
-  openComponent(C, props2 = {}) {
+  openComponent(C, props = {}) {
     return new Promise((resolve) => {
       const handle = this.add(C, {
-        ...props2,
+        ...props,
         done: (result) => {
           handle.close();
           resolve(result);
@@ -1520,7 +1520,7 @@ var DialogContainer = class extends Component {
         <t t-component="dialog.Component" t-props="dialog.props"/>
       </t>
     </div>`;
-  dialogs = plugin(DialogPlugin).dialogs;
+  dialogs = usePlugin(DialogPlugin).dialogs;
 };
 var Dialog = class extends Component {
   static template = xml`
@@ -1567,7 +1567,7 @@ var Dialog = class extends Component {
         </div>
       </div>
     </div>`;
-  props = props({ spec: t.any(), done: t.function() });
+  props = useProps({ spec: t.any(), done: t.function() });
   values = signal({});
   touched = signal(false);
   // has the user edited a field? (gates the inline error)
@@ -1657,11 +1657,11 @@ var PullRequest = {
 var PRS_CACHE_KEY = "oo-prs-cache";
 var CodePlugin = class extends Plugin {
   static sequence = 3;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
   // the shared observed store (branches/PRs/runbot/mergebot)
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   // observed state lives in the store, normalized by identity; these expose it in the
   // shapes the components already read — array views over the keyed maps, and the
   // shared runbot/mergebot signals (the same maps the Reviews screen reads).
@@ -2281,12 +2281,12 @@ var LogBuffer = class {
 // static/src/core/server_plugin.js
 var ServerPlugin = class extends Plugin {
   static sequence = 2;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
   // the shared store — the main odoo lives in servers["main"]
-  eventLog = plugin(EventLogPlugin);
-  code = plugin(CodePlugin);
-  dialogs = plugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  code = usePlugin(CodePlugin);
+  dialogs = usePlugin(DialogPlugin);
   // optimistic in-flight action, for immediate button feedback in the gap between
   // a click and the first real status event: "start" | "stop" | "restart" | ""
   pending = signal("");
@@ -2672,7 +2672,7 @@ var Workspace = class extends Model {
   }
   // ── mutations (edit records, persist via ConfigPlugin's existing save wire) ───
   _configPlugin() {
-    return withScope(this, () => plugin(ConfigPlugin));
+    return withScope(this, () => usePlugin(ConfigPlugin));
   }
   toggleDemoData() {
     this.demo_data.set(!this.demo_data());
@@ -2698,9 +2698,9 @@ var Workspace = class extends Model {
   // the workspace's branches (the guards on missing/dirty branches still apply).
   async activate({ restore = false } = {}) {
     const { server, code, eventLog } = withScope(this, () => ({
-      server: plugin(ServerPlugin),
-      code: plugin(CodePlugin),
-      eventLog: plugin(EventLogPlugin)
+      server: usePlugin(ServerPlugin),
+      code: usePlugin(CodePlugin),
+      eventLog: usePlugin(EventLogPlugin)
     }));
     const repoMap = {};
     for (const r of code.branchRepos()) {
@@ -3254,7 +3254,7 @@ var ConfigPlugin = class extends Plugin {
   _timer = null;
   // seed a fresh ORM from the boot payload (field initializer, so config + state are
   // populated the moment the plugin is constructed — other plugins' field inits read
-  // getState right after `plugin(ConfigPlugin)` returns)
+  // getState right after `usePlugin(ConfigPlugin)` returns)
   _seedOrm() {
     const orm = new ORM();
     const { config, state } = normalizeConfigState(merge(this._b.config), this._b.state || {});
@@ -3433,13 +3433,13 @@ var RouterPlugin = class extends Plugin {
 // static/src/core/workspace_plugin.js
 var WorkspacePlugin = class extends Plugin {
   static sequence = 5;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
   // worktree servers live in the shared servers map
-  server = plugin(ServerPlugin);
-  code = plugin(CodePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  server = usePlugin(ServerPlugin);
+  code = usePlugin(CodePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   selectedId = signal("");
   // the workspace selected in the Workspaces screen
   requestedSelection = signal("");
@@ -3768,8 +3768,8 @@ var WorkspacePlugin = class extends Plugin {
 
 // static/src/core/update_plugin.js
 var UpdatePlugin = class extends Plugin {
-  server = plugin(ServerPlugin);
-  dialogs = plugin(DialogPlugin);
+  server = usePlugin(ServerPlugin);
+  dialogs = usePlugin(DialogPlugin);
   // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
   info = signal(null);
   applying = signal(false);
@@ -3961,13 +3961,13 @@ var LogConsole = class extends Component {
       </div>
       <div class="log-host" t-ref="this.host"/>
     </section>`;
-  props = props({
+  props = useProps({
     title: t.string(),
     buffer: t.any(),
     extraClass: t.string().optional(),
     bare: t.boolean().optional()
   });
-  server = plugin(ServerPlugin);
+  server = usePlugin(ServerPlugin);
   host = signal.ref(HTMLElement);
   clearIcon = m(ICONS.clear);
   setup() {
@@ -3998,12 +3998,12 @@ var SearchBox = class extends Component {
              t-on-input="ev => this.props.value.set(ev.target.value)"/>
       <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
     </div>`;
-  props = props({ value: t.any() });
+  props = useProps({ value: t.any() });
 };
 var DirtyBadge = class extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
-  props = props({ path: t.string(), repo: t.string() });
+  props = useProps({ path: t.string(), repo: t.string() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
     appBus.dispatchEvent(
@@ -4019,7 +4019,7 @@ var DirtyMenu = class extends Component {
       <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
-  code = plugin(CodePlugin);
+  code = usePlugin(CodePlugin);
   open = signal(false);
   _path = null;
   _repo = null;
@@ -4159,7 +4159,7 @@ var Panel = class extends Component {
         <t t-call-slot="bottom-right"/>
       </div>
     </div>`;
-  props = props({
+  props = useProps({
     title: t.string(),
     slots: t.object({
       "title-extra": t.any().optional(),
@@ -4205,8 +4205,8 @@ var RemoteBranchDialog = class extends Component {
         </div>
       </div>
     </div>`;
-  props = props({ done: t.function() });
-  config = plugin(ConfigPlugin);
+  props = useProps({ done: t.function() });
+  config = usePlugin(ConfigPlugin);
   loading = signal(false);
   searched = signal(false);
   rows = signal([]);
@@ -4301,14 +4301,14 @@ var CommitsDialog = class extends Component {
       </div>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
-  props = props({
+  props = useProps({
     done: t.function(),
     path: t.string(),
     label: t.string(),
     ref: t.string(),
     github: t.string().optional()
   });
-  code = plugin(CodePlugin);
+  code = usePlugin(CodePlugin);
   externalIcon = m(ICONS.external);
   commits = signal([]);
   loading = signal(true);
@@ -4373,7 +4373,7 @@ async function pushBranchesDialog(code, dialogs, branches, { title, message, for
 // static/src/branches_screen/branches.js
 var BranchesScreen = class extends Component {
   static components = { SearchBox, DirtyBadge, Panel };
-  worktree = plugin(WorkspacePlugin);
+  worktree = usePlugin(WorkspacePlugin);
   // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
@@ -4453,9 +4453,9 @@ var BranchesScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  code = plugin(CodePlugin);
-  config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
+  code = usePlugin(CodePlugin);
+  config = usePlugin(ConfigPlugin);
+  dialogs = usePlugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   externalIcon = m(ICONS.external);
   kebabIcon = m(ICONS.kebab);
@@ -4791,8 +4791,8 @@ var ListEditor = class extends Component {
         <span t-att-class="this.msgCls()" t-out="this.msgText()"/>
       </div>
     </div>`;
-  props = props({ kind: t.string() });
-  config = plugin(ConfigPlugin);
+  props = useProps({ kind: t.string() });
+  config = usePlugin(ConfigPlugin);
   spec = SPECS[this.props.kind];
   rows = signal([]);
   msgText = signal("");
@@ -4906,7 +4906,7 @@ var TabsEditor = class extends Component {
         </div>
       </div>
     </div>`;
-  config = plugin(ConfigPlugin);
+  config = usePlugin(ConfigPlugin);
   dragIndex = signal(-1);
   dragOverIndex = signal(-1);
   // configured order, with any NAV tab missing from config slotted in at its
@@ -5009,7 +5009,7 @@ var LinksEditor = class extends Component {
         <button t-on-click="() => this.addMenu()">Add menu</button>
       </div>
     </div>`;
-  config = plugin(ConfigPlugin);
+  config = usePlugin(ConfigPlugin);
   items = signal([]);
   // [{label, href, _id} | {label, children:[{label, href, _id}], _id}]
   dragId = signal(0);
@@ -5254,10 +5254,10 @@ var ConfigScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  config = plugin(ConfigPlugin);
-  update = plugin(UpdatePlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
+  update = usePlugin(UpdatePlugin);
+  dialogs = usePlugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   refreshIcon = m(ICONS.refresh);
   checking = signal(false);
   upToDate = signal(false);
@@ -5477,9 +5477,9 @@ var SPECS = {
 // static/src/core/database_plugin.js
 var DatabasePlugin = class extends Plugin {
   static sequence = 3;
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  config = plugin(ConfigPlugin);
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
   databases = signal([]);
   // view state; freshness is the server's job now
   at = signal(0);
@@ -5650,8 +5650,8 @@ var DatabasesScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
+  db = usePlugin(DatabasePlugin);
+  dialogs = usePlugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   selected = signal(/* @__PURE__ */ new Set());
@@ -5842,11 +5842,11 @@ function slotFor(ws) {
 }
 var TestsPlugin = class extends Plugin {
   static sequence = 3;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
   // one-shot runs live in the shared store's runs map
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   history = signal(this._readHistory());
   // last test tags run, most recent first (global)
   _failSeq = 0;
@@ -6027,12 +6027,12 @@ var EventLog = class extends Component {
       </div>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
-  log = plugin(EventLogPlugin);
-  config = plugin(ConfigPlugin);
-  router = plugin(RouterPlugin);
-  tests = plugin(TestsPlugin);
-  server = plugin(ServerPlugin);
-  worktree = plugin(WorkspacePlugin);
+  log = usePlugin(EventLogPlugin);
+  config = usePlugin(ConfigPlugin);
+  router = usePlugin(RouterPlugin);
+  tests = usePlugin(TestsPlugin);
+  server = usePlugin(ServerPlugin);
+  worktree = usePlugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true);
@@ -6497,7 +6497,7 @@ var NightlyScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  nightly = plugin(NightlyPlugin);
+  nightly = usePlugin(NightlyPlugin);
   graphMetrics = GRAPH_METRICS;
   refreshIcon = m(ICONS.refresh);
   // self-contained (explicit size/fill), unlike ICONS.external which relies on
@@ -6915,7 +6915,7 @@ var MemoryScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  memory = plugin(MemoryPlugin);
+  memory = usePlugin(MemoryPlugin);
   canvas = signal.ref(HTMLElement);
   chevronIcon = m(ICONS.chevron);
   _chart = null;
@@ -7166,8 +7166,8 @@ var MbMenu = class extends Component {
 var mbKey = (p) => `${p.github}#${p.number}`;
 var ReviewPlugin = class extends Plugin {
   static sequence = 5;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
   // the shared observed store
   prs = signal([]);
   // view state; freshness is the server's job
@@ -7279,7 +7279,7 @@ var ReviewPlugin = class extends Plugin {
 // static/src/prs_screen/prs.js
 var PrsScreen = class extends Component {
   static components = { SearchBox, Panel };
-  worktree = plugin(WorkspacePlugin);
+  worktree = usePlugin(WorkspacePlugin);
   // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
@@ -7365,11 +7365,11 @@ var PrsScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  code = plugin(CodePlugin);
-  review = plugin(ReviewPlugin);
-  config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
-  router = plugin(RouterPlugin);
+  code = usePlugin(CodePlugin);
+  review = usePlugin(ReviewPlugin);
+  config = usePlugin(ConfigPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  router = usePlugin(RouterPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   // "mine" = PRs I authored (CodePlugin); "reviewing" = PRs I commented on but
@@ -7716,7 +7716,7 @@ var TerminalPanel = class extends Component {
       <div class="term-panel-body" t-ref="this.container"/>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
-  term = plugin(TerminalPlugin);
+  term = usePlugin(TerminalPlugin);
   container = signal.ref(HTMLElement);
   _dispose = null;
   _termOpen = false;
@@ -7764,7 +7764,7 @@ var TerminalDialog = class extends Component {
       <div class="term-panel-body" t-ref="this.container"/>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
-  props = props({ done: t.function(), path: t.string(), label: t.string() });
+  props = useProps({ done: t.function(), path: t.string(), label: t.string() });
   container = signal.ref(HTMLElement);
   _dispose = null;
   setup() {
@@ -7882,7 +7882,7 @@ var TodoScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  dialogs = plugin(DialogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   _stored = storedState();
   // read once — lists + selected must come from the same snapshot
   lists = signal(this._stored.lists);
@@ -8000,11 +8000,11 @@ var CLAUDE_MODELS = [
 var ClaudePlugin = class extends Plugin {
   static sequence = 6;
   // after WorkspacePlugin (5), whose wtRepos() it reuses
-  config = plugin(ConfigPlugin);
-  server = plugin(ServerPlugin);
-  worktree = plugin(WorkspacePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  server = usePlugin(ServerPlugin);
+  worktree = usePlugin(WorkspacePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   convos = signal({});
   // targetId -> { items: [...], state: "idle"|"running" }
   models = CLAUDE_MODELS;
@@ -8421,13 +8421,13 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
 var AddonsPlugin = class _AddonsPlugin extends Plugin {
   static sequence = 4;
   static MAX_ROWS = 200;
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
   // install/upgrade runs live in the shared store's runs map
-  server = plugin(ServerPlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
-  worktree = plugin(WorkspacePlugin);
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  worktree = usePlugin(WorkspacePlugin);
   // a worktree slot's addons paths come from its checkout
   // the text/state filters are global — shared between the standalone screen and
   // the Workspaces pane (acceptable: one user, one focus at a time)
@@ -8598,10 +8598,10 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
 // static/src/assets_screen/assets_plugin.js
 var AssetsPlugin = class extends Plugin {
   static sequence = 6;
-  config = plugin(ConfigPlugin);
-  db = plugin(DatabasePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  db = usePlugin(DatabasePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   bundles = signal([]);
   selectedDb = signal("");
   loadedDb = signal("");
@@ -8714,7 +8714,7 @@ var BundleNode = class extends Component {
         <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
       </t>
     </div>`;
-  props = props({ node: t.any(), depth: t.any() });
+  props = useProps({ node: t.any(), depth: t.any() });
   open = signal(false);
   setup() {
     if (this.props.depth === 0) this.open.set(true);
@@ -8761,7 +8761,7 @@ var AssetsAnalysis = class extends Component {
         </div>
       </div>
     </div>`;
-  assets = plugin(AssetsPlugin);
+  assets = usePlugin(AssetsPlugin);
   view = signal("tree");
   // "tree" (aggregate) | "flat"
   treeSearch = signal("");
@@ -8866,11 +8866,11 @@ var TestsPane = class extends Component {
       </div>
       <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
     </div>`;
-  props = props({ ws: t.any() });
-  tests = plugin(TestsPlugin);
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  wt = plugin(WorkspacePlugin);
+  props = useProps({ ws: t.any() });
+  tests = usePlugin(TestsPlugin);
+  server = usePlugin(ServerPlugin);
+  config = usePlugin(ConfigPlugin);
+  wt = usePlugin(WorkspacePlugin);
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");
@@ -8961,8 +8961,8 @@ var AddonsPane = class extends Component {
       <LogConsole t-if="this.addons.runActive(this.slotId) or this.addons.runningFor(this.slotId)"
                   t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
     </div>`;
-  props = props({ ws: t.any() });
-  addons = plugin(AddonsPlugin);
+  props = useProps({ ws: t.any() });
+  addons = usePlugin(AddonsPlugin);
   setup() {
     useEffect(() => {
       const db = this.props.ws.db;
@@ -9032,9 +9032,9 @@ var AssetsPane = class extends Component {
         </div>
       </t>
     </div>`;
-  props = props({ ws: t.any() });
-  assets = plugin(AssetsPlugin);
-  config = plugin(ConfigPlugin);
+  props = useProps({ ws: t.any() });
+  assets = usePlugin(AssetsPlugin);
+  config = usePlugin(ConfigPlugin);
   search = signal("");
   showJs = signal(true);
   // include .js bundles
@@ -9184,8 +9184,8 @@ var ClaudeChat = class extends Component {
         </div>
       </div>
     </div>`;
-  props = props({ target: t.any(), inMain: t.boolean().optional() });
-  claude = plugin(ClaudePlugin);
+  props = useProps({ target: t.any(), inMain: t.boolean().optional() });
+  claude = usePlugin(ClaudePlugin);
   scroll = signal.ref(HTMLElement);
   ta = signal.ref(HTMLElement);
   setup() {
@@ -9285,12 +9285,12 @@ var CodePane = class extends Component {
         </div>
       </div>
     </div>`;
-  props = props({ ws: t.any() });
-  code = plugin(CodePlugin);
-  store = plugin(StorePlugin);
-  config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
+  props = useProps({ ws: t.any() });
+  code = usePlugin(CodePlugin);
+  store = usePlugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   codeIcon = m(ICONS.code);
   // "Editor" toolbar button
   kebabIcon = m(ICONS.kebab);
@@ -9588,7 +9588,7 @@ var CodePane = class extends Component {
 };
 var TerminalPane = class extends Component {
   static template = xml`<div class="ws-term" t-ref="this.host"/>`;
-  props = props({ url: t.string() });
+  props = useProps({ url: t.string() });
   host = signal.ref(HTMLElement);
   _dispose = null;
   setup() {
@@ -9789,14 +9789,14 @@ var WorkspacesScreen = class extends Component {
         </div>
       </div>
     </section>`;
-  wt = plugin(WorkspacePlugin);
-  config = plugin(ConfigPlugin);
-  code = plugin(CodePlugin);
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
-  server = plugin(ServerPlugin);
-  store = plugin(StorePlugin);
+  wt = usePlugin(WorkspacePlugin);
+  config = usePlugin(ConfigPlugin);
+  code = usePlugin(CodePlugin);
+  db = usePlugin(DatabasePlugin);
+  dialogs = usePlugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  server = usePlugin(ServerPlugin);
+  store = usePlugin(StorePlugin);
   externalIcon = m(ICONS.external);
   kebabIcon = m(ICONS.kebab);
   sortIcon = m(ICONS.sort);
@@ -10507,16 +10507,16 @@ var Topbar = class extends Component {
         </button>
       </div>
     </header>`;
-  server = plugin(ServerPlugin);
-  config = plugin(ConfigPlugin);
-  update = plugin(UpdatePlugin);
-  eventLog = plugin(EventLogPlugin);
-  code = plugin(CodePlugin);
+  server = usePlugin(ServerPlugin);
+  config = usePlugin(ConfigPlugin);
+  update = usePlugin(UpdatePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  code = usePlugin(CodePlugin);
   // activation guards read the live branch state
-  store = plugin(StorePlugin);
+  store = usePlugin(StorePlugin);
   // running worktree servers for the switcher menu
-  wt = plugin(WorkspacePlugin);
-  router = plugin(RouterPlugin);
+  wt = usePlugin(WorkspacePlugin);
+  router = usePlugin(RouterPlugin);
   journalIcon = m(ICONS.journal);
   version = `v${VERSION}`;
   // event-log toggle tooltip, surfacing the unread count when there is one
@@ -10635,8 +10635,8 @@ var Sidebar = class extends Component {
         <span class="nav-label">Collapse</span>
       </button>
     </nav>`;
-  router = plugin(RouterPlugin);
-  config = plugin(ConfigPlugin);
+  router = usePlugin(RouterPlugin);
+  config = usePlugin(ConfigPlugin);
   collapseIcon = m(ICONS.collapse);
   collapsed = signal(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
   setup() {
@@ -10718,10 +10718,10 @@ var App = class extends Component {
         <div class="goo-updating-box"><span class="spin"/>Updating goo and restarting…</div>
       </div>
     </div>`;
-  dialogRoot = plugin(DialogPlugin).root;
-  router = plugin(RouterPlugin);
-  server = plugin(ServerPlugin);
-  update = plugin(UpdatePlugin);
+  dialogRoot = usePlugin(DialogPlugin).root;
+  router = usePlugin(RouterPlugin);
+  server = usePlugin(ServerPlugin);
+  update = usePlugin(UpdatePlugin);
   // the active screen's component class (a class, not an instance)
   currentScreen = computed(() => SCREENS[this.router.section()] || WorkspacesScreen);
   setup() {

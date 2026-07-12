@@ -1,4 +1,4 @@
-import { Component, onWillUnmount, plugin, signal, useEffect, xml } from "@odoo/owl";
+import { Component, onWillUnmount, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { NightlyPlugin } from "./nightly_plugin.js";
 import { ICONS, loadScript, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
@@ -270,7 +270,7 @@ export class NightlyScreen extends Component {
       </div>
     </section>`;
 
-  nightly = plugin(NightlyPlugin);
+  nightly = usePlugin(NightlyPlugin);
   graphMetrics = GRAPH_METRICS;
 
   refreshIcon = m(ICONS.refresh);

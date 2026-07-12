@@ -2,8 +2,8 @@ import {
   Component,
   onMounted,
   onWillUnmount,
-  plugin,
-  props,
+  usePlugin,
+  useProps,
   signal,
   t,
   untrack,
@@ -71,8 +71,8 @@ export class ClaudeChat extends Component {
       </div>
     </div>`;
 
-  props = props({ target: t.any(), inMain: t.boolean().optional() });
-  claude = plugin(ClaudePlugin);
+  props = useProps({ target: t.any(), inMain: t.boolean().optional() });
+  claude = usePlugin(ClaudePlugin);
   scroll = signal.ref(HTMLElement);
   ta = signal.ref(HTMLElement);
 
@@ -191,12 +191,12 @@ export class CodePane extends Component {
       </div>
     </div>`;
 
-  props = props({ ws: t.any() });
-  code = plugin(CodePlugin);
-  store = plugin(StorePlugin);
-  config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
+  props = useProps({ ws: t.any() });
+  code = usePlugin(CodePlugin);
+  store = usePlugin(StorePlugin);
+  config = usePlugin(ConfigPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   codeIcon = m(ICONS.code); // "Editor" toolbar button
   kebabIcon = m(ICONS.kebab); // the per-checkout actions menu
   pushIcon = m(ICONS.push); // the "Push all" toolbar button
@@ -535,7 +535,7 @@ export class CodePane extends Component {
 export class TerminalPane extends Component {
   static template = xml`<div class="ws-term" t-ref="this.host"/>`;
 
-  props = props({ url: t.string() });
+  props = useProps({ url: t.string() });
   host = signal.ref(HTMLElement);
   _dispose = null;
 
@@ -751,14 +751,14 @@ export class WorkspacesScreen extends Component {
       </div>
     </section>`;
 
-  wt = plugin(WorkspacePlugin);
-  config = plugin(ConfigPlugin);
-  code = plugin(CodePlugin);
-  db = plugin(DatabasePlugin);
-  dialogs = plugin(DialogPlugin);
-  eventLog = plugin(EventLogPlugin);
-  server = plugin(ServerPlugin);
-  store = plugin(StorePlugin);
+  wt = usePlugin(WorkspacePlugin);
+  config = usePlugin(ConfigPlugin);
+  code = usePlugin(CodePlugin);
+  db = usePlugin(DatabasePlugin);
+  dialogs = usePlugin(DialogPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  server = usePlugin(ServerPlugin);
+  store = usePlugin(StorePlugin);
   externalIcon = m(ICONS.external);
   kebabIcon = m(ICONS.kebab);
   sortIcon = m(ICONS.sort);

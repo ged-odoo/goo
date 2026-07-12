@@ -1,7 +1,7 @@
 // Dialog system. A single app-level plugin owns the list of open dialogs; a
 // minimal container component (mounted once as an Owl "root" at a location the
 // main app exposes via t-ref) renders them. Because it is a plugin, *any*
-// plugin or component can open a dialog — `plugin(DialogPlugin)` then
+// plugin or component can open a dialog — `usePlugin(DialogPlugin)` then
 // `.add(Component, props)` (or the `.open(spec)` / `.openComponent(C, props)`
 // promise-based conveniences).
 
@@ -9,13 +9,13 @@ import {
   Plugin,
   Component,
   xml,
-  plugin,
+  usePlugin,
   signal,
   useApp,
   useEffect,
   onMounted,
   onWillUnmount,
-  props,
+  useProps,
   t,
 } from "@odoo/owl";
 
@@ -26,7 +26,7 @@ let _seq = 0;
 export class DialogPlugin extends Plugin {
   dialogs = signal.Array([]);
   // the mount location for the dialog container. Owned here; the main app binds
-  // it with t-ref (via `plugin(DialogPlugin).root`) to a DOM node, and the
+  // it with t-ref (via `usePlugin(DialogPlugin).root`) to a DOM node, and the
   // effect below mounts the container there once it exists.
   root = signal.ref(HTMLElement);
 
@@ -86,7 +86,7 @@ class DialogContainer extends Component {
       </t>
     </div>`;
 
-  dialogs = plugin(DialogPlugin).dialogs;
+  dialogs = usePlugin(DialogPlugin).dialogs;
 }
 
 // ─────────────────────────── Generic dialog ───────────────────────────
@@ -148,7 +148,7 @@ export class Dialog extends Component {
       </div>
     </div>`;
 
-  props = props({ spec: t.any(), done: t.function() });
+  props = useProps({ spec: t.any(), done: t.function() });
   values = signal({});
   touched = signal(false); // has the user edited a field? (gates the inline error)
 

@@ -16,17 +16,17 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON, worktreeDirFor } from "./utils.js";
 
-import { Plugin, plugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 export class WorkspacePlugin extends Plugin {
   static sequence = 5;
 
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin); // worktree servers live in the shared servers map
-  server = plugin(ServerPlugin);
-  code = plugin(CodePlugin);
-  eventLog = plugin(EventLogPlugin);
-  dialogs = plugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // worktree servers live in the shared servers map
+  server = usePlugin(ServerPlugin);
+  code = usePlugin(CodePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
   selectedId = signal(""); // the workspace selected in the Workspaces screen
   requestedSelection = signal(""); // one-shot explicit target for the next screen open
   // one-shot: a detail pane the Workspaces screen should open on its next render

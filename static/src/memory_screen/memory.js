@@ -1,4 +1,4 @@
-import { Component, onPatched, onWillUnmount, plugin, signal, xml } from "@odoo/owl";
+import { Component, onPatched, onWillUnmount, usePlugin, signal, xml } from "@odoo/owl";
 import { MemoryPlugin } from "./memory_plugin.js";
 import { ICONS, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
@@ -60,7 +60,7 @@ export class MemoryScreen extends Component {
       </div>
     </section>`;
 
-  memory = plugin(MemoryPlugin);
+  memory = usePlugin(MemoryPlugin);
   canvas = signal.ref(HTMLElement);
   chevronIcon = m(ICONS.chevron);
   _chart = null;

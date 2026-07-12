@@ -13,15 +13,15 @@ import { PullRequest } from "./models.js";
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
 
-import { Plugin, plugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 const mbKey = (p) => `${p.github}#${p.number}`;
 
 export class ReviewPlugin extends Plugin {
   static sequence = 5;
 
-  config = plugin(ConfigPlugin);
-  store = plugin(StorePlugin); // the shared observed store
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // the shared observed store
   prs = signal([]); // view state; freshness is the server's job
   at = signal(0);
   loading = signal(false);

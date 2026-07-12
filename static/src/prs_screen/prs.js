@@ -1,4 +1,4 @@
-import { Component, onMounted, onWillUnmount, plugin, signal, useEffect, xml } from "@odoo/owl";
+import { Component, onMounted, onWillUnmount, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { MERGEBOT } from "../core/config.js";
 import { timeAgo } from "../core/utils.js";
 import { CodePlugin } from "../core/code_plugin.js";
@@ -12,7 +12,7 @@ import { Panel } from "../core/panel.js";
 
 export class PrsScreen extends Component {
   static components = { SearchBox, Panel };
-  worktree = plugin(WorkspacePlugin); // "wt" badge on PR branches owned by a worktree
+  worktree = usePlugin(WorkspacePlugin); // "wt" badge on PR branches owned by a worktree
   static template = xml`
     <section>
       <Panel title="'PRs'">
@@ -98,11 +98,11 @@ export class PrsScreen extends Component {
       </div>
     </section>`;
 
-  code = plugin(CodePlugin);
-  review = plugin(ReviewPlugin);
-  config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
-  router = plugin(RouterPlugin);
+  code = usePlugin(CodePlugin);
+  review = usePlugin(ReviewPlugin);
+  config = usePlugin(ConfigPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  router = usePlugin(RouterPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   // "mine" = PRs I authored (CodePlugin); "reviewing" = PRs I commented on but

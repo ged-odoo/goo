@@ -18,7 +18,7 @@
 // the production screens — and promoting the observed/runtime json payloads to real
 // fields so their screens render through here — is the follow-on.
 
-import { Component, xml, props, t } from "@odoo/owl";
+import { Component, xml, useProps, t } from "@odoo/owl";
 
 // ── adapters ──────────────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ export function recordset(recordsFn, specs) {
 // text; a relation column shows the target record's name/id. Reactive for free — the
 // getters read model signals, so an edit (or an upstream change) re-renders.
 export class RecordList extends Component {
-  props = props({ recordset: t.any() });
+  props = useProps({ recordset: t.any() });
   static template = xml`
     <table class="rec-table">
       <thead>

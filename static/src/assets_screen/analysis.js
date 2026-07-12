@@ -4,7 +4,7 @@
 // by the Workspaces screen's Assets pane when a bundle is clicked. State lives on
 // the (db-scoped) AssetsPlugin — this is just the view.
 
-import { Component, plugin, props, signal, t, xml } from "@odoo/owl";
+import { Component, usePlugin, useProps, signal, t, xml } from "@odoo/owl";
 import { AssetsPlugin } from "./assets_plugin.js";
 import { SearchBox } from "../core/common.js";
 import { formatBytes } from "../core/utils.js";
@@ -24,7 +24,7 @@ export class BundleNode extends Component {
       </t>
     </div>`;
 
-  props = props({ node: t.any(), depth: t.any() });
+  props = useProps({ node: t.any(), depth: t.any() });
   open = signal(false);
 
   setup() {
@@ -79,7 +79,7 @@ export class AssetsAnalysis extends Component {
       </div>
     </div>`;
 
-  assets = plugin(AssetsPlugin);
+  assets = usePlugin(AssetsPlugin);
   view = signal("tree"); // "tree" (aggregate) | "flat"
   treeSearch = signal(""); // filter files within the analysis
 

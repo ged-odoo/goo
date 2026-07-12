@@ -1,4 +1,4 @@
-import { Component, computed, plugin, signal, xml } from "@odoo/owl";
+import { Component, computed, usePlugin, signal, xml } from "@odoo/owl";
 import { BASE_BRANCH_RE } from "../core/config.js";
 import { timeAgo } from "../core/utils.js";
 import { CodePlugin } from "../core/code_plugin.js";
@@ -14,7 +14,7 @@ import { pushBranchesDialog } from "../core/dialogs.js";
 
 export class BranchesScreen extends Component {
   static components = { SearchBox, DirtyBadge, Panel };
-  worktree = plugin(WorkspacePlugin); // "wt" badge on branches owned by a worktree
+  worktree = usePlugin(WorkspacePlugin); // "wt" badge on branches owned by a worktree
   static template = xml`
     <section>
       <Panel title="'Branches'">
@@ -94,9 +94,9 @@ export class BranchesScreen extends Component {
       </div>
     </section>`;
 
-  code = plugin(CodePlugin);
-  config = plugin(ConfigPlugin);
-  dialogs = plugin(DialogPlugin);
+  code = usePlugin(CodePlugin);
+  config = usePlugin(ConfigPlugin);
+  dialogs = usePlugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
   externalIcon = m(ICONS.external);
   kebabIcon = m(ICONS.kebab);
