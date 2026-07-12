@@ -113,6 +113,7 @@ export const SECTIONS = [
   "branches",
   "prs",
   "reviews",
+  "todo",
   "databases",
   "nightly",
   "memory",

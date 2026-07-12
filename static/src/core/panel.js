@@ -21,15 +21,15 @@ export class Panel extends Component {
       <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
         <div t-if="this.hasSlot('title-extra')" class="panel-title">
           <h1 t-out="this.props.title"/>
-          <t t-slot="title-extra"/>
+          <t t-call-slot="title-extra"/>
         </div>
         <h1 t-else="" t-out="this.props.title"/>
-        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
-        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
+        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-call-slot="top-middle"/></div>
+        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-call-slot="top-right"/></div>
       </div>
       <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
-        <t t-slot="bottom-left"/>
-        <t t-slot="bottom-right"/>
+        <t t-call-slot="bottom-left"/>
+        <t t-call-slot="bottom-right"/>
       </div>
     </div>`;
 

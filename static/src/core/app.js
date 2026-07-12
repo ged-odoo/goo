@@ -28,6 +28,7 @@ import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
 import { NightlyScreen } from "../nightly_screen/nightly.js";
 import { PrsScreen } from "../prs_screen/prs.js";
 import { TerminalPanel } from "./terminal.js";
+import { TodoScreen } from "../todo_screen/todo.js";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
 
 export class Topbar extends Component {
@@ -299,6 +300,7 @@ export const SCREENS = {
   // back-compat: old #reviews bookmarks render the merged PRs screen, which opens
   // on its Reviewing segment (PrsScreen seeds its mode from the route)
   reviews: PrsScreen,
+  todo: TodoScreen,
   databases: DatabasesScreen,
   nightly: NightlyScreen,
   memory: MemoryScreen,
@@ -312,6 +314,7 @@ export class App extends Component {
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,
+    TodoScreen,
     DatabasesScreen,
     NightlyScreen,
     MemoryScreen,

@@ -853,6 +853,91 @@ section.hidden {
   border: none;
   border-radius: 0;
 }
+
+/* Todo screen */
+.todo-form {
+  display: flex;
+  gap: 8px;
+}
+.todo-form input {
+  width: min(420px, 45vw);
+  color: var(--l-text);
+  border-color: var(--l-line);
+  background: var(--l-card);
+}
+.todo-content {
+  align-items: stretch;
+}
+.todo-card {
+  width: min(760px, 100%);
+  overflow: hidden;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 14px;
+}
+.todo-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px 8px 16px;
+  border-top: 1px solid var(--l-line-soft);
+}
+.todo-row:first-child {
+  border-top: none;
+}
+.todo-row:hover {
+  background: var(--l-hover);
+}
+.todo-check {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--l-text);
+  cursor: pointer;
+}
+.todo-check span {
+  overflow-wrap: anywhere;
+}
+.todo-row.done .todo-check span {
+  color: var(--l-text-faint);
+  text-decoration: line-through;
+}
+.todo-delete {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  color: var(--l-text-faint);
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.todo-delete:hover {
+  color: var(--l-red);
+  background: oklch(0.55 0.21 25 / 0.1);
+}
+.todo-empty {
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--l-text-faint);
+  font-size: 13px;
+}
+.todo-empty-icon svg {
+  width: 28px;
+  height: 28px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
 /* tests tab empty state: centered guidance over the (empty) console */
 .tests-content {
   position: relative;

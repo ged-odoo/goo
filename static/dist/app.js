@@ -134,6 +134,7 @@ var SECTIONS = [
   "branches",
   "prs",
   "reviews",
+  "todo",
   "databases",
   "nightly",
   "memory",
@@ -3893,6 +3894,7 @@ var ICONS = {
   target: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/></svg>`,
   branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
   pr: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="6" y1="9" x2="6" y2="15"/><circle cx="18" cy="18" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/></svg>`,
+  todo: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><polyline points="8 9 10 11 14 7"/><line x1="8" y1="16" x2="16" y2="16"/></svg>`,
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
@@ -3921,6 +3923,7 @@ var NAV = [
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches", icon: ICONS.branches },
   { id: "prs", label: "PRs", icon: ICONS.pr },
+  { id: "todo", label: "Todo", icon: ICONS.todo, optIn: true },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },
   { id: "memory", label: "Memory", icon: ICONS.memory, optIn: true },
@@ -4145,15 +4148,15 @@ var Panel = class extends Component {
       <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
         <div t-if="this.hasSlot('title-extra')" class="panel-title">
           <h1 t-out="this.props.title"/>
-          <t t-slot="title-extra"/>
+          <t t-call-slot="title-extra"/>
         </div>
         <h1 t-else="" t-out="this.props.title"/>
-        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-slot="top-middle"/></div>
-        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-slot="top-right"/></div>
+        <div t-if="this.hasSlot('top-middle')" class="panel-filters"><t t-call-slot="top-middle"/></div>
+        <div t-if="this.hasSlot('top-right')" class="panel-top-right"><t t-call-slot="top-right"/></div>
       </div>
       <div t-if="this.hasSlot('bottom-left') or this.hasSlot('bottom-right')" class="panel-actions">
-        <t t-slot="bottom-left"/>
-        <t t-slot="bottom-right"/>
+        <t t-call-slot="bottom-left"/>
+        <t t-call-slot="bottom-right"/>
       </div>
     </div>`;
   props = props({
@@ -7795,6 +7798,92 @@ var TerminalDialog = class extends Component {
   }
 };
 
+// static/src/todo_screen/todo.js
+var STORAGE_KEY2 = "oo-todos";
+function storedTodos() {
+  try {
+    const items = JSON.parse(localStorage.getItem(STORAGE_KEY2) || "[]");
+    return Array.isArray(items) ? items.filter(
+      (item) => item && typeof item.id === "string" && typeof item.title === "string"
+    ) : [];
+  } catch {
+    return [];
+  }
+}
+var TodoScreen = class extends Component {
+  static components = { Panel };
+  static template = xml`
+    <section>
+      <Panel title="'Todo'">
+        <t t-set-slot="bottom-left">
+          <form class="todo-form" t-on-submit.prevent="() => this.add()">
+            <input t-ref="this.newTodo" type="text" t-att-value="this.draft()"
+                   t-on-input="ev => this.draft.set(ev.target.value)"
+                   placeholder="What needs to be done?" autocomplete="off" aria-label="New todo"/>
+            <button type="submit" class="pbtn" t-att-disabled="!this.draft().trim()">Add todo</button>
+          </form>
+        </t>
+        <t t-set-slot="bottom-right">
+          <span class="row-count" t-out="this.summary"/>
+          <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+        </t>
+      </Panel>
+      <div class="content todo-content">
+        <div class="todo-card">
+          <div t-if="!this.todos().length" class="todo-empty">
+            <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
+            <span>No todos yet.</span>
+          </div>
+          <div t-else="" class="todo-list">
+            <div t-foreach="this.todos()" t-as="todo" t-key="todo.id" class="todo-row"
+                 t-att-class="{done: todo.done}">
+              <label class="todo-check">
+                <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
+                <span t-out="todo.title"/>
+              </label>
+              <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+  todos = signal(storedTodos());
+  draft = signal("");
+  newTodo = signal.ref(HTMLInputElement);
+  todoIcon = m(ICONS.todo);
+  get completedCount() {
+    return this.todos().filter((todo) => todo.done).length;
+  }
+  get summary() {
+    const total = this.todos().length;
+    const open = total - this.completedCount;
+    return `${open} open \xB7 ${total} total`;
+  }
+  add() {
+    const title = this.draft().trim();
+    if (!title) return;
+    this._set([
+      ...this.todos(),
+      { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, title, done: false }
+    ]);
+    this.draft.set("");
+    this.newTodo()?.focus();
+  }
+  toggle(id) {
+    this._set(this.todos().map((todo) => todo.id === id ? { ...todo, done: !todo.done } : todo));
+  }
+  remove(id) {
+    this._set(this.todos().filter((todo) => todo.id !== id));
+  }
+  clearCompleted() {
+    this._set(this.todos().filter((todo) => !todo.done));
+  }
+  _set(todos) {
+    this.todos.set(todos);
+    localStorage.setItem(STORAGE_KEY2, JSON.stringify(todos));
+  }
+};
+
 // static/src/workspaces_screen/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
@@ -10481,6 +10570,7 @@ var SCREENS = {
   // back-compat: old #reviews bookmarks render the merged PRs screen, which opens
   // on its Reviewing segment (PrsScreen seeds its mode from the route)
   reviews: PrsScreen,
+  todo: TodoScreen,
   databases: DatabasesScreen,
   nightly: NightlyScreen,
   memory: MemoryScreen,
@@ -10493,6 +10583,7 @@ var App = class extends Component {
     WorkspacesScreen,
     BranchesScreen,
     PrsScreen,
+    TodoScreen,
     DatabasesScreen,
     NightlyScreen,
     MemoryScreen,
