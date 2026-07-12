@@ -1,5 +1,5 @@
 // app version — shown in the navbar. Keep in sync with package.json "version".
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 
 // The single source of truth for all initial data. Anything edited in the
 // Config tab is stored in localStorage (via ConfigPlugin) and overrides these

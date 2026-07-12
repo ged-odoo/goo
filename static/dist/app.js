@@ -22,7 +22,7 @@ var Plugin = owl.Plugin;
 var usePlugin = owl.usePlugin;
 
 // static/src/core/config.js
-var VERSION = "1.1.0";
+var VERSION = "1.2.0";
 var DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
   venv_activate: "",
