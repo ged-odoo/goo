@@ -3938,15 +3938,6 @@ a.commit-detail-hash svg {
   min-width: 0;
   user-select: all;
 }
-.ws-wt-tag {
-  color: var(--l-text-mid);
-  background: var(--l-panel);
-}
-/* the loaded workspace's claim is stale: a manual checkout drifted the main tree */
-.ws-drift-tag {
-  color: var(--amber);
-  background: var(--amber-bg);
-}
 /* the Code pane stacks the drift banner above the checkout list */
 .ws-code-pane {
   flex-direction: column;
@@ -4067,16 +4058,6 @@ a.commit-detail-hash svg {
   height: 14px;
   margin-right: 6px;
   vertical-align: -2px;
-}
-.ws-loaded-tag {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--l-accent);
-  background: var(--l-accent-soft);
-  padding: 2px 8px;
-  border-radius: 5px;
 }
 .ws-code {
   flex: 1;
