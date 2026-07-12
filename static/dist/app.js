@@ -7800,15 +7800,28 @@ var TerminalDialog = class extends Component {
 
 // static/src/todo_screen/todo.js
 var STORAGE_KEY2 = "oo-todos";
-function storedTodos() {
+var uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+function storedState() {
   try {
-    const items = JSON.parse(localStorage.getItem(STORAGE_KEY2) || "[]");
-    return Array.isArray(items) ? items.filter(
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY2) || "null");
+    const cleanTodos = (todos) => (Array.isArray(todos) ? todos : []).filter(
       (item) => item && typeof item.id === "string" && typeof item.title === "string"
-    ) : [];
+    );
+    if (Array.isArray(raw)) {
+      const list2 = { id: uid(), name: "Todo", todos: cleanTodos(raw) };
+      return { lists: [list2], selected: list2.id };
+    }
+    if (raw && Array.isArray(raw.lists)) {
+      const lists = raw.lists.filter((l) => l && typeof l.id === "string" && typeof l.name === "string").map((l) => ({ id: l.id, name: l.name, todos: cleanTodos(l.todos) }));
+      if (lists.length) {
+        const selected = lists.some((l) => l.id === raw.selected) ? raw.selected : lists[0].id;
+        return { lists, selected };
+      }
+    }
   } catch {
-    return [];
   }
+  const list = { id: uid(), name: "Todo", todos: [] };
+  return { lists: [list], selected: list.id };
 }
 var TodoScreen = class extends Component {
   static components = { Panel };
@@ -7829,58 +7842,150 @@ var TodoScreen = class extends Component {
         </t>
       </Panel>
       <div class="content todo-content">
-        <div class="todo-card">
-          <div t-if="!this.todos().length" class="todo-empty">
-            <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
-            <span>No todos yet.</span>
+        <div class="todo-layout">
+          <div class="todo-rail">
+            <button t-foreach="this.lists()" t-as="l" t-key="l.id" class="todo-rail-item"
+                    t-att-class="{active: l.id === this.selected()}" t-on-click="() => this.select(l.id)">
+              <span class="todo-rail-name" t-out="l.name"/>
+              <span t-if="this.openCount(l)" class="todo-rail-count" t-out="this.openCount(l)"/>
+            </button>
+            <button class="todo-rail-add" t-on-click="() => this.addList()">+ New list</button>
           </div>
-          <div t-else="" class="todo-list">
-            <div t-foreach="this.todos()" t-as="todo" t-key="todo.id" class="todo-row"
-                 t-att-class="{done: todo.done}">
-              <label class="todo-check">
-                <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
-                <span t-out="todo.title"/>
-              </label>
-              <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+          <div class="todo-card">
+            <div class="todo-card-head">
+              <span class="todo-card-title" t-out="this.list.name"/>
+              <div class="dash-kebab-wrap">
+                <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="list actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
+                <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
+                  <button class="dash-menu-item" t-on-click="() => this.menuAct(() => this.renameList())">Rename</button>
+                  <button class="dash-menu-item danger" t-att-disabled="this.lists().length === 1"
+                          t-att-title="this.lists().length === 1 ? 'the last list cannot be deleted' : ''"
+                          t-on-click="() => this.menuAct(() => this.deleteList())">Delete list</button>
+                </div>
+              </div>
+            </div>
+            <div t-if="!this.list.todos.length" class="todo-empty">
+              <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
+              <span>No todos yet.</span>
+            </div>
+            <div t-else="" class="todo-list">
+              <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
+                   t-att-class="{done: todo.done}">
+                <label class="todo-check">
+                  <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
+                  <span t-out="todo.title"/>
+                </label>
+                <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </section>`;
-  todos = signal(storedTodos());
+  dialogs = plugin(DialogPlugin);
+  _stored = storedState();
+  // read once — lists + selected must come from the same snapshot
+  lists = signal(this._stored.lists);
+  selected = signal(this._stored.selected);
   draft = signal("");
+  menuOpen = signal(false);
   newTodo = signal.ref(HTMLInputElement);
   todoIcon = m(ICONS.todo);
+  kebabIcon = m(ICONS.kebab);
+  setup() {
+    const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
+    onMounted(() => document.addEventListener("click", closeMenu));
+    onWillUnmount(() => document.removeEventListener("click", closeMenu));
+  }
+  // the selected list (falls back to the first — a list always exists)
+  get list() {
+    return this.lists().find((l) => l.id === this.selected()) || this.lists()[0];
+  }
+  openCount(l) {
+    return l.todos.filter((todo) => !todo.done).length;
+  }
   get completedCount() {
-    return this.todos().filter((todo) => todo.done).length;
+    return this.list.todos.filter((todo) => todo.done).length;
   }
   get summary() {
-    const total = this.todos().length;
-    const open = total - this.completedCount;
-    return `${open} open \xB7 ${total} total`;
+    const total = this.list.todos.length;
+    return `${total - this.completedCount} open \xB7 ${total} total`;
   }
+  select(id) {
+    this.selected.set(id);
+    this._save();
+    this.newTodo()?.focus();
+  }
+  menuAct(fn) {
+    this.menuOpen.set(false);
+    return fn();
+  }
+  // ── lists ──────────────────────────────────────────────────────────────────
+  async addList() {
+    const res = await this._nameDialog("New list", "Create", "");
+    if (!res) return;
+    const list = { id: uid(), name: res, todos: [] };
+    this.lists.set([...this.lists(), list]);
+    this.select(list.id);
+  }
+  async renameList() {
+    const res = await this._nameDialog("Rename list", "Rename", this.list.name);
+    if (!res) return;
+    this._updateList(this.list.id, (l) => ({ ...l, name: res }));
+  }
+  async deleteList() {
+    const target = this.list;
+    if (this.lists().length === 1) return;
+    if (target.todos.length) {
+      const ok = await this.dialogs.open({
+        title: "Delete list",
+        message: `Delete "${target.name}" and its ${target.todos.length} todo${target.todos.length === 1 ? "" : "s"}?`,
+        okLabel: "Delete"
+      });
+      if (!ok) return;
+    }
+    this.lists.set(this.lists().filter((l) => l.id !== target.id));
+    this.select(this.lists()[0].id);
+  }
+  _nameDialog(title, okLabel, value) {
+    return this.dialogs.open({
+      title,
+      okLabel,
+      validate: (v) => (v.name || "").trim() ? "" : "a name is required",
+      fields: [{ key: "name", type: "text", label: "Name", value, placeholder: "list name" }]
+    }).then((res) => res ? res.name.trim() : "");
+  }
+  // ── todos (on the selected list) ───────────────────────────────────────────
   add() {
     const title = this.draft().trim();
     if (!title) return;
-    this._set([
-      ...this.todos(),
-      { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, title, done: false }
-    ]);
+    this._updateTodos((todos) => [...todos, { id: uid(), title, done: false }]);
     this.draft.set("");
     this.newTodo()?.focus();
   }
   toggle(id) {
-    this._set(this.todos().map((todo) => todo.id === id ? { ...todo, done: !todo.done } : todo));
+    this._updateTodos(
+      (todos) => todos.map((todo) => todo.id === id ? { ...todo, done: !todo.done } : todo)
+    );
   }
   remove(id) {
-    this._set(this.todos().filter((todo) => todo.id !== id));
+    this._updateTodos((todos) => todos.filter((todo) => todo.id !== id));
   }
   clearCompleted() {
-    this._set(this.todos().filter((todo) => !todo.done));
+    this._updateTodos((todos) => todos.filter((todo) => !todo.done));
   }
-  _set(todos) {
-    this.todos.set(todos);
-    localStorage.setItem(STORAGE_KEY2, JSON.stringify(todos));
+  _updateTodos(fn) {
+    this._updateList(this.list.id, (l) => ({ ...l, todos: fn(l.todos) }));
+  }
+  _updateList(id, fn) {
+    this.lists.set(this.lists().map((l) => l.id === id ? fn(l) : l));
+    this._save();
+  }
+  _save() {
+    localStorage.setItem(
+      STORAGE_KEY2,
+      JSON.stringify({ lists: this.lists(), selected: this.selected() })
+    );
   }
 };
 

@@ -868,12 +868,92 @@ section.hidden {
 .todo-content {
   align-items: stretch;
 }
-.todo-card {
-  width: min(760px, 100%);
+/* rail of lists on the left, the selected list's card on the right */
+.todo-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: min(980px, 100%);
+}
+.todo-rail {
+  flex: none;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.todo-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--l-text-mid);
+  text-align: left;
+}
+.todo-rail-item:hover {
+  background: var(--l-hover);
+}
+.todo-rail-item.active {
+  background: var(--l-card);
+  color: var(--l-text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.08);
+}
+.todo-rail-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* open-todo count for each list */
+.todo-rail-count {
+  flex: none;
+  min-width: 20px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--l-text-dim);
+  background: var(--l-line-soft);
+  border-radius: 9px;
+  padding: 2px 6px;
+}
+.todo-rail-add {
+  padding: 8px 12px;
+  border-radius: 8px;
+  text-align: left;
+  color: var(--l-text-dim);
+}
+.todo-rail-add:hover {
+  color: var(--l-accent);
+  background: var(--l-hover);
+}
+.todo-card {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 760px;
+  overflow: visible; /* the list-actions kebab menu must escape the card */
   background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 14px;
+}
+.todo-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 9px 16px;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.todo-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--l-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .todo-row {
   min-height: 52px;
@@ -885,6 +965,10 @@ section.hidden {
 }
 .todo-row:first-child {
   border-top: none;
+}
+/* the card no longer clips (kebab menu), so round the last row's hover bg */
+.todo-row:last-child {
+  border-radius: 0 0 13px 13px;
 }
 .todo-row:hover {
   background: var(--l-hover);
