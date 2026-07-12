@@ -4198,6 +4198,10 @@ a.commit-detail-hash svg {
   background: var(--l-card);
   border-radius: 10px;
   padding: 11px 14px 12px;
+  /* lift the card off the panel — it's near-white on light gray otherwise */
+  box-shadow:
+    0 1px 2px oklch(0.27 0.012 264 / 0.05),
+    0 4px 14px oklch(0.27 0.012 264 / 0.08);
 }
 .ws-co-head {
   display: flex;
