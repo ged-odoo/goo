@@ -741,7 +741,7 @@ export class WorkspacesScreen extends Component {
             <div class="wt-detail-top">
             <div class="wt-detail-head">
               <div class="wt-head-row">
-                <h2 t-out="this.sel.name"/>
+                <h2 t-out="this.sel.name" title="double-click to edit this workspace" t-on-dblclick="() => this.edit(this.sel)"/>
                 <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
                 <t t-if="ci">
                   <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
