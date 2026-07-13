@@ -678,6 +678,46 @@ class GitHubServiceTest(unittest.TestCase):
         repos = svc.prs([{"id": "community", "github": "odoo/odoo"}])
         self.assertEqual(repos[0]["error"], "gh: not logged in")
 
+    def test_prs_for_branches_resolves_by_head_ref(self):
+        # two PRs share the head ref: a closed old one and an open live one — the
+        # open PR wins, and it comes back as a head-relation PullRequest
+        payload = (
+            '[{"number": 10, "title": "old", "url": "u10", "state": "CLOSED", "isDraft": false,'
+            ' "headRefName": "br-fw", "createdAt": "a", "updatedAt": "2026-01-01T00:00:00Z"},'
+            '{"number": 20, "title": "fw port", "url": "u20", "state": "OPEN", "isDraft": false,'
+            ' "headRefName": "br-fw", "createdAt": "b", "updatedAt": "2026-02-01T00:00:00Z"}]'
+        )
+        io = FakeIO(run_result=completed(stdout=payload))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        prs = svc.prs_for_branches([{"github": "odoo/odoo", "branch": "br-fw"}])
+        self.assertEqual(len(prs), 1)
+        self.assertEqual(prs[0]["number"], 20)  # open PR preferred over closed
+        self.assertEqual(prs[0]["relation"], "head")
+        self.assertEqual(prs[0]["branch"], "br-fw")
+        self.assertEqual(prs[0]["state"], "open")
+        # queried by head ref, not by author
+        joined = " ".join(str(c) for c in io.run_calls[0])
+        self.assertIn("--head", joined)
+        self.assertIn("br-fw", joined)
+        self.assertNotIn("@me", joined)
+
+    def test_prs_for_branches_omits_branches_without_a_pr(self):
+        io = FakeIO(run_result=completed(stdout="[]"))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        prs = svc.prs_for_branches([{"github": "odoo/odoo", "branch": "no-pr"}])
+        self.assertEqual(prs, [])
+
+    def test_prs_for_branches_dedups_and_caches(self):
+        io = FakeIO(run_result=completed(stdout="[]"))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pairs = [
+            {"github": "odoo/odoo", "branch": "br"},
+            {"github": "odoo/odoo", "branch": "br"},  # duplicate — one gh call
+        ]
+        svc.prs_for_branches(pairs)
+        svc.prs_for_branches(pairs)  # served from cache — still one gh call
+        self.assertEqual(len(io.run_calls), 1)
+
     def test_reviewed_maps_search_items(self):
         payload = json.dumps(
             {

@@ -21,7 +21,7 @@ export const PullRequest = {
       state: (raw.state || "").toLowerCase(), // open | closed | merged
       draft: !!raw.draft,
       branch: raw.branch || "",
-      relation: raw.relation || "", // authored | reviewed
+      relation: raw.relation || "", // authored | reviewed | head
       createdAt: raw.created_at || "",
       updatedAt: raw.updated_at || "",
       ci: raw.ci || null,

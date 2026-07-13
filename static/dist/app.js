@@ -1674,7 +1674,7 @@ var PullRequest = {
       draft: !!raw.draft,
       branch: raw.branch || "",
       relation: raw.relation || "",
-      // authored | reviewed
+      // authored | reviewed | head
       createdAt: raw.created_at || "",
       updatedAt: raw.updated_at || "",
       ci: raw.ci || null,
@@ -1707,6 +1707,10 @@ var CodePlugin = class extends Plugin {
   runbot = this.store.runbot;
   // branch name -> runbot status
   at = signal((this._cache() || {}).at || 0);
+  // branchKey -> a PR resolved by head ref (forward ports / colleagues' PRs the
+  // authored `prs()` fetch misses), or null once looked up and none was found (so
+  // we don't re-ask). Overlaid onto the authored prIndex in `_groups()`.
+  headPrs = signal({});
   loading = signal(false);
   error = signal("");
   busy = signal(false);
@@ -1852,6 +1856,52 @@ var CodePlugin = class extends Plugin {
       const branchRepos = this.store.repoStatusList();
       localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos }));
     }
+    this.loadHeadPrs(force);
+  }
+  // Look up PRs by head ref for branches an authored `prs()` fetch left without one
+  // — forward ports (fw-bot authored) and colleagues' PRs. Only remote, non-base
+  // branches with no authored PR are asked, and only once each (null is cached as
+  // "looked up, none found") unless force re-asks. Never triggered from an effect
+  // that reads groups(), so updating headPrs can't re-drive a load.
+  async loadHeadPrs(force = false) {
+    const prIndex = {};
+    for (const repo of this.prRepos()) {
+      for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
+    }
+    const githubByRepo = Object.fromEntries(this.reposWithGithub().map((r) => [r.id, r.github]));
+    const have = this.headPrs();
+    const seen = /* @__PURE__ */ new Set();
+    const pairs = [];
+    for (const repo of this.branchRepos()) {
+      const github = githubByRepo[repo.id];
+      if (!github) continue;
+      for (const b of repo.branches) {
+        if (!b.remote || BASE_BRANCH_RE.test(b.name)) continue;
+        const key = branchKey(repo.id, b.name);
+        if (prIndex[key] || !force && key in have) continue;
+        const ghKey = `${github}#${b.name}`;
+        if (seen.has(ghKey)) continue;
+        seen.add(ghKey);
+        pairs.push({ id: repo.id, github, branch: b.name });
+      }
+    }
+    if (!pairs.length) return;
+    try {
+      const data = await postJSON("/api/prs/for-branches", {
+        branches: pairs.map((p) => ({ github: p.github, branch: p.branch })),
+        refresh: force
+      });
+      const byGhBranch = {};
+      for (const raw of data.prs || [])
+        byGhBranch[`${raw.github}#${raw.branch}`] = PullRequest.from(raw);
+      const next = { ...this.headPrs() };
+      for (const p of pairs) {
+        next[branchKey(p.id, p.branch)] = byGhBranch[`${p.github}#${p.branch}`] || null;
+      }
+      this.headPrs.set(next);
+    } catch (e) {
+      this.error.set(e.message);
+    }
   }
   // The last time every piece of a workspace's code view was refreshed. A workspace
   // is only as fresh as its oldest requested repo snapshot; repos with a GitHub slug
@@ -1942,6 +1992,10 @@ var CodePlugin = class extends Plugin {
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
+    }
+    const headPrs = this.headPrs();
+    for (const [key, pr] of Object.entries(headPrs)) {
+      if (pr && !prIndex[key]) prIndex[key] = pr;
     }
     const map = /* @__PURE__ */ new Map();
     for (const repo of this.branchRepos()) {

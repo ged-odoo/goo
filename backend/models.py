@@ -39,9 +39,11 @@ class CiRollup:
 @dataclass
 class PullRequest:
     """A pull request in one unified shape, whether authored by the user
-    (`relation="authored"`, from `gh pr list`) or reviewed by them
-    (`relation="reviewed"`, from the global GitHub search). Identity is
-    `(github, number)`; `branch` is the head ref (the join to a local branch)."""
+    (`relation="authored"`, from `gh pr list`), reviewed by them
+    (`relation="reviewed"`, from the global GitHub search), or resolved by head
+    ref (`relation="head"`, a `gh pr list --head` lookup that surfaces PRs the user
+    didn't author, e.g. forward ports). Identity is `(github, number)`; `branch`
+    is the head ref (the join to a local branch)."""
 
     github: str  # canonical slug, e.g. "odoo/odoo"
     number: int

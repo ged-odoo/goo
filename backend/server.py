@@ -1625,6 +1625,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing repos list"})
             prs = GITHUB.prs(repos, refresh=bool((body or {}).get("refresh")))
             self._send_json(200, {"ok": True, "repos": prs})
+        elif path == "/api/prs/for-branches":
+            body, err = self._read_json()
+            branches = (body or {}).get("branches")
+            if err or not isinstance(branches, list):
+                return self._send_json(400, {"ok": False, "error": "missing branches list"})
+            prs = GITHUB.prs_for_branches(branches, refresh=bool((body or {}).get("refresh")))
+            self._send_json(200, {"ok": True, "prs": prs})
         elif path == "/api/mergebot":
             body, err = self._read_json()
             prs = (body or {}).get("prs")

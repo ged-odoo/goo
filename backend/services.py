@@ -158,6 +158,82 @@ class GitHubService:
             entry["error"] = "unexpected gh output"
         return entry
 
+    def prs_for_branches(self, pairs, refresh=False):
+        """For each {github, branch}: the PR whose head is that branch, regardless
+        of author, so forward-port / colleagues' PRs resolve too (the authored
+        `prs()` fetch misses them). Returns a flat list of PullRequest dicts
+        (`relation="head"`), one per branch that has a matching PR. Cached per
+        (github, branch); refresh=True bypasses it."""
+        seen, uniq = set(), []
+        for p in pairs:
+            gh_repo, branch = p.get("github"), p.get("branch")
+            if not (gh_repo and branch) or (gh_repo, branch) in seen:
+                continue
+            seen.add((gh_repo, branch))
+            uniq.append((gh_repo, branch))
+        if not uniq:
+            return []
+        if refresh:
+            for gh_repo, branch in uniq:
+                self.cache.invalidate(("head", gh_repo, branch))
+        with ThreadPoolExecutor(max_workers=min(8, len(uniq))) as pool:
+            results = pool.map(
+                lambda gb: self.cache.get(
+                    ("head", gb[0], gb[1]), lambda gb=gb: self._fetch_head(*gb)
+                ),
+                uniq,
+            )
+        return [pr for pr in results if pr]
+
+    def _fetch_head(self, gh_repo, branch):
+        """The best PR whose head ref is `branch` (open preferred, else most recently
+        updated), or None. Returns a PullRequest dict, cached by the caller."""
+        self.io.log_request(f"gh pr list --repo {gh_repo} --head {branch}")
+        try:
+            r = self.io.run(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    gh_repo,
+                    "--head",
+                    branch,
+                    "--state",
+                    "all",
+                    "--limit",
+                    "10",
+                    "--json",
+                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                ],
+                timeout=30,
+            )
+            if r.returncode != 0:
+                return None
+            rows = json.loads(r.stdout)
+        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            return None
+        if not rows:
+            return None
+        # an open PR is the live one; otherwise the most recently touched
+        rows.sort(key=lambda pr: (pr.get("state") == "OPEN", pr.get("updatedAt", "")), reverse=True)
+        pr = rows[0]
+        return asdict(
+            PullRequest(
+                github=gh_repo,
+                number=pr.get("number"),
+                title=pr.get("title", ""),
+                url=pr.get("url", ""),
+                state=(pr.get("state") or "").lower(),
+                branch=pr.get("headRefName", ""),
+                relation="head",
+                draft=pr.get("isDraft", False),
+                created_at=pr.get("createdAt", ""),
+                updated_at=pr.get("updatedAt", ""),
+                ci=_ci_rollup(pr.get("statusCheckRollup")),
+            )
+        )
+
     # GraphQL search: one call gives us the PR head branch and a real MERGED state
     # (the REST search/issues endpoint exposes neither). `$after` drives pagination.
     _REVIEWED_QUERY = """
