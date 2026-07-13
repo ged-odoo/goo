@@ -364,6 +364,8 @@ export class CodePlugin extends Plugin {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
+    const pullRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.pull_remote]));
+    const pushRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.push_remote]));
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -389,6 +391,8 @@ export class CodePlugin extends Plugin {
     return {
       githubByRepo,
       pathByRepo,
+      pullRemoteByRepo,
+      pushRemoteByRepo,
       prIndex,
       errors: this.prRepos().filter((r) => r.error),
       list: [...map.entries()]
@@ -454,8 +458,21 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // the configured remotes for the repo at <path> (never blank — repoData normalizes)
+  _pullRemote(path) {
+    return this.config.config.repos.find((r) => r.path === path)?.pull_remote || "origin";
+  }
+
+  _pushRemote(path) {
+    return this.config.config.repos.find((r) => r.path === path)?.push_remote || "dev";
+  }
+
   async remoteExists(path, branch) {
-    const res = await postJSON("/api/code/branch/remote", { path, branch });
+    const res = await postJSON("/api/code/branch/remote", {
+      path,
+      branch,
+      push_remote: this._pushRemote(path),
+    });
     return res.exists;
   }
 
@@ -523,6 +540,8 @@ export class CodePlugin extends Plugin {
   // touched, so we leave those as-is rather than re-querying everything.
   async rebase(repos) {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
+    const { pullRemoteByRepo } = this.groups();
+    repos = repos.map((r) => ({ ...r, pull_remote: pullRemoteByRepo[r.repo] }));
     this.busy.set(true);
     this._beginWork(ids);
     // the backend logs each repo's fetch then rebase phase as it happens (via SSE
@@ -560,7 +579,7 @@ export class CodePlugin extends Plugin {
   }
 
   async deleteBranch(branch, repo, path, deleteRemote = false) {
-    const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
+    const scope = deleteRemote ? `locally and on the ${this._pushRemote(path)} remote` : "locally";
     const ok = await this.dialogs.open({
       title: `Force-delete branch "${branch}" in ${repo}?`,
       message: `This deletes the branch ${scope}. This cannot be undone.`,
@@ -581,6 +600,7 @@ export class CodePlugin extends Plugin {
           path,
           branch,
           delete_remote: deleteRemote,
+          push_remote: this._pushRemote(path),
         });
         if (res.remote_error)
           this.dialogs.open({
@@ -635,7 +655,7 @@ export class CodePlugin extends Plugin {
           name: s.name,
           start_point: s.startPoint,
           fresh_start: !!s.freshStart,
-          github: repo.github,
+          pull_remote: repo.pull_remote,
           repo: repo.id,
         };
       });
@@ -785,7 +805,12 @@ export class CodePlugin extends Plugin {
       async () => {
         const verb = force ? "force-pushing" : "pushing";
         this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
-        await postJSON("/api/code/branch/push", { path, branch, force });
+        await postJSON("/api/code/branch/push", {
+          path,
+          branch,
+          force,
+          push_remote: repo?.push_remote || "dev",
+        });
         // a push only flips this repo's remote-tracking/synced state — refresh just
         // that branch row, not every repo's PRs/runbot/mergebot
         if (reload && repo) await this.refreshBranches(new Set([repo.id]));

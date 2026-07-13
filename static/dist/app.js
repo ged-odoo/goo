@@ -48,11 +48,20 @@ var DEFAULT_CONFIG = {
   // hourly, driving the navbar badge). The manual check button always works.
   update_check: true,
   repos: [
-    { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo", favorite: true },
+    {
+      id: "community",
+      path: "/home/odoo/work/community",
+      github: "odoo/odoo",
+      pull_remote: "origin",
+      push_remote: "dev",
+      favorite: true
+    },
     {
       id: "enterprise",
       path: "/home/odoo/work/enterprise",
       github: "odoo/enterprise",
+      pull_remote: "origin",
+      push_remote: "dev",
       favorite: true
     }
   ],
@@ -1989,6 +1998,8 @@ var CodePlugin = class extends Plugin {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
+    const pullRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.pull_remote]));
+    const pushRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.push_remote]));
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -2013,6 +2024,8 @@ var CodePlugin = class extends Plugin {
     return {
       githubByRepo,
       pathByRepo,
+      pullRemoteByRepo,
+      pushRemoteByRepo,
       prIndex,
       errors: this.prRepos().filter((r) => r.error),
       list: [...map.entries()].map(([branch, rows]) => {
@@ -2062,8 +2075,19 @@ var CodePlugin = class extends Plugin {
       return false;
     }
   }
+  // the configured remotes for the repo at <path> (never blank — repoData normalizes)
+  _pullRemote(path) {
+    return this.config.config.repos.find((r) => r.path === path)?.pull_remote || "origin";
+  }
+  _pushRemote(path) {
+    return this.config.config.repos.find((r) => r.path === path)?.push_remote || "dev";
+  }
   async remoteExists(path, branch) {
-    const res = await postJSON("/api/code/branch/remote", { path, branch });
+    const res = await postJSON("/api/code/branch/remote", {
+      path,
+      branch,
+      push_remote: this._pushRemote(path)
+    });
     return res.exists;
   }
   // last commits on a branch (ref; defaults to the repo's current branch)
@@ -2126,6 +2150,8 @@ var CodePlugin = class extends Plugin {
   // touched, so we leave those as-is rather than re-querying everything.
   async rebase(repos) {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
+    const { pullRemoteByRepo } = this.groups();
+    repos = repos.map((r) => ({ ...r, pull_remote: pullRemoteByRepo[r.repo] }));
     this.busy.set(true);
     this._beginWork(ids);
     try {
@@ -2159,7 +2185,7 @@ var CodePlugin = class extends Plugin {
     }
   }
   async deleteBranch(branch, repo, path, deleteRemote = false) {
-    const scope = deleteRemote ? "locally and on the odoo-dev remote" : "locally";
+    const scope = deleteRemote ? `locally and on the ${this._pushRemote(path)} remote` : "locally";
     const ok = await this.dialogs.open({
       title: `Force-delete branch "${branch}" in ${repo}?`,
       message: `This deletes the branch ${scope}. This cannot be undone.`,
@@ -2178,7 +2204,8 @@ var CodePlugin = class extends Plugin {
         const res = await postJSON("/api/code/branches/delete", {
           path,
           branch,
-          delete_remote: deleteRemote
+          delete_remote: deleteRemote,
+          push_remote: this._pushRemote(path)
         });
         if (res.remote_error)
           this.dialogs.open({
@@ -2229,7 +2256,7 @@ ${res.remote_error}`,
         name: s.name,
         start_point: s.startPoint,
         fresh_start: !!s.freshStart,
-        github: repo.github,
+        pull_remote: repo.pull_remote,
         repo: repo.id
       };
     });
@@ -2365,7 +2392,12 @@ ${res.remote_error}`,
       async () => {
         const verb = force ? "force-pushing" : "pushing";
         this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
-        await postJSON("/api/code/branch/push", { path, branch, force });
+        await postJSON("/api/code/branch/push", {
+          path,
+          branch,
+          force,
+          push_remote: repo?.push_remote || "dev"
+        });
         if (reload && repo) await this.refreshBranches(/* @__PURE__ */ new Set([repo.id]));
       },
       false
@@ -2744,6 +2776,8 @@ var Repository = class extends Model {
   static id = "repository";
   path = fields.char();
   github = fields.char();
+  pull_remote = fields.char();
+  push_remote = fields.char();
   favorite = fields.bool();
   external = fields.bool();
   autoreload = fields.bool();
@@ -2751,6 +2785,14 @@ var Repository = class extends Model {
   // the canonical GitHub slug — the stored value, else the built-in default for this id
   githubOrDefault() {
     return this.github() || DEFAULT_CONFIG.repos.find((d) => d.id === this.id)?.github || "";
+  }
+  // the configured git remotes, never blank — fetch/rebase pull from pullRemote,
+  // push/remote-delete go to pushRemote
+  pullRemote() {
+    return this.pull_remote() || "origin";
+  }
+  pushRemote() {
+    return this.push_remote() || "dev";
   }
   compareUrl(branch) {
     return repoUrls.compare(this.githubOrDefault(), branch);
@@ -2963,6 +3005,9 @@ function repoData(r) {
     id: r.id,
     path: r.path ?? "",
     github: r.github ?? "",
+    // normalizing blanks here migrates configs saved before the fields existed
+    pull_remote: r.pull_remote || "origin",
+    push_remote: r.push_remote || "dev",
     favorite: !!r.favorite,
     external: !!r.external,
     autoreload: !!r.autoreload
@@ -3025,6 +3070,8 @@ function toConfig(orm) {
     id: r.id,
     path: r.path(),
     github: r.github(),
+    pull_remote: r.pullRemote(),
+    push_remote: r.pushRemote(),
     favorite: r.favorite(),
     external: r.external(),
     autoreload: r.autoreload()
@@ -3093,7 +3140,16 @@ function reconcileRepos(orm, repos) {
     (r) => r.id,
     (rec, r) => {
       const d = repoData(r);
-      for (const k of ["path", "github", "favorite", "external", "autoreload"]) rec[k].set(d[k]);
+      const keys = [
+        "path",
+        "github",
+        "pull_remote",
+        "push_remote",
+        "favorite",
+        "external",
+        "autoreload"
+      ];
+      for (const k of keys) rec[k].set(d[k]);
     },
     createRepo
   );
@@ -3794,7 +3850,7 @@ var WorkspacePlugin = class extends Plugin {
       newBranch: branch,
       startPoint: startPointByRepo[repo],
       mainPath: g.pathByRepo[repo] || "",
-      github: g.githubByRepo[repo] || "",
+      pull_remote: g.pullRemoteByRepo[repo],
       worktreePath: `${dir}/${repo}`
     })).filter((r) => r.mainPath);
     if (!repos.length) return this._error("Create workspace", "no local repos for the checkouts");
@@ -4635,7 +4691,7 @@ var BranchesScreen = class extends Component {
   // repo rows and is "active" when the branch is checked out in any of its repos.
   // Sorted by the chosen column (branch name, or summed last-update time).
   groups = computed(() => {
-    const { prIndex, pathByRepo, githubByRepo } = this.code.groups();
+    const { prIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
     const byBranch = /* @__PURE__ */ new Map();
@@ -4650,6 +4706,7 @@ var BranchesScreen = class extends Component {
           repo: repo.id,
           path: pathByRepo[repo.id] || "",
           github: githubByRepo[repo.id] || "",
+          push_remote: pushRemoteByRepo[repo.id] || "dev",
           remote: b.remote,
           base: BASE_BRANCH_RE.test(b.name),
           date: b.date,
@@ -4717,7 +4774,7 @@ var BranchesScreen = class extends Component {
       fields2.push({
         key: "delRemote",
         type: "checkbox",
-        label: `Also delete ${remoteRows.length === 1 ? "it" : "them"} on the remote (odoo-dev)`,
+        label: `Also delete ${remoteRows.length === 1 ? "it" : "them"} on the push remote`,
         value: false
       });
     if (prs.length)
@@ -4759,7 +4816,7 @@ var BranchesScreen = class extends Component {
       fields2.push({
         key: "delRemote",
         type: "checkbox",
-        label: "Also delete it on the remote (odoo-dev)",
+        label: `Also delete it on the push remote (${r.push_remote})`,
         value: false
       });
     if (hasPr)
@@ -4825,10 +4882,10 @@ var BranchesScreen = class extends Component {
   openRowMenu(ev, r) {
     const rect = ev.currentTarget.getBoundingClientRect();
     const actions = [{ label: "Commits", onClick: () => this.openCommits(r) }];
-    if (!r.remote)
+    if (!r.remote && !r.base)
       actions.push({
         label: "Push",
-        title: "push this branch to the dev remote (odoo-dev)",
+        title: `push this branch to the ${r.push_remote} remote`,
         onClick: () => this.pushBranch(r)
       });
     if (!r.base && r.remote && r.github && !r.pr)
@@ -4876,7 +4933,7 @@ var BranchesScreen = class extends Component {
   pushBranch(row) {
     return pushBranchesDialog(this.code, this.dialogs, [{ path: row.path, branch: row.branch }], {
       title: `Push "${row.branch}"?`,
-      message: `Push ${row.branch} (${row.repo}) to the dev remote (odoo-dev)?`
+      message: `Push ${row.branch} (${row.repo}) to the ${row.push_remote} remote?`
     });
   }
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
@@ -4943,7 +5000,8 @@ var ListEditor = class extends Component {
               <t t-out="f.name"/>
             </label>
             <input t-else="" t-att-class="f.className" t-att-placeholder="f.placeholder"
-                   t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"
+                   t-att-title="f.title" t-att-value="row[f.key]"
+                   t-on-input="ev => row[f.key] = ev.target.value"
                    t-on-change="() => this.saveAuto()"/>
           </t>
           <button class="row-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
@@ -5608,6 +5666,24 @@ var SPECS = {
         placeholder: "github (e.g. odoo/odoo)",
         className: "w-name",
         optional: true
+      },
+      {
+        key: "pull_remote",
+        name: "pull remote",
+        placeholder: "pull remote (default: origin)",
+        className: "w-name",
+        optional: true,
+        default: "origin",
+        title: "git remote fetched from (rebase, fresh start points, auto-reload)"
+      },
+      {
+        key: "push_remote",
+        name: "push remote",
+        placeholder: "push remote (default: dev)",
+        className: "w-name",
+        optional: true,
+        default: "dev",
+        title: "git remote pushed to (push branch, delete remote branch)"
       },
       { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
       {
@@ -8600,7 +8676,7 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
     fields2.push({
       key: "delRemote",
       type: "checkbox",
-      label: "\u2026also on the remote (odoo-dev)",
+      label: "\u2026also on the push remote",
       value: true
     });
   if (prs.length)
@@ -9599,6 +9675,7 @@ var CodePane = class extends Component {
         error: b.error || "",
         github,
         path: groups.pathByRepo[r.id] || "",
+        push_remote: groups.pushRemoteByRepo[r.id] || "dev",
         pr,
         // a work branch that's pushed and PR-less can have a PR opened for it
         canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
@@ -9639,14 +9716,16 @@ var CodePane = class extends Component {
       { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
     ]);
   }
-  // push a checkout's branch to the dev remote. Git pushes an explicit branch name
-  // (git push dev <branch>), so this works whether or not it's checked out — the
-  // guard is only that the branch exists locally and the repo is configured.
+  // push a checkout's branch to the repo's push remote. Git pushes an explicit
+  // branch name (git push <remote> <branch>), so this works whether or not it's
+  // checked out — the guard is only that the branch exists locally and is not a
+  // base branch (those are never pushed).
   pushRowTitle(r) {
     if (r.entry?.error) return r.entry.error;
-    if (!r.entry?.github || !r.path) return "no canonical repo configured for this repository";
+    if (!r.path) return "no local path configured for this repository";
+    if (this.isBaseBranch(r.branch)) return "base branches cannot be pushed";
     if (!r.canPush) return "the branch does not exist locally";
-    return `push ${r.branch} to the dev remote (odoo-dev)`;
+    return `push ${r.branch} to the ${r.push_remote} remote`;
   }
   async pushRow(r) {
     if (!r.canPush) return;
@@ -9656,7 +9735,7 @@ var CodePane = class extends Component {
       [{ path: r.path, branch: r.branch }],
       {
         title: `Push "${r.branch}"?`,
-        message: `Push ${r.branch} (${r.repo}) to the dev remote (odoo-dev)?`
+        message: `Push ${r.branch} (${r.repo}) to the ${r.push_remote} remote?`
       }
     );
     if (pushed) this.touchActivity();
@@ -9669,7 +9748,7 @@ var CodePane = class extends Component {
       [{ path: r.path, branch: r.branch }],
       {
         title: `Force-push "${r.branch}"?`,
-        message: `Force-push ${r.branch} (${r.repo}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+        message: `Force-push ${r.branch} (${r.repo}) to the ${r.push_remote} remote with --force-with-lease? This overwrites the remote branch.`,
         force: true
       }
     );
@@ -9709,13 +9788,19 @@ var CodePane = class extends Component {
   canPushAll() {
     return this.pushableRows.length > 0;
   }
+  // "the dev remote" / "the dev, fork remotes" — repos may configure different
+  // push remotes, so multi-repo push labels list every distinct one
+  _pushRemotes(rows) {
+    const names = [...new Set(rows.map((r) => r.push_remote))];
+    return `the ${names.join(", ")} remote${names.length === 1 ? "" : "s"}`;
+  }
   pushAllTitle() {
     const rows = this.pushableRows;
     if (!rows.length)
-      return "nothing to push \u2014 no local work branches (base branches are never bulk-pushed)";
-    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to the dev remote (odoo-dev)`;
+      return "nothing to push \u2014 no local work branches (base branches are never pushed)";
+    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}`;
   }
-  // push every work-branch checkout to the dev remote, one confirm for the batch
+  // push every work-branch checkout to its repo's push remote, one confirm for the batch
   async pushAll() {
     const rows = this.pushableRows;
     if (!rows.length) return;
@@ -9725,7 +9810,7 @@ var CodePane = class extends Component {
       rows.map((r) => ({ path: r.path, branch: r.branch })),
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
-        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to the dev remote (odoo-dev)?`
+        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}?`
       }
     );
     if (pushed) this.touchActivity();
@@ -9804,12 +9889,14 @@ var CodePane = class extends Component {
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
         github: entry?.github || "",
         path: entry?.path || "",
+        push_remote: entry?.push_remote || "dev",
         base: entry?.base || this._baseBranch(c.branch),
         behind: checkedOut ? entry?.behind || 0 : 0,
         ahead: checkedOut ? entry?.ahead || 0 : 0,
         canRebase: checkedOut && !!entry && this.canRebaseRepo(entry),
-        // push works on any local branch (explicit refspec) — checkout not required
-        canPush: !!(b && entry && !entry.error && entry.github && entry.path),
+        // push works on any local branch (explicit refspec) — checkout not required,
+        // but base branches are never pushed
+        canPush: !!(b && entry && !entry.error && entry.path) && !this.isBaseBranch(c.branch),
         entry
         // the rich repo entry (this.repos) the actions menu operates on
       };

@@ -1498,7 +1498,7 @@ def _autoreload_repos():
     """The config's repos opted into the 4h background `git fetch master`."""
     cfg = CONFIG.get()["config"] or {}
     return [
-        {"id": r.get("id"), "path": r.get("path"), "github": r.get("github")}
+        {"id": r.get("id"), "path": r.get("path"), "pull_remote": r.get("pull_remote")}
         for r in (cfg.get("repos") or [])
         if r.get("autoreload") and r.get("path")
     ]
@@ -1751,7 +1751,10 @@ class Handler(BaseHTTPRequestHandler):
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
             ok, error, remote_error = GIT.delete_branch(
-                repo_path, branch, bool((body or {}).get("delete_remote"))
+                repo_path,
+                branch,
+                bool((body or {}).get("delete_remote")),
+                push_remote=(body or {}).get("push_remote"),
             )
             if ok:
                 self._send_json(200, {"ok": True, "remote_error": remote_error})
@@ -1771,7 +1774,7 @@ class Handler(BaseHTTPRequestHandler):
                     b.get("name"),
                     b.get("start_point"),
                     fresh_start=bool(b.get("fresh_start")),
-                    github=b.get("github"),
+                    pull_remote=b.get("pull_remote"),
                     repo=b.get("repo", ""),
                 )
                 return {"name": b.get("name"), "ok": ok, "error": error}
@@ -1833,7 +1836,7 @@ class Handler(BaseHTTPRequestHandler):
             # reports under its own event id, so the progress log stays unambiguous)
             def fr(r):
                 ok, error = GIT.fetch_rebase(
-                    r.get("path"), r.get("base"), r.get("github"), r.get("repo")
+                    r.get("path"), r.get("base"), r.get("pull_remote"), r.get("repo")
                 )
                 return {"repo": r.get("repo"), "ok": ok, "error": error}
 
@@ -1860,7 +1863,7 @@ class Handler(BaseHTTPRequestHandler):
                     new_branch=bool(r.get("newBranch")),
                     start_point=r.get("startPoint"),
                     fresh_start=True,
-                    github=r.get("github"),
+                    pull_remote=r.get("pull_remote"),
                 )
                 results.append({"repo": r.get("repo"), "ok": ok, "error": error})
             self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
@@ -2016,7 +2019,9 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            exists, error = GIT.remote_branch_exists(repo_path, branch)
+            exists, error = GIT.remote_branch_exists(
+                repo_path, branch, push_remote=(body or {}).get("push_remote")
+            )
             if error:
                 self._send_json(400, {"ok": False, "error": error})
             else:
@@ -2027,7 +2032,12 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = GIT.push_branch(repo_path, branch, bool((body or {}).get("force")))
+            ok, error = GIT.push_branch(
+                repo_path,
+                branch,
+                bool((body or {}).get("force")),
+                push_remote=(body or {}).get("push_remote"),
+            )
             if ok:
                 self._send_json(200, {"ok": True})
             else:
@@ -2046,7 +2056,9 @@ class Handler(BaseHTTPRequestHandler):
             branch = (body or {}).get("branch")
             if err or not repo_path or not branch:
                 return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = GIT.fetch_remote_branch(repo_path, branch)
+            ok, error = GIT.fetch_remote_branch(
+                repo_path, branch, pull_remote=(body or {}).get("pull_remote")
+            )
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/wip-commit":
             body, err = self._read_json()

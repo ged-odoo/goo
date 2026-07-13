@@ -253,7 +253,7 @@ export class WorkspacePlugin extends Plugin {
         newBranch: branch,
         startPoint: startPointByRepo[repo],
         mainPath: g.pathByRepo[repo] || "",
-        github: g.githubByRepo[repo] || "",
+        pull_remote: g.pullRemoteByRepo[repo],
         worktreePath: `${dir}/${repo}`,
       }))
       .filter((r) => r.mainPath);

@@ -1493,6 +1493,11 @@ def base_branch(name):
     return m.group(1) if m else "master"
 
 
+def is_base_branch(name):
+    """Whether <name> IS a base branch (exact match — master-foo is a work branch)."""
+    return bool(_BASE_BRANCH_RE.fullmatch(name or ""))
+
+
 class GitService:
     """Local git operations on the user's repos, over the IO seam. Branch reads are
     volatile (dirty / current-branch state) and fast, so they're not cached — callers
@@ -1557,7 +1562,7 @@ class GitService:
                 # how far the current branch diverges from its canonical base (the
                 # "target" it would rebase onto), e.g. master-owl-update vs origin/master
                 base = base_branch(entry["current"])
-                ref = f"{self.main_remote(path, repo.get('github'))}/{base}"
+                ref = f"{repo.get('pull_remote') or 'origin'}/{base}"
                 # quiet: the base ref may not be fetched locally (→ "bad revision"); that's
                 # expected, we just leave ahead/behind at 0 rather than log every refresh
                 ad = self.io.run(
@@ -1652,16 +1657,16 @@ class GitService:
         self.notify(checking, event_id=eid, status="done")
         return True, None
 
-    def fresh_start_point(self, path, branch, github=None, repo=""):
-        """Resolve a workspace branch's start point. If the canonical remote has
-        <branch>, fetch it and return FETCH_HEAD so branch/worktree creation starts
-        from the freshly fetched commit. If the branch is local-only, return its
-        local name unchanged. A remote lookup/fetch error is not silently treated
+    def fresh_start_point(self, path, branch, pull_remote="origin", repo=""):
+        """Resolve a workspace branch's start point. If the configured pull remote
+        has <branch>, fetch it and return FETCH_HEAD so branch/worktree creation
+        starts from the freshly fetched commit. If the branch is local-only, return
+        its local name unchanged. A remote lookup/fetch error is not silently treated
         as local-only: doing so could create a workspace from stale local state."""
         if not path or not branch:
             return None, "missing path or start point"
         p = os.path.expanduser(path)
-        remote = self.main_remote(p, github)
+        remote = pull_remote or "origin"
         label = repo or os.path.basename(p)
         self.io.log_request(f"git ls-remote {remote} {branch}  (workspace base {label})")
         try:
@@ -1703,7 +1708,7 @@ class GitService:
         new_branch=False,
         start_point=None,
         fresh_start=False,
-        github=None,
+        pull_remote="origin",
     ):
         """Add a git worktree at <worktree_path>, linked to the repo at <main_path>
         (sharing its .git); git creates intermediate dirs. With new_branch, create
@@ -1717,7 +1722,7 @@ class GitService:
             return False, "missing start point for the new branch"
         p = os.path.expanduser(main_path)
         if new_branch and fresh_start:
-            start_point, error = self.fresh_start_point(p, start_point, github, repo)
+            start_point, error = self.fresh_start_point(p, start_point, pull_remote, repo)
             if error:
                 return False, error
         wp = os.path.expanduser(worktree_path)
@@ -1762,13 +1767,15 @@ class GitService:
         self.notify(removing, event_id=eid, status="done")
         return True, None
 
-    def create_branch(self, path, name, start_point, fresh_start=False, github=None, repo=""):
+    def create_branch(
+        self, path, name, start_point, fresh_start=False, pull_remote="origin", repo=""
+    ):
         """Create a new local branch <name> at <start_point> WITHOUT checking it
         out (working tree / current branch untouched). Returns (ok, error)."""
         if not path or not name or not start_point:
             return False, "missing path, name or start point"
         if fresh_start:
-            start_point, error = self.fresh_start_point(path, start_point, github, repo)
+            start_point, error = self.fresh_start_point(path, start_point, pull_remote, repo)
             if error:
                 return False, error
         try:
@@ -1781,9 +1788,9 @@ class GitService:
             return False, r.stderr.strip().split("\n")[0] or "git branch failed"
         return True, None
 
-    def delete_branch(self, path, branch, delete_remote=False):
-        """Force-delete a local branch, and optionally its branch on the odoo-dev
-        remote too. Returns (ok, error, remote_error): the first two are for the
+    def delete_branch(self, path, branch, delete_remote=False, push_remote="dev"):
+        """Force-delete a local branch, and optionally its branch on the configured
+        push remote too. Returns (ok, error, remote_error): the first two are for the
         local delete; remote_error is set when the local delete succeeded but the
         remote branch could not be removed (None otherwise)."""
         path = os.path.expanduser(path)
@@ -1795,12 +1802,12 @@ class GitService:
             return False, r.stderr.strip().split("\n")[0] or "git branch -D failed", None
         remote_error = None
         if delete_remote:
+            if is_base_branch(branch):
+                return True, None, f"refusing to delete base branch {branch} on the remote"
             # delete straight away — no `ls-remote` pre-check (a round-trip per branch).
             # If the branch was never pushed, git fails with "remote ref does not
             # exist", which we treat as success: there was nothing to remove.
-            remote, _ = self.dev_remote(path)
-            if not remote:
-                return True, None, None  # no odoo-dev fork → nothing could be there
+            remote = push_remote or "dev"
             self.io.log_request(f"git push {remote} --delete {branch}")
             try:
                 r = self.io.run(
@@ -1874,29 +1881,26 @@ class GitService:
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return None, str(e)
 
-    def fetch_remote_branch(self, path, branch):
+    def fetch_remote_branch(self, path, branch, pull_remote="origin"):
         """Fetch a remote branch and create/reset the local branch to track it
-        (git fetch origin {branch}:{branch}). Returns (ok, error)."""
+        (git fetch <pull_remote> {branch}:{branch}). Returns (ok, error)."""
         path = os.path.expanduser(path)
+        remote = pull_remote or "origin"
         try:
-            r = self.io.run(
-                ["git", "-C", path, "fetch", "origin", f"{branch}:{branch}"], timeout=60
-            )
+            r = self.io.run(["git", "-C", path, "fetch", remote, f"{branch}:{branch}"], timeout=60)
             if r.returncode != 0:
                 return False, r.stderr.strip().split("\n")[0] or "git fetch failed"
             return True, None
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return False, str(e)
 
-    def fetch_rebase(self, path, base, github, repo=""):
-        """Fetch the base branch from the canonical (main) repo and rebase the
+    def fetch_rebase(self, path, base, pull_remote="origin", repo=""):
+        """Fetch the base branch from the configured pull remote and rebase the
         current branch onto it. Announces the fetch and rebase phases via notify.
         Returns (ok, error); on conflict the rebase is left in progress."""
         if not path or not base:
             return False, "missing path or base branch"
-        remote = self.main_remote(path, github)
-        if not remote:
-            return False, f"no remote points at {github}"
+        remote = pull_remote or "origin"
         p = os.path.expanduser(path)
         label = repo or os.path.basename(p)
         # both phases are slow — track each as a timed event so the browser shows a
@@ -1928,23 +1932,9 @@ class GitService:
         self.notify(rebasing, event_id=eid, status="done")
         return True, None
 
-    def dev_remote(self, path):
-        """Name of the remote pointing at the odoo-dev fork. (remote, error)."""
-        try:
-            r = self.io.run(["git", "-C", os.path.expanduser(path), "remote", "-v"], timeout=10)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return None, str(e)
-        for line in r.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and "odoo-dev" in parts[1]:
-                return parts[0], None
-        return None, "no odoo-dev remote configured"
-
-    def remote_branch_exists(self, path, branch):
-        """Whether <branch> exists on the odoo-dev remote. (exists, error)."""
-        remote, err = self.dev_remote(path)
-        if err:
-            return None, err
+    def remote_branch_exists(self, path, branch, push_remote="dev"):
+        """Whether <branch> exists on the configured push remote. (exists, error)."""
+        remote = push_remote or "dev"
         self.io.log_request(f"git ls-remote {remote} {branch}")
         try:
             r = self.io.run(
@@ -1957,12 +1947,13 @@ class GitService:
             return None, r.stderr.strip().split("\n")[0] or "git ls-remote failed"
         return bool(r.stdout.strip()), None
 
-    def push_branch(self, path, branch, force=False):
-        """Push <branch> to the odoo-dev remote, setting upstream. With force, use
-        --force-with-lease (aborts if the remote moved unexpectedly). (ok, error)."""
-        remote, err = self.dev_remote(path)
-        if err:
-            return False, err
+    def push_branch(self, path, branch, force=False, push_remote="dev"):
+        """Push <branch> to the configured push remote, setting upstream. With force,
+        use --force-with-lease (aborts if the remote moved unexpectedly). (ok, error).
+        Base branches (master, saas-19.4, …) are never pushed."""
+        if is_base_branch(branch):
+            return False, f"refusing to push base branch {branch}"
+        remote = push_remote or "dev"
         args = ["push", "--set-upstream"]
         if force:
             args.append("--force-with-lease")
@@ -1976,31 +1967,6 @@ class GitService:
             return False, r.stderr.strip().split("\n")[-1] or "git push failed"
         return True, None
 
-    def main_remote(self, path, github=None):
-        """Best guess at the remote hosting the canonical master: (1) the upstream
-        of the local `master` branch; (2) the remote whose URL matches the github
-        slug (not the odoo-dev fork); (3) "origin"."""
-        p = os.path.expanduser(path)
-        try:
-            # quiet: a non-zero exit just means master has no upstream here — expected,
-            # we fall back to the remote-URL match / "origin" below
-            r = self.io.run(
-                ["git", "-C", p, "rev-parse", "--abbrev-ref", "master@{upstream}"],
-                timeout=10,
-                quiet=True,
-            )
-            if r.returncode == 0 and "/" in r.stdout.strip():
-                return r.stdout.strip().split("/", 1)[0]
-            if github:
-                rv = self.io.run(["git", "-C", p, "remote", "-v"], timeout=10)
-                for line in rv.stdout.splitlines():
-                    parts = line.split()
-                    if len(parts) >= 2 and github in parts[1]:
-                        return parts[0]
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        return "origin"
-
     def fetch_master(self, repo):
         """Fetch master objects for one repo (no merge, no working-tree change).
         Slow on stale odoo clones, so callers run this off the main thread."""
@@ -2008,7 +1974,7 @@ class GitService:
         path = repo.get("path")
         if not path:
             return
-        remote = self.main_remote(path, repo.get("github"))
+        remote = repo.get("pull_remote") or "origin"
         self.io.log_request(f"git fetch {remote} master  (auto-reload {rid})")
         tag = getattr(self.io, "TAG", "[goo]")
         try:

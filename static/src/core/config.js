@@ -26,11 +26,20 @@ export const DEFAULT_CONFIG = {
   // hourly, driving the navbar badge). The manual check button always works.
   update_check: true,
   repos: [
-    { id: "community", path: "/home/odoo/work/community", github: "odoo/odoo", favorite: true },
+    {
+      id: "community",
+      path: "/home/odoo/work/community",
+      github: "odoo/odoo",
+      pull_remote: "origin",
+      push_remote: "dev",
+      favorite: true,
+    },
     {
       id: "enterprise",
       path: "/home/odoo/work/enterprise",
       github: "odoo/enterprise",
+      pull_remote: "origin",
+      push_remote: "dev",
       favorite: true,
     },
   ],

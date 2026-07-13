@@ -24,7 +24,8 @@ export class ListEditor extends Component {
               <t t-out="f.name"/>
             </label>
             <input t-else="" t-att-class="f.className" t-att-placeholder="f.placeholder"
-                   t-att-value="row[f.key]" t-on-input="ev => row[f.key] = ev.target.value"
+                   t-att-title="f.title" t-att-value="row[f.key]"
+                   t-on-input="ev => row[f.key] = ev.target.value"
                    t-on-change="() => this.saveAuto()"/>
           </t>
           <button class="row-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
@@ -772,6 +773,24 @@ export const SPECS = {
         placeholder: "github (e.g. odoo/odoo)",
         className: "w-name",
         optional: true,
+      },
+      {
+        key: "pull_remote",
+        name: "pull remote",
+        placeholder: "pull remote (default: origin)",
+        className: "w-name",
+        optional: true,
+        default: "origin",
+        title: "git remote fetched from (rebase, fresh start points, auto-reload)",
+      },
+      {
+        key: "push_remote",
+        name: "push remote",
+        placeholder: "push remote (default: dev)",
+        className: "w-name",
+        optional: true,
+        default: "dev",
+        title: "git remote pushed to (push branch, delete remote branch)",
       },
       { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
       {

@@ -87,6 +87,8 @@ export class Repository extends Model {
   static id = "repository";
   path = fields.char();
   github = fields.char();
+  pull_remote = fields.char();
+  push_remote = fields.char();
   favorite = fields.bool();
   external = fields.bool();
   autoreload = fields.bool();
@@ -95,6 +97,16 @@ export class Repository extends Model {
   // the canonical GitHub slug — the stored value, else the built-in default for this id
   githubOrDefault() {
     return this.github() || DEFAULT_CONFIG.repos.find((d) => d.id === this.id)?.github || "";
+  }
+
+  // the configured git remotes, never blank — fetch/rebase pull from pullRemote,
+  // push/remote-delete go to pushRemote
+  pullRemote() {
+    return this.pull_remote() || "origin";
+  }
+
+  pushRemote() {
+    return this.push_remote() || "dev";
   }
 
   compareUrl(branch) {
@@ -357,6 +369,9 @@ function repoData(r) {
     id: r.id,
     path: r.path ?? "",
     github: r.github ?? "",
+    // normalizing blanks here migrates configs saved before the fields existed
+    pull_remote: r.pull_remote || "origin",
+    push_remote: r.push_remote || "dev",
     favorite: !!r.favorite,
     external: !!r.external,
     autoreload: !!r.autoreload,
@@ -424,6 +439,8 @@ export function toConfig(orm) {
     id: r.id,
     path: r.path(),
     github: r.github(),
+    pull_remote: r.pullRemote(),
+    push_remote: r.pushRemote(),
     favorite: r.favorite(),
     external: r.external(),
     autoreload: r.autoreload(),
@@ -500,7 +517,16 @@ function reconcileRepos(orm, repos) {
     (r) => r.id,
     (rec, r) => {
       const d = repoData(r);
-      for (const k of ["path", "github", "favorite", "external", "autoreload"]) rec[k].set(d[k]);
+      const keys = [
+        "path",
+        "github",
+        "pull_remote",
+        "push_remote",
+        "favorite",
+        "external",
+        "autoreload",
+      ];
+      for (const k of keys) rec[k].set(d[k]);
     },
     createRepo,
   );

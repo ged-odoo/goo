@@ -284,6 +284,7 @@ export class CodePane extends Component {
           error: b.error || "",
           github,
           path: groups.pathByRepo[r.id] || "",
+          push_remote: groups.pushRemoteByRepo[r.id] || "dev",
           pr,
           // a work branch that's pushed and PR-less can have a PR opened for it
           canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
@@ -331,14 +332,16 @@ export class CodePane extends Component {
     ]);
   }
 
-  // push a checkout's branch to the dev remote. Git pushes an explicit branch name
-  // (git push dev <branch>), so this works whether or not it's checked out — the
-  // guard is only that the branch exists locally and the repo is configured.
+  // push a checkout's branch to the repo's push remote. Git pushes an explicit
+  // branch name (git push <remote> <branch>), so this works whether or not it's
+  // checked out — the guard is only that the branch exists locally and is not a
+  // base branch (those are never pushed).
   pushRowTitle(r) {
     if (r.entry?.error) return r.entry.error;
-    if (!r.entry?.github || !r.path) return "no canonical repo configured for this repository";
+    if (!r.path) return "no local path configured for this repository";
+    if (this.isBaseBranch(r.branch)) return "base branches cannot be pushed";
     if (!r.canPush) return "the branch does not exist locally";
-    return `push ${r.branch} to the dev remote (odoo-dev)`;
+    return `push ${r.branch} to the ${r.push_remote} remote`;
   }
 
   async pushRow(r) {
@@ -349,7 +352,7 @@ export class CodePane extends Component {
       [{ path: r.path, branch: r.branch }],
       {
         title: `Push "${r.branch}"?`,
-        message: `Push ${r.branch} (${r.repo}) to the dev remote (odoo-dev)?`,
+        message: `Push ${r.branch} (${r.repo}) to the ${r.push_remote} remote?`,
       },
     );
     if (pushed) this.touchActivity();
@@ -363,7 +366,7 @@ export class CodePane extends Component {
       [{ path: r.path, branch: r.branch }],
       {
         title: `Force-push "${r.branch}"?`,
-        message: `Force-push ${r.branch} (${r.repo}) to the dev remote (odoo-dev) with --force-with-lease? This overwrites the remote branch.`,
+        message: `Force-push ${r.branch} (${r.repo}) to the ${r.push_remote} remote with --force-with-lease? This overwrites the remote branch.`,
         force: true,
       },
     );
@@ -410,14 +413,21 @@ export class CodePane extends Component {
     return this.pushableRows.length > 0;
   }
 
+  // "the dev remote" / "the dev, fork remotes" — repos may configure different
+  // push remotes, so multi-repo push labels list every distinct one
+  _pushRemotes(rows) {
+    const names = [...new Set(rows.map((r) => r.push_remote))];
+    return `the ${names.join(", ")} remote${names.length === 1 ? "" : "s"}`;
+  }
+
   pushAllTitle() {
     const rows = this.pushableRows;
     if (!rows.length)
-      return "nothing to push — no local work branches (base branches are never bulk-pushed)";
-    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to the dev remote (odoo-dev)`;
+      return "nothing to push — no local work branches (base branches are never pushed)";
+    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}`;
   }
 
-  // push every work-branch checkout to the dev remote, one confirm for the batch
+  // push every work-branch checkout to its repo's push remote, one confirm for the batch
   async pushAll() {
     const rows = this.pushableRows;
     if (!rows.length) return;
@@ -427,7 +437,7 @@ export class CodePane extends Component {
       rows.map((r) => ({ path: r.path, branch: r.branch })),
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
-        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to the dev remote (odoo-dev)?`,
+        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}?`,
       },
     );
     if (pushed) this.touchActivity();
@@ -513,12 +523,14 @@ export class CodePane extends Component {
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
         github: entry?.github || "",
         path: entry?.path || "",
+        push_remote: entry?.push_remote || "dev",
         base: entry?.base || this._baseBranch(c.branch),
         behind: checkedOut ? entry?.behind || 0 : 0,
         ahead: checkedOut ? entry?.ahead || 0 : 0,
         canRebase: checkedOut && !!entry && this.canRebaseRepo(entry),
-        // push works on any local branch (explicit refspec) — checkout not required
-        canPush: !!(b && entry && !entry.error && entry.github && entry.path),
+        // push works on any local branch (explicit refspec) — checkout not required,
+        // but base branches are never pushed
+        canPush: !!(b && entry && !entry.error && entry.path) && !this.isBaseBranch(c.branch),
         entry, // the rich repo entry (this.repos) the actions menu operates on
       };
     });

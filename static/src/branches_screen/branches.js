@@ -109,7 +109,7 @@ export class BranchesScreen extends Component {
   // repo rows and is "active" when the branch is checked out in any of its repos.
   // Sorted by the chosen column (branch name, or summed last-update time).
   groups = computed(() => {
-    const { prIndex, pathByRepo, githubByRepo } = this.code.groups();
+    const { prIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
     const byBranch = new Map();
@@ -124,6 +124,7 @@ export class BranchesScreen extends Component {
           repo: repo.id,
           path: pathByRepo[repo.id] || "",
           github: githubByRepo[repo.id] || "",
+          push_remote: pushRemoteByRepo[repo.id] || "dev",
           remote: b.remote,
           base: BASE_BRANCH_RE.test(b.name),
           date: b.date,
@@ -199,7 +200,7 @@ export class BranchesScreen extends Component {
       fields.push({
         key: "delRemote",
         type: "checkbox",
-        label: `Also delete ${remoteRows.length === 1 ? "it" : "them"} on the remote (odoo-dev)`,
+        label: `Also delete ${remoteRows.length === 1 ? "it" : "them"} on the push remote`,
         value: false,
       });
     if (prs.length)
@@ -245,7 +246,7 @@ export class BranchesScreen extends Component {
       fields.push({
         key: "delRemote",
         type: "checkbox",
-        label: "Also delete it on the remote (odoo-dev)",
+        label: `Also delete it on the push remote (${r.push_remote})`,
         value: false,
       });
     if (hasPr)
@@ -321,10 +322,10 @@ export class BranchesScreen extends Component {
   openRowMenu(ev, r) {
     const rect = ev.currentTarget.getBoundingClientRect();
     const actions = [{ label: "Commits", onClick: () => this.openCommits(r) }];
-    if (!r.remote)
+    if (!r.remote && !r.base)
       actions.push({
         label: "Push",
-        title: "push this branch to the dev remote (odoo-dev)",
+        title: `push this branch to the ${r.push_remote} remote`,
         onClick: () => this.pushBranch(r),
       });
     if (!r.base && r.remote && r.github && !r.pr)
@@ -375,7 +376,7 @@ export class BranchesScreen extends Component {
   pushBranch(row) {
     return pushBranchesDialog(this.code, this.dialogs, [{ path: row.path, branch: row.branch }], {
       title: `Push "${row.branch}"?`,
-      message: `Push ${row.branch} (${row.repo}) to the dev remote (odoo-dev)?`,
+      message: `Push ${row.branch} (${row.repo}) to the ${row.push_remote} remote?`,
     });
   }
 

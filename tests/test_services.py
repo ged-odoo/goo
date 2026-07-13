@@ -1016,7 +1016,6 @@ class GitServiceTest(unittest.TestCase):
                         "master-test\t2024-06-19T10:00:00\t[NEW] x\tnew111\n"
                     )
                 ),
-                "master@{upstream}": completed(stdout="origin/master\n"),
             }
         )
         svc = services.GitService(io)
@@ -1039,6 +1038,20 @@ class GitServiceTest(unittest.TestCase):
         )
         [entry] = services.GitService(io).branches([{"id": "x", "path": "/nope"}])
         self.assertEqual(entry["error"], "not a git repo")
+
+    def test_branches_compares_against_configured_pull_remote(self):
+        io = FakeIO(runs={"branch --show-current": completed(stdout="master-x\n")})
+        services.GitService(io).branches(
+            [{"id": "community", "path": "/repo", "pull_remote": "upstream"}]
+        )
+        [ahead_behind] = [c for c in io.run_calls if "--left-right" in " ".join(c)]
+        self.assertIn("upstream/master...HEAD", " ".join(ahead_behind))
+
+    def test_branches_defaults_pull_remote_to_origin(self):
+        io = FakeIO(runs={"branch --show-current": completed(stdout="master-x\n")})
+        services.GitService(io).branches([{"id": "community", "path": "/repo"}])
+        [ahead_behind] = [c for c in io.run_calls if "--left-right" in " ".join(c)]
+        self.assertIn("origin/master...HEAD", " ".join(ahead_behind))
 
     def test_checkout_error(self):
         io = FakeIO(
@@ -1153,17 +1166,30 @@ class GitServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("not a working tree", err)
 
-    def test_delete_branch_no_dev_remote_skips_remote(self):
-        # local delete ok; no odoo-dev remote → remote delete skipped (no error)
-        io = FakeIO(
-            runs={
-                "branch -D": completed(),
-                "remote -v": completed(stdout="origin\tgit@github:odoo/odoo\n"),
-            }
+    def test_delete_branch_pushes_delete_to_push_remote(self):
+        io = FakeIO()
+        ok, err, remote_err = services.GitService(io).delete_branch(
+            "/r", "b", delete_remote=True, push_remote="fork"
         )
-        ok, err, remote_err = services.GitService(io).delete_branch("/r", "b", delete_remote=True)
         self.assertEqual((ok, err, remote_err), (True, None, None))
-        self.assertFalse(any("--delete" in " ".join(c) for c in io.run_calls))  # never pushed
+        self.assertTrue(any("push fork --delete b" in " ".join(c) for c in io.run_calls))
+
+    def test_delete_branch_remote_defaults_to_dev(self):
+        io = FakeIO()
+        ok, _, _ = services.GitService(io).delete_branch("/r", "b", delete_remote=True)
+        self.assertTrue(ok)
+        self.assertTrue(any("push dev --delete b" in " ".join(c) for c in io.run_calls))
+
+    def test_delete_branch_refuses_remote_delete_of_base_branch(self):
+        # the local branch still goes; the remote base branch is never touched
+        io = FakeIO()
+        ok, err, remote_err = services.GitService(io).delete_branch(
+            "/r", "saas-19.4", delete_remote=True
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertIn("refusing to delete base branch", remote_err)
+        self.assertFalse(any("push" in " ".join(c) for c in io.run_calls))
 
     def test_log_parses_commits(self):
         rec = "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1fbody line\x1e"
@@ -1181,25 +1207,61 @@ class GitServiceTest(unittest.TestCase):
             },
         )
 
-    def test_main_remote_falls_back_to_origin(self):
-        # no upstream and no github match → "origin"
-        io = FakeIO(runs={"master@{upstream}": completed(returncode=128, stderr="no upstream")})
-        self.assertEqual(services.GitService(io).main_remote("/r"), "origin")
+    def test_push_branch_pushes_to_push_remote(self):
+        io = FakeIO()
+        ok, err = services.GitService(io).push_branch("/r", "master-x", push_remote="fork")
+        self.assertEqual((ok, err), (True, None))
+        self.assertIn("push --set-upstream fork master-x", " ".join(io.run_calls[-1]))
 
-    def test_main_remote_from_github_url(self):
-        io = FakeIO(
-            runs={
-                "master@{upstream}": completed(returncode=128),
-                "remote -v": completed(stdout="upstream\tgit@github.com:odoo/odoo.git (fetch)\n"),
-            }
+    def test_push_branch_defaults_to_dev_and_supports_force(self):
+        io = FakeIO()
+        ok, _ = services.GitService(io).push_branch("/r", "master-x", force=True)
+        self.assertTrue(ok)
+        self.assertIn(
+            "push --set-upstream --force-with-lease dev master-x", " ".join(io.run_calls[-1])
         )
-        self.assertEqual(services.GitService(io).main_remote("/r", "odoo/odoo"), "upstream")
+
+    def test_push_branch_refuses_base_branches(self):
+        for base in ("master", "saas-19.4", "17.0"):
+            io = FakeIO()
+            ok, err = services.GitService(io).push_branch("/r", base)
+            self.assertFalse(ok)
+            self.assertEqual(err, f"refusing to push base branch {base}")
+            self.assertEqual(io.run_calls, [])  # never reaches git
+
+    def test_push_branch_allows_base_prefixed_work_branches(self):
+        for branch in ("master-foo", "17.0-fix-x", "saas-19.4-imp-y"):
+            io = FakeIO()
+            ok, err = services.GitService(io).push_branch("/r", branch)
+            self.assertEqual((ok, err), (True, None))
+
+    def test_remote_branch_exists_queries_push_remote(self):
+        io = FakeIO(runs={"ls-remote": completed(stdout="abc\trefs/heads/master-x\n")})
+        exists, err = services.GitService(io).remote_branch_exists(
+            "/r", "master-x", push_remote="fork"
+        )
+        self.assertEqual((exists, err), (True, None))
+        self.assertIn("ls-remote --heads fork master-x", " ".join(io.run_calls[-1]))
+
+    def test_fetch_remote_branch_uses_pull_remote(self):
+        io = FakeIO()
+        ok, err = services.GitService(io).fetch_remote_branch(
+            "/r", "master-x", pull_remote="upstream"
+        )
+        self.assertEqual((ok, err), (True, None))
+        self.assertIn("fetch upstream master-x:master-x", " ".join(io.run_calls[-1]))
+
+    def test_fetch_master_uses_pull_remote(self):
+        io = FakeIO()
+        services.GitService(io).fetch_master(
+            {"id": "community", "path": "/r", "pull_remote": "upstream"}
+        )
+        self.assertIn("fetch upstream master", " ".join(io.run_calls[-1]))
 
     def test_create_branch_fetches_remote_start_point_first(self):
         notes = []
         io = FakeIO(
             runs={
-                "master@{upstream}": completed(stdout="origin/master\n"),
                 "ls-remote --exit-code --heads origin master": completed(
                     stdout="abc123\trefs/heads/master\n"
                 ),
@@ -1223,10 +1285,26 @@ class GitServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_create_branch_fetches_start_point_from_custom_pull_remote(self):
+        io = FakeIO(
+            runs={
+                "ls-remote --exit-code --heads upstream master": completed(
+                    stdout="abc123\trefs/heads/master\n"
+                ),
+                "fetch upstream master": completed(),
+            }
+        )
+        ok, err = services.GitService(io).create_branch(
+            "/r", "master-feature", "master", fresh_start=True, pull_remote="upstream"
+        )
+        self.assertEqual((ok, err), (True, None))
+        joined = [" ".join(c) for c in io.run_calls]
+        self.assertTrue(any("ls-remote --exit-code --heads upstream master" in c for c in joined))
+        self.assertTrue(any("fetch upstream master" in c for c in joined))
+
     def test_worktree_uses_local_start_point_when_remote_branch_is_absent(self):
         io = FakeIO(
             runs={
-                "master@{upstream}": completed(stdout="origin/master\n"),
                 "ls-remote --exit-code --heads origin local-base": completed(returncode=2),
             }
         )
@@ -1246,7 +1324,6 @@ class GitServiceTest(unittest.TestCase):
     def test_remote_start_lookup_failure_does_not_fall_back_to_local(self):
         io = FakeIO(
             runs={
-                "master@{upstream}": completed(stdout="origin/master\n"),
                 "ls-remote --exit-code --heads origin master": completed(
                     returncode=128, stderr="could not read from remote"
                 ),
@@ -1261,7 +1338,6 @@ class GitServiceTest(unittest.TestCase):
         notes = []
         io = FakeIO(
             runs={
-                "master@{upstream}": completed(stdout="origin/master\n"),
                 "ls-remote --exit-code --heads origin master": completed(
                     stdout="abc123\trefs/heads/master\n"
                 ),
@@ -1279,12 +1355,13 @@ class GitServiceTest(unittest.TestCase):
 
     def test_fetch_rebase_notifies_phases(self):
         notes = []
-        io = FakeIO(runs={"master@{upstream}": completed(stdout="origin/master\n")})
+        io = FakeIO()
         svc = services.GitService(
             io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
         )
-        ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
+        ok, _ = svc.fetch_rebase("/r", "master", repo="community")
         self.assertTrue(ok)
+        self.assertTrue(any("fetch origin master" in " ".join(c) for c in io.run_calls))
         # both phases are timed events: each emits a "start" then a "done" (same text)
         self.assertEqual(
             notes,
@@ -1296,18 +1373,25 @@ class GitServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_fetch_rebase_fetches_from_custom_pull_remote(self):
+        io = FakeIO()
+        ok, _ = services.GitService(io).fetch_rebase(
+            "/r", "master", pull_remote="upstream", repo="community"
+        )
+        self.assertTrue(ok)
+        self.assertTrue(any("fetch upstream master" in " ".join(c) for c in io.run_calls))
+
     def test_fetch_rebase_notifies_error_on_conflict(self):
         notes = []
         io = FakeIO(
             runs={
-                "master@{upstream}": completed(stdout="origin/master\n"),
                 "rebase": completed(returncode=1, stderr="CONFLICT (content)\n"),
             }
         )
         svc = services.GitService(
             io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
         )
-        ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
+        ok, _ = svc.fetch_rebase("/r", "master", repo="community")
         self.assertFalse(ok)
         # the timed event still resolves — to "error" — so the spinner never hangs
         self.assertEqual(notes[-1], ("rebasing community onto master", "error"))
@@ -1316,14 +1400,13 @@ class GitServiceTest(unittest.TestCase):
         notes = []
         io = FakeIO(
             runs={
-                "master@{upstream}": completed(stdout="origin/master\n"),
                 "fetch": completed(returncode=1, stderr="could not read from remote\n"),
             }
         )
         svc = services.GitService(
             io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
         )
-        ok, _ = svc.fetch_rebase("/r", "master", "odoo/odoo", repo="community")
+        ok, _ = svc.fetch_rebase("/r", "master", repo="community")
         self.assertFalse(ok)
         # a failed fetch resolves its own timed event and never starts the rebase
         self.assertEqual(

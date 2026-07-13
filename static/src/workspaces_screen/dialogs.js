@@ -201,11 +201,15 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
   const res = await dialogs.openComponent(RemoteBranchDialog);
   if (!res) return;
   const { branch, repos } = res;
-  const pathByRepo = code.groups().pathByRepo;
+  const { pathByRepo, pullRemoteByRepo } = code.groups();
   for (const repoId of repos) {
     const path = pathByRepo[repoId];
     if (!path) continue;
-    await postJSON("/api/code/remote-branch/fetch", { path, branch });
+    await postJSON("/api/code/remote-branch/fetch", {
+      path,
+      branch,
+      pull_remote: pullRemoteByRepo[repoId],
+    });
   }
   await startCreateWorkspace(plugins, {
     name: branch,
@@ -347,7 +351,7 @@ export async function deleteWorkspaceDialog(
     fields.push({
       key: "delRemote",
       type: "checkbox",
-      label: "…also on the remote (odoo-dev)",
+      label: "…also on the push remote",
       value: true,
     });
   if (prs.length)
