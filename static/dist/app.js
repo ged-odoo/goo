@@ -10198,10 +10198,11 @@ var WorkspacesScreen = class extends Component {
                 <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
               </div>
             </div>
-            <t t-foreach="this.listGroups" t-as="grp" t-key="grp.id">
+            <div t-foreach="this.listGroups" t-as="grp" t-key="grp.id" class="wt-group" t-att-class="{named: grp.name}">
               <button t-if="grp.name" class="wt-group-head" t-att-title="(this.isCollapsed(grp.id) ? 'expand' : 'collapse') + ' ' + grp.name" t-on-click="() => this.toggleGroup(grp.id)">
                 <span class="wt-group-caret" t-out="this.isCollapsed(grp.id) ? '▸' : '▾'"/>
                 <span class="wt-group-name" t-out="grp.name"/>
+                <span class="wt-sp"/>
                 <span class="wt-group-count" t-out="grp.items.length"/>
               </button>
               <t t-if="!grp.name || !this.isCollapsed(grp.id)">
@@ -10217,7 +10218,7 @@ var WorkspacesScreen = class extends Component {
                   <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
                 </button>
               </t>
-            </t>
+            </div>
           </div>
         </div>
         <div class="wt-detail">
@@ -10383,11 +10384,15 @@ var WorkspacesScreen = class extends Component {
       if (this.list.some((ws) => ws.id === id)) this.wt.select(id);
       this.wt.requestedSelection.set("");
     });
+    let loadedWsKey = "";
     useEffect(() => {
       const ws = this.sel;
       if (!ws) return;
       const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-      if (ids.size) untrack(() => this.code.loadWorkspace(ws.id, ids));
+      const key = `${ws.id}:${[...ids].sort().join(",")}`;
+      if (!ids.size || key === loadedWsKey) return;
+      loadedWsKey = key;
+      untrack(() => this.code.loadWorkspace(ws.id, ids));
     });
     useEffect(() => {
       const pane = this.wt.requestedPane();

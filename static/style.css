@@ -3149,24 +3149,36 @@ a.dash-ci:hover {
   user-select: none;
   cursor: pointer;
 }
-/* workspace-list category groups: collapsible uppercase headers with a count */
+/* workspace-list category groups: one bordered card per category with a
+   collapsible header (caret + name + count pill); the anonymous group rendered
+   when categories are disabled gets no card chrome */
+.wt-group.named {
+  margin: 0 10px 10px;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 10px;
+  overflow: hidden; /* clip the item rows' hover/selected background to the corners */
+}
+.wt-group.named:first-child {
+  margin-top: 4px;
+}
 .wt-group-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
-  padding: 9px 10px 5px;
-  margin-top: 4px;
+  padding: 9px 10px 9px 12px;
   border: none;
-  border-top: 1px solid var(--l-line);
   border-radius: 0;
   background: none;
   cursor: pointer;
   text-align: left;
 }
-.wt-group-head:first-child {
-  border-top: none;
-  margin-top: 0;
+.wt-group-head:hover {
+  background: var(--l-panel);
+}
+/* separate the header from the items below — but not when collapsed (header only) */
+.wt-group-head:not(:last-child) {
+  border-bottom: 1px solid var(--l-line-soft);
 }
 .wt-group-caret {
   flex: none;
@@ -3174,16 +3186,24 @@ a.dash-ci:hover {
   color: var(--l-text-faint);
 }
 .wt-group-name {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.07em;
+  color: var(--l-text);
+}
+.wt-group-name::first-letter {
   text-transform: uppercase;
-  color: var(--l-text-mid);
 }
 .wt-group-count {
+  flex: none;
   font-size: 11px;
   font-weight: 600;
-  color: var(--l-text-faint);
+  color: var(--l-text-mid);
+  border: 1px solid var(--l-line);
+  border-radius: 20px;
+  padding: 1px 9px;
+}
+.wt-group.named .wt-item:last-child {
+  border-bottom: none;
 }
 
 /* card list layout (spec.card): one bordered card per item, labeled fields over rows */

@@ -759,10 +759,11 @@ export class WorkspacesScreen extends Component {
                 <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
               </div>
             </div>
-            <t t-foreach="this.listGroups" t-as="grp" t-key="grp.id">
+            <div t-foreach="this.listGroups" t-as="grp" t-key="grp.id" class="wt-group" t-att-class="{named: grp.name}">
               <button t-if="grp.name" class="wt-group-head" t-att-title="(this.isCollapsed(grp.id) ? 'expand' : 'collapse') + ' ' + grp.name" t-on-click="() => this.toggleGroup(grp.id)">
                 <span class="wt-group-caret" t-out="this.isCollapsed(grp.id) ? '▸' : '▾'"/>
                 <span class="wt-group-name" t-out="grp.name"/>
+                <span class="wt-sp"/>
                 <span class="wt-group-count" t-out="grp.items.length"/>
               </button>
               <t t-if="!grp.name || !this.isCollapsed(grp.id)">
@@ -778,7 +779,7 @@ export class WorkspacesScreen extends Component {
                   <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
                 </button>
               </t>
-            </t>
+            </div>
           </div>
         </div>
         <div class="wt-detail">
@@ -949,15 +950,24 @@ export class WorkspacesScreen extends Component {
       if (this.list.some((ws) => ws.id === id)) this.wt.select(id);
       this.wt.requestedSelection.set("");
     });
-    // Keep the selected workspace's code state fresh (drives the Start guard,
-    // checkout badges and Code pane). The workspace-aware loader skips the scoped
-    // branch + PR scan when all of its content was refreshed in the last 10 minutes.
+    // Load the selected workspace's code state (drives the Start guard, checkout
+    // badges and Code pane), keyed by the selection + its repo set. The effect
+    // tracks `this.sel` — i.e. the config records — so it re-runs on EVERY config
+    // write, including ones that change nothing here: an activity timestamp (each
+    // test run touches it) or another tab's edit echoed over SSE (applyBroadcast
+    // rebuilds all records). Without the key guard each of those re-runs called
+    // loadWorkspace, and once its 10-minute freshness lapsed every config write
+    // re-scanned git in every open tab (see the `loadedIds` pattern below).
     // Keep the loader itself untracked: it reads and then rewrites the shared store.
+    let loadedWsKey = "";
     useEffect(() => {
       const ws = this.sel;
       if (!ws) return;
       const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-      if (ids.size) untrack(() => this.code.loadWorkspace(ws.id, ids));
+      const key = `${ws.id}:${[...ids].sort().join(",")}`;
+      if (!ids.size || key === loadedWsKey) return;
+      loadedWsKey = key;
+      untrack(() => this.code.loadWorkspace(ws.id, ids));
     });
     // consume the event log's one-shot pane request (its [jump] selects the
     // workspace and sets this before navigating here — the plugin holds it so it
