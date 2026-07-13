@@ -349,12 +349,6 @@ a {
   background: var(--amber);
   box-shadow: 0 0 0 3px var(--amber-bg);
 }
-/* the loaded workspace's checkout drifted (manual git checkout outside goo) —
-   the badge's claim is stale; amber wins over the live green (defined after it) */
-.nav-target.drift .dot {
-  background: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-bg);
-}
 .nav-target .t-name {
   color: var(--text);
   font-weight: 600;

@@ -178,22 +178,13 @@ export class Topbar extends Component {
   get stateClass() {
     // displayState() is orange the moment Start is clicked, held through "starting"
     const s = this.server.displayState();
-    const cls = s === "running" ? "live" : s === "starting" ? "starting" : "idle";
-    return this.drifted ? cls + " drift" : cls;
-  }
-
-  // the loaded workspace's checkout no longer matches its branches (a manual git
-  // checkout happened outside goo) — the badge's claim is stale, show it amber
-  get drifted() {
-    const ws = (this.config.config.workspaces || []).find((w) => w.id === this.activeId);
-    return !!ws && this.store.drift(ws).length > 0;
+    return s === "running" ? "live" : s === "starting" ? "starting" : "idle";
   }
 
   get tooltip() {
-    const base = this.active
+    return this.active
       ? `loaded workspace (${this.server.status().state})`
       : "loaded workspace — server stopped";
-    return this.drifted ? `${base} — checkout drifted (see the Workspaces screen)` : base;
   }
 
   // the Start/Stop control on the right of the badge. "Starting…" spans the whole
