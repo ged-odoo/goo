@@ -741,14 +741,6 @@ export class WorkspacesScreen extends Component {
             <div class="wt-detail-top">
             <div class="wt-detail-head">
               <div class="wt-head-row">
-                <!-- one primary slot: a main-located workspace that isn't loaded offers
-                     Activate (check out its branches first); once loaded — and always
-                     for worktrees — the slot is the Start/Stop toggle -->
-                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
-                <t t-else="">
-                  <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                  <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
-                </t>
                 <h2 t-out="this.sel.name"/>
                 <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
                 <t t-if="ci">
@@ -780,6 +772,14 @@ export class WorkspacesScreen extends Component {
                 </div>
               </div>
               <div class="wt-meta">
+                <!-- one primary slot: a main-located workspace that isn't loaded offers
+                     Activate (check out its branches first); once loaded — and always
+                     for worktrees — the slot is the Start/Stop toggle -->
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
+                <t t-else="">
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                </t>
                 <t t-set="br" t-value="this.branchSummary(this.sel)"/>
                 <span t-att-title="br.title"><t t-out="br.label"/> <b t-out="br.value"/></span>
                 <span>db <b t-out="this.sel.db || '—'"/></span>
