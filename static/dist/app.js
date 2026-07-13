@@ -9831,10 +9831,11 @@ var CodePane = class extends Component {
       await this.code.rebase(repos);
     }
   }
-  // every pushable work-branch checkout — base branches (master/16.0/…) are
-  // excluded: bulk-pushing those to the dev fork is never what "push all" means
+  // every work-branch checkout with something to push — base branches are excluded
+  // (canPush), and so are branches already in sync with their remote: "push all"
+  // means publishing local changes, not re-pushing what's already there
   get pushableRows() {
-    return this.checkoutRows.filter((r) => r.canPush && !this.isBaseBranch(r.branch));
+    return this.checkoutRows.filter((r) => r.canPush && !r.synced);
   }
   canPushAll() {
     return this.pushableRows.length > 0;
@@ -9845,8 +9846,9 @@ var CodePane = class extends Component {
   }
   pushAllTitle() {
     const rows = this.pushableRows;
-    if (!rows.length)
-      return "nothing to push \u2014 no local work branches (base branches are never pushed)";
+    if (!rows.length) {
+      return this.checkoutRows.some((r) => r.canPush) ? "nothing to push \u2014 every work branch is already in sync with its remote" : "nothing to push \u2014 no local work branches (base branches are never pushed)";
+    }
     return `push ${this._pushList(rows)}`;
   }
   // push every work-branch checkout to its repo's push remote, one confirm for the batch
@@ -9933,6 +9935,8 @@ var CodePane = class extends Component {
         missing: !!git && !b,
         remote: !!(b && b.remote),
         // the branch has a remote-tracking ref
+        synced: !!(b && b.remote && b.synced),
+        // …and the local tip is what's on the remote
         subject: b?.subject || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
