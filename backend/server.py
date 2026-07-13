@@ -548,31 +548,29 @@ def build_odoo_cmd(config):
 
 def warn_if_rust_bundler_missing(config, bus, context=""):
     """goo auto-installs the rust_bundler addon in every database it launches, but
-    the speedup only happens when the rust_bundler config key is on AND the
-    odoo_bundler Rust extension is importable from the instance's venv — otherwise
+    the speedup only happens when the rust_bundler config key is on AND Goo's
+    native Rust extension is current in the instance's venv — otherwise
     the addon falls back to the slow Python bundler and its only warning lands in
     the odoo log, easy to miss. When the feature is on, probe the venv in the
     background and explain in the goo log when the extension is missing. Returns
     the probe thread (callers may ignore it; tests join it), or None when off."""
     if not (config or {}).get("rust_bundler"):
         return None  # feature off — the addon won't engage, nothing to warn about
-    venv_activate = (config or {}).get("venv_activate", "")
-    probe = "python3 -c 'import odoo_bundler'"
-    if venv_activate:
-        probe = f"{venv_activate} && {probe}"
 
     def check():
-        try:
-            result = run(probe, shell=True, executable="/bin/bash", quiet=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            return  # can't probe — don't guess, and never disturb the start
-        if result.returncode:
+        status = RUST_BUNDLER.status(config)
+        if not status.get("current"):
             where = f" ({context})" if context else ""
+            detail = "not installed"
+            if status.get("installed"):
+                detail = (
+                    f"version {status.get('version')} is stale "
+                    f"(expected {status.get('expected_version')})"
+                )
             bus.publish_log(
-                f"{TAG} rust_bundler{where}: odoo_bundler is not importable from the "
-                f"instance's venv — JS asset bundling stays on the slow Python path. "
-                f"Build it into the venv with `maturin develop --release` "
-                f"(https://github.com/Goaman/odoo_bundler)."
+                f"{TAG} rust_bundler{where}: Goo's native extension is {detail}; "
+                "JS asset bundling stays on the Python path. Use Configuration > "
+                "Build / update Rust bundler, then restart Odoo."
             )
 
     thread = threading.Thread(target=check, daemon=True)
@@ -1470,6 +1468,11 @@ DATABASE = services.DatabaseService(effects, TTLCache(60))
 GIT = services.GitService(effects, notify=BUS.publish_event)
 ADDONS = services.AddonsService(effects)
 ASSETS = services.AssetsService(effects, TTLCache(30))
+RUST_BUNDLER = services.RustBundlerService(
+    effects,
+    os.path.join(ADDONS_DIR, "rust_bundler", "native"),
+    notify=BUS.publish_event,
+)
 # 24h is just a safety net for the versions/night-index keys (refresh=True bypasses
 # them); per-build detail keys are never invalidated — see NightlyService's docstring.
 NIGHTLY = services.NightlyService(effects, TTLCache(24 * 3600))
@@ -1553,6 +1556,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, WORKSPACES.status())
         elif path == "/api/goo/update":
             self._send_json(200, {**GOO_UPDATE, "boot": BOOT_ID})
+        elif path == "/api/rust-bundler":
+            config = CONFIG.get().get("config") or {}
+            self._send_json(200, {"ok": True, **RUST_BUNDLER.status(config)})
         elif path == "/api/databases":
             refresh = "refresh" in urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
@@ -1593,6 +1599,11 @@ class Handler(BaseHTTPRequestHandler):
             self._action_oneshot()
         elif path == "/api/config":
             self._save_config()
+        elif path == "/api/rust-bundler/install":
+            config = CONFIG.get().get("config") or {}
+            ok, result = RUST_BUNDLER.install(config)
+            status = 200 if ok else 409 if "already in progress" in result.get("error", "") else 500
+            self._send_json(status, {"ok": ok, **result})
         elif path == "/api/cli/test":
             self._handle_cli_test()
         elif path == "/api/stop":

@@ -5,6 +5,8 @@ Run from the repo root: `python3 -m unittest discover`
 """
 
 import json
+import pathlib
+import re
 import subprocess
 import threading
 import time
@@ -60,7 +62,7 @@ class FakeIO:
 
     def run(self, cmd, **kwargs):
         self.run_calls.append(cmd)
-        joined = " ".join(str(c) for c in cmd)
+        joined = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
         for needle, res in self._runs.items():
             if needle in joined:
                 return res
@@ -1339,6 +1341,114 @@ class AssetsServiceTest(unittest.TestCase):
         self.assertIn("Generate asset bundles", err)
 
 
+class RustBundlerServiceTest(unittest.TestCase):
+    SOURCE = "/goo path/addons/rust_bundler/native"
+    CARGO = '[package]\nname = "goo_odoo_bundler"\nversion = "0.1.0"\n'
+
+    def service(self, io=None, notify=None):
+        io = io or FakeIO()
+        io._files[f"{self.SOURCE}/Cargo.toml"] = self.CARGO
+        return services.RustBundlerService(io, self.SOURCE, notify=notify), io
+
+    def test_addon_and_native_versions_stay_in_sync(self):
+        root = pathlib.Path(__file__).parents[1] / "addons" / "rust_bundler"
+        cargo = (root / "native" / "Cargo.toml").read_text()
+        addon = (root / "models" / "assetsbundle.py").read_text()
+        cargo_version = re.search(r'(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"', cargo)
+        addon_version = re.search(r'^NATIVE_VERSION\s*=\s*"([^"]+)"', addon, re.MULTILINE)
+        self.assertEqual(cargo_version.group(1), addon_version.group(1))
+
+    def test_install_command_targets_configured_environment_and_quotes_source(self):
+        svc, _io = self.service()
+        command = svc.install_command({"venv_activate": "source /env/bin/activate"})
+        self.assertTrue(command.startswith("source /env/bin/activate && python3 -m pip"))
+        self.assertIn("--force-reinstall --no-deps", command)
+        self.assertIn("'/goo path/addons/rust_bundler/native'", command)
+        self.assertEqual(
+            svc.install_command({}),
+            "python3 -m pip install --force-reinstall --no-deps "
+            "'/goo path/addons/rust_bundler/native'",
+        )
+
+    def test_status_distinguishes_missing_current_and_stale(self):
+        missing, _io = self.service(FakeIO(run_result=completed(returncode=1)))
+        self.assertEqual(
+            missing.status({}),
+            {
+                "installed": False,
+                "current": False,
+                "version": "",
+                "expected_version": "0.1.0",
+                "building": False,
+            },
+        )
+
+        current, _io = self.service(FakeIO(run_result=completed('{"version":"0.1.0"}\n')))
+        self.assertTrue(current.status({})["current"])
+
+        stale, _io = self.service(FakeIO(run_result=completed('{"version":"0.0.9"}\n')))
+        status = stale.status({})
+        self.assertTrue(status["installed"])
+        self.assertFalse(status["current"])
+        self.assertEqual(status["version"], "0.0.9")
+
+    def test_successful_install_is_verified_and_notified(self):
+        io = FakeIO(
+            runs={
+                "pip install": completed(),
+                "python3 -c": completed('{"version":"0.1.0"}\n'),
+            }
+        )
+        events = []
+        svc, _io = self.service(io, notify=lambda *args: events.append(args))
+        ok, result = svc.install({"venv_activate": "source /env/bin/activate"})
+        self.assertTrue(ok)
+        self.assertTrue(result["current"])
+        self.assertTrue(result["restart_required"])
+        self.assertEqual([event[3] for event in events], ["start", "done"])
+        self.assertEqual(len(io.run_calls), 2)  # pip, then exact-version probe
+
+    def test_install_failure_returns_output_tail(self):
+        svc, _io = self.service(
+            FakeIO(runs={"pip install": completed(returncode=1, stderr="first\nlast failure\n")})
+        )
+        ok, result = svc.install({})
+        self.assertFalse(ok)
+        self.assertIn("last failure", result["error"])
+
+    def test_install_verification_rejects_stale_module(self):
+        io = FakeIO(
+            runs={
+                "pip install": completed(),
+                "python3 -c": completed('{"version":"0.0.9"}\n'),
+            }
+        )
+        svc, _io = self.service(io)
+        ok, result = svc.install({})
+        self.assertFalse(ok)
+        self.assertFalse(result["current"])
+        self.assertIn("verified", result["error"])
+
+    def test_timeout_and_concurrent_install_are_reported(self):
+        class TimeoutIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        timeout_svc, _io = self.service(TimeoutIO())
+        ok, result = timeout_svc.install({})
+        self.assertFalse(ok)
+        self.assertIn("timed out", result["error"])
+
+        locked_svc, _io = self.service()
+        locked_svc._build_lock.acquire()
+        try:
+            ok, result = locked_svc.install({})
+        finally:
+            locked_svc._build_lock.release()
+        self.assertFalse(ok)
+        self.assertIn("already in progress", result["error"])
+
+
 class ConfigStoreTest(unittest.TestCase):
     P = "/cfg/config.json"
 
@@ -1500,13 +1610,17 @@ class BuildOdooCmdTest(unittest.TestCase):
     Target.demo_data): dfc6299c hardcoded it off for every start, this makes it
     per-target, defaulting on."""
 
-    def _cmd(self, demo_data=None):
+    def _cmd(self, demo_data=None, rust_bundler=False):
         from backend import server
 
         start = {"repos": ["community"], "db": "db1"}
         if demo_data is not None:
             start["demo_data"] = demo_data
-        config = {"repos": [{"id": "community", "path": "/repo/community"}], "start": start}
+        config = {
+            "repos": [{"id": "community", "path": "/repo/community"}],
+            "start": start,
+            "rust_bundler": rust_bundler,
+        }
         orig = server.DATABASE.db_initialized
         server.DATABASE.db_initialized = lambda db: True  # skip the real psql probe
         try:
@@ -1523,6 +1637,46 @@ class BuildOdooCmdTest(unittest.TestCase):
 
     def test_demo_data_off(self):
         self.assertIn("--without-demo all", self._cmd(demo_data=False))
+
+    def test_rust_bundler_environment_is_opt_in(self):
+        self.assertNotIn("RUST_BUNDLER=1", self._cmd())
+        self.assertIn("RUST_BUNDLER=1", self._cmd(rust_bundler=True))
+
+
+class RustBundlerWarningTest(unittest.TestCase):
+    def test_missing_or_stale_fork_warns_only_when_enabled(self):
+        from backend import server
+
+        class Bundler:
+            @staticmethod
+            def status(config):
+                return {
+                    "installed": True,
+                    "current": False,
+                    "version": "0.0.9",
+                    "expected_version": "0.1.0",
+                }
+
+        class Bus:
+            lines = []
+
+            def publish_log(self, line):
+                self.lines.append(line)
+
+        original = server.RUST_BUNDLER
+        server.RUST_BUNDLER = Bundler()
+        bus = Bus()
+        try:
+            self.assertIsNone(server.warn_if_rust_bundler_missing({}, bus))
+            thread = server.warn_if_rust_bundler_missing(
+                {"rust_bundler": True}, bus, context="workspace w1"
+            )
+            thread.join(timeout=1)
+        finally:
+            server.RUST_BUNDLER = original
+        self.assertEqual(len(bus.lines), 1)
+        self.assertIn("version 0.0.9 is stale", bus.lines[0])
+        self.assertIn("Configuration", bus.lines[0])
 
 
 class ServerSnapshotTest(unittest.TestCase):

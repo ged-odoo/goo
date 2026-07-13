@@ -1,2 +1,3 @@
 __pycache__/
 node_modules/
+addons/rust_bundler/native/target/

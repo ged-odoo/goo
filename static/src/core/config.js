@@ -19,8 +19,8 @@ export const DEFAULT_CONFIG = {
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
   editor: "code", // command used by the "Open with editor" actions
   auto_open_event_log: false, // open the event log overlay when new events arrive
-  // launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets
-  // through the odoo_bundler Rust extension (must be built into the venv)
+  // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
+  // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,
   // automatic goo self-update check (git fetch of origin/master at startup +
   // hourly, driving the navbar badge). The manual check button always works.

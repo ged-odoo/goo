@@ -1,4 +1,4 @@
-"""Benchmark: Rust (odoo_bundler) vs Python JS asset bundling.
+"""Benchmark: Goo's Rust extension vs Python JS asset bundling.
 
 Compares bundling wall time and output for the given asset bundles, on the exact
 same ordered file list, with cold caches on every timed iteration. It also writes
@@ -12,12 +12,13 @@ Run it through the odoo shell (the ``env`` global is provided by the shell)::
     # benchmark a specific set of bundles:
     BENCH_BUNDLES=web.assets_unit_tests,web.tests_assets ./odoo-bin shell -d <db> ...
 
-The Rust path calls ``odoo_bundler.bundle()`` directly; the Python path replicates
+The Rust path calls ``goo_odoo_bundler.bundle()`` directly; the Python path replicates
 ``AssetsBundle.js()``'s minified branch (without DB writes) so both measure pure
 bundling CPU work (read + transpile + minify + XML), not attachment I/O.
 """
 
 import os
+import re
 import tempfile
 import textwrap
 import time
@@ -32,10 +33,10 @@ ITERATIONS = int(os.environ.get("BENCH_ITERATIONS", "5"))
 OUT_DIR = tempfile.gettempdir()
 
 try:
-    import odoo_bundler
+    import goo_odoo_bundler
 except ImportError:
     raise SystemExit(
-        "odoo_bundler is not installed; run `maturin develop --release` first."
+        "goo_odoo_bundler is not installed; build it from Goo's Configuration screen."
     ) from None
 
 
@@ -75,7 +76,7 @@ def python_bundle(bundle):
 
 
 def rust_bundle(files, name):
-    return odoo_bundler.bundle(name, files, minify_level="whitespace")["content"]
+    return goo_odoo_bundler.bundle(name, files, minify_level="whitespace")
 
 
 def timeit(fn, n=ITERATIONS):
@@ -104,6 +105,13 @@ for name in BUNDLES:
     reset_cold(bundle)
     py_out = python_bundle(bundle)
     rust_out = rust_bundle(files, name)
+    rust_urls = re.findall(r"/\* (/\S+?) \*/", rust_out)
+    expected_urls = [asset.url for asset in bundle.javascripts]
+    if rust_urls != expected_urls:
+        raise AssertionError(
+            f"{name}: Rust file sequence differs from Odoo's resolved sequence\n"
+            f"expected: {expected_urls!r}\nactual:   {rust_urls!r}"
+        )
     for label, content in (("from_python", py_out), ("from_rust", rust_out)):
         with open(f"{OUT_DIR}/{name}.{label}.js", "w") as fh:
             fh.write(content)

@@ -2977,6 +2977,28 @@ a.dash-ci:hover {
   outline: none;
   border-color: var(--l-accent-line);
 }
+
+.rust-bundler-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rust-bundler-control button {
+  flex: 0 0 auto;
+}
+
+.rust-bundler-control span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rust-bundler-control span.error {
+  color: var(--red, #d9534f);
+}
 .settings-check {
   justify-self: start;
   width: 15px;
@@ -3921,8 +3943,9 @@ a.commit-detail-hash svg {
   stroke: currentColor;
   stroke-width: 2;
 }
-/* the status-refresh button's in-flight spinner (replaces its icon while running) */
-.wt-refresh-spin {
+/* in-flight spinners shown inside workspace refresh buttons */
+.wt-refresh-spin,
+.ws-refresh-spin {
   width: 13px;
   height: 13px;
   flex: none;

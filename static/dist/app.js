@@ -41,8 +41,8 @@ var DEFAULT_CONFIG = {
   // command used by the "Open with editor" actions
   auto_open_event_log: false,
   // open the event log overlay when new events arrive
-  // launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets
-  // through the odoo_bundler Rust extension (must be built into the venv)
+  // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
+  // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,
   // automatic goo self-update check (git fetch of origin/master at startup +
   // hourly, driving the navbar badge). The manual check button always works.
@@ -155,7 +155,7 @@ var GED_CONFIG = {
   venv_activate: "source /home/odoo/work/env20/bin/activate",
   auto_open_event_log: true,
   rust_bundler: true,
-  // env20 has the odoo_bundler extension built
+  // env20 has Goo's native bundler installed
   repos: [
     {
       id: "community",
@@ -5220,10 +5220,16 @@ var ConfigScreen = class extends Component {
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
-            <label for="setting-rust-bundler" title="Launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets through the odoo_bundler Rust extension (build it into the venv with 'maturin develop --release'). Takes effect on the next server start.">rust bundler</label>
-            <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Launch odoo with RUST_BUNDLER=1 so the rust_bundler addon bundles JS assets through the odoo_bundler Rust extension (build it into the venv with 'maturin develop --release'). Takes effect on the next server start."
-                   t-att-checked="this.config.config.rust_bundler"
-                   t-on-change="ev => this.config.updateConfig({ rust_bundler: ev.target.checked })"/>
+            <label for="setting-rust-bundler" title="Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.">rust bundler</label>
+            <div class="rust-bundler-control">
+              <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Use Goo's native asset bundler on the next Odoo restart. Untick it for the Python bundler."
+                     t-att-checked="this.config.config.rust_bundler"
+                     t-on-change="ev => this.config.updateConfig({ rust_bundler: ev.target.checked })"/>
+              <button t-att-disabled="this.rustBuilding()" t-on-click="() => this.installRustBundler()">
+                <t t-out="this.rustBuilding() ? 'Building…' : 'Build / update Rust bundler'"/>
+              </button>
+              <span class="dim" t-att-class="{error: this.rustStatus().error}" t-out="this.rustStatusText"/>
+            </div>
             <label for="setting-update-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off.">check for goo updates</label>
             <input id="setting-update-check" type="checkbox" class="settings-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off."
                    t-att-checked="this.config.config.update_check !== false"
@@ -5263,9 +5269,57 @@ var ConfigScreen = class extends Component {
   upToDate = signal(false);
   // brief green check by the button when already up to date
   backupMsg = signal("");
+  rustBuilding = signal(false);
+  rustStatus = signal({ checking: true });
   settingsFields = SETTINGS_FIELDS.filter((f) => f.key !== "editor");
   // editor lives in Miscellaneous
   settings = signal(this._loadSettings());
+  setup() {
+    onMounted(() => this.checkRustBundler());
+  }
+  get rustStatusText() {
+    const status = this.rustStatus();
+    if (status.checking) return "checking\u2026";
+    if (this.rustBuilding() || status.building) return "building in the configured environment\u2026";
+    if (status.error) return `failed: ${status.error}`;
+    if (!status.installed)
+      return `not installed (expected ${status.expected_version || "unknown"})`;
+    if (!status.current)
+      return `update required (${status.version || "unknown"} \u2192 ${status.expected_version})`;
+    if (status.restart_required) return `installed ${status.version}; restart Odoo to load it`;
+    return `installed ${status.version}`;
+  }
+  async checkRustBundler() {
+    this.rustStatus.set({ checking: true });
+    try {
+      const response = await fetch("/api/rust-bundler", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.status);
+      this.rustStatus.set(data);
+    } catch (error) {
+      this.rustStatus.set({ error: error.message });
+    }
+  }
+  async installRustBundler() {
+    if (this.rustBuilding()) return;
+    this.rustBuilding.set(true);
+    this.rustStatus.set({ ...this.rustStatus(), building: true, error: "" });
+    try {
+      const result = await postJSON("/api/rust-bundler/install");
+      this.rustStatus.set(result);
+    } catch (error) {
+      this.rustStatus.set({ ...this.rustStatus(), building: false, error: error.message });
+      this.dialogs.open({
+        title: "Rust bundler build failed",
+        message: error.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    } finally {
+      this.rustBuilding.set(false);
+    }
+  }
   // manually re-check whether goo is behind origin/master, then report the result
   async checkUpdate() {
     if (this.checking()) return;
@@ -9225,11 +9279,12 @@ var CodePane = class extends Component {
     <div class="ws-code">
       <div class="ws-sec">
         <span>Checkouts</span>
-        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)">Refresh</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
-        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
+        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" title="refresh branches + pull requests" t-on-click="() => this.load(true)">
+          <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
+        </button>
       </div>
 
       <div t-if="!this.checkoutRows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>

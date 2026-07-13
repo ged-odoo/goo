@@ -12,6 +12,7 @@ import html as html_lib
 import json
 import os
 import re
+import shlex
 import subprocess
 import threading
 import urllib.parse
@@ -2066,6 +2067,129 @@ class AssetsService:
             end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
             out.append([m.group(1).replace(".", "/"), len(text[m.end() : end].encode("utf-8"))])
         return out
+
+
+# ─────────────────────────── Rust asset bundler ───────────────────────────
+
+
+class RustBundlerService:
+    """Install and probe Goo's native asset bundler in the configured Odoo Python.
+
+    The source directory is fixed by the server, while ``venv_activate`` comes from
+    Goo's trusted local configuration just like every Odoo launch command. A
+    process-wide lock prevents two browser tabs from building into the same venv.
+    """
+
+    PROBE_CODE = (
+        "import json, goo_odoo_bundler as module; "
+        'print(json.dumps({"version": module.__version__}))'
+    )
+
+    def __init__(self, io, source_dir, notify=None):
+        self.io = io
+        self.source_dir = os.path.abspath(source_dir)
+        self.notify = notify
+        self._build_lock = threading.Lock()
+
+    def expected_version(self):
+        cargo = self.io.read_text(os.path.join(self.source_dir, "Cargo.toml")) or ""
+        package = re.search(r'(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"', cargo)
+        return package.group(1) if package else "unknown"
+
+    @staticmethod
+    def _environment_command(config, command):
+        activate = ((config or {}).get("venv_activate") or "").strip()
+        return f"{activate} && {command}" if activate else command
+
+    def install_command(self, config):
+        pip = f"python3 -m pip install --force-reinstall --no-deps {shlex.quote(self.source_dir)}"
+        return self._environment_command(config, pip)
+
+    def probe_command(self, config):
+        probe = f"python3 -c {shlex.quote(self.PROBE_CODE)}"
+        return self._environment_command(config, probe)
+
+    @staticmethod
+    def _tail(result, fallback):
+        lines = ((result.stderr or result.stdout or "").strip()).splitlines()
+        return "\n".join(lines[-12:])[-3000:] if lines else fallback
+
+    def _probe(self, config, allow_while_building=False):
+        expected = self.expected_version()
+        base = {
+            "installed": False,
+            "current": False,
+            "version": "",
+            "expected_version": expected,
+            "building": self._build_lock.locked(),
+        }
+        if base["building"] and not allow_while_building:
+            return base
+        try:
+            result = self.io.run(
+                self.probe_command(config),
+                shell=True,
+                executable="/bin/bash",
+                quiet=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return {**base, "error": str(error)}
+        if result.returncode:
+            return base
+        try:
+            payload = json.loads((result.stdout or "").strip().splitlines()[-1])
+            version = payload["version"]
+        except (IndexError, KeyError, TypeError, ValueError):
+            return {**base, "error": "the native module returned an invalid version"}
+        return {
+            **base,
+            "installed": True,
+            "current": version == expected,
+            "version": version,
+        }
+
+    def status(self, config):
+        return self._probe(config)
+
+    def install(self, config, timeout=900):
+        if not self._build_lock.acquire(blocking=False):
+            return False, {"error": "Rust bundler installation is already in progress"}
+
+        event_id = f"rust-bundler-{uuid.uuid4().hex}"
+        event_text = "building Goo's Rust asset bundler"
+        if self.notify:
+            self.notify(event_text, "", event_id, "start")
+        try:
+            try:
+                result = self.io.run(
+                    self.install_command(config),
+                    shell=True,
+                    executable="/bin/bash",
+                    timeout=timeout,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                message = str(error) or "Rust bundler installation timed out"
+                if self.notify:
+                    self.notify(event_text, "error", event_id, "error")
+                return False, {"error": message}
+            if result.returncode:
+                message = self._tail(result, "Rust bundler installation failed")
+                if self.notify:
+                    self.notify(event_text, "error", event_id, "error")
+                return False, {"error": message}
+
+            status = {**self._probe(config, allow_while_building=True), "building": False}
+            if not status.get("current"):
+                message = status.get("error") or "installed module version could not be verified"
+                if self.notify:
+                    self.notify(event_text, "error", event_id, "error")
+                return False, {"error": message, **status}
+            if self.notify:
+                self.notify(event_text, "", event_id, "done")
+            return True, {**status, "restart_required": True}
+        finally:
+            self._build_lock.release()
 
 
 # ─────────────────────────── Config store ───────────────────────────

@@ -47,7 +47,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   the cohesive `OdooManager`/PTY subsystem keeps its own process side-effects (it's
   integration-proven, not unit-tested — abstracting it buys little).
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
-  in the addons path
+  in the addons path. `rust_bundler/native/` is Goo's minimal Rust/PyO3 asset
+  bundler; Odoo's resolved file list is authoritative and imports are never crawled.
 - `static/src/` — the Owl 3 frontend application (ES modules; `main.js` at the root is the
   entry). Organized **by feature**: a shared `core/` plus one folder per screen.
   - `core/` — the application basics everything builds on: the shared plugins (state/action
@@ -91,6 +92,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   `@odoo/owl` aliased to the `window.owl` shim). Run + commit the output after editing
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
 - `ruff check --fix` / `ruff format` — Python lint+format.
+- `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
 - `pre-commit` runs ruff + prettier + eslint on changed files.
 
 ## Conventions

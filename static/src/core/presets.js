@@ -22,7 +22,7 @@ const SIMPLE_TABS = [
 const GED_CONFIG = {
   venv_activate: "source /home/odoo/work/env20/bin/activate",
   auto_open_event_log: true,
-  rust_bundler: true, // env20 has the odoo_bundler extension built
+  rust_bundler: true, // env20 has Goo's native bundler installed
   repos: [
     {
       id: "community",

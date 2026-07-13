@@ -19,6 +19,9 @@ launched by `goo.py`) with an Owl 3 frontend (`static/`, served as-is, no bundle
   features (listing PRs, creating/closing them). Runbot/mergebot state is scraped
   over plain HTTP and needs no auth.
 - **Google Chrome** — only for running the JS (hoot) test suites headlessly.
+- **Rust/Cargo and pip** — optional; only needed to build Goo's accelerated Odoo
+  asset bundler from the Configuration screen. The first build may download
+  Maturin and Cargo dependencies.
 
 ## Install
 
@@ -63,6 +66,18 @@ edit by hand:
   that activates your Odoo venv, and the Postgres user/password.
 - **Storage** — config and favorites live in the browser's localStorage by
   default; set a JSON file path to persist them on disk and share across browsers.
+
+### Optional Rust asset bundler
+
+Goo carries a native `goo_odoo_bundler` extension that accelerates Odoo's JS and
+QWeb asset path while keeping Odoo manifests authoritative: imports become
+runtime module dependencies, but never pull extra files into a bundle.
+
+Set `venv_activate` to the environment used by Odoo, then use **Build / update
+Rust bundler** in Configuration. The action runs pip against Goo's in-tree Rust
+source; a first build may download Maturin and Cargo dependencies. Installation
+does not enable the feature. Tick **rust bundler** and restart Odoo to activate
+it; untick and restart to return to the Python path.
 
 **Targets** are the core concept: a named combination of a database, per-repo
 branches (`repo:branch`), and start args. Manage them in the **Targets** tab

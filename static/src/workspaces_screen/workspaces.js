@@ -130,11 +130,12 @@ export class CodePane extends Component {
     <div class="ws-code">
       <div class="ws-sec">
         <span>Checkouts</span>
-        <button class="pbtn ghost ws-tool" title="refresh branches + pull requests" t-on-click="() => this.load(true)">Refresh</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
-        <span t-if="this.code.loading()" class="dim ws-sec-meta">loading…</span>
+        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" title="refresh branches + pull requests" t-on-click="() => this.load(true)">
+          <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
+        </button>
       </div>
 
       <div t-if="!this.checkoutRows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>

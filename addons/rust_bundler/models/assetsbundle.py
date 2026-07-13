@@ -1,4 +1,4 @@
-"""Monkey-patch ``AssetsBundle`` to bundle JS with the odoo_bundler Rust extension.
+"""Monkey-patch ``AssetsBundle`` to bundle JS with Goo's Rust extension.
 
 ``AssetsBundle`` is a plain Python class (not an ORM model), so it cannot be
 extended through ``_inherit``. Instead its ``js()`` method is patched at import
@@ -8,7 +8,7 @@ goo auto-installs this module in every database it launches, so unlike the
 upstream addon (where installing is the switch) activation is opt-in: the patch
 is only applied when the ``RUST_BUNDLER`` env var is truthy (goo sets it from
 the "rust bundler" checkbox in the config's Miscellaneous section) AND the
-``odoo_bundler`` extension imports (one warning at startup otherwise). Any
+``goo_odoo_bundler`` extension imports (one warning at startup otherwise). Any
 failure on the Rust path falls back to the original Python bundler.
 """
 
@@ -18,15 +18,25 @@ import os
 from odoo.addons.base.models.assetsbundle import AssetsBundle
 
 _logger = logging.getLogger(__name__)
+NATIVE_VERSION = "0.1.0"  # keep in sync with native/Cargo.toml
 
 try:
-    import odoo_bundler
+    import goo_odoo_bundler
 except ImportError:
-    odoo_bundler = None
+    goo_odoo_bundler = None
+else:
+    if getattr(goo_odoo_bundler, "__version__", None) != NATIVE_VERSION:
+        _logger.warning(
+            "goo_odoo_bundler version %r is stale (expected %s); using the Python bundler. "
+            "Rebuild it from Goo's Configuration screen.",
+            getattr(goo_odoo_bundler, "__version__", None),
+            NATIVE_VERSION,
+        )
+        goo_odoo_bundler = None
 
 
 def _rust_js(self, minified=True):
-    """Build the JS bundle with the ``odoo_bundler`` Rust extension.
+    """Build the JS bundle with the ``goo_odoo_bundler`` Rust extension.
 
     The Rust bundler reads the source files from disk, transpiles odoo modules
     (``import`` -> ``odoo.define``), minifies, and bundles the QWeb XML
@@ -36,9 +46,9 @@ def _rust_js(self, minified=True):
         fall back to the Python bundler (an asset has no on-disk file and
         therefore cannot be read by Rust, or the Rust bundler failed).
     """
-    # Ordered list of on-disk paths: JS entry points first (order matters),
-    # then the QWeb XML templates. The Rust bundler filters by extension and
-    # emits the JS, then the templates block, like js()/generate_xml_bundle.
+    # Ordered list of on-disk paths: JS assets first (order matters), then QWeb
+    # templates. The native extension processes exactly these paths; imports never
+    # add files that Odoo did not resolve into this bundle.
     files = []
     for asset in self.javascripts + self.templates:
         if not asset._filename:
@@ -52,17 +62,16 @@ def _rust_js(self, minified=True):
         files.append(asset._filename)
 
     try:
-        result = odoo_bundler.bundle(
+        return goo_odoo_bundler.bundle(
             self.name,
             files,
             minify_level="whitespace" if minified else "none",
         )
     except Exception:
         _logger.exception(
-            "odoo_bundler failed on %r; falling back to the Python bundler.", self.name
+            "goo_odoo_bundler failed on %r; falling back to the Python bundler.", self.name
         )
         return None
-    return result["content"]
 
 
 _original_js = AssetsBundle.js
@@ -89,11 +98,11 @@ if not _enabled:
         "bundler. Tick 'rust bundler' in goo's Miscellaneous config section (or "
         "`export RUST_BUNDLER=1`) to activate it."
     )
-elif odoo_bundler is None:
+elif goo_odoo_bundler is None:
     _logger.warning(
-        "RUST_BUNDLER is set but the odoo_bundler extension is not importable; "
-        "JS bundling stays on the pure-Python path. Build it into the Odoo venv with "
-        "`maturin develop --release` (https://github.com/Goaman/odoo_bundler)."
+        "RUST_BUNDLER is set but Goo's goo_odoo_bundler extension is not importable; "
+        "JS bundling stays on the pure-Python path. Install it from Goo's "
+        "Configuration > Rust bundler action."
     )
 else:
     AssetsBundle._rust_js = _rust_js
