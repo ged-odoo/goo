@@ -25,7 +25,12 @@ import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo } from "../core/utils.js";
-import { adoptCurrentCheckout, deleteWorkspaceDialog, startCreateWorkspace } from "./dialogs.js";
+import {
+  adoptCurrentCheckout,
+  categoryOptions,
+  deleteWorkspaceDialog,
+  startCreateWorkspace,
+} from "./dialogs.js";
 import { AddonsPane, AssetsPane, TestsPane } from "./panes.js";
 
 export class ClaudeChat extends Component {
@@ -699,6 +704,18 @@ function savedWorkspaceOrder() {
   }
 }
 
+// collapsed category groups (a browser-side view preference, like the ordering)
+const WORKSPACE_COLLAPSED_KEY = "goo-workspace-collapsed-categories";
+
+function savedCollapsedGroups() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WORKSPACE_COLLAPSED_KEY));
+    return new Set(Array.isArray(stored) ? stored : []);
+  } catch {
+    return new Set();
+  }
+}
+
 export class WorkspacesScreen extends Component {
   static components = {
     LogConsole,
@@ -742,17 +759,26 @@ export class WorkspacesScreen extends Component {
                 <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
               </div>
             </div>
-            <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
-                    t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
-                    t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
-              <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
-              <span class="wt-item-name" t-out="ws.name"/>
-              <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
-              <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
-              <span class="wt-sp"/>
-              <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
-              <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
-            </button>
+            <t t-foreach="this.listGroups" t-as="grp" t-key="grp.id">
+              <button t-if="grp.name" class="wt-group-head" t-att-title="(this.isCollapsed(grp.id) ? 'expand' : 'collapse') + ' ' + grp.name" t-on-click="() => this.toggleGroup(grp.id)">
+                <span class="wt-group-caret" t-out="this.isCollapsed(grp.id) ? '▸' : '▾'"/>
+                <span class="wt-group-name" t-out="grp.name"/>
+                <span class="wt-group-count" t-out="grp.items.length"/>
+              </button>
+              <t t-if="!grp.name || !this.isCollapsed(grp.id)">
+                <button t-foreach="grp.items" t-as="ws" t-key="ws.id" class="wt-item"
+                        t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
+                        t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
+                  <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
+                  <span class="wt-item-name" t-out="ws.name"/>
+                  <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
+                  <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+                  <span class="wt-sp"/>
+                  <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
+                  <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
+                </button>
+              </t>
+            </t>
           </div>
         </div>
         <div class="wt-detail">
@@ -895,6 +921,7 @@ export class WorkspacesScreen extends Component {
   order = signal(savedWorkspaceOrder()); // config | name | created | recent | mergebot
   orderMenuOpen = signal(false);
   menuOpen = signal(false); // the header's Edit/Remove overflow menu
+  collapsedGroups = signal(savedCollapsedGroups()); // collapsed category ids
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
@@ -1214,6 +1241,43 @@ export class WorkspacesScreen extends Component {
       rows.sort((a, b) => statusRank.get(a.ws.id) - statusRank.get(b.ws.id) || a.index - b.index);
     }
     return rows.map(({ ws }) => ws);
+  }
+
+  get categoriesEnabled() {
+    return !!this.config.config.workspace_categories_enabled;
+  }
+
+  // the list partitioned into category groups (config order, uncategorized last),
+  // preserving the chosen sort within each group. With categories disabled, one
+  // anonymous group — the template renders a header only for named groups.
+  get listGroups() {
+    const list = this.list;
+    if (!this.categoriesEnabled) return [{ id: "", name: "", items: list }];
+    const cats = (this.config.config.workspace_categories || []).map((c) => c.id);
+    const byCat = new Map(cats.map((c) => [c, []]));
+    const rest = []; // no category, or one that was removed from the list
+    for (const ws of list) {
+      if (byCat.has(ws.category)) byCat.get(ws.category).push(ws);
+      else rest.push(ws);
+    }
+    const groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) }));
+    if (rest.length) groups.push({ id: "\0none", name: "uncategorized", items: rest });
+    return groups.filter((g) => g.items.length);
+  }
+
+  isCollapsed(id) {
+    return this.collapsedGroups().has(id);
+  }
+
+  toggleGroup(id) {
+    const next = new Set(this.collapsedGroups());
+    if (!next.delete(id)) next.add(id);
+    this.collapsedGroups.set(next);
+    try {
+      localStorage.setItem(WORKSPACE_COLLAPSED_KEY, JSON.stringify([...next]));
+    } catch {
+      /* browser storage can be disabled; the in-memory preference still works */
+    }
   }
 
   get sel() {
@@ -1635,6 +1699,18 @@ export class WorkspacesScreen extends Component {
         },
         { key: "db", type: "text", label: "Database", value: ws.db || "" },
         { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" },
+        ...(this.categoriesEnabled
+          ? [
+              {
+                key: "category",
+                type: "select",
+                label: "Category",
+                placeholder: "— none —",
+                options: categoryOptions(this.config),
+                value: ws.category || "",
+              },
+            ]
+          : []),
       ],
     });
     if (!res) return;
@@ -1643,6 +1719,7 @@ export class WorkspacesScreen extends Component {
       checkouts: repoBranchList.parse(res.config.trim()),
       db: (res.db || "").trim(),
       on_create_args: (res.args || "").trim(),
+      ...(this.categoriesEnabled ? { category: res.category || "" } : {}),
     });
   }
 

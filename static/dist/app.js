@@ -47,6 +47,11 @@ var DEFAULT_CONFIG = {
   // automatic goo self-update check (git fetch of origin/master at startup +
   // hourly, driving the navbar badge). The manual check button always works.
   update_check: true,
+  // workspace categories: when enabled, the Workspaces list groups workspaces
+  // under collapsible per-category headers (in this order); each workspace may
+  // carry a `category` naming one of these ids
+  workspace_categories_enabled: false,
+  workspace_categories: [{ id: "dev" }, { id: "base" }],
   repos: [
     {
       id: "community",
@@ -2749,8 +2754,13 @@ var SETTINGS_CHARS = [
   "filestore",
   "editor"
 ];
-var SETTINGS_BOOLS = ["auto_open_event_log", "update_check", "rust_bundler"];
-var SETTINGS_JSON = ["start", "tabs", "links", "test_presets"];
+var SETTINGS_BOOLS = [
+  "auto_open_event_log",
+  "update_check",
+  "rust_bundler",
+  "workspace_categories_enabled"
+];
+var SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories"];
 var STATE_CHARS = ["active_workspace", "claude_model"];
 var STATE_JSON = ["test_history", "reviews_favorites", "reviews_merged", "reviews_no_mergebot"];
 var Settings = class extends Model {
@@ -2767,10 +2777,13 @@ var Settings = class extends Model {
   auto_open_event_log = fields.bool();
   update_check = fields.bool();
   rust_bundler = fields.bool();
+  workspace_categories_enabled = fields.bool();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
   test_presets = fields.json();
+  workspace_categories = fields.json();
+  // [{ id }] — group order for the Workspaces list
 };
 var Repository = class extends Model {
   static id = "repository";
@@ -2846,6 +2859,8 @@ var Workspace = class extends Model {
   last_activity = fields.char();
   // ISO timestamp; intentional workspace actions only
   favorite = fields.bool();
+  category = fields.char();
+  // a workspace_categories id ("" = uncategorized)
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
@@ -2890,10 +2905,11 @@ var Workspace = class extends Model {
   // commit an inline edit onto the target (favorite/demo_data untouched — each is
   // toggled directly via its own checkbox).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
-  applyEdit({ name, checkouts, db, on_create_args }) {
+  applyEdit({ name, checkouts, db, on_create_args, category }) {
     this.name.set(name);
     this.db.set(db);
     this.on_create_args.set(on_create_args);
+    if (category !== void 0) this.category.set(category);
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
     this.touchActivity();
   }
@@ -2991,6 +3007,7 @@ function toModels(orm, config = {}, state = {}) {
   settings.tabs = config.tabs ?? [];
   settings.links = config.links ?? [];
   settings.test_presets = config.test_presets ?? [];
+  settings.workspace_categories = config.workspace_categories ?? [];
   orm.create(Settings, settings);
   for (const r of config.repos || []) createRepo(orm, r);
   for (const w of config.workspaces || []) createWorkspace(orm, w);
@@ -3023,6 +3040,7 @@ function workspaceData(w) {
     created_at: w.created_at ?? "",
     last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
+    category: w.category ?? "",
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
     demo_data: w.demo_data ?? true,
@@ -3065,6 +3083,7 @@ function toConfig(orm) {
     out.tabs = s.tabs() ?? [];
     out.links = s.links() ?? [];
     out.test_presets = s.test_presets() ?? [];
+    out.workspace_categories = s.workspace_categories() ?? [];
   }
   out.repos = orm.records(Repository).map((r) => ({
     id: r.id,
@@ -3083,6 +3102,7 @@ function toConfig(orm) {
     created_at: w.created_at(),
     last_activity: w.last_activity(),
     favorite: w.favorite(),
+    category: w.category(),
     db: w.db(),
     on_create_args: w.on_create_args(),
     demo_data: w.demo_data(),
@@ -3162,7 +3182,16 @@ function reconcileWorkspaces(orm, desired) {
     (w) => w.id,
     (rec, w) => {
       const d = workspaceData(w);
-      for (const k of ["name", "favorite", "db", "on_create_args", "demo_data", "worktree"]) {
+      const keys = [
+        "name",
+        "favorite",
+        "category",
+        "db",
+        "on_create_args",
+        "demo_data",
+        "worktree"
+      ];
+      for (const k of keys) {
         rec[k].set(d[k]);
       }
       if ("created_at" in w) rec.created_at.set(d.created_at);
@@ -3823,7 +3852,8 @@ var WorkspacePlugin = class extends Plugin {
     baseId = "",
     on_create_args = "",
     demo_data = true,
-    favorite = false
+    favorite = false,
+    category = ""
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -3835,6 +3865,7 @@ var WorkspacePlugin = class extends Plugin {
       created_at: now,
       last_activity: now,
       favorite,
+      category,
       db: dbName,
       on_create_args,
       demo_data,
@@ -5484,11 +5515,16 @@ var ConfigScreen = class extends Component {
             <input id="setting-update-check" type="checkbox" class="settings-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off."
                    t-att-checked="this.config.config.update_check !== false"
                    t-on-change="ev => this.config.updateConfig({ update_check: ev.target.checked })"/>
+            <label for="setting-ws-categories" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog.">enable workspace categories</label>
+            <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
+                   t-att-checked="this.config.config.workspace_categories_enabled"
+                   t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
         <ListEditor kind="'templates'"/>
+        <ListEditor kind="'categories'"/>
         <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
         <div class="config-block">
@@ -5791,6 +5827,25 @@ var SPECS = {
         optional: true,
         default: true,
         title: "load demo data when a workspace created from this template makes its database"
+      }
+    ],
+    validate() {
+      return null;
+    }
+  },
+  categories: {
+    key: "workspace_categories",
+    title: "Workspace categories",
+    itemName: "category",
+    reorderable: true,
+    // drag the handle to reorder how the groups appear in the Workspaces list
+    fields: [
+      {
+        key: "id",
+        name: "name",
+        placeholder: "category name (e.g. dev)",
+        className: "w-name",
+        title: "group label shown in the Workspaces list (when categories are enabled)"
       }
     ],
     validate() {
@@ -8472,6 +8527,9 @@ var ClaudePlugin = class extends Plugin {
 
 // static/src/workspaces_screen/dialogs.js
 var baseBranchOf = (branch) => (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+function categoryOptions(config) {
+  return (config.config.workspace_categories || []).map((c) => ({ value: c.id, label: c.id }));
+}
 async function startCreateWorkspace(plugins, prefill = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   await db.load();
@@ -8557,6 +8615,16 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         placeholder: "database name"
       },
       { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      ...config.config.workspace_categories_enabled ? [
+        {
+          key: "category",
+          type: "select",
+          label: "Category",
+          placeholder: "\u2014 none \u2014",
+          options: categoryOptions(config),
+          value: prefill.category ?? ""
+        }
+      ] : [],
       {
         key: "cloneDb",
         type: "check-select",
@@ -8597,7 +8665,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       baseId: tpl?.id || "",
       on_create_args: (res.args || "").trim(),
       demo_data: !!res.demoData,
-      favorite: false
+      favorite: false,
+      category: res.category || ""
     });
     return;
   }
@@ -8608,6 +8677,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     created_at: now,
     last_activity: now,
     favorite: false,
+    category: res.category || "",
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
     demo_data: !!res.demoData,
@@ -10077,6 +10147,15 @@ function savedWorkspaceOrder() {
     return "config";
   }
 }
+var WORKSPACE_COLLAPSED_KEY = "goo-workspace-collapsed-categories";
+function savedCollapsedGroups() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WORKSPACE_COLLAPSED_KEY));
+    return new Set(Array.isArray(stored) ? stored : []);
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
 var WorkspacesScreen = class extends Component {
   static components = {
     LogConsole,
@@ -10119,17 +10198,26 @@ var WorkspacesScreen = class extends Component {
                 <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
               </div>
             </div>
-            <button t-foreach="this.list" t-as="ws" t-key="ws.id" class="wt-item"
-                    t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
-                    t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
-              <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
-              <span class="wt-item-name" t-out="ws.name"/>
-              <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
-              <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
-              <span class="wt-sp"/>
-              <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
-              <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
-            </button>
+            <t t-foreach="this.listGroups" t-as="grp" t-key="grp.id">
+              <button t-if="grp.name" class="wt-group-head" t-att-title="(this.isCollapsed(grp.id) ? 'expand' : 'collapse') + ' ' + grp.name" t-on-click="() => this.toggleGroup(grp.id)">
+                <span class="wt-group-caret" t-out="this.isCollapsed(grp.id) ? '▸' : '▾'"/>
+                <span class="wt-group-name" t-out="grp.name"/>
+                <span class="wt-group-count" t-out="grp.items.length"/>
+              </button>
+              <t t-if="!grp.name || !this.isCollapsed(grp.id)">
+                <button t-foreach="grp.items" t-as="ws" t-key="ws.id" class="wt-item"
+                        t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
+                        t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
+                  <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
+                  <span class="wt-item-name" t-out="ws.name"/>
+                  <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
+                  <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+                  <span class="wt-sp"/>
+                  <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
+                  <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
+                </button>
+              </t>
+            </t>
           </div>
         </div>
         <div class="wt-detail">
@@ -10274,6 +10362,8 @@ var WorkspacesScreen = class extends Component {
   orderMenuOpen = signal(false);
   menuOpen = signal(false);
   // the header's Edit/Remove overflow menu
+  collapsedGroups = signal(savedCollapsedGroups());
+  // collapsed category ids
   setup() {
     this.db.load();
     const closeMenu = () => {
@@ -10535,6 +10625,38 @@ var WorkspacesScreen = class extends Component {
       rows.sort((a, b) => statusRank.get(a.ws.id) - statusRank.get(b.ws.id) || a.index - b.index);
     }
     return rows.map(({ ws }) => ws);
+  }
+  get categoriesEnabled() {
+    return !!this.config.config.workspace_categories_enabled;
+  }
+  // the list partitioned into category groups (config order, uncategorized last),
+  // preserving the chosen sort within each group. With categories disabled, one
+  // anonymous group — the template renders a header only for named groups.
+  get listGroups() {
+    const list = this.list;
+    if (!this.categoriesEnabled) return [{ id: "", name: "", items: list }];
+    const cats = (this.config.config.workspace_categories || []).map((c) => c.id);
+    const byCat = new Map(cats.map((c) => [c, []]));
+    const rest = [];
+    for (const ws of list) {
+      if (byCat.has(ws.category)) byCat.get(ws.category).push(ws);
+      else rest.push(ws);
+    }
+    const groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) }));
+    if (rest.length) groups.push({ id: "\0none", name: "uncategorized", items: rest });
+    return groups.filter((g) => g.items.length);
+  }
+  isCollapsed(id) {
+    return this.collapsedGroups().has(id);
+  }
+  toggleGroup(id) {
+    const next = new Set(this.collapsedGroups());
+    if (!next.delete(id)) next.add(id);
+    this.collapsedGroups.set(next);
+    try {
+      localStorage.setItem(WORKSPACE_COLLAPSED_KEY, JSON.stringify([...next]));
+    } catch {
+    }
   }
   get sel() {
     return (this.config.config.workspaces || []).find((w) => w.id === this.wt.selectedId()) || null;
@@ -10874,7 +10996,17 @@ var WorkspacesScreen = class extends Component {
           placeholder: "community:master,enterprise:master"
         },
         { key: "db", type: "text", label: "Database", value: ws.db || "" },
-        { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" }
+        { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" },
+        ...this.categoriesEnabled ? [
+          {
+            key: "category",
+            type: "select",
+            label: "Category",
+            placeholder: "\u2014 none \u2014",
+            options: categoryOptions(this.config),
+            value: ws.category || ""
+          }
+        ] : []
       ]
     });
     if (!res) return;
@@ -10882,7 +11014,8 @@ var WorkspacesScreen = class extends Component {
       name: res.name.trim(),
       checkouts: repoBranchList.parse(res.config.trim()),
       db: (res.db || "").trim(),
-      on_create_args: (res.args || "").trim()
+      on_create_args: (res.args || "").trim(),
+      ...this.categoriesEnabled ? { category: res.category || "" } : {}
     });
   }
   // ── new workspace (unified: template picker + location) ─────────────────────

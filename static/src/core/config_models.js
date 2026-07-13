@@ -58,8 +58,13 @@ const SETTINGS_CHARS = [
   "filestore",
   "editor",
 ];
-const SETTINGS_BOOLS = ["auto_open_event_log", "update_check", "rust_bundler"];
-const SETTINGS_JSON = ["start", "tabs", "links", "test_presets"];
+const SETTINGS_BOOLS = [
+  "auto_open_event_log",
+  "update_check",
+  "rust_bundler",
+  "workspace_categories_enabled",
+];
+const SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories"];
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
 const STATE_CHARS = ["active_workspace", "claude_model"];
 const STATE_JSON = ["test_history", "reviews_favorites", "reviews_merged", "reviews_no_mergebot"];
@@ -77,10 +82,12 @@ export class Settings extends Model {
   auto_open_event_log = fields.bool();
   update_check = fields.bool();
   rust_bundler = fields.bool();
+  workspace_categories_enabled = fields.bool();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
   test_presets = fields.json();
+  workspace_categories = fields.json(); // [{ id }] — group order for the Workspaces list
 }
 
 export class Repository extends Model {
@@ -169,6 +176,7 @@ export class Workspace extends Model {
   created_at = fields.char(); // ISO timestamp; immutable after creation
   last_activity = fields.char(); // ISO timestamp; intentional workspace actions only
   favorite = fields.bool();
+  category = fields.char(); // a workspace_categories id ("" = uncategorized)
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
@@ -218,10 +226,11 @@ export class Workspace extends Model {
   // commit an inline edit onto the target (favorite/demo_data untouched — each is
   // toggled directly via its own checkbox).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
-  applyEdit({ name, checkouts, db, on_create_args }) {
+  applyEdit({ name, checkouts, db, on_create_args, category }) {
     this.name.set(name);
     this.db.set(db);
     this.on_create_args.set(on_create_args);
+    if (category !== undefined) this.category.set(category);
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
     this.touchActivity();
   }
@@ -352,6 +361,7 @@ export function toModels(orm, config = {}, state = {}) {
   settings.tabs = config.tabs ?? [];
   settings.links = config.links ?? [];
   settings.test_presets = config.test_presets ?? [];
+  settings.workspace_categories = config.workspace_categories ?? [];
   orm.create(Settings, settings);
 
   for (const r of config.repos || []) createRepo(orm, r);
@@ -388,6 +398,7 @@ function workspaceData(w) {
     created_at: w.created_at ?? "",
     last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
+    category: w.category ?? "",
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
     demo_data: w.demo_data ?? true,
@@ -434,6 +445,7 @@ export function toConfig(orm) {
     out.tabs = s.tabs() ?? [];
     out.links = s.links() ?? [];
     out.test_presets = s.test_presets() ?? [];
+    out.workspace_categories = s.workspace_categories() ?? [];
   }
   out.repos = orm.records(Repository).map((r) => ({
     id: r.id,
@@ -452,6 +464,7 @@ export function toConfig(orm) {
     created_at: w.created_at(),
     last_activity: w.last_activity(),
     favorite: w.favorite(),
+    category: w.category(),
     db: w.db(),
     on_create_args: w.on_create_args(),
     demo_data: w.demo_data(),
@@ -542,7 +555,16 @@ function reconcileWorkspaces(orm, desired) {
     (w) => w.id,
     (rec, w) => {
       const d = workspaceData(w);
-      for (const k of ["name", "favorite", "db", "on_create_args", "demo_data", "worktree"]) {
+      const keys = [
+        "name",
+        "favorite",
+        "category",
+        "db",
+        "on_create_args",
+        "demo_data",
+        "worktree",
+      ];
+      for (const k of keys) {
         rec[k].set(d[k]);
       }
       if ("created_at" in w) rec.created_at.set(d.created_at);

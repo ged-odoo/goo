@@ -25,6 +25,11 @@ export const DEFAULT_CONFIG = {
   // automatic goo self-update check (git fetch of origin/master at startup +
   // hourly, driving the navbar badge). The manual check button always works.
   update_check: true,
+  // workspace categories: when enabled, the Workspaces list groups workspaces
+  // under collapsible per-category headers (in this order); each workspace may
+  // carry a `category` naming one of these ids
+  workspace_categories_enabled: false,
+  workspace_categories: [{ id: "dev" }, { id: "base" }],
   repos: [
     {
       id: "community",

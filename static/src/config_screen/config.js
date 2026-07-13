@@ -568,11 +568,16 @@ export class ConfigScreen extends Component {
             <input id="setting-update-check" type="checkbox" class="settings-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off."
                    t-att-checked="this.config.config.update_check !== false"
                    t-on-change="ev => this.config.updateConfig({ update_check: ev.target.checked })"/>
+            <label for="setting-ws-categories" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog.">enable workspace categories</label>
+            <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
+                   t-att-checked="this.config.config.workspace_categories_enabled"
+                   t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
         <ListEditor kind="'templates'"/>
+        <ListEditor kind="'categories'"/>
         <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
         <div class="config-block">
@@ -901,6 +906,24 @@ export const SPECS = {
     ],
     validate() {
       return null;
+    },
+  },
+  categories: {
+    key: "workspace_categories",
+    title: "Workspace categories",
+    itemName: "category",
+    reorderable: true, // drag the handle to reorder how the groups appear in the Workspaces list
+    fields: [
+      {
+        key: "id",
+        name: "name",
+        placeholder: "category name (e.g. dev)",
+        className: "w-name",
+        title: "group label shown in the Workspaces list (when categories are enabled)",
+      },
+    ],
+    validate() {
+      return null; // a category removed while still assigned just falls back to uncategorized
     },
   },
   testPresets: {

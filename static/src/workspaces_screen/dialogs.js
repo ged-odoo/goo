@@ -14,6 +14,12 @@ import { postJSON, repoBranchList } from "../core/utils.js";
 const baseBranchOf = (branch) =>
   (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 
+// the Category select options for the create/edit dialogs (shown only when the
+// workspace-categories setting is on; the empty placeholder = uncategorized)
+export function categoryOptions(config) {
+  return (config.config.workspace_categories || []).map((c) => ({ value: c.id, label: c.id }));
+}
+
 // Create a workspace through the unified dialog (validated before it closes).
 // plugins: { config, dialogs, db, code, eventLog, wt }. `prefill` seeds the form
 // (the remote-branch flow passes the fetched branch): { name, config, db,
@@ -106,6 +112,18 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         placeholder: "database name",
       },
       { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      ...(config.config.workspace_categories_enabled
+        ? [
+            {
+              key: "category",
+              type: "select",
+              label: "Category",
+              placeholder: "— none —",
+              options: categoryOptions(config),
+              value: prefill.category ?? "",
+            },
+          ]
+        : []),
       {
         key: "cloneDb",
         type: "check-select",
@@ -152,6 +170,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       on_create_args: (res.args || "").trim(),
       demo_data: !!res.demoData,
       favorite: false,
+      category: res.category || "",
     });
     return;
   }
@@ -165,6 +184,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
     created_at: now,
     last_activity: now,
     favorite: false,
+    category: res.category || "",
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
     demo_data: !!res.demoData,

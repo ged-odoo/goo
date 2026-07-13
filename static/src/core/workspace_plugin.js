@@ -224,6 +224,7 @@ export class WorkspacePlugin extends Plugin {
     on_create_args = "",
     demo_data = true,
     favorite = false,
+    category = "",
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -235,6 +236,7 @@ export class WorkspacePlugin extends Plugin {
       created_at: now,
       last_activity: now,
       favorite,
+      category,
       db: dbName,
       on_create_args,
       demo_data,
