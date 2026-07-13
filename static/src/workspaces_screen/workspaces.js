@@ -133,7 +133,7 @@ export class CodePane extends Component {
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
-        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" title="refresh branches + pull requests" t-on-click="() => this.load(true)">
+        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" t-att-title="this.refreshTitle()" t-on-click="() => this.load(true)">
           <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
         </button>
       </div>
@@ -230,12 +230,6 @@ export class CodePane extends Component {
   menuId = signal(""); // key of the checkout whose action menu is open ("" = none)
 
   setup() {
-    // load branches + PRs narrowed to this workspace's repos (merging, so other
-    // repos' cached state is untouched); owl3's useEffect tracks the body, so this
-    // re-runs when the workspace's checkouts change (the pane is t-keyed per ws)
-    useEffect(() => {
-      this.load(false);
-    });
     // close the repo chip menu on any outside click
     const closeMenu = () => this.menuId() && this.menuId.set("");
     onMounted(() => document.addEventListener("click", closeMenu));
@@ -244,7 +238,14 @@ export class CodePane extends Component {
 
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
-    if (ids.size) this.code.load(force, ids, ids);
+    if (ids.size) return this.code.loadWorkspace(this.props.ws.id, ids, force);
+  }
+
+  refreshTitle() {
+    const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    const at = this.code.workspaceRefreshedAt(ids);
+    const last = at ? timeAgo(new Date(at).toISOString()) : "never";
+    return `refresh branches + pull requests · last refreshed ${last}`;
   }
 
   toggleMenu(id) {
@@ -865,14 +866,15 @@ export class WorkspacesScreen extends Component {
       if (this.list.some((ws) => ws.id === id)) this.wt.select(id);
       this.wt.requestedSelection.set("");
     });
-    // keep the selected workspace's git state fresh (drives the Start guard + the
-    // checked-out badges) — a scoped, cheap branch scan when the selection (read
-    // via this.sel — owl3's useEffect tracks the body) changes
+    // Keep the selected workspace's code state fresh (drives the Start guard,
+    // checkout badges and Code pane). The workspace-aware loader skips the scoped
+    // branch + PR scan when all of its content was refreshed in the last 10 minutes.
+    // Keep the loader itself untracked: it reads and then rewrites the shared store.
     useEffect(() => {
       const ws = this.sel;
       if (!ws) return;
       const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-      if (ids.size) this.code.loadBranches(ids);
+      if (ids.size) untrack(() => this.code.loadWorkspace(ws.id, ids));
     });
     // consume the event log's one-shot pane request (its [jump] selects the
     // workspace and sets this before navigating here — the plugin holds it so it

@@ -1685,6 +1685,7 @@ var PullRequest = {
 
 // static/src/core/code_plugin.js
 var PRS_CACHE_KEY = "oo-prs-cache";
+var WORKSPACE_REFRESH_TTL = 10 * 60 * 1e3;
 var CodePlugin = class extends Plugin {
   static sequence = 3;
   config = usePlugin(ConfigPlugin);
@@ -1721,6 +1722,9 @@ var CodePlugin = class extends Plugin {
   // them, so the have-based dedup (the loop guard) resumes right after.
   _mbRefresh = false;
   _rbRefresh = false;
+  // workspace + repo scope -> its current automatic load. Switching away and back
+  // while a request is still running should join it, not start another scan.
+  _workspaceLoads = /* @__PURE__ */ new Map();
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
   // hydrate the store from the instant-paint cache once, so a reload doesn't flash
@@ -1848,6 +1852,52 @@ var CodePlugin = class extends Plugin {
       const branchRepos = this.store.repoStatusList();
       localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos }));
     }
+  }
+  // The last time every piece of a workspace's code view was refreshed. A workspace
+  // is only as fresh as its oldest requested repo snapshot; repos with a GitHub slug
+  // need both their local branch state and PR state. Deriving this from the normalized
+  // store also lets a list-wide or another screen's load satisfy the workspace cache.
+  workspaceRefreshedAt(repoIds) {
+    const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
+    if (!ids.size) return 0;
+    const branches = new Map(this.branchRepos().map((r) => [r.id, r.fetchedAt || 0]));
+    const prs = new Map(this.prRepos().map((r) => [r.id, r.fetchedAt || 0]));
+    const githubIds = new Set(
+      this.reposWithGithub().filter((r) => ids.has(r.id) && r.github).map((r) => r.id)
+    );
+    const stamps = [];
+    for (const id of ids) {
+      const branchAt = branches.get(id);
+      if (!branchAt) return 0;
+      stamps.push(branchAt);
+      if (githubIds.has(id)) {
+        const prAt = prs.get(id);
+        if (!prAt) return 0;
+        stamps.push(prAt);
+      }
+    }
+    return Math.min(...stamps);
+  }
+  // Selection-driven workspace loads are cache-aware for ten minutes. Manual
+  // Refresh passes force=true and always bypasses this frontend freshness guard
+  // (and the backend's PR cache through load()).
+  loadWorkspace(workspaceId, repoIds, force = false) {
+    const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
+    const refreshedAt = this.workspaceRefreshedAt(ids);
+    if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
+      return Promise.resolve(false);
+    }
+    const key = `${workspaceId}:${JSON.stringify([...ids].sort())}`;
+    const pending = this._workspaceLoads.get(key);
+    if (pending)
+      return force ? pending.then(() => this.loadWorkspace(workspaceId, ids, true)) : pending;
+    const request = this.load(force, ids, ids).then(() => true).finally(() => {
+      if (this._workspaceLoads.get(key) === request) {
+        this._workspaceLoads.delete(key);
+      }
+    });
+    this._workspaceLoads.set(key, request);
+    return request;
   }
   // fetch just the local branch/checkout state (no PRs, runbot or mergebot),
   // optionally scoped to a set of repo ids. For a screen that needs checkout/dirty
@@ -9323,7 +9373,7 @@ var CodePane = class extends Component {
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
-        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" title="refresh branches + pull requests" t-on-click="() => this.load(true)">
+        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" t-att-title="this.refreshTitle()" t-on-click="() => this.load(true)">
           <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
         </button>
       </div>
@@ -9422,16 +9472,19 @@ var CodePane = class extends Component {
   menuId = signal("");
   // key of the checkout whose action menu is open ("" = none)
   setup() {
-    useEffect(() => {
-      this.load(false);
-    });
     const closeMenu = () => this.menuId() && this.menuId.set("");
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
   }
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
-    if (ids.size) this.code.load(force, ids, ids);
+    if (ids.size) return this.code.loadWorkspace(this.props.ws.id, ids, force);
+  }
+  refreshTitle() {
+    const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    const at = this.code.workspaceRefreshedAt(ids);
+    const last = at ? timeAgo(new Date(at).toISOString()) : "never";
+    return `refresh branches + pull requests \xB7 last refreshed ${last}`;
   }
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
@@ -9994,7 +10047,7 @@ var WorkspacesScreen = class extends Component {
       const ws = this.sel;
       if (!ws) return;
       const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-      if (ids.size) this.code.loadBranches(ids);
+      if (ids.size) untrack(() => this.code.loadWorkspace(ws.id, ids));
     });
     useEffect(() => {
       const pane = this.wt.requestedPane();

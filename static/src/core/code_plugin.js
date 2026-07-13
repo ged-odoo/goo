@@ -13,6 +13,7 @@ import { PullRequest, branchKey } from "./models.js";
 import { Plugin, usePlugin, signal, computed } from "@odoo/owl";
 
 const PRS_CACHE_KEY = "oo-prs-cache";
+const WORKSPACE_REFRESH_TTL = 10 * 60 * 1000;
 
 export class CodePlugin extends Plugin {
   static sequence = 3;
@@ -46,6 +47,9 @@ export class CodePlugin extends Plugin {
   // them, so the have-based dedup (the loop guard) resumes right after.
   _mbRefresh = false;
   _rbRefresh = false;
+  // workspace + repo scope -> its current automatic load. Switching away and back
+  // while a request is still running should join it, not start another scan.
+  _workspaceLoads = new Map();
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
 
@@ -203,6 +207,60 @@ export class CodePlugin extends Plugin {
       const branchRepos = this.store.repoStatusList();
       localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos }));
     }
+  }
+
+  // The last time every piece of a workspace's code view was refreshed. A workspace
+  // is only as fresh as its oldest requested repo snapshot; repos with a GitHub slug
+  // need both their local branch state and PR state. Deriving this from the normalized
+  // store also lets a list-wide or another screen's load satisfy the workspace cache.
+  workspaceRefreshedAt(repoIds) {
+    const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
+    if (!ids.size) return 0;
+    const branches = new Map(this.branchRepos().map((r) => [r.id, r.fetchedAt || 0]));
+    const prs = new Map(this.prRepos().map((r) => [r.id, r.fetchedAt || 0]));
+    const githubIds = new Set(
+      this.reposWithGithub()
+        .filter((r) => ids.has(r.id) && r.github)
+        .map((r) => r.id),
+    );
+    const stamps = [];
+    for (const id of ids) {
+      const branchAt = branches.get(id);
+      if (!branchAt) return 0;
+      stamps.push(branchAt);
+      if (githubIds.has(id)) {
+        const prAt = prs.get(id);
+        if (!prAt) return 0;
+        stamps.push(prAt);
+      }
+    }
+    return Math.min(...stamps);
+  }
+
+  // Selection-driven workspace loads are cache-aware for ten minutes. Manual
+  // Refresh passes force=true and always bypasses this frontend freshness guard
+  // (and the backend's PR cache through load()).
+  loadWorkspace(workspaceId, repoIds, force = false) {
+    const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
+    const refreshedAt = this.workspaceRefreshedAt(ids);
+    if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
+      return Promise.resolve(false);
+    }
+    const key = `${workspaceId}:${JSON.stringify([...ids].sort())}`;
+    const pending = this._workspaceLoads.get(key);
+    // A manual refresh made during an automatic request must still force a second
+    // load after it; ordinary selection changes can simply share the pending one.
+    if (pending)
+      return force ? pending.then(() => this.loadWorkspace(workspaceId, ids, true)) : pending;
+    const request = this.load(force, ids, ids)
+      .then(() => true)
+      .finally(() => {
+        if (this._workspaceLoads.get(key) === request) {
+          this._workspaceLoads.delete(key);
+        }
+      });
+    this._workspaceLoads.set(key, request);
+    return request;
   }
 
   // fetch just the local branch/checkout state (no PRs, runbot or mergebot),
