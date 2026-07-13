@@ -759,7 +759,7 @@ export class WorkspacesScreen extends Component {
                 <button class="pbtn" t-on-click="() => this.create()">New workspace…</button>
               </div>
             </div>
-            <div t-foreach="this.listGroups" t-as="grp" t-key="grp.id" class="wt-group" t-att-class="{named: grp.name}">
+            <div t-foreach="this.listGroups" t-as="grp" t-key="grp.id" class="wt-group">
               <button t-if="grp.name" class="wt-group-head" t-att-title="(this.isCollapsed(grp.id) ? 'expand' : 'collapse') + ' ' + grp.name" t-on-click="() => this.toggleGroup(grp.id)">
                 <span class="wt-group-caret" t-out="this.isCollapsed(grp.id) ? '▸' : '▾'"/>
                 <span class="wt-group-name" t-out="grp.name"/>
