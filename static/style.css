@@ -4064,11 +4064,11 @@ a.commit-detail-hash svg {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
-  padding: 9px 15px;
+  width: calc(100% - 12px);
+  margin: 0 6px;
+  padding: 9px 9px;
   border: 0;
-  border-bottom: 1px solid var(--l-line-soft);
-  border-radius: 0;
+  border-radius: 8px;
   background: transparent;
   text-align: left;
   cursor: pointer;
@@ -4104,9 +4104,10 @@ a.commit-detail-hash svg {
   background: var(--l-panel);
 }
 .wt-item.selected {
-  border-top: 1px solid var(--l-accent-line);
-  border-color: var(--l-accent-line);
   background: var(--l-accent-soft);
+}
+.wt-item.selected .wt-item-name {
+  color: var(--l-accent);
 }
 .wt-item-name {
   /* hug the name so the wt badge sits right next to it (the wt-sp spacer
