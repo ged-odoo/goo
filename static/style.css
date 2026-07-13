@@ -3117,7 +3117,8 @@ a.dash-ci:hover {
   font-weight: 600;
   color: var(--l-green);
 }
-.edit-row input {
+.edit-row input,
+.edit-card input {
   padding: 7px 10px;
   border: 1px solid var(--l-panel-line);
   border-radius: 7px;
@@ -3127,10 +3128,12 @@ a.dash-ci:hover {
   min-width: 0;
   font-family: inherit;
 }
-.edit-row input::placeholder {
+.edit-row input::placeholder,
+.edit-card input::placeholder {
   color: var(--l-text-faint);
 }
-.edit-row input:focus {
+.edit-row input:focus,
+.edit-card input:focus {
   outline: none;
   border-color: var(--l-accent-line);
 }
@@ -3145,6 +3148,45 @@ a.dash-ci:hover {
   white-space: nowrap;
   user-select: none;
   cursor: pointer;
+}
+/* card list layout (spec.card): one bordered card per item, labeled fields over rows */
+.edit-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 880px;
+  padding: 10px 48px 12px 12px;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 9px;
+}
+.edit-card-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.edit-field-name {
+  font-size: 11px;
+  color: var(--l-text-mid);
+  white-space: nowrap;
+}
+.edit-field input {
+  width: 100%;
+}
+.edit-card .edit-check {
+  padding-bottom: 8px; /* baseline-align with the labeled inputs beside it */
+}
+.edit-card-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  height: 28px;
 }
 
 /* ─── modal dialog ─── */

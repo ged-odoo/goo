@@ -284,6 +284,7 @@ export class CodePane extends Component {
           error: b.error || "",
           github,
           path: groups.pathByRepo[r.id] || "",
+          pull_remote: groups.pullRemoteByRepo[r.id] || "origin",
           push_remote: groups.pushRemoteByRepo[r.id] || "dev",
           pr,
           // a work branch that's pushed and PR-less can have a PR opened for it
@@ -314,14 +315,14 @@ export class CodePane extends Component {
 
   // fetch+rebase a single repo's current branch onto its canonical base branch
   canRebaseRepo(r) {
-    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
+    return !!r.current && !r.dirty && !r.error && !!r.path;
   }
 
   rebaseRepoTitle(r) {
     if (r.error) return r.error;
     if (r.dirty) return "commit or stash changes first — the working tree is dirty";
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
+    if (!r.path) return "no local path configured for this repository";
+    return `fetch and rebase ${r.current} onto ${r.pull_remote}/${this._baseBranch(r.current)}`;
   }
 
   async rebaseRepo(r) {
@@ -383,10 +384,13 @@ export class CodePane extends Component {
   }
 
   rebaseAllTitle() {
-    const n = this.rebasableRepos.length;
-    if (!n)
-      return "nothing to rebase — repositories are dirty, missing, or have no canonical remote";
-    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
+    const repos = this.rebasableRepos;
+    if (!repos.length)
+      return "nothing to rebase — repositories are dirty, missing, or have no local path";
+    // spell out each repo's pull remote — checkouts may fetch from different remotes
+    return `fetch and rebase ${repos
+      .map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${this._baseBranch(r.current)}`)
+      .join(", ")}`;
   }
 
   // fetch + rebase every shown repo's current branch onto its base, in one call
@@ -413,18 +417,16 @@ export class CodePane extends Component {
     return this.pushableRows.length > 0;
   }
 
-  // "the dev remote" / "the dev, fork remotes" — repos may configure different
-  // push remotes, so multi-repo push labels list every distinct one
-  _pushRemotes(rows) {
-    const names = [...new Set(rows.map((r) => r.push_remote))];
-    return `the ${names.join(", ")} remote${names.length === 1 ? "" : "s"}`;
+  // spell out each branch's destination — checkouts may push to different remotes
+  _pushList(rows) {
+    return rows.map((r) => `${r.branch} (${r.repo}) to ${r.push_remote}`).join(", ");
   }
 
   pushAllTitle() {
     const rows = this.pushableRows;
     if (!rows.length)
       return "nothing to push — no local work branches (base branches are never pushed)";
-    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}`;
+    return `push ${this._pushList(rows)}`;
   }
 
   // push every work-branch checkout to its repo's push remote, one confirm for the batch
@@ -437,7 +439,7 @@ export class CodePane extends Component {
       rows.map((r) => ({ path: r.path, branch: r.branch })),
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
-        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}?`,
+        message: `Push ${this._pushList(rows)}?`,
       },
     );
     if (pushed) this.touchActivity();

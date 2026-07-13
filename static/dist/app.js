@@ -4989,7 +4989,26 @@ var ListEditor = class extends Component {
     <div class="config-block">
       <h2 class="subtitle" t-out="this.spec.title"/>
       <div class="rows" data-form-type="other">
-        <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
+        <t t-if="this.spec.card">
+          <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-card">
+            <button class="row-remove edit-card-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
+            <div t-foreach="this.cardRows" t-as="fields" t-key="fields_index" class="edit-card-row">
+              <t t-foreach="fields" t-as="f" t-key="f.key">
+                <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.title || f.name">
+                  <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => { row[f.key] = ev.target.checked; this.saveAuto(); }"/>
+                  <t t-out="f.name"/>
+                </label>
+                <label t-else="" class="edit-field" t-att-class="f.className" t-att-title="f.title">
+                  <span class="edit-field-name" t-out="f.name"/>
+                  <input t-att-placeholder="f.placeholder" t-att-value="row[f.key]"
+                         t-on-input="ev => row[f.key] = ev.target.value"
+                         t-on-change="() => this.saveAuto()"/>
+                </label>
+              </t>
+            </div>
+          </div>
+        </t>
+        <div t-if="!this.spec.card" t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
              t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
              t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
           <span t-if="this.spec.reorderable" class="row-handle" draggable="true" title="drag to reorder"
@@ -5024,6 +5043,16 @@ var ListEditor = class extends Component {
   // row the drag is hovering over
   setup() {
     this.load();
+  }
+  // card layout: the spec's fields grouped by their `row` (default 1), order kept
+  get cardRows() {
+    const rows = /* @__PURE__ */ new Map();
+    for (const f of this.spec.fields) {
+      const r = f.row || 1;
+      if (!rows.has(r)) rows.set(r, []);
+      rows.get(r).push(f);
+    }
+    return [...rows.values()];
   }
   onDragStart(ev, i) {
     this.dragIndex.set(i);
@@ -5650,47 +5679,68 @@ var SPECS = {
     key: "repos",
     title: "Repositories",
     itemName: "repository",
+    card: true,
+    // one card per repo, fields spread over two labeled rows
     carry: ["favorite"],
     // legacy flag: no UI reads it anymore, but stored configs round-trip
     fields: [
-      { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
+      {
+        key: "id",
+        name: "name",
+        placeholder: "community",
+        className: "w-name",
+        title: "short identifier used across goo (also the checkout's folder name in worktrees)"
+      },
       {
         key: "path",
         name: "path",
-        placeholder: "path (e.g. ~/work/community)",
-        className: "w-flex"
+        placeholder: "~/work/community",
+        className: "w-flex",
+        title: "local path of the git checkout (~ allowed)"
       },
       {
         key: "github",
         name: "github repo",
-        placeholder: "github (e.g. odoo/odoo)",
+        placeholder: "odoo/odoo",
         className: "w-name",
-        optional: true
+        optional: true,
+        row: 2,
+        title: "canonical GitHub slug (owner/name) \u2014 used for PR, runbot and mergebot lookups"
       },
       {
         key: "pull_remote",
         name: "pull remote",
-        placeholder: "pull remote (default: origin)",
+        placeholder: "origin",
         className: "w-name",
         optional: true,
         default: "origin",
+        row: 2,
         title: "git remote fetched from (rebase, fresh start points, auto-reload)"
       },
       {
         key: "push_remote",
         name: "push remote",
-        placeholder: "push remote (default: dev)",
+        placeholder: "dev",
         className: "w-name",
         optional: true,
         default: "dev",
+        row: 2,
         title: "git remote pushed to (push branch, delete remote branch)"
       },
-      { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
+      {
+        key: "autoreload",
+        name: "auto-reload master",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title: "fetch master from the pull remote in the background (every 4h)"
+      },
       {
         key: "external",
         name: "external",
         type: "checkbox",
         optional: true,
+        row: 2,
         title: "a repo outside the odoo CI ecosystem (e.g. odoo/owl) \u2014 skip its mergebot/runbot lookups"
       }
     ],
@@ -9675,6 +9725,7 @@ var CodePane = class extends Component {
         error: b.error || "",
         github,
         path: groups.pathByRepo[r.id] || "",
+        pull_remote: groups.pullRemoteByRepo[r.id] || "origin",
         push_remote: groups.pushRemoteByRepo[r.id] || "dev",
         pr,
         // a work branch that's pushed and PR-less can have a PR opened for it
@@ -9701,13 +9752,13 @@ var CodePane = class extends Component {
   }
   // fetch+rebase a single repo's current branch onto its canonical base branch
   canRebaseRepo(r) {
-    return !!r.current && !r.dirty && !r.error && !!r.github && !!r.path;
+    return !!r.current && !r.dirty && !r.error && !!r.path;
   }
   rebaseRepoTitle(r) {
     if (r.error) return r.error;
     if (r.dirty) return "commit or stash changes first \u2014 the working tree is dirty";
-    if (!r.github || !r.path) return "no canonical repo configured for this repository";
-    return `fetch and rebase ${r.current} onto ${r.github}@${this._baseBranch(r.current)}`;
+    if (!r.path) return "no local path configured for this repository";
+    return `fetch and rebase ${r.current} onto ${r.pull_remote}/${this._baseBranch(r.current)}`;
   }
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
@@ -9762,10 +9813,10 @@ var CodePane = class extends Component {
     return this.rebasableRepos.length > 0;
   }
   rebaseAllTitle() {
-    const n = this.rebasableRepos.length;
-    if (!n)
-      return "nothing to rebase \u2014 repositories are dirty, missing, or have no canonical remote";
-    return `fetch and rebase ${n} branch${n === 1 ? "" : "es"} onto their base`;
+    const repos = this.rebasableRepos;
+    if (!repos.length)
+      return "nothing to rebase \u2014 repositories are dirty, missing, or have no local path";
+    return `fetch and rebase ${repos.map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${this._baseBranch(r.current)}`).join(", ")}`;
   }
   // fetch + rebase every shown repo's current branch onto its base, in one call
   async rebaseAll() {
@@ -9788,17 +9839,15 @@ var CodePane = class extends Component {
   canPushAll() {
     return this.pushableRows.length > 0;
   }
-  // "the dev remote" / "the dev, fork remotes" — repos may configure different
-  // push remotes, so multi-repo push labels list every distinct one
-  _pushRemotes(rows) {
-    const names = [...new Set(rows.map((r) => r.push_remote))];
-    return `the ${names.join(", ")} remote${names.length === 1 ? "" : "s"}`;
+  // spell out each branch's destination — checkouts may push to different remotes
+  _pushList(rows) {
+    return rows.map((r) => `${r.branch} (${r.repo}) to ${r.push_remote}`).join(", ");
   }
   pushAllTitle() {
     const rows = this.pushableRows;
     if (!rows.length)
       return "nothing to push \u2014 no local work branches (base branches are never pushed)";
-    return `push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}`;
+    return `push ${this._pushList(rows)}`;
   }
   // push every work-branch checkout to its repo's push remote, one confirm for the batch
   async pushAll() {
@@ -9810,7 +9859,7 @@ var CodePane = class extends Component {
       rows.map((r) => ({ path: r.path, branch: r.branch })),
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
-        message: `Push ${rows.map((r) => `${r.branch} (${r.repo})`).join(", ")} to ${this._pushRemotes(rows)}?`
+        message: `Push ${this._pushList(rows)}?`
       }
     );
     if (pushed) this.touchActivity();

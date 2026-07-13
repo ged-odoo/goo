@@ -13,7 +13,26 @@ export class ListEditor extends Component {
     <div class="config-block">
       <h2 class="subtitle" t-out="this.spec.title"/>
       <div class="rows" data-form-type="other">
-        <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
+        <t t-if="this.spec.card">
+          <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-card">
+            <button class="row-remove edit-card-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
+            <div t-foreach="this.cardRows" t-as="fields" t-key="fields_index" class="edit-card-row">
+              <t t-foreach="fields" t-as="f" t-key="f.key">
+                <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.title || f.name">
+                  <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => { row[f.key] = ev.target.checked; this.saveAuto(); }"/>
+                  <t t-out="f.name"/>
+                </label>
+                <label t-else="" class="edit-field" t-att-class="f.className" t-att-title="f.title">
+                  <span class="edit-field-name" t-out="f.name"/>
+                  <input t-att-placeholder="f.placeholder" t-att-value="row[f.key]"
+                         t-on-input="ev => row[f.key] = ev.target.value"
+                         t-on-change="() => this.saveAuto()"/>
+                </label>
+              </t>
+            </div>
+          </div>
+        </t>
+        <div t-if="!this.spec.card" t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
              t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
              t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
           <span t-if="this.spec.reorderable" class="row-handle" draggable="true" title="drag to reorder"
@@ -47,6 +66,17 @@ export class ListEditor extends Component {
   dragOverIndex = signal(-1); // row the drag is hovering over
   setup() {
     this.load();
+  }
+
+  // card layout: the spec's fields grouped by their `row` (default 1), order kept
+  get cardRows() {
+    const rows = new Map();
+    for (const f of this.spec.fields) {
+      const r = f.row || 1;
+      if (!rows.has(r)) rows.set(r, []);
+      rows.get(r).push(f);
+    }
+    return [...rows.values()];
   }
 
   onDragStart(ev, i) {
@@ -758,46 +788,66 @@ export const SPECS = {
     key: "repos",
     title: "Repositories",
     itemName: "repository",
+    card: true, // one card per repo, fields spread over two labeled rows
     carry: ["favorite"], // legacy flag: no UI reads it anymore, but stored configs round-trip
     fields: [
-      { key: "id", name: "name", placeholder: "name (e.g. community)", className: "w-name" },
+      {
+        key: "id",
+        name: "name",
+        placeholder: "community",
+        className: "w-name",
+        title: "short identifier used across goo (also the checkout's folder name in worktrees)",
+      },
       {
         key: "path",
         name: "path",
-        placeholder: "path (e.g. ~/work/community)",
+        placeholder: "~/work/community",
         className: "w-flex",
+        title: "local path of the git checkout (~ allowed)",
       },
       {
         key: "github",
         name: "github repo",
-        placeholder: "github (e.g. odoo/odoo)",
+        placeholder: "odoo/odoo",
         className: "w-name",
         optional: true,
+        row: 2,
+        title: "canonical GitHub slug (owner/name) — used for PR, runbot and mergebot lookups",
       },
       {
         key: "pull_remote",
         name: "pull remote",
-        placeholder: "pull remote (default: origin)",
+        placeholder: "origin",
         className: "w-name",
         optional: true,
         default: "origin",
+        row: 2,
         title: "git remote fetched from (rebase, fresh start points, auto-reload)",
       },
       {
         key: "push_remote",
         name: "push remote",
-        placeholder: "push remote (default: dev)",
+        placeholder: "dev",
         className: "w-name",
         optional: true,
         default: "dev",
+        row: 2,
         title: "git remote pushed to (push branch, delete remote branch)",
       },
-      { key: "autoreload", name: "auto-reload master", type: "checkbox", optional: true },
+      {
+        key: "autoreload",
+        name: "auto-reload master",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title: "fetch master from the pull remote in the background (every 4h)",
+      },
       {
         key: "external",
         name: "external",
         type: "checkbox",
         optional: true,
+        row: 2,
         title:
           "a repo outside the odoo CI ecosystem (e.g. odoo/owl) — skip its mergebot/runbot lookups",
       },
