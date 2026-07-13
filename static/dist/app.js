@@ -1117,6 +1117,8 @@ var MergebotStatus = class extends Model {
   // "" | "merged" | blocked reason
   detail = fields.json();
   // blocked-reason detail (string) | null
+  forwardPorts = fields.json();
+  // subsequent mergebot matrix rows | null (not fetched)
 };
 var RunbotStatus = class extends Model {
   static id = "runbot";
@@ -1176,6 +1178,11 @@ var StorePlugin = class extends Plugin {
   mbDetails = computed(
     () => Object.fromEntries(
       this.orm.records(MergebotStatus).filter((m2) => m2.detail() != null).map((m2) => [m2.id, m2.detail()])
+    )
+  );
+  mbForwardPorts = computed(
+    () => Object.fromEntries(
+      this.orm.records(MergebotStatus).filter((m2) => m2.forwardPorts() != null).map((m2) => [m2.id, m2.forwardPorts()])
     )
   );
   runbot = computed(
@@ -1254,16 +1261,39 @@ var StorePlugin = class extends Plugin {
       if (scopeIds.has(rec.id) && !seen.has(rec.id)) this.orm.delete(rec);
     }
   }
-  mergeMergebot(states, details) {
+  mergeMergebot(states, details, forwardPorts) {
     for (const [k, v] of Object.entries(states || {})) {
       const rec = this._live(MergebotStatus, k);
       if (rec) rec.state.set(v);
-      else this.orm.create(MergebotStatus, { id: k, state: v, detail: (details || {})[k] ?? null });
+      else
+        this.orm.create(MergebotStatus, {
+          id: k,
+          state: v,
+          detail: (details || {})[k] ?? null,
+          forwardPorts: (forwardPorts || {})[k] ?? null
+        });
     }
     for (const [k, v] of Object.entries(details || {})) {
       const rec = this._live(MergebotStatus, k);
       if (rec) rec.detail.set(v);
-      else this.orm.create(MergebotStatus, { id: k, state: (states || {})[k] ?? "", detail: v });
+      else
+        this.orm.create(MergebotStatus, {
+          id: k,
+          state: (states || {})[k] ?? "",
+          detail: v,
+          forwardPorts: (forwardPorts || {})[k] ?? null
+        });
+    }
+    for (const [k, v] of Object.entries(forwardPorts || {})) {
+      const rec = this._live(MergebotStatus, k);
+      if (rec) rec.forwardPorts.set(v);
+      else
+        this.orm.create(MergebotStatus, {
+          id: k,
+          state: (states || {})[k] ?? "",
+          detail: (details || {})[k] ?? null,
+          forwardPorts: v
+        });
     }
   }
   mergeRunbot(states) {
@@ -1671,6 +1701,8 @@ var CodePlugin = class extends Plugin {
   // "github#number" -> mergebot state (one shared copy)
   mbDetails = this.store.mbDetails;
   // "github#number" -> blocked-reason detail
+  mbForwardPorts = this.store.mbForwardPorts;
+  // "github#number" -> subsequent branch rows
   runbot = this.store.runbot;
   // branch name -> runbot status
   at = signal((this._cache() || {}).at || 0);
@@ -1708,9 +1740,10 @@ var CodePlugin = class extends Plugin {
   async loadMergebot(prs) {
     const refresh = this._mbRefresh;
     const have = this.mergebot();
+    const forwardPorts = this.mbForwardPorts();
     const todo = prs.filter((p) => {
       const k = `${p.github}#${p.number}`;
-      return (refresh || !(k in have)) && !this.store.mbPending.has(k);
+      return (refresh || !(k in have) || !(k in forwardPorts)) && !this.store.mbPending.has(k);
     });
     if (!todo.length) return;
     this._mbRefresh = false;
@@ -1722,7 +1755,11 @@ var CodePlugin = class extends Plugin {
       const details = Object.fromEntries(
         Object.entries(res.details || {}).filter(([k]) => k in states)
       );
-      this.store.mergeMergebot(states, details);
+      const rawForwardPorts = res.forward_ports ?? Object.fromEntries(Object.keys(states).map((k) => [k, []]));
+      const forwardPorts2 = Object.fromEntries(
+        Object.entries(rawForwardPorts).filter(([k]) => k in states)
+      );
+      this.store.mergeMergebot(states, details, forwardPorts2);
     } catch {
     } finally {
       keys.forEach((k) => this.store.mbPending.delete(k));
@@ -7234,6 +7271,8 @@ var ReviewPlugin = class extends Plugin {
   // "github#number" -> mergebot state (or "" / "merged")
   mbDetails = this.store.mbDetails;
   // "github#number" -> blocked-reason detail
+  mbForwardPorts = this.store.mbForwardPorts;
+  // "github#number" -> subsequent branch rows
   favorites = signal(this._readArr("reviews_favorites"));
   // [branch, …] (starred groups, sorted first)
   _merged = new Set(this._readArr("reviews_merged"));
@@ -7269,28 +7308,30 @@ var ReviewPlugin = class extends Plugin {
   }
   // load mergebot states for `prs` ([{github, number}]). Skips PRs already known
   // merged and (on normal loads) repos known to lack mergebot, so only the unknown
-  // ones hit the network. Pass {refresh:true} to re-probe (bypasses caches; still
-  // never re-fetches merged PRs).
+  // ones hit the network. Pass {refresh:true} to re-probe and bypass caches, including
+  // merged PRs whose forward-port chain may have advanced.
   async loadMergebot(prs, { refresh = false } = {}) {
     const seeded = {};
     for (const p of prs) {
       const k = mbKey(p);
       if (this._merged.has(k) && this.mergebot()[k] !== "merged") seeded[k] = "merged";
     }
-    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null);
+    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null, null);
     const have = this.mergebot();
+    const forwardPorts = this.mbForwardPorts();
     const todo = prs.filter((p) => {
       const k = mbKey(p);
-      if (this._merged.has(k)) return false;
+      if (this._merged.has(k) && k in forwardPorts && !refresh) return false;
       if (this._noMergebot.has(p.github) && !refresh) return false;
-      return refresh || !(k in have) && !this.store.mbPending.has(k);
+      return refresh || (!(k in have) || !(k in forwardPorts)) && !this.store.mbPending.has(k);
     });
     if (!todo.length) return;
     const keys = todo.map(mbKey);
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.store.mergeMergebot(res.states, res.details || {});
+      const forwardPorts2 = res.forward_ports ?? Object.fromEntries(Object.keys(res.states || {}).map((k) => [k, []]));
+      this.store.mergeMergebot(res.states, res.details || {}, forwardPorts2);
       this._record(todo, res);
     } catch {
     } finally {
@@ -9339,6 +9380,32 @@ var CodePane = class extends Component {
           </div>
         </div>
       </div>
+
+      <t t-if="this.forwardPortChains.length">
+        <div class="ws-sec ws-fp-heading"><span>Forward ports</span></div>
+        <div class="ws-fp-chain" t-foreach="this.forwardPortChains" t-as="chain" t-key="chain.key">
+          <div class="ws-fp-origin">
+            <span class="ws-repo-tag" t-out="chain.repo"/>
+            <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(chain.github, chain.number)" t-out="'#' + chain.number"/>
+          </div>
+          <div class="ws-fp-list">
+            <div class="ws-fp-row" t-foreach="chain.rows" t-as="row" t-key="row.branch">
+              <span class="ws-fp-branch" t-out="row.branch"/>
+              <div class="ws-fp-cells">
+                <div class="ws-fp-cell" t-foreach="row.cells" t-as="cell" t-key="cell.repository">
+                  <span t-if="chain.multiRepo" class="ws-fp-repo dim" t-out="cell.repository"/>
+                  <span t-if="!cell.pulls.length" class="ws-fp-waiting dim">waiting</span>
+                  <span class="ws-fp-pull" t-foreach="cell.pulls" t-as="pull" t-key="pull.github + '#' + pull.number">
+                    <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(pull.github, pull.number)" t-out="'#' + pull.number"/>
+                    <span class="ws-fp-status" t-att-class="'is-' + pull.category" t-out="pull.status"/>
+                    <span t-if="pull.detail" class="ws-fp-detail" t-out="pull.detail"/>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </t>
     </div>`;
   props = useProps({ ws: t.any() });
   code = usePlugin(CodePlugin);
@@ -9611,6 +9678,32 @@ var CodePane = class extends Component {
         // the rich repo entry (this.repos) the actions menu operates on
       };
     });
+  }
+  // One matrix per merged checkout PR. Rows are already sliced by the backend so
+  // only branches after the workspace's target are shown (including empty ones).
+  get forwardPortChains() {
+    const states = this.code.mergebot();
+    const matrices = this.code.mbForwardPorts();
+    const chains = [];
+    const seenMatrices = /* @__PURE__ */ new Set();
+    for (const row of this.checkoutRows) {
+      if (!row.pr || !row.github) continue;
+      const key = `${row.github}#${row.pr.number}`;
+      const rows = matrices[key];
+      if (states[key] !== "merged" || !Array.isArray(rows) || !rows.length) continue;
+      const signature = JSON.stringify(rows);
+      if (seenMatrices.has(signature)) continue;
+      seenMatrices.add(signature);
+      chains.push({
+        key,
+        repo: row.repo,
+        github: row.github,
+        number: row.pr.number,
+        rows,
+        multiRepo: (rows[0]?.cells || []).length > 1
+      });
+    }
+    return chains;
   }
   // fetch + rebase this checkout's branch (its repo entry) onto its base
   rebaseCheckout(r) {

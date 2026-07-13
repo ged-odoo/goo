@@ -4392,6 +4392,84 @@ a.commit-detail-hash svg {
   white-space: normal; /* let the subject wrap inside the card instead of clipping */
   margin-top: 0;
 }
+/* Mergebot's forward-port matrix, shown below the checkout cards. The branch is a
+   stable first column; linked repositories stack inside the status column. */
+.ws-fp-heading {
+  margin-top: 18px;
+}
+.ws-fp-chain {
+  max-width: 840px;
+  margin-bottom: 12px;
+  border: 1px solid var(--l-line);
+  background: var(--l-card);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.ws-fp-origin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--l-line);
+  background: var(--l-panel);
+}
+.ws-fp-row {
+  display: grid;
+  grid-template-columns: 105px minmax(0, 1fr);
+  min-height: 35px;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.ws-fp-row:last-child {
+  border-bottom: 0;
+}
+.ws-fp-branch {
+  padding: 8px 12px;
+  border-right: 1px solid var(--l-line-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ws-fp-cells {
+  min-width: 0;
+  padding: 6px 12px;
+}
+.ws-fp-cell,
+.ws-fp-pull {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+}
+.ws-fp-cell + .ws-fp-cell {
+  border-top: 1px solid var(--l-line-soft);
+  margin-top: 5px;
+  padding-top: 5px;
+}
+.ws-fp-repo {
+  width: 112px;
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+.ws-fp-status {
+  font-size: 11px;
+  color: var(--l-text-mid);
+}
+.ws-fp-status.is-success {
+  color: var(--green);
+}
+.ws-fp-status.is-warning,
+.ws-fp-status.is-pending {
+  color: var(--amber);
+}
+.ws-fp-status.is-danger,
+.ws-fp-detail {
+  color: var(--red);
+}
+.ws-fp-detail,
+.ws-fp-waiting {
+  font-size: 11px;
+}
 .ws-card {
   display: flex;
   align-items: center;

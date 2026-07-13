@@ -244,16 +244,20 @@ class MergebotServiceTest(unittest.TestCase):
     def test_merged(self):
         io = FakeIO(http={"pull": ('<div class="alert alert-success">merged</div>', None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, details, unsupported = svc.statuses([{"github": "odoo/odoo", "number": 1}])
+        states, details, forward_ports, unsupported = svc.statuses(
+            [{"github": "odoo/odoo", "number": 1}]
+        )
         self.assertEqual(states, {"odoo/odoo#1": "merged"})
         self.assertEqual(details, {})  # no `todo` checklist → no blocking detail
+        self.assertEqual(forward_ports, {"odoo/odoo#1": []})
         self.assertEqual(unsupported, [])
 
     def test_blocked(self):
         io = FakeIO(http={"pull": ('<p class="bg-warning">blocked: CI</p>', None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, details, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
+        states, details, forward_ports, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
         self.assertEqual(states, {"o/o#7": "blocked"})
+        self.assertEqual(forward_ports, {"o/o#7": []})
         self.assertEqual(unsupported, [])
 
     def test_blocked_reasons_lists_unmet_requirements(self):
@@ -262,6 +266,7 @@ class MergebotServiceTest(unittest.TestCase):
         # items and the nested per-CI-check <li> (they start with <a>) are excluded.
         html = (
             '<p class="text-danger bg-danger">Blocked</p>'
+            "<ul><li>Description bullet, not a merge requirement</li></ul>"
             '<ul class="todo">'
             '  <li class="ok">\n  Merge method\n  </li>'
             '  <li class="fail">\n  Review\n  </li>'
@@ -275,23 +280,109 @@ class MergebotServiceTest(unittest.TestCase):
         )
         io = FakeIO(http={"pull": (html, None)})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, details, unsupported = svc.statuses([{"github": "odoo/enterprise", "number": 9}])
+        states, details, forward_ports, unsupported = svc.statuses(
+            [{"github": "odoo/enterprise", "number": 9}]
+        )
         self.assertEqual(states, {"odoo/enterprise#9": "blocked"})
         self.assertEqual(details, {"odoo/enterprise#9": "Review, CI"})
+        self.assertEqual(forward_ports, {"odoo/enterprise#9": []})
         self.assertEqual(unsupported, [])
+
+    def test_forward_ports_lists_every_subsequent_branch_and_linked_repo(self):
+        html = """
+            <div class="alert alert-success">Merged</div>
+            <table class="table table-bordered table-sm">
+              <thead><tr><th></th><th>odoo/odoo</th><th>odoo/enterprise</th></tr></thead>
+              <tbody>
+                <tr><td>16.0</td>
+                  <td class="table-success"><span title="merged at yesterday">
+                    <a href="/odoo/odoo/pull/275568">#275568</a></span></td>
+                  <td class="table-success"><span title="merged at yesterday">
+                    <a href="/odoo/enterprise/pull/90000">#90000</a></span></td>
+                </tr>
+                <tr><td>17.0</td>
+                  <td class="table-warning"><span title="approved, is not ready">
+                    <a href="/odoo/odoo/pull/275660">#275660</a>
+                    <sup class="text-danger">missing statuses</sup></span></td>
+                  <td></td>
+                </tr>
+                <tr><td>18.0</td><td></td><td></td></tr>
+                <tr><td>master</td>
+                  <td class="table-success"><span title="merged at today">
+                    <a href="/odoo/odoo/pull/275999">#275999</a></span></td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+        """
+        svc = services.MergebotService(FakeIO(http={"pull": (html, None)}), TTLCache(ttl=0))
+        states, _, forward_ports, _ = svc.statuses([{"github": "odoo/odoo", "number": 275568}])
+        self.assertEqual(states, {"odoo/odoo#275568": "merged"})
+        self.assertEqual(
+            forward_ports["odoo/odoo#275568"],
+            [
+                {
+                    "branch": "17.0",
+                    "cells": [
+                        {
+                            "repository": "odoo/odoo",
+                            "pulls": [
+                                {
+                                    "github": "odoo/odoo",
+                                    "number": 275660,
+                                    "status": "approved, is not ready",
+                                    "detail": "missing statuses",
+                                    "category": "warning",
+                                }
+                            ],
+                        },
+                        {"repository": "odoo/enterprise", "pulls": []},
+                    ],
+                },
+                {
+                    "branch": "18.0",
+                    "cells": [
+                        {"repository": "odoo/odoo", "pulls": []},
+                        {"repository": "odoo/enterprise", "pulls": []},
+                    ],
+                },
+                {
+                    "branch": "master",
+                    "cells": [
+                        {
+                            "repository": "odoo/odoo",
+                            "pulls": [
+                                {
+                                    "github": "odoo/odoo",
+                                    "number": 275999,
+                                    "status": "merged at today",
+                                    "detail": "",
+                                    "category": "success",
+                                }
+                            ],
+                        },
+                        {"repository": "odoo/enterprise", "pulls": []},
+                    ],
+                },
+            ],
+        )
 
     def test_transient_failure_is_blank_not_unsupported(self):
         svc = services.MergebotService(FakeIO(http={"pull": ("", "down")}), TTLCache(ttl=0))
-        states, details, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
+        states, details, forward_ports, unsupported = svc.statuses([{"github": "o/o", "number": 7}])
         self.assertEqual(states, {"o/o#7": ""})
         self.assertEqual(details, {})
+        self.assertEqual(forward_ports, {})
         self.assertEqual(unsupported, [])  # a non-404 error is transient, not "no mergebot"
 
     def test_404_marks_repo_unsupported(self):
         io = FakeIO(http={"pull": ("", "HTTP Error 404: Not Found")})
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, details, unsupported = svc.statuses([{"github": "odoo/owl", "number": 5}])
+        states, details, forward_ports, unsupported = svc.statuses(
+            [{"github": "odoo/owl", "number": 5}]
+        )
         self.assertEqual(states, {"odoo/owl#5": ""})
+        self.assertEqual(forward_ports, {})
         self.assertEqual(unsupported, ["odoo/owl"])
 
     def test_404_blank_is_not_cached(self):
@@ -320,10 +411,11 @@ class MergebotServiceTest(unittest.TestCase):
             }
         )
         svc = services.MergebotService(io, TTLCache(ttl=0))
-        states, details, unsupported = svc.statuses(
+        states, details, forward_ports, unsupported = svc.statuses(
             [{"github": "odoo/odoo", "number": 1}, {"github": "odoo/odoo", "number": 2}]
         )
         self.assertEqual(states, {"odoo/odoo#1": "merged", "odoo/odoo#2": ""})
+        self.assertEqual(forward_ports, {"odoo/odoo#1": []})
         self.assertEqual(unsupported, [])
 
 

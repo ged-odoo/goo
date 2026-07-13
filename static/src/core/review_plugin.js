@@ -3,10 +3,10 @@
 // just requests; the backend returns cached-or-fresh.
 //
 // Mergebot status is loaded lazily on top (one scrape per PR, server-cached 8h).
-// Two facts are terminal and persisted in localStorage so we stop asking:
-//   - a PR that reached "merged" never changes again (skipped even on Refresh);
-//   - a repo with no mergebot page (404) is remembered and skipped on normal loads
-//     (re-probed on a manual Refresh so a false positive can recover).
+// Merged badges are persisted for instant paint, but their mergebot page is fetched
+// once per session to hydrate the forward-port chain (and again on manual Refresh,
+// because that chain keeps evolving). Repos with no mergebot page (404) are remembered
+// and skipped on normal loads, then re-probed on Refresh so a false positive can recover.
 
 import { postJSON } from "./utils.js";
 import { PullRequest } from "./models.js";
@@ -30,6 +30,7 @@ export class ReviewPlugin extends Plugin {
   // so a PR scraped on either screen shows its badge on both (dedup via store.mbPending)
   mergebot = this.store.mergebot; // "github#number" -> mergebot state (or "" / "merged")
   mbDetails = this.store.mbDetails; // "github#number" -> blocked-reason detail
+  mbForwardPorts = this.store.mbForwardPorts; // "github#number" -> subsequent branch rows
   favorites = signal(this._readArr("reviews_favorites")); // [branch, …] (starred groups, sorted first)
   _merged = new Set(this._readArr("reviews_merged")); // terminal merged PRs
   _noMergebot = new Set(this._readArr("reviews_no_mergebot")); // repos without mergebot
@@ -66,8 +67,8 @@ export class ReviewPlugin extends Plugin {
 
   // load mergebot states for `prs` ([{github, number}]). Skips PRs already known
   // merged and (on normal loads) repos known to lack mergebot, so only the unknown
-  // ones hit the network. Pass {refresh:true} to re-probe (bypasses caches; still
-  // never re-fetches merged PRs).
+  // ones hit the network. Pass {refresh:true} to re-probe and bypass caches, including
+  // merged PRs whose forward-port chain may have advanced.
   async loadMergebot(prs, { refresh = false } = {}) {
     // show known-merged badges straight from storage, no request
     const seeded = {};
@@ -75,14 +76,18 @@ export class ReviewPlugin extends Plugin {
       const k = mbKey(p);
       if (this._merged.has(k) && this.mergebot()[k] !== "merged") seeded[k] = "merged";
     }
-    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null);
+    if (Object.keys(seeded).length) this.store.mergeMergebot(seeded, null, null);
 
     const have = this.mergebot();
+    const forwardPorts = this.mbForwardPorts();
     const todo = prs.filter((p) => {
       const k = mbKey(p);
-      if (this._merged.has(k)) return false; // terminal — never refetch, even on refresh
+      // A persisted merged badge predates the forward-port payload. Fetch it once;
+      // after that the matrix is cacheable normally and manual Refresh can follow
+      // the still-evolving chain even though the original PR itself is terminal.
+      if (this._merged.has(k) && k in forwardPorts && !refresh) return false;
       if (this._noMergebot.has(p.github) && !refresh) return false; // skip unsupported repos
-      return refresh || (!(k in have) && !this.store.mbPending.has(k));
+      return refresh || ((!(k in have) || !(k in forwardPorts)) && !this.store.mbPending.has(k));
     });
     if (!todo.length) return;
 
@@ -90,7 +95,9 @@ export class ReviewPlugin extends Plugin {
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
       const res = await postJSON("/api/mergebot", { prs: todo, refresh });
-      this.store.mergeMergebot(res.states, res.details || {});
+      const forwardPorts =
+        res.forward_ports ?? Object.fromEntries(Object.keys(res.states || {}).map((k) => [k, []]));
+      this.store.mergeMergebot(res.states, res.details || {}, forwardPorts);
       this._record(todo, res);
     } catch {
       /* leave states blank on failure */

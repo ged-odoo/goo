@@ -65,6 +65,15 @@ export class StorePlugin extends Plugin {
     ),
   );
 
+  mbForwardPorts = computed(() =>
+    Object.fromEntries(
+      this.orm
+        .records(MergebotStatus)
+        .filter((m) => m.forwardPorts() != null)
+        .map((m) => [m.id, m.forwardPorts()]),
+    ),
+  );
+
   runbot = computed(() =>
     Object.fromEntries(this.orm.records(RunbotStatus).map((r) => [r.id, r.status()])),
   );
@@ -149,16 +158,39 @@ export class StorePlugin extends Plugin {
     }
   }
 
-  mergeMergebot(states, details) {
+  mergeMergebot(states, details, forwardPorts) {
     for (const [k, v] of Object.entries(states || {})) {
       const rec = this._live(MergebotStatus, k);
       if (rec) rec.state.set(v);
-      else this.orm.create(MergebotStatus, { id: k, state: v, detail: (details || {})[k] ?? null });
+      else
+        this.orm.create(MergebotStatus, {
+          id: k,
+          state: v,
+          detail: (details || {})[k] ?? null,
+          forwardPorts: (forwardPorts || {})[k] ?? null,
+        });
     }
     for (const [k, v] of Object.entries(details || {})) {
       const rec = this._live(MergebotStatus, k);
       if (rec) rec.detail.set(v);
-      else this.orm.create(MergebotStatus, { id: k, state: (states || {})[k] ?? "", detail: v });
+      else
+        this.orm.create(MergebotStatus, {
+          id: k,
+          state: (states || {})[k] ?? "",
+          detail: v,
+          forwardPorts: (forwardPorts || {})[k] ?? null,
+        });
+    }
+    for (const [k, v] of Object.entries(forwardPorts || {})) {
+      const rec = this._live(MergebotStatus, k);
+      if (rec) rec.forwardPorts.set(v);
+      else
+        this.orm.create(MergebotStatus, {
+          id: k,
+          state: (states || {})[k] ?? "",
+          detail: (details || {})[k] ?? null,
+          forwardPorts: v,
+        });
     }
   }
 

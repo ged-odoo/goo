@@ -33,6 +33,7 @@ export class MergebotStatus extends Model {
   static id = "mergebot"; // id = "github#number"
   state = fields.char(); // "" | "merged" | blocked reason
   detail = fields.json(); // blocked-reason detail (string) | null
+  forwardPorts = fields.json(); // subsequent mergebot matrix rows | null (not fetched)
 }
 
 export class RunbotStatus extends Model {

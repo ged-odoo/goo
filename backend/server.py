@@ -1630,12 +1630,18 @@ class Handler(BaseHTTPRequestHandler):
             prs = (body or {}).get("prs")
             if err or not isinstance(prs, list):
                 return self._send_json(400, {"ok": False, "error": "missing prs list"})
-            states, details, unsupported = MERGEBOT.statuses(
+            states, details, forward_ports, unsupported = MERGEBOT.statuses(
                 prs, refresh=bool((body or {}).get("refresh"))
             )
             self._send_json(
                 200,
-                {"ok": True, "states": states, "details": details, "unsupported": unsupported},
+                {
+                    "ok": True,
+                    "states": states,
+                    "details": details,
+                    "forward_ports": forward_ports,
+                    "unsupported": unsupported,
+                },
             )
         elif path == "/api/runbot":
             body, err = self._read_json()

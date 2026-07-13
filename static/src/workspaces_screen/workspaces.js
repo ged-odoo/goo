@@ -190,6 +190,32 @@ export class CodePane extends Component {
           </div>
         </div>
       </div>
+
+      <t t-if="this.forwardPortChains.length">
+        <div class="ws-sec ws-fp-heading"><span>Forward ports</span></div>
+        <div class="ws-fp-chain" t-foreach="this.forwardPortChains" t-as="chain" t-key="chain.key">
+          <div class="ws-fp-origin">
+            <span class="ws-repo-tag" t-out="chain.repo"/>
+            <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(chain.github, chain.number)" t-out="'#' + chain.number"/>
+          </div>
+          <div class="ws-fp-list">
+            <div class="ws-fp-row" t-foreach="chain.rows" t-as="row" t-key="row.branch">
+              <span class="ws-fp-branch" t-out="row.branch"/>
+              <div class="ws-fp-cells">
+                <div class="ws-fp-cell" t-foreach="row.cells" t-as="cell" t-key="cell.repository">
+                  <span t-if="chain.multiRepo" class="ws-fp-repo dim" t-out="cell.repository"/>
+                  <span t-if="!cell.pulls.length" class="ws-fp-waiting dim">waiting</span>
+                  <span class="ws-fp-pull" t-foreach="cell.pulls" t-as="pull" t-key="pull.github + '#' + pull.number">
+                    <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(pull.github, pull.number)" t-out="'#' + pull.number"/>
+                    <span class="ws-fp-status" t-att-class="'is-' + pull.category" t-out="pull.status"/>
+                    <span t-if="pull.detail" class="ws-fp-detail" t-out="pull.detail"/>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </t>
     </div>`;
 
   props = useProps({ ws: t.any() });
@@ -489,6 +515,35 @@ export class CodePane extends Component {
         entry, // the rich repo entry (this.repos) the actions menu operates on
       };
     });
+  }
+
+  // One matrix per merged checkout PR. Rows are already sliced by the backend so
+  // only branches after the workspace's target are shown (including empty ones).
+  get forwardPortChains() {
+    const states = this.code.mergebot();
+    const matrices = this.code.mbForwardPorts();
+    const chains = [];
+    const seenMatrices = new Set();
+    for (const row of this.checkoutRows) {
+      if (!row.pr || !row.github) continue;
+      const key = `${row.github}#${row.pr.number}`;
+      const rows = matrices[key];
+      if (states[key] !== "merged" || !Array.isArray(rows) || !rows.length) continue;
+      // Linked community/enterprise PR pages expose the same matrix. When both are
+      // workspace checkouts, render that chain once instead of duplicating it.
+      const signature = JSON.stringify(rows);
+      if (seenMatrices.has(signature)) continue;
+      seenMatrices.add(signature);
+      chains.push({
+        key,
+        repo: row.repo,
+        github: row.github,
+        number: row.pr.number,
+        rows,
+        multiRepo: (rows[0]?.cells || []).length > 1,
+      });
+    }
+    return chains;
   }
 
   // fetch + rebase this checkout's branch (its repo entry) onto its base

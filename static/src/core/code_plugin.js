@@ -28,6 +28,7 @@ export class CodePlugin extends Plugin {
   prRepos = computed(() => this.store.prReposList());
   mergebot = this.store.mergebot; // "github#number" -> mergebot state (one shared copy)
   mbDetails = this.store.mbDetails; // "github#number" -> blocked-reason detail
+  mbForwardPorts = this.store.mbForwardPorts; // "github#number" -> subsequent branch rows
   runbot = this.store.runbot; // branch name -> runbot status
   at = signal((this._cache() || {}).at || 0);
   loading = signal(false);
@@ -66,9 +67,10 @@ export class CodePlugin extends Plugin {
   async loadMergebot(prs) {
     const refresh = this._mbRefresh;
     const have = this.mergebot();
+    const forwardPorts = this.mbForwardPorts();
     const todo = prs.filter((p) => {
       const k = `${p.github}#${p.number}`;
-      return (refresh || !(k in have)) && !this.store.mbPending.has(k);
+      return (refresh || !(k in have) || !(k in forwardPorts)) && !this.store.mbPending.has(k);
     });
     if (!todo.length) return;
     this._mbRefresh = false; // consumed by this batch — dedup resumes when it lands
@@ -84,7 +86,15 @@ export class CodePlugin extends Plugin {
       const details = Object.fromEntries(
         Object.entries(res.details || {}).filter(([k]) => k in states),
       );
-      this.store.mergeMergebot(states, details);
+      // During a hot frontend reload an already-running older Goo backend may not
+      // expose forward_ports yet. Mark those states as hydrated-with-no-rows so the
+      // effect does not repeatedly call that old endpoint until Goo is restarted.
+      const rawForwardPorts =
+        res.forward_ports ?? Object.fromEntries(Object.keys(states).map((k) => [k, []]));
+      const forwardPorts = Object.fromEntries(
+        Object.entries(rawForwardPorts).filter(([k]) => k in states),
+      );
+      this.store.mergeMergebot(states, details, forwardPorts);
     } catch {
       /* leave states blank on failure */
     } finally {

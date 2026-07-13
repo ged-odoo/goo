@@ -401,10 +401,13 @@ class MergebotService:
         self.cache = cache
 
     def statuses(self, prs, refresh=False):
-        """Return ({"github#number": state}, {"github#number": detail}, [unsupported
-        repos]) for the given PRs, cached per PR and fetched in parallel. Pass
-        refresh=True to bypass the cache. `detail` (omitted when empty) lists the
-        unmet merge requirements behind a blocked state, e.g. "Review, CI".
+        """Return ({"github#number": state}, {"github#number": detail},
+        {"github#number": forward-port matrix}, [unsupported repos]) for the given
+        PRs, cached per PR and fetched in parallel. Pass refresh=True to bypass the
+        cache. `detail` (omitted when empty) lists the unmet merge requirements behind
+        a blocked state, e.g. "Review, CI". Forward-port rows only contain branches
+        after the requested PR's target branch; empty cells are retained so the UI can
+        show branches which are still waiting for fw-bot.
 
         A repo is reported "unsupported" when, in this batch, at least one of its PRs
         404s (no mergebot page) and none of its PRs is reachable — so the caller can
@@ -412,7 +415,7 @@ class MergebotService:
         reachable PR is NOT unsupported (its reachable PR clears it)."""
         prs = [p for p in prs if p.get("github") and p.get("number")]
         if not prs:
-            return {}, {}, []
+            return {}, {}, {}, []
         if refresh:
             for p in prs:
                 self.cache.invalidate(f"{p['github']}#{p['number']}")
@@ -426,12 +429,17 @@ class MergebotService:
                     prs,
                 )
             )
-        states, details, reachable, missing = {}, {}, set(), set()
-        for p, (state, detail, supported) in zip(prs, results, strict=False):
+        states, details, forward_ports, reachable, missing = {}, {}, {}, set(), set()
+        for p, (state, detail, ports, supported) in zip(prs, results, strict=False):
             key = f"{p['github']}#{p['number']}"
             states[key] = state
             if detail:
                 details[key] = detail
+            if supported:
+                # An empty list is meaningful: the page was parsed, but this PR has
+                # no subsequent branches. It also distinguishes a fetched merged PR
+                # from a client-side persisted "merged" seed.
+                forward_ports[key] = ports
             if supported is None:
                 # transient failure — don't pin a blank for the whole TTL
                 self.cache.invalidate(key)
@@ -447,19 +455,19 @@ class MergebotService:
                 self.cache.invalidate(key)
                 missing.add(p["github"])
         unsupported = sorted(missing - reachable)
-        return states, details, unsupported
+        return states, details, forward_ports, unsupported
 
     def _status(self, github, number):
-        """(merge state, detail, supported) — e.g. ('blocked', 'Review, CI', True),
-        ('merged', '', True), or ('', '', True) when the page loads but shows no
-        known state. `detail` lists the unmet merge requirements when blocked, ''
-        otherwise. `supported` is False on a 404 (repo/PR not on mergebot) and None
-        on a transient failure. State is rendered inconsistently (a colored <p> for
-        blocked/staged/ready/…, an alert <div> for merged/closed), so scan for the
-        first element with a bg-* or alert class whose leading word is a known state."""
+        """(merge state, detail, forward ports, supported).
+
+        `supported` is False on a 404 and None on a transient failure. State is
+        rendered inconsistently (a colored <p> for blocked/staged/ready/…, an alert
+        <div> for merged/closed), so scan for the first colored element whose leading
+        word is known. The same page's table is the authoritative forward-port chain.
+        """
         html, err = self.io.http_get(f"{MERGEBOT_BASE}/{github}/pull/{number}")
         if err:
-            return "", "", (False if "404" in err else None)
+            return "", "", [], (False if "404" in err else None)
         state = ""
         for m in re.finditer(
             r'<\w+[^>]*class="[^"]*(?:\bbg-\w+|\balert\b)[^"]*"[^>]*>(.*?)</', html, re.S
@@ -471,15 +479,129 @@ class MergebotService:
             if word in MERGEBOT_STATES:
                 state = word
                 break
-        return state, self._blocked_reasons(html), True
+        return state, self._blocked_reasons(html), self._forward_ports(html, github, number), True
+
+    @staticmethod
+    def _html_text(fragment):
+        text = re.sub(r"<[^>]+>", " ", fragment)
+        return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
+
+    @staticmethod
+    def _html_attr(attrs, name):
+        match = re.search(rf"\b{re.escape(name)}\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", attrs, re.I)
+        return (
+            (match.group(1) if match and match.group(1) is not None else match.group(2))
+            if match
+            else ""
+        )
+
+    def _forward_ports(self, html, github, number):
+        """Parse the forward-port matrix below a PR and return subsequent rows.
+
+        Each row keeps one cell per repository because linked community/enterprise
+        chains can progress independently. A cell can contain multiple PRs (conflict
+        resolutions sometimes create siblings), hence the nested ``pulls`` list.
+        """
+        table = re.search(
+            r'<table\b[^>]*class="[^"]*\btable-bordered\b[^"]*"[^>]*>(.*?)</table>',
+            html,
+            re.S | re.I,
+        )
+        if not table:
+            return []
+        table_html = table.group(1)
+        head = re.search(r"<thead\b[^>]*>(.*?)</thead>", table_html, re.S | re.I)
+        if not head:
+            return []
+        repositories = [
+            self._html_text(body)
+            for _, body in re.findall(r"<th\b([^>]*)>(.*?)</th>", head.group(1), re.S | re.I)
+        ][1:]
+        repositories = [repo for repo in repositories if re.fullmatch(r"[^/\s]+/[^/\s]+", repo)]
+        if not repositories:
+            return []
+
+        body = re.search(r"<tbody\b[^>]*>(.*?)</tbody>", table_html, re.S | re.I)
+        if not body:
+            return []
+        rows = []
+        target_index = None
+        wanted_number = int(number)
+        for _row_attrs, row_html in re.findall(
+            r"<tr\b([^>]*)>(.*?)</tr>", body.group(1), re.S | re.I
+        ):
+            raw_cells = re.findall(r"<td\b([^>]*)>(.*?)</td>", row_html, re.S | re.I)
+            if not raw_cells:
+                continue
+            branch = self._html_text(raw_cells[0][1])
+            if not branch:
+                continue
+            cells = []
+            contains_requested = False
+            for repository, (cell_attrs, cell_html) in zip(
+                repositories, raw_cells[1:], strict=False
+            ):
+                cell_classes = self._html_attr(cell_attrs, "class").split()
+                pulls = []
+                for span_attrs, span_html in re.findall(
+                    r"<span\b([^>]*)>(.*?)</span>", cell_html, re.S | re.I
+                ):
+                    title = self._html_attr(span_attrs, "title")
+                    details = [
+                        self._html_text(sup)
+                        for sup in re.findall(r"<sup\b[^>]*>(.*?)</sup>", span_html, re.S | re.I)
+                    ]
+                    detail = ", ".join(part for part in details if part)
+                    for slug, pull_number in re.findall(
+                        r'href=["\']/([^"\']+?/[^"\']+?)/pull/(\d+)["\']', span_html, re.I
+                    ):
+                        pull_number = int(pull_number)
+                        category = "pending"
+                        if "table-success" in cell_classes:
+                            category = "success"
+                        elif "table-warning" in cell_classes:
+                            category = "warning"
+                        elif "table-danger" in cell_classes:
+                            category = "danger"
+                        pulls.append(
+                            {
+                                "github": slug,
+                                "number": pull_number,
+                                "status": title or "pending",
+                                "detail": detail,
+                                "category": category,
+                            }
+                        )
+                        if slug == github and pull_number == wanted_number:
+                            contains_requested = True
+                cells.append({"repository": repository, "pulls": pulls})
+            rows.append({"branch": branch, "cells": cells})
+            if contains_requested:
+                target_index = len(rows) - 1
+
+        if target_index is None:
+            return []
+        # The target row itself is already represented by the workspace checkout.
+        return rows[target_index + 1 :]
 
     def _blocked_reasons(self, html):
         """The unmet merge requirements from the page's `todo` checklist: the labels
         of the top-level <li> items not marked satisfied (class 'ok'), joined like
         "Review, CI". Nested per-CI-check items begin with an <a>, so their empty
         leading text excludes them. Returns '' when nothing is unmet / no checklist."""
+        start = re.search(r'<ul\b[^>]*class="[^"]*\btodo\b[^"]*"[^>]*>', html, re.I)
+        if not start:
+            return ""
+        depth = 1
+        end = len(html)
+        for tag in re.finditer(r"</?ul\b[^>]*>", html[start.end() :], re.I):
+            depth += -1 if tag.group(0).lower().startswith("</") else 1
+            if depth == 0:
+                end = start.end() + tag.start()
+                break
+        checklist = html[start.end() : end]
         reasons = []
-        for m in re.finditer(r'<li(?:[^>]*\bclass="([^"]*)")?[^>]*>([^<]*)', html):
+        for m in re.finditer(r'<li(?:[^>]*\bclass="([^"]*)")?[^>]*>([^<]*)', checklist):
             label = re.sub(r"\s+", " ", m.group(2)).strip()
             if not label or "ok" in (m.group(1) or "").split():
                 continue
