@@ -374,6 +374,26 @@ export class CodePlugin extends Plugin {
     );
   }
 
+  pullRequestUrl(github, number) {
+    return (
+      this.config.repoByGithub(github)?.pullRequestUrl(number) ??
+      repoUrls.pullRequest(github, number)
+    );
+  }
+
+  async postRPlus(github, number) {
+    this.eventLog.add(`posting robodoo r+ on PR #${number} (${github})`);
+    try {
+      await postJSON("/api/prs/r-plus", { repo: github, number });
+      this.eventLog.add(`posted robodoo r+ on PR #${number} (${github})`);
+      return true;
+    } catch (e) {
+      this.eventLog.add(`posting r+ failed: ${github}#${number} — ${e.message}`, "", "error");
+      this._errorDialog("Post r+ failed", e.message);
+      return false;
+    }
+  }
+
   async remoteExists(path, branch) {
     const res = await postJSON("/api/code/branch/remote", { path, branch });
     return res.exists;

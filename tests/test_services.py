@@ -751,6 +751,33 @@ class GitHubServiceTest(unittest.TestCase):
         svc.prs([{"id": "c", "github": "o/o"}])  # cache was invalidated → fetches again
         self.assertEqual(len(io.run_calls), 3)  # 1 prs + 1 close + 1 prs
 
+    def test_post_r_plus_comments_through_gh(self):
+        io = FakeIO(run_result=completed())
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        ok, error = svc.post_r_plus("odoo/odoo", 275826)
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertEqual(
+            io.run_calls,
+            [
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    "275826",
+                    "--repo",
+                    "odoo/odoo",
+                    "--body",
+                    "robodoo r+",
+                ]
+            ],
+        )
+
+    def test_post_r_plus_surfaces_gh_failure(self):
+        io = FakeIO(run_result=completed(returncode=1, stderr="not allowed"))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        self.assertEqual(svc.post_r_plus("odoo/odoo", 275826), (False, "not allowed"))
+
 
 class TTLCacheTest(unittest.TestCase):
     def test_single_flight(self):

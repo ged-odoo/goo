@@ -112,6 +112,10 @@ export class Repository extends Model {
   mergebotUrl(number) {
     return repoUrls.mergebot(this.githubOrDefault(), number);
   }
+
+  pullRequestUrl(number) {
+    return repoUrls.pullRequest(this.githubOrDefault(), number);
+  }
 }
 
 // The pure GitHub/mergebot URL builders (keyed by slug). The Repository methods above
@@ -140,6 +144,10 @@ export const repoUrls = {
   // the mergebot page for one of this repo's PRs
   mergebot(github, number) {
     return `${MERGEBOT}/${github}/pull/${number}`;
+  },
+  // the canonical GitHub page for an existing PR
+  pullRequest(github, number) {
+    return `https://github.com/${github}/pull/${number}`;
   },
 };
 

@@ -196,19 +196,24 @@ export class CodePane extends Component {
         <div class="ws-fp-chain" t-foreach="this.forwardPortChains" t-as="chain" t-key="chain.key">
           <div class="ws-fp-origin">
             <span class="ws-repo-tag" t-out="chain.repo"/>
-            <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(chain.github, chain.number)" t-out="'#' + chain.number"/>
+            <a class="pr-link" target="_blank" t-att-href="this.code.pullRequestUrl(chain.github, chain.number)" t-out="'#' + chain.number"/>
           </div>
           <div class="ws-fp-list">
             <div class="ws-fp-row" t-foreach="chain.rows" t-as="row" t-key="row.branch">
-              <span class="ws-fp-branch" t-out="row.branch"/>
+              <a t-if="row.mergebotUrl" class="ws-fp-branch" target="_blank" t-att-href="row.mergebotUrl" t-out="row.branch"/>
+              <span t-else="" class="ws-fp-branch" t-out="row.branch"/>
               <div class="ws-fp-cells">
                 <div class="ws-fp-cell" t-foreach="row.cells" t-as="cell" t-key="cell.repository">
                   <span t-if="chain.multiRepo" class="ws-fp-repo dim" t-out="cell.repository"/>
                   <span t-if="!cell.pulls.length" class="ws-fp-waiting dim">waiting</span>
                   <span class="ws-fp-pull" t-foreach="cell.pulls" t-as="pull" t-key="pull.github + '#' + pull.number">
-                    <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(pull.github, pull.number)" t-out="'#' + pull.number"/>
+                    <a class="pr-link" target="_blank" t-att-href="this.code.pullRequestUrl(pull.github, pull.number)" t-out="'#' + pull.number"/>
                     <span class="ws-fp-status" t-att-class="'is-' + pull.category" t-out="pull.status"/>
                     <span t-if="pull.detail" class="ws-fp-detail" t-out="pull.detail"/>
+                    <button t-if="this.hasMissingRPlus(pull)" class="pbtn ws-fp-rplus"
+                            t-att-disabled="this.rPlusState(pull)"
+                            t-on-click.stop="() => this.postRPlus(pull)"
+                            t-out="this.rPlusState(pull) === 'posting' ? 'posting…' : this.rPlusState(pull) === 'posted' ? 'posted' : 'post r+'"/>
                   </span>
                 </div>
               </div>
@@ -228,6 +233,7 @@ export class CodePane extends Component {
   kebabIcon = m(ICONS.kebab); // the per-checkout actions menu
   pushIcon = m(ICONS.push); // the "Push all" toolbar button
   menuId = signal(""); // key of the checkout whose action menu is open ("" = none)
+  rPlusPosts = signal({}); // "github#number" -> "posting" | "posted"
 
   setup() {
     // close the repo chip menu on any outside click
@@ -535,16 +541,46 @@ export class CodePane extends Component {
       const signature = JSON.stringify(rows);
       if (seenMatrices.has(signature)) continue;
       seenMatrices.add(signature);
+      const linkedRows = rows.map((forwardRow) => {
+        const firstPull = forwardRow.cells.flatMap((cell) => cell.pulls)[0];
+        return {
+          ...forwardRow,
+          mergebotUrl: firstPull ? this.code.mergebotUrl(firstPull.github, firstPull.number) : "",
+        };
+      });
       chains.push({
         key,
         repo: row.repo,
         github: row.github,
         number: row.pr.number,
-        rows,
+        rows: linkedRows,
         multiRepo: (rows[0]?.cells || []).length > 1,
       });
     }
     return chains;
+  }
+
+  rPlusKey(pull) {
+    return `${pull.github}#${pull.number}`;
+  }
+
+  hasMissingRPlus(pull) {
+    return `${pull.status || ""} ${pull.detail || ""}`.toLowerCase().includes("missing r+");
+  }
+
+  rPlusState(pull) {
+    return this.rPlusPosts()[this.rPlusKey(pull)] || "";
+  }
+
+  async postRPlus(pull) {
+    const key = this.rPlusKey(pull);
+    if (this.rPlusPosts()[key]) return;
+    this.rPlusPosts.set({ ...this.rPlusPosts(), [key]: "posting" });
+    const posted = await this.code.postRPlus(pull.github, pull.number);
+    const next = { ...this.rPlusPosts() };
+    if (posted) next[key] = "posted";
+    else delete next[key];
+    this.rPlusPosts.set(next);
   }
 
   // fetch + rebase this checkout's branch (its repo entry) onto its base
@@ -692,6 +728,7 @@ export class WorkspacesScreen extends Component {
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
               <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
               <span class="wt-item-name" t-out="ws.name"/>
+              <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
               <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
               <span class="wt-sp"/>
               <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
@@ -1242,13 +1279,12 @@ export class WorkspacesScreen extends Component {
     return "wt-dot-" + this.stateOf(ws);
   }
 
-  // the list-row dot: a starting/running server keeps its live colour; a loaded
-  // workspace whose checkout drifted goes amber (the claim is stale); otherwise a
+  // the list-row dot: a starting/running server keeps its live colour; a
   // worktree workspace or the loaded (active) one gets a solid black dot, and any
-  // other (stopped, inactive) workspace stays faint.
+  // other (stopped, inactive) workspace stays faint. Checkout drift no longer
+  // recolours the dot — it surfaces as a "drift" badge next to the name instead.
   listDotClass(ws) {
     if (this.isLive(ws)) return this.dotClass(ws);
-    if (this.isDrifted(ws)) return "wt-dot-drift";
     if (this.isWt(ws) || this.isLoaded(ws)) return "wt-dot-active";
     return this.dotClass(ws);
   }

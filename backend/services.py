@@ -251,6 +251,30 @@ class GitHubService:
         self.cache.invalidate()
         return True, None
 
+    def post_r_plus(self, github, number):
+        """Post the mergebot approval command on a GitHub PR via ``gh``."""
+        self.io.log_request(f"gh pr comment {number} --repo {github} --body 'robodoo r+'")
+        try:
+            r = self.io.run(
+                [
+                    "gh",
+                    "pr",
+                    "comment",
+                    str(number),
+                    "--repo",
+                    github,
+                    "--body",
+                    "robodoo r+",
+                ],
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[0] or "gh pr comment failed"
+        self.cache.invalidate()
+        return True, None
+
     def search_branches(self, repos, query):
         """Search GitHub for branches whose name starts with `query`, across all
         repos that have a github field (one `gh api` call per repo, in parallel).

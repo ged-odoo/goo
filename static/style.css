@@ -3799,6 +3799,12 @@ a.commit-detail-hash svg {
 .wt-badge[role="button"] {
   cursor: pointer;
 }
+/* checkout drift marker — amber, sits right after the workspace name */
+.wt-badge-drift {
+  color: var(--amber);
+  background: var(--amber-bg);
+  border-color: transparent;
+}
 
 /* two columns — worktree list | detail — filling the content area */
 .content.wt-content {
@@ -4064,11 +4070,6 @@ a.commit-detail-hash svg {
    isn't starting/up (a live server keeps the green/amber state colour instead) */
 .wt-dot-active {
   background: #000;
-}
-/* the loaded workspace whose branches no longer match the main checkout */
-.wt-dot-drift {
-  background: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-bg);
 }
 @keyframes wt-pulse {
   50% {
@@ -4428,6 +4429,12 @@ a.commit-detail-hash svg {
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 600;
+  color: var(--l-text);
+  text-decoration: none;
+}
+a.ws-fp-branch:hover {
+  color: var(--l-accent);
+  text-decoration: underline;
 }
 .ws-fp-cells {
   min-width: 0;
@@ -4465,6 +4472,18 @@ a.commit-detail-hash svg {
 .ws-fp-status.is-danger,
 .ws-fp-detail {
   color: var(--red);
+}
+.ws-fp-pull {
+  flex: 1 1 300px;
+}
+.ws-fp-rplus {
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--l-accent);
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
 }
 .ws-fp-detail,
 .ws-fp-waiting {

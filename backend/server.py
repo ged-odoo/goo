@@ -1989,6 +1989,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(400, {"ok": False, "error": error})
+        elif path == "/api/prs/r-plus":
+            body, err = self._read_json()
+            repo = (body or {}).get("repo")
+            number = (body or {}).get("number")
+            valid_repo = isinstance(repo, str) and re.fullmatch(
+                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo
+            )
+            if err or not valid_repo or type(number) is not int or number <= 0:
+                return self._send_json(400, {"ok": False, "error": "invalid repo or number"})
+            ok, error = GITHUB.post_r_plus(repo, number)
+            self._send_json(
+                200 if ok else 400,
+                {"ok": ok, **({} if ok else {"error": error})},
+            )
         elif path == "/api/code/branch/remote":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")

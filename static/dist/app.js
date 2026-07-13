@@ -1993,6 +1993,21 @@ var CodePlugin = class extends Plugin {
   mergebotUrl(github, number) {
     return this.config.repoByGithub(github)?.mergebotUrl(number) ?? repoUrls.mergebot(github, number);
   }
+  pullRequestUrl(github, number) {
+    return this.config.repoByGithub(github)?.pullRequestUrl(number) ?? repoUrls.pullRequest(github, number);
+  }
+  async postRPlus(github, number) {
+    this.eventLog.add(`posting robodoo r+ on PR #${number} (${github})`);
+    try {
+      await postJSON("/api/prs/r-plus", { repo: github, number });
+      this.eventLog.add(`posted robodoo r+ on PR #${number} (${github})`);
+      return true;
+    } catch (e) {
+      this.eventLog.add(`posting r+ failed: ${github}#${number} \u2014 ${e.message}`, "", "error");
+      this._errorDialog("Post r+ failed", e.message);
+      return false;
+    }
+  }
   async remoteExists(path, branch) {
     const res = await postJSON("/api/code/branch/remote", { path, branch });
     return res.exists;
@@ -2695,6 +2710,9 @@ var Repository = class extends Model {
   mergebotUrl(number) {
     return repoUrls.mergebot(this.githubOrDefault(), number);
   }
+  pullRequestUrl(number) {
+    return repoUrls.pullRequest(this.githubOrDefault(), number);
+  }
 };
 var repoUrls = {
   // GitHub "create PR" compare page for a work branch (base inferred from the name)
@@ -2718,6 +2736,10 @@ var repoUrls = {
   // the mergebot page for one of this repo's PRs
   mergebot(github, number) {
     return `${MERGEBOT}/${github}/pull/${number}`;
+  },
+  // the canonical GitHub page for an existing PR
+  pullRequest(github, number) {
+    return `https://github.com/${github}/pull/${number}`;
   }
 };
 var Workspace = class extends Model {
@@ -9436,19 +9458,24 @@ var CodePane = class extends Component {
         <div class="ws-fp-chain" t-foreach="this.forwardPortChains" t-as="chain" t-key="chain.key">
           <div class="ws-fp-origin">
             <span class="ws-repo-tag" t-out="chain.repo"/>
-            <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(chain.github, chain.number)" t-out="'#' + chain.number"/>
+            <a class="pr-link" target="_blank" t-att-href="this.code.pullRequestUrl(chain.github, chain.number)" t-out="'#' + chain.number"/>
           </div>
           <div class="ws-fp-list">
             <div class="ws-fp-row" t-foreach="chain.rows" t-as="row" t-key="row.branch">
-              <span class="ws-fp-branch" t-out="row.branch"/>
+              <a t-if="row.mergebotUrl" class="ws-fp-branch" target="_blank" t-att-href="row.mergebotUrl" t-out="row.branch"/>
+              <span t-else="" class="ws-fp-branch" t-out="row.branch"/>
               <div class="ws-fp-cells">
                 <div class="ws-fp-cell" t-foreach="row.cells" t-as="cell" t-key="cell.repository">
                   <span t-if="chain.multiRepo" class="ws-fp-repo dim" t-out="cell.repository"/>
                   <span t-if="!cell.pulls.length" class="ws-fp-waiting dim">waiting</span>
                   <span class="ws-fp-pull" t-foreach="cell.pulls" t-as="pull" t-key="pull.github + '#' + pull.number">
-                    <a class="pr-link" target="_blank" t-att-href="this.code.mergebotUrl(pull.github, pull.number)" t-out="'#' + pull.number"/>
+                    <a class="pr-link" target="_blank" t-att-href="this.code.pullRequestUrl(pull.github, pull.number)" t-out="'#' + pull.number"/>
                     <span class="ws-fp-status" t-att-class="'is-' + pull.category" t-out="pull.status"/>
                     <span t-if="pull.detail" class="ws-fp-detail" t-out="pull.detail"/>
+                    <button t-if="this.hasMissingRPlus(pull)" class="pbtn ws-fp-rplus"
+                            t-att-disabled="this.rPlusState(pull)"
+                            t-on-click.stop="() => this.postRPlus(pull)"
+                            t-out="this.rPlusState(pull) === 'posting' ? 'posting…' : this.rPlusState(pull) === 'posted' ? 'posted' : 'post r+'"/>
                   </span>
                 </div>
               </div>
@@ -9471,6 +9498,8 @@ var CodePane = class extends Component {
   // the "Push all" toolbar button
   menuId = signal("");
   // key of the checkout whose action menu is open ("" = none)
+  rPlusPosts = signal({});
+  // "github#number" -> "posting" | "posted"
   setup() {
     const closeMenu = () => this.menuId() && this.menuId.set("");
     onMounted(() => document.addEventListener("click", closeMenu));
@@ -9747,16 +9776,42 @@ var CodePane = class extends Component {
       const signature = JSON.stringify(rows);
       if (seenMatrices.has(signature)) continue;
       seenMatrices.add(signature);
+      const linkedRows = rows.map((forwardRow) => {
+        const firstPull = forwardRow.cells.flatMap((cell) => cell.pulls)[0];
+        return {
+          ...forwardRow,
+          mergebotUrl: firstPull ? this.code.mergebotUrl(firstPull.github, firstPull.number) : ""
+        };
+      });
       chains.push({
         key,
         repo: row.repo,
         github: row.github,
         number: row.pr.number,
-        rows,
+        rows: linkedRows,
         multiRepo: (rows[0]?.cells || []).length > 1
       });
     }
     return chains;
+  }
+  rPlusKey(pull) {
+    return `${pull.github}#${pull.number}`;
+  }
+  hasMissingRPlus(pull) {
+    return `${pull.status || ""} ${pull.detail || ""}`.toLowerCase().includes("missing r+");
+  }
+  rPlusState(pull) {
+    return this.rPlusPosts()[this.rPlusKey(pull)] || "";
+  }
+  async postRPlus(pull) {
+    const key = this.rPlusKey(pull);
+    if (this.rPlusPosts()[key]) return;
+    this.rPlusPosts.set({ ...this.rPlusPosts(), [key]: "posting" });
+    const posted = await this.code.postRPlus(pull.github, pull.number);
+    const next = { ...this.rPlusPosts() };
+    if (posted) next[key] = "posted";
+    else delete next[key];
+    this.rPlusPosts.set(next);
   }
   // fetch + rebase this checkout's branch (its repo entry) onto its base
   rebaseCheckout(r) {
@@ -9875,6 +9930,7 @@ var WorkspacesScreen = class extends Component {
                     t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
               <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
               <span class="wt-item-name" t-out="ws.name"/>
+              <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
               <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
               <span class="wt-sp"/>
               <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
@@ -10350,13 +10406,12 @@ var WorkspacesScreen = class extends Component {
   dotClass(ws) {
     return "wt-dot-" + this.stateOf(ws);
   }
-  // the list-row dot: a starting/running server keeps its live colour; a loaded
-  // workspace whose checkout drifted goes amber (the claim is stale); otherwise a
+  // the list-row dot: a starting/running server keeps its live colour; a
   // worktree workspace or the loaded (active) one gets a solid black dot, and any
-  // other (stopped, inactive) workspace stays faint.
+  // other (stopped, inactive) workspace stays faint. Checkout drift no longer
+  // recolours the dot — it surfaces as a "drift" badge next to the name instead.
   listDotClass(ws) {
     if (this.isLive(ws)) return this.dotClass(ws);
-    if (this.isDrifted(ws)) return "wt-dot-drift";
     if (this.isWt(ws) || this.isLoaded(ws)) return "wt-dot-active";
     return this.dotClass(ws);
   }
