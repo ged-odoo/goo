@@ -996,6 +996,39 @@ class DatabaseServiceTest(unittest.TestCase):
         self.assertIn(("move", "/fs/alpha", "/fs/gamma"), io.fs_ops)
 
 
+class ParseGithubSlugTest(unittest.TestCase):
+    def test_ssh_form(self):
+        self.assertEqual(
+            services.parse_github_slug("git@github.com:someone/documentation.git"),
+            "someone/documentation",
+        )
+
+    def test_https_form(self):
+        self.assertEqual(
+            services.parse_github_slug("https://github.com/someone/documentation.git"),
+            "someone/documentation",
+        )
+
+    def test_https_form_without_dot_git_suffix(self):
+        self.assertEqual(
+            services.parse_github_slug("https://github.com/someone/documentation"),
+            "someone/documentation",
+        )
+
+    def test_ssh_protocol_form(self):
+        self.assertEqual(
+            services.parse_github_slug("ssh://git@github.com/someone/documentation.git"),
+            "someone/documentation",
+        )
+
+    def test_non_github_url_returns_none(self):
+        self.assertIsNone(services.parse_github_slug("https://gitlab.com/someone/documentation"))
+
+    def test_blank_returns_none(self):
+        self.assertIsNone(services.parse_github_slug(""))
+        self.assertIsNone(services.parse_github_slug(None))
+
+
 class GitServiceTest(unittest.TestCase):
     def test_branches_parses_state(self):
         io = FakeIO(
@@ -1031,6 +1064,59 @@ class GitServiceTest(unittest.TestCase):
         # a stale same-named remote ref: present, but not what's checked out locally
         self.assertTrue(branches["master-test"]["remote"])
         self.assertFalse(branches["master-test"]["synced"])
+
+    def test_branches_resolves_push_github_from_ssh_remote(self):
+        io = FakeIO(
+            runs={
+                "branch --show-current": completed(stdout="master-x\n"),
+                "remote get-url dev": completed(
+                    stdout="git@github.com:someone/documentation.git\n"
+                ),
+            }
+        )
+        [entry] = services.GitService(io).branches(
+            [{"id": "documentation", "path": "/repo", "push_remote": "dev"}]
+        )
+        self.assertEqual(entry["push_github"], "someone/documentation")
+
+    def test_branches_resolves_push_github_from_https_remote(self):
+        io = FakeIO(
+            runs={
+                "branch --show-current": completed(stdout="master-x\n"),
+                "remote get-url dev": completed(
+                    stdout="https://github.com/someone/documentation\n"
+                ),
+            }
+        )
+        [entry] = services.GitService(io).branches(
+            [{"id": "documentation", "path": "/repo", "push_remote": "dev"}]
+        )
+        self.assertEqual(entry["push_github"], "someone/documentation")
+
+    def test_branches_uses_the_configured_push_remote_name(self):
+        io = FakeIO(
+            runs={
+                "branch --show-current": completed(stdout="master-x\n"),
+                "remote get-url upstream-dev": completed(
+                    stdout="git@github.com:someone/enterprise.git\n"
+                ),
+            }
+        )
+        [entry] = services.GitService(io).branches(
+            [{"id": "enterprise", "path": "/repo", "push_remote": "upstream-dev"}]
+        )
+        # only matches because the call used "upstream-dev", not the "dev" default
+        self.assertEqual(entry["push_github"], "someone/enterprise")
+
+    def test_branches_push_github_none_when_remote_missing(self):
+        io = FakeIO(
+            runs={
+                "branch --show-current": completed(stdout="master-x\n"),
+                "remote get-url dev": completed(returncode=128, stderr="No such remote"),
+            }
+        )
+        [entry] = services.GitService(io).branches([{"id": "community", "path": "/repo"}])
+        self.assertIsNone(entry["push_github"])
 
     def test_branches_reports_not_a_repo(self):
         io = FakeIO(

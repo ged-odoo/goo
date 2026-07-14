@@ -37,6 +37,7 @@ export class StorePlugin extends Plugin {
       dirty: r.dirty(),
       error: r.error(),
       branches: r.branches(),
+      pushGithub: r.pushGithub(),
       fetchedAt: r.fetchedAt(),
     })),
   );
@@ -113,6 +114,7 @@ export class StorePlugin extends Plugin {
           dirty: !!raw.dirty,
           error: raw.error ?? null,
           branches: raw.branches ?? [],
+          pushGithub: raw.push_github ?? null,
           fetchedAt,
         });
       } else if (rec.fetchedAt() <= fetchedAt) {
@@ -121,6 +123,7 @@ export class StorePlugin extends Plugin {
         rec.dirty.set(!!raw.dirty);
         rec.error.set(raw.error ?? null);
         rec.branches.set(raw.branches ?? []);
+        rec.pushGithub.set(raw.push_github ?? null);
         rec.fetchedAt.set(fetchedAt);
       }
     }

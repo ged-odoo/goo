@@ -116,16 +116,19 @@ export class Repository extends Model {
     return this.push_remote() || "dev";
   }
 
-  compareUrl(branch) {
-    return repoUrls.compare(this.githubOrDefault(), branch);
+  // `pushSlug`: the push remote's actual resolved "owner/repo" (from live git
+  // state — see CodePlugin), so the fork link/compare page point at the real
+  // fork rather than the hardcoded odoo-dev fallback baked into repoUrls.
+  compareUrl(branch, pushSlug) {
+    return repoUrls.compare(this.githubOrDefault(), branch, pushSlug);
   }
 
-  forkBranchUrl(branch) {
-    return repoUrls.fork(this.githubOrDefault(), branch);
+  forkBranchUrl(branch, pushSlug) {
+    return repoUrls.fork(this.githubOrDefault(), branch, pushSlug);
   }
 
-  remoteBranchUrl(branch) {
-    return repoUrls.remote(this.githubOrDefault(), branch);
+  remoteBranchUrl(branch, pushSlug) {
+    return repoUrls.remote(this.githubOrDefault(), branch, pushSlug);
   }
 
   mergebotUrl(number) {
@@ -141,24 +144,33 @@ export class Repository extends Model {
 // are the model-facing API; these back them and are exported so CodePlugin can build a
 // URL for a PR whose repo isn't in config (a reviewed PR from an unfavorited repo has no
 // Repository record). One source of truth, callable with a record or a bare slug.
+//
+// `pushSlug` ("owner/repo") is the push remote's actual resolved fork, from live git
+// state (a repo's fork can live under a different owner — and even a differently-named
+// repo — than its upstream `github` slug, and that varies independently per repo). It
+// falls back to "odoo-dev" + the upstream repo name when not supplied (not yet resolved,
+// or a repo outside config entirely) — the old hardcoded assumption, kept only as a
+// last resort so a URL is still produced.
 export const repoUrls = {
   // GitHub "create PR" compare page for a work branch (base inferred from the name)
-  compare(github, branch) {
+  compare(github, branch, pushSlug) {
     const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
     const name = github.split("/")[1];
-    return `https://github.com/${github}/compare/${base}...odoo-dev:${name}:${branch}?expand=1`;
+    const [forkOwner, forkRepo] = pushSlug ? pushSlug.split("/") : ["odoo-dev", name];
+    return `https://github.com/${github}/compare/${base}...${forkOwner}:${forkRepo}:${branch}?expand=1`;
   },
-  // the branch on the odoo-dev fork
-  fork(github, branch) {
+  // the branch on the fork the push remote actually points to
+  fork(github, branch, pushSlug) {
     const name = github.split("/")[1];
-    return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
+    const slug = pushSlug || `odoo-dev/${name}`;
+    return `https://github.com/${slug}/tree/${encodeURIComponent(branch)}`;
   },
   // where a branch lives remotely: base branches on the canonical repo, work branches on the fork
-  remote(github, branch) {
+  remote(github, branch, pushSlug) {
     if (BASE_BRANCH_RE.test(branch)) {
       return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
     }
-    return repoUrls.fork(github, branch);
+    return repoUrls.fork(github, branch, pushSlug);
   },
   // the mergebot page for one of this repo's PRs
   mergebot(github, number) {

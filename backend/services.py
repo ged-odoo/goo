@@ -1498,6 +1498,19 @@ def is_base_branch(name):
     return bool(_BASE_BRANCH_RE.fullmatch(name or ""))
 
 
+_GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
+
+
+def parse_github_slug(url):
+    """The "owner/repo" GitHub slug a remote URL points to (SSH, HTTPS, or
+    ssh:// forms), or None if it's not a github.com URL. A repo's push remote
+    can be a fork under a different owner — and even a differently-renamed
+    repo — than its `github` (upstream) slug, so this is resolved from the
+    remote's actual URL rather than assumed."""
+    m = _GITHUB_REMOTE_RE.search(url or "")
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
 class GitService:
     """Local git operations on the user's repos, over the IO seam. Branch reads are
     volatile (dirty / current-branch state) and fast, so they're not cached — callers
@@ -1510,9 +1523,11 @@ class GitService:
 
     def branches(self, repos):
         """For each repo {id, path}: the checked-out branch and all local branches
-        with their last-commit date, plus dirty / pushed / ahead-behind state. Each
-        repo's git reads (~7 subprocesses) are independent, so repos are read in
-        parallel — keeping a multi-repo target's refresh snappy."""
+        with their last-commit date, plus dirty / pushed / ahead-behind state and
+        the push remote's resolved "owner/repo" (push_github, None if the remote
+        is missing/unparseable). Each repo's git reads (~8 subprocesses) are
+        independent, so repos are read in parallel — keeping a multi-repo target's
+        refresh snappy."""
         valid = [r for r in repos if r.get("id") and r.get("path")]
         if not valid:
             return []
@@ -1532,6 +1547,7 @@ class GitService:
                 "ahead": 0,  # current branch commits not on its base (target) branch
                 "behind": 0,  # base branch commits not on the current branch
                 "branches": [],
+                "push_github": None,  # "owner/repo" the push remote's URL actually points to
                 "error": None,
             }
             try:
@@ -1543,6 +1559,17 @@ class GitService:
                 # uncommitted changes in the working tree (only the current branch)
                 st = self.io.run(["git", "-C", path, "status", "--porcelain"], timeout=10)
                 entry["dirty"] = bool(st.stdout.strip())
+                # the push remote's actual fork owner/repo — a repo's fork can live
+                # under a different GitHub owner (or even a renamed repo) than its
+                # upstream `github` slug, and that can vary independently per repo
+                # (e.g. one repo forked under a personal username, another under a
+                # team org), so it's resolved from the remote itself, not assumed
+                push_remote = repo.get("push_remote") or "dev"
+                pu = self.io.run(
+                    ["git", "-C", path, "remote", "get-url", push_remote], timeout=10, quiet=True
+                )
+                if pu.returncode == 0:
+                    entry["push_github"] = parse_github_slug(pu.stdout.strip())
                 # HEAD's sha + last commit subject + date (for the branch summaries)
                 hl = self.io.run(
                     ["git", "-C", path, "log", "-1", "--format=%H%n%s%n%cI"], timeout=10

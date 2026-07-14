@@ -366,6 +366,12 @@ export class CodePlugin extends Plugin {
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
     const pullRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.pull_remote]));
     const pushRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.push_remote]));
+    // the push remote's actual resolved fork ("owner/repo"), from live git state
+    // (see GitService.branches / RepoStatus) — not to be confused with
+    // pushRemoteByRepo above, which is just the configured git remote *name*
+    const pushGithubByRepo = Object.fromEntries(
+      this.branchRepos().map((r) => [r.id, r.pushGithub || null]),
+    );
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -393,6 +399,7 @@ export class CodePlugin extends Plugin {
       pathByRepo,
       pullRemoteByRepo,
       pushRemoteByRepo,
+      pushGithubByRepo,
       prIndex,
       errors: this.prRepos().filter((r) => r.error),
       list: [...map.entries()]
@@ -418,17 +425,30 @@ export class CodePlugin extends Plugin {
   // GitHub / mergebot URL helpers. The logic lives on the Repository model (via the
   // shared repoUrls builders); these resolve the repo by slug and delegate, falling
   // back to the bare-slug builder for a reviewed PR from a repo that isn't in config.
-  prCreateUrl(github, branch) {
-    return this.config.repoByGithub(github)?.compareUrl(branch) ?? repoUrls.compare(github, branch);
-  }
-
-  forkBranchUrl(github, branch) {
-    return this.config.repoByGithub(github)?.forkBranchUrl(branch) ?? repoUrls.fork(github, branch);
-  }
-
-  remoteBranchUrl(github, branch) {
+  // `repoId` resolves the push remote's actual fork (see pushGithubByRepo) — without
+  // it (or before that repo's first branches() read completes) these fall back to
+  // repoUrls' own hardcoded-org guess.
+  prCreateUrl(repoId, github, branch) {
+    const pushSlug = this.groups().pushGithubByRepo[repoId];
     return (
-      this.config.repoByGithub(github)?.remoteBranchUrl(branch) ?? repoUrls.remote(github, branch)
+      this.config.repoByGithub(github)?.compareUrl(branch, pushSlug) ??
+      repoUrls.compare(github, branch, pushSlug)
+    );
+  }
+
+  forkBranchUrl(repoId, github, branch) {
+    const pushSlug = this.groups().pushGithubByRepo[repoId];
+    return (
+      this.config.repoByGithub(github)?.forkBranchUrl(branch, pushSlug) ??
+      repoUrls.fork(github, branch, pushSlug)
+    );
+  }
+
+  remoteBranchUrl(repoId, github, branch) {
+    const pushSlug = this.groups().pushGithubByRepo[repoId];
+    return (
+      this.config.repoByGithub(github)?.remoteBranchUrl(branch, pushSlug) ??
+      repoUrls.remote(github, branch, pushSlug)
     );
   }
 

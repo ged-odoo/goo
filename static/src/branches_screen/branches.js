@@ -68,7 +68,7 @@ export class BranchesScreen extends Component {
               <div class="brg-rows">
                 <div t-foreach="g.repos" t-as="r" t-key="r.repo" class="brg-cols brg-row" t-att-class="{active: r.active}">
                   <span class="brg-repo">
-                    <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
+                    <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
                     <span t-else="" t-out="r.repo"/>
                     <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
                   </span>
@@ -314,7 +314,7 @@ export class BranchesScreen extends Component {
 
   openPr(row) {
     this.code.eventLog.add(`opening PR for ${row.branch} (${row.repo})`);
-    window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
+    window.open(this.code.prCreateUrl(row.repo, row.github, row.branch), "_blank");
   }
 
   // build the per-branch action list for this row and open the floating kebab

@@ -150,7 +150,7 @@ export class CodePane extends Component {
           <div class="ws-co-head">
             <span class="ws-repo-tag" t-out="r.repo"/>
             <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
-               t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
+               t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
             <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
             <span class="wt-sp"/>
             <div class="dash-kebab-wrap" t-if="r.entry">
@@ -176,7 +176,7 @@ export class CodePane extends Component {
               </t>
               <t t-else="">
                 <span class="dim">no pull request</span>
-                <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
+                <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.repo, r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
               </t>
             </t>
             <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
@@ -504,7 +504,7 @@ export class CodePane extends Component {
   openPr(r) {
     this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
-    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
+    window.open(this.code.prCreateUrl(r.id, r.github, r.current), "_blank");
   }
 
   // one row per checkout, joined with live git state, sync counts, its PR, and the

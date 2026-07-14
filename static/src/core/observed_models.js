@@ -18,6 +18,7 @@ export class RepoStatus extends Model {
   dirty = fields.bool();
   error = fields.json(); // null | string
   branches = fields.json(); // [{ name, date, runbot, remote, synced, subject }, …]
+  pushGithub = fields.json(); // "owner/repo" the push remote's URL resolves to, or null
   fetchedAt = fields.number(); // request-start stamp — the step-4 "latest wins" key
 }
 
