@@ -3155,11 +3155,11 @@ a.dash-ci:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: calc(100% - 12px);
-  margin: 6px 6px 2px;
-  padding: 6px 9px;
+  width: 100%;
+  margin: 6px 0 6px;
+  padding: 6px 15px;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--l-panel);
   cursor: pointer;
   text-align: left;
@@ -4065,8 +4065,8 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 10px;
   width: calc(100% - 12px);
-  margin: 0 6px;
-  padding: 9px 9px;
+  margin: 0 6px 0 6px;
+  padding: 9px 9px 9px 16px;
   border: 0;
   border-radius: 8px;
   background: transparent;
