@@ -3353,6 +3353,13 @@ a.dash-ci:hover {
   font-size: 13px;
   color: var(--l-text);
 }
+/* one checkbox per repo (e.g. new-workspace's "Repositories") — wraps, since a
+   config can have several repos */
+.dialog-repo-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
 /* a checkbox with an inline select revealed beside it (e.g. "Clone db") */
 .dialog-check-select {
   display: flex;
