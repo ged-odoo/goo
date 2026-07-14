@@ -20,7 +20,16 @@ import { ServerPlugin } from "../core/server_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
 import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { BASE_BRANCH_RE } from "../core/config.js";
-import { DirtyBadge, ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.js";
+import {
+  DirtyBadge,
+  ICONS,
+  LogConsole,
+  SearchBox,
+  appBus,
+  editCommitMessage,
+  m,
+  mbCategory,
+} from "../core/common.js";
 import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
@@ -163,6 +172,7 @@ export class CodePane extends Component {
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
                 <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
                 <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
               </div>
@@ -497,6 +507,8 @@ export class CodePane extends Component {
       ref: r.current || "",
       label: `${r.id} · ${r.current || "?"}`,
       github: r.github || "",
+      base: r.base || "",
+      pullRemote: r.pull_remote || "",
     });
   }
 
@@ -624,6 +636,19 @@ export class CodePane extends Component {
 
   touchActivity() {
     this.config.workspace(this.props.ws.id)?.touchActivity();
+  }
+
+  // prompt for a message (the shared textarea editor — also used by the dirty
+  // badge's own Commit entry and CommitsDialog's reword affordance) then stage
+  // everything and commit with it
+  async commitDialog(r) {
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Commit — ${r.repo}`,
+      okLabel: "Commit",
+    });
+    if (!message) return;
+    this.touchActivity();
+    return this.code.commit(r.path, r.repo, message);
   }
 
   wipCommit(r) {

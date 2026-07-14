@@ -12,6 +12,7 @@ import {
   xml,
 } from "@odoo/owl";
 import { CodePlugin } from "./code_plugin.js";
+import { DialogPlugin } from "./dialog_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
 
 export const appBus = new EventBus();
@@ -186,11 +187,13 @@ export class DirtyBadge extends Component {
 export class DirtyMenu extends Component {
   static template = xml`
     <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button class="dash-menu-item" t-on-click="() => this.commitDialog()">Commit</button>
       <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
 
   code = usePlugin(CodePlugin);
+  dialogs = usePlugin(DialogPlugin);
   open = signal(false);
   _path = null;
   _repo = null;
@@ -217,6 +220,23 @@ export class DirtyMenu extends Component {
     this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
 
+  // prompt for a message (the shared textarea editor — also used by CommitsDialog's
+  // reword affordance) then stage everything and commit with it. path/repo are
+  // captured before the (async) dialog opens, so a commit started here always
+  // targets the repo the menu was opened for, even if another dirty badge is
+  // clicked while this one's dialog is still open.
+  async commitDialog() {
+    this.open.set(false);
+    const path = this._path;
+    const repo = this._repo;
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Commit — ${repo}`,
+      okLabel: "Commit",
+    });
+    if (!message) return;
+    this.code.commit(path, repo, message);
+  }
+
   wipCommit() {
     this.open.set(false);
     this.code.wipCommit(this._path, this._repo);
@@ -226,6 +246,33 @@ export class DirtyMenu extends Component {
     this.open.set(false);
     this.code.discard(this._path, this._repo);
   }
+}
+
+// Prompt for a commit message via a single-field textarea Dialog — the one
+// editor shared by both a fresh "Commit" (initialMessage "") and CommitsDialog's
+// reword affordance (initialMessage = the existing message, being edited in
+// place). Returns the trimmed message, or null if cancelled/blank.
+export async function editCommitMessage(
+  dialogs,
+  { title, initialMessage = "", okLabel = "Commit" },
+) {
+  const res = await dialogs.open({
+    title,
+    okLabel,
+    cls: "commit-msg-dialog",
+    validate: (v) => ((v.message || "").trim() ? "" : "a commit message is required"),
+    fields: [
+      {
+        key: "message",
+        type: "textarea",
+        label: "Message",
+        value: initialMessage,
+        rows: 8,
+        placeholder: "commit message",
+      },
+    ],
+  });
+  return res ? res.message.trim() : null;
 }
 
 // ─────────────────────────── Shared helpers ───────────────────────────

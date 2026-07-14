@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import threading
 import urllib.parse
 import uuid
@@ -1846,19 +1847,95 @@ class GitService:
                 remote_error = str(e)
         return True, None, remote_error
 
-    def wip_commit(self, path):
-        """Stage all changes and create a WIP commit. Returns (ok, error)."""
+    def commit(self, path, message):
+        """Stage all changes and create a commit with the given message. Returns
+        (ok, error)."""
         path = os.path.expanduser(path)
         try:
             r = self.io.run(["git", "-C", path, "add", "-A"], timeout=30)
             if r.returncode != 0:
                 return False, r.stderr.strip() or "git add failed"
-            r = self.io.run(["git", "-C", path, "commit", "--no-verify", "-m", "[WIP]"], timeout=30)
+            r = self.io.run(["git", "-C", path, "commit", "--no-verify", "-m", message], timeout=30)
             if r.returncode != 0:
                 return False, r.stderr.strip() or "git commit failed"
             return True, None
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return False, str(e)
+
+    def wip_commit(self, path):
+        """Stage all changes and create a WIP commit. Returns (ok, error)."""
+        return self.commit(path, "[WIP]")
+
+    def _ahead_shas(self, path, ref, base, pull_remote):
+        """The set of commit shas reachable from <ref> (default HEAD) but not from
+        the base branch — its fetched <pull_remote>/<base> tip, falling back to a
+        local <base> branch — i.e. unique to this branch, not inherited from base.
+        None if neither resolves (caller should then treat nothing as safe)."""
+        for candidate in (f"{pull_remote or 'origin'}/{base}", base):
+            r = self.io.run(
+                ["git", "-C", path, "rev-list", f"{candidate}..{ref or 'HEAD'}"],
+                timeout=15,
+                quiet=True,
+            )
+            if r.returncode == 0:
+                return set(r.stdout.split())
+        return None
+
+    def reword_commit(self, path, sha, message, base="", pull_remote="origin"):
+        """Rewrite an existing commit's message, leaving its content untouched.
+
+        Uses git's own non-interactive reword mechanism: an empty `--fixup=reword:`
+        commit supplies the new message, then `rebase --autosquash` splices it into
+        <sha> — GIT_SEQUENCE_EDITOR/GIT_EDITOR are set to the no-op `true` for that
+        step since autosquash has already prepared the correct todo/message by the
+        time either would run. The fixup commit's message must be provided through
+        an editor (git refuses `-m`/`-F` together with `--fixup=reword:`), so
+        GIT_EDITOR is pointed at `cp <tmpfile>` for that one step, copying a
+        prepared file over whatever git drafted — no shell-embedding of the
+        (arbitrary, possibly multi-line/quoted) message at all. That file's first
+        line must be "amend! <sha>" using <sha> in full: autosquash normally matches
+        by searching ancestor SUBJECTS for that trailer, which is ambiguous the
+        moment two commits share a subject (e.g. several "[WIP]" commits) — using
+        the full sha there instead makes the match exact.
+
+        `base`/`pull_remote`, when given, gate this to commits actually ahead of
+        the base branch (see `_ahead_shas`/`log`'s `ahead` flag) — the UI only ever
+        offers rewording for those, and this re-checks it server-side too, since
+        rewriting inherited/shared history is a mistake no confirmation dialog
+        should be able to wave through. Returns (ok, error); on conflict the
+        rebase is left in progress (mirrors fetch_rebase)."""
+        path = os.path.expanduser(path)
+        if base:
+            ahead = self._ahead_shas(path, "HEAD", base, pull_remote)
+            if not ahead or sha not in ahead:
+                return False, "refusing to rewrite a commit that isn't unique to this branch"
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as f:
+                f.write(f"amend! {sha}\n\n{message}\n")
+                tmp = f.name
+            env = {**os.environ, "GIT_EDITOR": f"cp {shlex.quote(tmp)}"}
+            r = self.io.run(
+                ["git", "-C", path, "commit", "--allow-empty", f"--fixup=reword:{sha}"],
+                timeout=30,
+                env=env,
+            )
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git commit --fixup failed"
+            env = {**os.environ, "GIT_SEQUENCE_EDITOR": "true", "GIT_EDITOR": "true"}
+            r = self.io.run(
+                ["git", "-C", path, "rebase", "--autosquash", "--autostash", "-i", f"{sha}^"],
+                timeout=60,
+                env=env,
+            )
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git rebase --autosquash failed"
+            return True, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
 
     def discard(self, path):
         """Make the working tree pristine: reset tracked files to HEAD, then remove
@@ -1875,10 +1952,16 @@ class GitService:
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return False, str(e)
 
-    def log(self, path, n=20, ref=""):
+    def log(self, path, n=20, ref="", base="", pull_remote="origin"):
         """The last n commits on <ref> (default HEAD). Returns (commits, error);
-        commits is a list of {sha, author, date, subject, body}. Fields are
-        \\x1f-separated, commits \\x1e-terminated so multi-line bodies survive."""
+        commits is a list of {sha, author, date, subject, body, ahead}. Fields are
+        \\x1f-separated, commits \\x1e-terminated so multi-line bodies survive.
+
+        When `base` is given, "ahead" marks commits reachable from <ref> but not
+        from the base branch (see `_ahead_shas`) — i.e. unique to this branch, not
+        inherited from it. Only those are safe to reword (see `reword_commit`); if
+        the base can't be resolved, every commit conservatively comes back
+        not-ahead rather than guessing."""
         path = os.path.expanduser(path)
         cmd = ["git", "-C", path, "log", "-n", str(n), "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"]
         if ref:
@@ -1887,6 +1970,7 @@ class GitService:
             r = self.io.run(cmd, timeout=30)
             if r.returncode != 0:
                 return None, r.stderr.strip() or "git log failed"
+            ahead = self._ahead_shas(path, ref, base, pull_remote) if base else None
             commits = []
             for rec in r.stdout.split("\x1e"):
                 rec = rec.strip("\n")
@@ -1895,13 +1979,15 @@ class GitService:
                 parts = rec.split("\x1f")
                 if len(parts) < 4:
                     continue
+                sha = parts[0]
                 commits.append(
                     {
-                        "sha": parts[0],
+                        "sha": sha,
                         "author": parts[1],
                         "date": parts[2],
                         "subject": parts[3],
                         "body": parts[4].strip() if len(parts) > 4 else "",
+                        "ahead": bool(ahead and sha in ahead),
                     }
                 )
             return commits, None

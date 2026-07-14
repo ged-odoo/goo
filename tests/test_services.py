@@ -5,6 +5,7 @@ Run from the repo root: `python3 -m unittest discover`
 """
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -50,6 +51,7 @@ class FakeIO:
         self._json_files = dict(json_files or {})  # {path: parsed-json-object}
         self.fs_fail = fs_fail  # path substring whose filesystem op should fail
         self.run_calls = []
+        self.run_kwargs = []  # kwargs (env, timeout, …) passed alongside each run_calls entry
         self.http_calls = []
         self.logs = []
         self.fs_ops = []  # recorded (op, src, dst) filesystem mutations
@@ -62,6 +64,7 @@ class FakeIO:
 
     def run(self, cmd, **kwargs):
         self.run_calls.append(cmd)
+        self.run_kwargs.append(kwargs)
         joined = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
         for needle, res in self._runs.items():
             if needle in joined:
@@ -1298,8 +1301,126 @@ class GitServiceTest(unittest.TestCase):
                 "date": "2024-06-20",
                 "subject": "[FIX] a",
                 "body": "body line",
+                "ahead": False,
             },
         )
+
+    def test_log_marks_commits_ahead_of_base(self):
+        rec = (
+            "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1f\x1e"
+            "sha2\x1fAlice\x1f2024-06-19\x1f[FIX] b\x1f\x1e"
+        )
+        io = FakeIO(
+            runs={
+                "git -C /r log": completed(stdout=rec),
+                "rev-list origin/master..HEAD": completed(stdout="sha1\n"),
+            }
+        )
+        commits, err = services.GitService(io).log("/r", base="master")
+        self.assertIsNone(err)
+        self.assertTrue(commits[0]["ahead"])  # sha1 — unique to this branch
+        self.assertFalse(commits[1]["ahead"])  # sha2 — inherited from base
+
+    def test_log_falls_back_to_local_base_branch(self):
+        rec = "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1f\x1e"
+        io = FakeIO(
+            runs={
+                "git -C /r log": completed(stdout=rec),
+                # no fetched origin/master ref locally; only the bare local branch
+                "rev-list origin/master..HEAD": completed(
+                    returncode=128, stderr="unknown revision"
+                ),
+                "rev-list master..HEAD": completed(stdout="sha1\n"),
+            }
+        )
+        commits, err = services.GitService(io).log("/r", base="master")
+        self.assertIsNone(err)
+        self.assertTrue(commits[0]["ahead"])
+
+    def test_log_conservatively_marks_nothing_ahead_when_base_unresolvable(self):
+        rec = "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1f\x1e"
+        io = FakeIO(
+            runs={
+                "git -C /r log": completed(stdout=rec),
+                "rev-list": completed(returncode=128, stderr="unknown revision"),
+            }
+        )
+        commits, err = services.GitService(io).log("/r", base="master")
+        self.assertIsNone(err)
+        self.assertFalse(commits[0]["ahead"])
+
+    def test_log_without_base_marks_nothing_ahead(self):
+        rec = "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1f\x1e"
+        io = FakeIO(runs={"git -C /r log": completed(stdout=rec)})
+        commits, err = services.GitService(io).log("/r")
+        self.assertIsNone(err)
+        self.assertFalse(commits[0]["ahead"])
+        self.assertFalse(any("rev-list" in " ".join(c) for c in io.run_calls))
+
+    def test_reword_commit_writes_amend_trailer_and_autosquashes(self):
+        io = FakeIO()
+        ok, err = services.GitService(io).reword_commit("/r", "abc123", "new message")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        fixup_call = next(c for c in io.run_calls if "--fixup" in " ".join(c))
+        self.assertIn("--allow-empty", fixup_call)
+        self.assertIn("--fixup=reword:abc123", fixup_call)
+        rebase_call = next(c for c in io.run_calls if "rebase" in c)
+        self.assertIn("--autosquash", rebase_call)
+        self.assertIn("--autostash", rebase_call)
+        self.assertIn("abc123^", rebase_call)
+        # the fixup step's editor is pointed at a prepared file (never at the raw
+        # message directly, avoiding any shell-embedding of arbitrary content)
+        fixup_kwargs = io.run_kwargs[io.run_calls.index(fixup_call)]
+        editor = fixup_kwargs["env"]["GIT_EDITOR"]
+        self.assertTrue(editor.startswith("cp "))
+        tmp_path = editor[len("cp ") :].strip()
+        # the temp file is cleaned up by the time reword_commit returns
+        self.assertFalse(os.path.exists(tmp_path))
+        # the no-op editors for the rebase step, so autosquash's own todo/message
+        # is accepted without ever opening a real editor
+        rebase_kwargs = io.run_kwargs[io.run_calls.index(rebase_call)]
+        self.assertEqual(rebase_kwargs["env"]["GIT_SEQUENCE_EDITOR"], "true")
+        self.assertEqual(rebase_kwargs["env"]["GIT_EDITOR"], "true")
+
+    def test_reword_commit_trailer_uses_full_sha_not_subject(self):
+        # autosquash matches "amend! <text>" against ancestor SUBJECTS by default —
+        # ambiguous the moment two commits share one (e.g. several "[WIP]" commits).
+        # Using the full sha there instead must be exact, so read the file the
+        # fixup step's GIT_EDITOR="cp <file>" would copy, while it still exists
+        # (reword_commit deletes it once both git calls are done).
+        written = {}
+
+        class CapturingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                editor = (kwargs.get("env") or {}).get("GIT_EDITOR", "")
+                if editor.startswith("cp ") and "--fixup" in " ".join(cmd):
+                    with open(editor[len("cp ") :].strip()) as f:
+                        written["content"] = f.read()
+                return super().run(cmd, **kwargs)
+
+        io = CapturingIO()
+        ok, err = services.GitService(io).reword_commit("/r", "abc123def", "hello")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertEqual(written["content"], "amend! abc123def\n\nhello\n")
+
+    def test_reword_commit_refuses_when_not_ahead_of_base(self):
+        io = FakeIO(runs={"rev-list origin/master..HEAD": completed(stdout="other-sha\n")})
+        ok, err = services.GitService(io).reword_commit(
+            "/r", "abc123", "new message", base="master"
+        )
+        self.assertFalse(ok)
+        self.assertIn("refusing", err)
+        self.assertFalse(any("--fixup" in " ".join(c) for c in io.run_calls))
+
+    def test_reword_commit_allowed_when_ahead_of_base(self):
+        io = FakeIO(runs={"rev-list origin/master..HEAD": completed(stdout="abc123\n")})
+        ok, err = services.GitService(io).reword_commit(
+            "/r", "abc123", "new message", base="master"
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(err)
 
     def test_push_branch_pushes_to_push_remote(self):
         io = FakeIO()

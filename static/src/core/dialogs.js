@@ -11,7 +11,8 @@ import {
 import { timeAgo } from "./utils.js";
 import { CodePlugin } from "./code_plugin.js";
 import { ConfigPlugin } from "./config_plugin.js";
-import { ICONS, m, useDragResize } from "./common.js";
+import { DialogPlugin } from "./dialog_plugin.js";
+import { ICONS, editCommitMessage, m, useDragResize } from "./common.js";
 
 export class RemoteBranchDialog extends Component {
   static template = xml`
@@ -144,9 +145,12 @@ export class CommitsDialog extends Component {
             </div>
             <div t-if="this.isExpanded(c.sha)" class="commit-detail">
               <div class="commit-detail-meta">
-                <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
-                <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
-                <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
+                <span class="commit-detail-left">
+                  <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
+                  <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
+                  <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
+                </span>
+                <button t-if="c.ahead" class="commit-edit-btn" title="edit this commit's message" t-on-click.stop="() => this.editMessage(c)">edit</button>
               </div>
               <pre class="commit-body" t-out="this.message(c)"/>
             </div>
@@ -162,9 +166,13 @@ export class CommitsDialog extends Component {
     label: t.string(),
     ref: t.string(),
     github: t.string().optional(),
+    base: t.string().optional(), // the branch's own base (e.g. "master") — gates which
+    // commits are "ahead" (this branch's own, editable) vs inherited from it
+    pullRemote: t.string().optional(),
   });
 
   code = usePlugin(CodePlugin);
+  dialogs = usePlugin(DialogPlugin);
   externalIcon = m(ICONS.external);
   commits = signal([]);
   loading = signal(true);
@@ -182,12 +190,44 @@ export class CommitsDialog extends Component {
   }
 
   async load() {
+    this.loading.set(true);
     try {
-      this.commits.set(await this.code.commits(this.props.path, this.props.ref));
+      this.commits.set(
+        await this.code.commits(this.props.path, this.props.ref, {
+          base: this.props.base,
+          pullRemote: this.props.pullRemote,
+        }),
+      );
     } catch (e) {
       this.error.set(e.message);
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  // open the shared textarea editor prefilled with this commit's current
+  // message; on confirm, reword it server-side and reload the list
+  async editMessage(c) {
+    const message = await editCommitMessage(this.dialogs, {
+      title: "Edit commit message",
+      initialMessage: this.message(c),
+      okLabel: "Save",
+    });
+    if (!message) return;
+    try {
+      await this.code.rewordCommit(this.props.path, c.sha, message, {
+        base: this.props.base,
+        pullRemote: this.props.pullRemote,
+      });
+      await this.load();
+    } catch (e) {
+      this.dialogs.open({
+        title: "Edit commit message failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
     }
   }
 
