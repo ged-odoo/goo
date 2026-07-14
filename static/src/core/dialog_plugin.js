@@ -93,10 +93,11 @@ class DialogContainer extends Component {
 
 // A form/message modal. Spec: { title, message?, okLabel?, cancelLabel?, cls?,
 // validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox"|
-// "select"|"check-select", label, value, placeholder?, options?, onChange?,
-// default? }] }. A "check-select" is a checkbox with an inline select that shows
-// only when ticked; its value is "" (off) or the chosen option, seeded from
-// default(values) on tick. validate() runs
+// "select"|"check-select"|"repo-checks", label, value, placeholder?, options?,
+// onChange?, default? }] }. A "check-select" is a checkbox with an inline select
+// that shows only when ticked; its value is "" (off) or the chosen option, seeded
+// from default(values) on tick. A "repo-checks" is a list of checkboxes (one per
+// `options` entry); its value is the array of ticked option values. validate() runs
 // live: a non-empty result disables the OK button (and, once the user has edited a
 // field, shows the message), so an invalid form can't be submitted. cancelLabel:
 // null hides the Discard button (e.g. for a plain message/alert). Closes itself by
@@ -134,6 +135,15 @@ export class Dialog extends Component {
                 </t>
               </select>
             </div>
+            <t t-elif="f.type === 'repo-checks'">
+              <label t-out="f.label"/>
+              <div class="dialog-repo-checks">
+                <label t-foreach="f.options || []" t-as="opt" t-key="opt.value" class="edit-check">
+                  <input type="checkbox" t-att-checked="(this.values()[f.key] || []).includes(opt.value)" t-on-change="(ev) => this.toggleRepoCheck(f, opt.value, ev.target.checked)"/>
+                  <t t-out="opt.label"/>
+                </label>
+              </div>
+            </t>
             <t t-else="">
               <label t-out="f.label"/>
               <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
@@ -166,7 +176,7 @@ export class Dialog extends Component {
   setup() {
     const vals = {};
     for (const f of this.spec.fields || [])
-      vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
+      vals[f.key] = f.value ?? (f.type === "checkbox" ? false : f.type === "repo-checks" ? [] : "");
     this.values.set(vals);
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
@@ -206,6 +216,14 @@ export class Dialog extends Component {
     if (!checked) return this.setVal(field.key, "");
     const seed = typeof field.default === "function" ? field.default(this.values()) : field.default;
     this.setVal(field.key, seed || field.options?.[0]?.value || "");
+  }
+
+  // a "repo-checks" field's value is the array of ticked option values; toggling
+  // one re-derives dependent fields the same way any other field's onChange does
+  toggleRepoCheck(field, value, checked) {
+    const current = this.values()[field.key] || [];
+    const next = checked ? [...current, value] : current.filter((v) => v !== value);
+    this.setVal(field.key, next);
   }
 
   onKey(ev) {

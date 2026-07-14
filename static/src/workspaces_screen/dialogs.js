@@ -20,6 +20,11 @@ export function categoryOptions(config) {
   return (config.config.workspace_categories || []).map((c) => ({ value: c.id, label: c.id }));
 }
 
+// the Config string for a set of ticked repo ids, all forking the same branch
+// (the common case — a task branch of the same name across every repo it touches)
+const configFromRepos = (repoIds, branch) =>
+  repoBranchList.format(repoIds.map((repo) => ({ repo, branch })));
+
 // Create a workspace through the unified dialog (validated before it closes).
 // plugins: { config, dialogs, db, code, eventLog, wt }. `prefill` seeds the form
 // (the remote-branch flow passes the fetched branch): { name, config, db,
@@ -31,6 +36,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   const existing = config.config.workspaces || [];
   const dbNames = new Set(db.databases().map((d) => d.name));
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
+  const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
+  // ticked by default: whatever the prefilled config already covers, else every
+  // non-external configured repo (a new task branch usually spans all of them;
+  // external repos, e.g. odoo/owl, are outside the CI ecosystem and rarely need
+  // a matching branch, so leave them for the user to opt into)
+  const prefillRepoIds = prefill.config
+    ? repoBranchList.parse(prefill.config).map((c) => c.repo)
+    : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
   const res = await dialogs.open({
     title: "New workspace",
     okLabel: "Create",
@@ -65,6 +78,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
             "";
           return {
             name: branch,
+            repos: tpl.checkouts.map((c) => c.repo),
             config: repoBranchList.format(tpl.checkouts),
             db: tpl.db || "",
             args: tpl.on_create_args || "",
@@ -89,19 +103,32 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.name ?? "",
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
-          const oldName = oldValues.name;
-          if (!oldName) return null;
-          return {
-            config: (currentValues.config || "").replaceAll(oldName, newName),
-            db: (currentValues.db || "").replaceAll(oldName, newName),
-          };
+          const updates = { config: configFromRepos(currentValues.repos || [], newName.trim()) };
+          // only string-replace db when there was a previous name to replace —
+          // replaceAll("", newName) on the very first keystroke would otherwise
+          // splice newName between every character
+          if (oldValues.name)
+            updates.db = (currentValues.db || "").replaceAll(oldValues.name, newName);
+          return updates;
         },
+      },
+      {
+        key: "repos",
+        type: "repo-checks",
+        label: "Repositories",
+        value: prefillRepoIds,
+        options: repoOptions,
+        onChange: (repoIds, currentValues) => ({
+          config: configFromRepos(repoIds, (currentValues.name || "").trim()),
+        }),
       },
       {
         key: "config",
         type: "text",
         label: "Config",
-        value: prefill.config ?? "",
+        value:
+          prefill.config ??
+          (prefill.name ? configFromRepos(prefillRepoIds, prefill.name.trim()) : ""),
         placeholder: "community:master,enterprise:master",
       },
       {
