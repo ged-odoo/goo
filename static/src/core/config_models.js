@@ -177,6 +177,7 @@ export class Workspace extends Model {
   last_activity = fields.char(); // ISO timestamp; intentional workspace actions only
   favorite = fields.bool();
   category = fields.char(); // a workspace_categories id ("" = uncategorized)
+  notes = fields.char(); // free-form user notes (the Details tab)
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
@@ -215,6 +216,14 @@ export class Workspace extends Model {
 
   toggleDemoData() {
     this.demo_data.set(!this.demo_data());
+    this._configPlugin().touch();
+  }
+
+  // persist the Details tab's notes (no touchActivity — writing a note is
+  // bookkeeping, not workspace activity)
+  setNotes(text) {
+    if (text === this.notes()) return;
+    this.notes.set(text);
     this._configPlugin().touch();
   }
 
@@ -399,6 +408,7 @@ function workspaceData(w) {
     last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
     category: w.category ?? "",
+    notes: w.notes ?? "",
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
     demo_data: w.demo_data ?? true,
@@ -465,6 +475,7 @@ export function toConfig(orm) {
     last_activity: w.last_activity(),
     favorite: w.favorite(),
     category: w.category(),
+    notes: w.notes(),
     db: w.db(),
     on_create_args: w.on_create_args(),
     demo_data: w.demo_data(),
@@ -559,6 +570,7 @@ function reconcileWorkspaces(orm, desired) {
         "name",
         "favorite",
         "category",
+        "notes",
         "db",
         "on_create_args",
         "demo_data",

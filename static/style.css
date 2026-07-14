@@ -3149,6 +3149,44 @@ a.dash-ci:hover {
   user-select: none;
   cursor: pointer;
 }
+/* workspace Details tab: creation/activity dates + free-form notes */
+.ws-details-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  max-width: 720px;
+}
+.ws-details-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 18px;
+  font-size: 13px;
+}
+.ws-notes-label {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.ws-notes {
+  min-height: 180px;
+  padding: 10px 12px;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  background: var(--l-card);
+  color: var(--l-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.ws-notes::placeholder {
+  color: var(--l-text-faint);
+}
+.ws-notes:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
+
 /* workspace-list category groups: the items stay a flat list; each category gets
    a collapsible header — a light rounded bar with caret + name + count pill */
 .wt-group-head {

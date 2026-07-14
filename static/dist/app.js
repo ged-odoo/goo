@@ -2861,6 +2861,8 @@ var Workspace = class extends Model {
   favorite = fields.bool();
   category = fields.char();
   // a workspace_categories id ("" = uncategorized)
+  notes = fields.char();
+  // free-form user notes (the Details tab)
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
@@ -2896,6 +2898,13 @@ var Workspace = class extends Model {
   }
   toggleDemoData() {
     this.demo_data.set(!this.demo_data());
+    this._configPlugin().touch();
+  }
+  // persist the Details tab's notes (no touchActivity — writing a note is
+  // bookkeeping, not workspace activity)
+  setNotes(text) {
+    if (text === this.notes()) return;
+    this.notes.set(text);
     this._configPlugin().touch();
   }
   touchActivity() {
@@ -3041,6 +3050,7 @@ function workspaceData(w) {
     last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
     category: w.category ?? "",
+    notes: w.notes ?? "",
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
     demo_data: w.demo_data ?? true,
@@ -3103,6 +3113,7 @@ function toConfig(orm) {
     last_activity: w.last_activity(),
     favorite: w.favorite(),
     category: w.category(),
+    notes: w.notes(),
     db: w.db(),
     on_create_args: w.on_create_args(),
     demo_data: w.demo_data(),
@@ -3186,6 +3197,7 @@ function reconcileWorkspaces(orm, desired) {
         "name",
         "favorite",
         "category",
+        "notes",
         "db",
         "on_create_args",
         "demo_data",
@@ -4162,6 +4174,7 @@ var ICONS = {
   terminal: `<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>`,
   claude: `<svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.2 6.2l2.1 2.1M15.7 15.7l2.1 2.1M17.8 6.2l-2.1 2.1M8.3 15.7l-2.1 2.1"/><circle cx="12" cy="12" r="3"/></svg>`,
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
+  info: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/><circle cx="12" cy="7.8" r="0.6" fill="currentColor" stroke="none"/></svg>`,
   worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
   nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
   memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`,
@@ -10279,6 +10292,7 @@ var WorkspacesScreen = class extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
             <div class="wt-panes">
@@ -10323,6 +10337,18 @@ var WorkspacesScreen = class extends Component {
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
+              <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
+                <div class="ws-details-grid">
+                  <span class="dim">Created</span>
+                  <span t-out="this.fmtWhen(this.sel.created_at)"/>
+                  <span class="dim">Last activity</span>
+                  <span t-out="this.fmtWhen(this.sel.last_activity)"/>
+                </div>
+                <label class="ws-notes-label dim" for="ws-notes">Notes</label>
+                <textarea id="ws-notes" class="ws-notes" placeholder="Anything worth remembering about this workspace — context, findings, next steps…"
+                          t-att-value="this.sel.notes || ''"
+                          t-on-change="ev => this.config.workspace(this.sel.id)?.setNotes(ev.target.value)"/>
+              </div>
             </div>
           </t>
           <div t-else="" class="wt-detail-empty dim">Select a workspace on the left, or create one.</div>
@@ -10352,7 +10378,8 @@ var WorkspacesScreen = class extends Component {
     addons: m(ICONS.addons),
     assets: m(ICONS.assets),
     claude: m(ICONS.claude),
-    terminal: m(ICONS.terminal)
+    terminal: m(ICONS.terminal),
+    info: m(ICONS.info)
   };
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
   pane = signal("code");
@@ -10671,6 +10698,16 @@ var WorkspacesScreen = class extends Component {
   }
   branchOf(ws) {
     return ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch || "";
+  }
+  // Details tab timestamps: absolute local date-time + relative ("2 days ago")
+  fmtWhen(ts) {
+    const t2 = Date.parse(ts || "");
+    if (!t2) return "\u2014";
+    const abs = new Date(t2).toLocaleString(void 0, {
+      dateStyle: "medium",
+      timeStyle: "short"
+    });
+    return `${abs} \xB7 ${timeAgo(ts)}`;
   }
   // the header's branch chip: the shared branch name when every checkout agrees
   // (the usual convention), else just the distinct-name count — one label can't
