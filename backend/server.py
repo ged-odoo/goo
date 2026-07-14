@@ -2067,6 +2067,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             ok, error = GIT.wip_commit(repo_path)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/commit":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            message = (body or {}).get("message")
+            if err or not repo_path or not (message or "").strip():
+                return self._send_json(400, {"ok": False, "error": "missing path or message"})
+            ok, error = GIT.commit(repo_path, message)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/reword":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            sha = (body or {}).get("sha")
+            message = (body or {}).get("message")
+            if err or not repo_path or not sha or not (message or "").strip():
+                return self._send_json(400, {"ok": False, "error": "missing path, sha, or message"})
+            ok, error = GIT.reword_commit(
+                repo_path,
+                sha,
+                message,
+                base=(body or {}).get("base") or "",
+                pull_remote=(body or {}).get("pull_remote") or "origin",
+            )
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/discard":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")
@@ -2081,7 +2104,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing path"})
             count = int((body or {}).get("count") or 20)
             ref = (body or {}).get("ref") or ""
-            commits, error = GIT.log(repo_path, count, ref)
+            base = (body or {}).get("base") or ""
+            pull_remote = (body or {}).get("pull_remote") or "origin"
+            commits, error = GIT.log(repo_path, count, ref, base, pull_remote)
             self._send_json(
                 200 if error is None else 400,
                 {"ok": error is None, "commits": commits or [], "error": error},

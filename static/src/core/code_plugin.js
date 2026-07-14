@@ -496,9 +496,12 @@ export class CodePlugin extends Plugin {
     return res.exists;
   }
 
-  // last commits on a branch (ref; defaults to the repo's current branch)
-  async commits(path, ref = "") {
-    const res = await postJSON("/api/code/log", { path, ref });
+  // last commits on a branch (ref; defaults to the repo's current branch). `base`
+  // (the branch's own base, e.g. "master") + `pullRemote` make each commit carry
+  // an "ahead" flag — reachable from ref but not the base branch, i.e. unique to
+  // this branch and so safe to reword (see rewordCommit).
+  async commits(path, ref = "", { base = "", pullRemote = "" } = {}) {
+    const res = await postJSON("/api/code/log", { path, ref, base, pull_remote: pullRemote });
     if (!res.ok) throw new Error(res.error || "git log failed");
     return res.commits;
   }
@@ -785,6 +788,44 @@ export class CodePlugin extends Plugin {
     } finally {
       this.busy.set(false);
     }
+  }
+
+  // stage all changes and commit with a user-supplied message (see
+  // dialogs.js's editCommitMessage — the "Commit" menu action's caller)
+  async commit(path, repo, message) {
+    this.busy.set(true);
+    try {
+      this.eventLog.add(`commit (${repo})`);
+      await postJSON("/api/code/commit", { path, message });
+      await this.refreshBranches(new Set([repo]));
+    } catch (e) {
+      this.eventLog.add(`commit failed (${repo})`);
+      this.dialogs.open({
+        title: "Commit failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // rewrite an existing commit's message (CommitsDialog's edit affordance —
+  // only ever offered for commits already flagged "ahead" of the base branch,
+  // and the backend re-checks that itself before touching anything). Throws on
+  // failure — the caller (CommitsDialog) owns showing that error, since it needs
+  // to keep its own dialog open rather than this cutting straight to a generic one.
+  async rewordCommit(path, sha, message, { base = "", pullRemote = "" } = {}) {
+    const res = await postJSON("/api/code/reword", {
+      path,
+      sha,
+      message,
+      base,
+      pull_remote: pullRemote,
+    });
+    if (!res.ok) throw new Error(res.error || "git reword failed");
   }
 
   async discard(path, repo) {

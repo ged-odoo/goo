@@ -92,12 +92,15 @@ class DialogContainer extends Component {
 // ─────────────────────────── Generic dialog ───────────────────────────
 
 // A form/message modal. Spec: { title, message?, okLabel?, cancelLabel?, cls?,
-// validate?(values) => errorString, fields: [{ key, type: "text"|"checkbox"|
-// "select"|"check-select"|"repo-checks", label, value, placeholder?, options?,
-// onChange?, default? }] }. A "check-select" is a checkbox with an inline select
-// that shows only when ticked; its value is "" (off) or the chosen option, seeded
-// from default(values) on tick. A "repo-checks" is a list of checkboxes (one per
-// `options` entry); its value is the array of ticked option values. validate() runs
+// validate?(values) => errorString, fields: [{ key, type: "text"|"textarea"|
+// "checkbox"|"select"|"check-select"|"repo-checks", label, value, placeholder?,
+// rows?, options?, onChange?, default? }] }. A "check-select" is a checkbox with
+// an inline select that shows only when ticked; its value is "" (off) or the
+// chosen option, seeded from default(values) on tick. A "repo-checks" is a list
+// of checkboxes (one per `options` entry); its value is the array of ticked
+// option values. A "textarea" is a multi-line text field (Enter inserts a
+// newline rather than submitting, unlike "text"; `rows` sets its height, default
+// 6). validate() runs
 // live: a non-empty result disables the OK button (and, once the user has edited a
 // field, shows the message), so an invalid form can't be submitted. cancelLabel:
 // null hides the Discard button (e.g. for a plain message/alert). Closes itself by
@@ -144,6 +147,10 @@ export class Dialog extends Component {
                 </label>
               </div>
             </t>
+            <t t-elif="f.type === 'textarea'">
+              <label t-out="f.label"/>
+              <textarea t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-att-rows="f.rows || 6" t-on-input="(ev) => this.setVal(f.key, ev.target.value)"/>
+            </t>
             <t t-else="">
               <label t-out="f.label"/>
               <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
@@ -184,8 +191,8 @@ export class Dialog extends Component {
     document.addEventListener("keydown", onKey);
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
     onMounted(() => {
-      // focus + select the first text field once rendered
-      const inp = document.querySelector(".dialog input[type=text]");
+      // focus + select the first text/textarea field once rendered
+      const inp = document.querySelector(".dialog input[type=text], .dialog textarea");
       if (inp) {
         inp.focus();
         inp.select();

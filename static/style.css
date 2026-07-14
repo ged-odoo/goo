@@ -3297,6 +3297,21 @@ a.dash-ci:hover {
   outline: none;
   border-color: var(--l-accent-line);
 }
+.dialog-field textarea {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--l-text);
+  background: var(--l-card);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  padding: 8px 11px;
+  resize: vertical;
+  min-height: 80px;
+}
+.dialog-field textarea:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
 .dialog-field select {
   font-family: var(--mono);
   font-size: 12.5px;
@@ -3377,6 +3392,9 @@ a.dash-ci:hover {
 /* ─── remote branch dialog ─── */
 .dialog.rbd {
   width: min(520px, 92vw);
+}
+.dialog.commit-msg-dialog {
+  width: min(560px, 92vw);
 }
 .rbd-input {
   font-family: var(--mono);
@@ -3577,6 +3595,27 @@ a.commit-detail-hash svg {
 .commit-detail-date {
   color: var(--l-text-dim);
   white-space: nowrap;
+}
+.commit-detail-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+}
+.commit-edit-btn {
+  flex: none;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--l-text-mid);
+  background: var(--l-panel);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.commit-edit-btn:hover {
+  color: var(--l-text);
+  border-color: var(--l-accent-line);
 }
 .commit-body {
   margin: 8px 16px 12px;
