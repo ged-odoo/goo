@@ -1112,6 +1112,8 @@ var RepoStatus = class extends Model {
   // null | string
   branches = fields.json();
   // [{ name, date, runbot, remote, synced, subject }, …]
+  pushGithub = fields.json();
+  // "owner/repo" the push remote's URL resolves to, or null
   fetchedAt = fields.number();
   // request-start stamp — the step-4 "latest wins" key
 };
@@ -1173,6 +1175,7 @@ var StorePlugin = class extends Plugin {
       dirty: r.dirty(),
       error: r.error(),
       branches: r.branches(),
+      pushGithub: r.pushGithub(),
       fetchedAt: r.fetchedAt()
     }))
   );
@@ -1233,6 +1236,7 @@ var StorePlugin = class extends Plugin {
           dirty: !!raw.dirty,
           error: raw.error ?? null,
           branches: raw.branches ?? [],
+          pushGithub: raw.push_github ?? null,
           fetchedAt
         });
       } else if (rec.fetchedAt() <= fetchedAt) {
@@ -1240,6 +1244,7 @@ var StorePlugin = class extends Plugin {
         rec.dirty.set(!!raw.dirty);
         rec.error.set(raw.error ?? null);
         rec.branches.set(raw.branches ?? []);
+        rec.pushGithub.set(raw.push_github ?? null);
         rec.fetchedAt.set(fetchedAt);
       }
     }
@@ -2005,6 +2010,9 @@ var CodePlugin = class extends Plugin {
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
     const pullRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.pull_remote]));
     const pushRemoteByRepo = Object.fromEntries(repos.map((r) => [r.id, r.push_remote]));
+    const pushGithubByRepo = Object.fromEntries(
+      this.branchRepos().map((r) => [r.id, r.pushGithub || null])
+    );
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -2031,6 +2039,7 @@ var CodePlugin = class extends Plugin {
       pathByRepo,
       pullRemoteByRepo,
       pushRemoteByRepo,
+      pushGithubByRepo,
       prIndex,
       errors: this.prRepos().filter((r) => r.error),
       list: [...map.entries()].map(([branch, rows]) => {
@@ -2053,14 +2062,20 @@ var CodePlugin = class extends Plugin {
   // GitHub / mergebot URL helpers. The logic lives on the Repository model (via the
   // shared repoUrls builders); these resolve the repo by slug and delegate, falling
   // back to the bare-slug builder for a reviewed PR from a repo that isn't in config.
-  prCreateUrl(github, branch) {
-    return this.config.repoByGithub(github)?.compareUrl(branch) ?? repoUrls.compare(github, branch);
+  // `repoId` resolves the push remote's actual fork (see pushGithubByRepo) — without
+  // it (or before that repo's first branches() read completes) these fall back to
+  // repoUrls' own hardcoded-org guess.
+  prCreateUrl(repoId, github, branch) {
+    const pushSlug = this.groups().pushGithubByRepo[repoId];
+    return this.config.repoByGithub(github)?.compareUrl(branch, pushSlug) ?? repoUrls.compare(github, branch, pushSlug);
   }
-  forkBranchUrl(github, branch) {
-    return this.config.repoByGithub(github)?.forkBranchUrl(branch) ?? repoUrls.fork(github, branch);
+  forkBranchUrl(repoId, github, branch) {
+    const pushSlug = this.groups().pushGithubByRepo[repoId];
+    return this.config.repoByGithub(github)?.forkBranchUrl(branch, pushSlug) ?? repoUrls.fork(github, branch, pushSlug);
   }
-  remoteBranchUrl(github, branch) {
-    return this.config.repoByGithub(github)?.remoteBranchUrl(branch) ?? repoUrls.remote(github, branch);
+  remoteBranchUrl(repoId, github, branch) {
+    const pushSlug = this.groups().pushGithubByRepo[repoId];
+    return this.config.repoByGithub(github)?.remoteBranchUrl(branch, pushSlug) ?? repoUrls.remote(github, branch, pushSlug);
   }
   mergebotUrl(github, number) {
     return this.config.repoByGithub(github)?.mergebotUrl(number) ?? repoUrls.mergebot(github, number);
@@ -2807,14 +2822,17 @@ var Repository = class extends Model {
   pushRemote() {
     return this.push_remote() || "dev";
   }
-  compareUrl(branch) {
-    return repoUrls.compare(this.githubOrDefault(), branch);
+  // `pushSlug`: the push remote's actual resolved "owner/repo" (from live git
+  // state — see CodePlugin), so the fork link/compare page point at the real
+  // fork rather than the hardcoded odoo-dev fallback baked into repoUrls.
+  compareUrl(branch, pushSlug) {
+    return repoUrls.compare(this.githubOrDefault(), branch, pushSlug);
   }
-  forkBranchUrl(branch) {
-    return repoUrls.fork(this.githubOrDefault(), branch);
+  forkBranchUrl(branch, pushSlug) {
+    return repoUrls.fork(this.githubOrDefault(), branch, pushSlug);
   }
-  remoteBranchUrl(branch) {
-    return repoUrls.remote(this.githubOrDefault(), branch);
+  remoteBranchUrl(branch, pushSlug) {
+    return repoUrls.remote(this.githubOrDefault(), branch, pushSlug);
   }
   mergebotUrl(number) {
     return repoUrls.mergebot(this.githubOrDefault(), number);
@@ -2825,22 +2843,24 @@ var Repository = class extends Model {
 };
 var repoUrls = {
   // GitHub "create PR" compare page for a work branch (base inferred from the name)
-  compare(github, branch) {
+  compare(github, branch, pushSlug) {
     const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
     const name = github.split("/")[1];
-    return `https://github.com/${github}/compare/${base}...odoo-dev:${name}:${branch}?expand=1`;
+    const [forkOwner, forkRepo] = pushSlug ? pushSlug.split("/") : ["odoo-dev", name];
+    return `https://github.com/${github}/compare/${base}...${forkOwner}:${forkRepo}:${branch}?expand=1`;
   },
-  // the branch on the odoo-dev fork
-  fork(github, branch) {
+  // the branch on the fork the push remote actually points to
+  fork(github, branch, pushSlug) {
     const name = github.split("/")[1];
-    return `https://github.com/odoo-dev/${name}/tree/${encodeURIComponent(branch)}`;
+    const slug = pushSlug || `odoo-dev/${name}`;
+    return `https://github.com/${slug}/tree/${encodeURIComponent(branch)}`;
   },
   // where a branch lives remotely: base branches on the canonical repo, work branches on the fork
-  remote(github, branch) {
+  remote(github, branch, pushSlug) {
     if (BASE_BRANCH_RE.test(branch)) {
       return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
     }
-    return repoUrls.fork(github, branch);
+    return repoUrls.fork(github, branch, pushSlug);
   },
   // the mergebot page for one of this repo's PRs
   mergebot(github, number) {
@@ -4691,7 +4711,7 @@ var BranchesScreen = class extends Component {
               <div class="brg-rows">
                 <div t-foreach="g.repos" t-as="r" t-key="r.repo" class="brg-cols brg-row" t-att-class="{active: r.active}">
                   <span class="brg-repo">
-                    <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
+                    <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
                     <span t-else="" t-out="r.repo"/>
                     <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
                   </span>
@@ -4919,7 +4939,7 @@ var BranchesScreen = class extends Component {
   }
   openPr(row) {
     this.code.eventLog.add(`opening PR for ${row.branch} (${row.repo})`);
-    window.open(this.code.prCreateUrl(row.github, row.branch), "_blank");
+    window.open(this.code.prCreateUrl(row.repo, row.github, row.branch), "_blank");
   }
   // build the per-branch action list for this row and open the floating kebab
   // menu anchored to the clicked button (see ActionMenu)
@@ -9670,7 +9690,7 @@ var CodePane = class extends Component {
           <div class="ws-co-head">
             <span class="ws-repo-tag" t-out="r.repo"/>
             <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
-               t-att-href="this.code.remoteBranchUrl(r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
+               t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
             <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
             <span class="wt-sp"/>
             <div class="dash-kebab-wrap" t-if="r.entry">
@@ -9696,7 +9716,7 @@ var CodePane = class extends Component {
               </t>
               <t t-else="">
                 <span class="dim">no pull request</span>
-                <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
+                <a t-if="r.github" class="ws-pr-create" t-att-href="this.code.prCreateUrl(r.repo, r.github, r.branch)" target="_blank" title="create a PR" t-on-click="() => this.touchActivity()">create a PR</a>
               </t>
             </t>
             <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
@@ -9993,7 +10013,7 @@ var CodePane = class extends Component {
   openPr(r) {
     this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
-    window.open(this.code.prCreateUrl(r.github, r.current), "_blank");
+    window.open(this.code.prCreateUrl(r.id, r.github, r.current), "_blank");
   }
   // one row per checkout, joined with live git state, sync counts, its PR, and the
   // rich repo entry (for the actions menu). Sync + rebase/push are only meaningful
