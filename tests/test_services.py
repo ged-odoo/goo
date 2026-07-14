@@ -1147,6 +1147,14 @@ class GitServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("pathspec", err)
 
+    def test_wip_commit_uses_bracketed_message(self):
+        io = FakeIO(run_result=completed())
+        ok, err = services.GitService(io).wip_commit("/repo")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        [commit_call] = [c for c in io.run_calls if "commit" in c]
+        self.assertIn("[WIP]", commit_call)
+
     def test_checkout_notifies_timed_event(self):
         notes = []
         svc = services.GitService(

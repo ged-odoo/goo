@@ -1853,7 +1853,7 @@ class GitService:
             r = self.io.run(["git", "-C", path, "add", "-A"], timeout=30)
             if r.returncode != 0:
                 return False, r.stderr.strip() or "git add failed"
-            r = self.io.run(["git", "-C", path, "commit", "--no-verify", "-m", "WIP"], timeout=30)
+            r = self.io.run(["git", "-C", path, "commit", "--no-verify", "-m", "[WIP]"], timeout=30)
             if r.returncode != 0:
                 return False, r.stderr.strip() or "git commit failed"
             return True, None
