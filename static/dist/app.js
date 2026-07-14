@@ -1603,6 +1603,19 @@ var Dialog = class extends Component {
                 </t>
               </select>
             </div>
+            <t t-elif="f.type === 'repo-checks'">
+              <label t-out="f.label"/>
+              <div class="dialog-repo-checks">
+                <label t-foreach="f.options || []" t-as="opt" t-key="opt.value" class="edit-check">
+                  <input type="checkbox" t-att-checked="(this.values()[f.key] || []).includes(opt.value)" t-on-change="(ev) => this.toggleRepoCheck(f, opt.value, ev.target.checked)"/>
+                  <t t-out="opt.label"/>
+                </label>
+              </div>
+            </t>
+            <t t-elif="f.type === 'textarea'">
+              <label t-out="f.label"/>
+              <textarea t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-att-rows="f.rows || 6" t-on-input="(ev) => this.setVal(f.key, ev.target.value)"/>
+            </t>
             <t t-else="">
               <label t-out="f.label"/>
               <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
@@ -1632,7 +1645,7 @@ var Dialog = class extends Component {
   setup() {
     const vals = {};
     for (const f of this.spec.fields || [])
-      vals[f.key] = f.value ?? (f.type === "checkbox" ? false : "");
+      vals[f.key] = f.value ?? (f.type === "checkbox" ? false : f.type === "repo-checks" ? [] : "");
     this.values.set(vals);
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
@@ -1640,7 +1653,7 @@ var Dialog = class extends Component {
     document.addEventListener("keydown", onKey);
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
     onMounted(() => {
-      const inp = document.querySelector(".dialog input[type=text]");
+      const inp = document.querySelector(".dialog input[type=text], .dialog textarea");
       if (inp) {
         inp.focus();
         inp.select();
@@ -1668,6 +1681,13 @@ var Dialog = class extends Component {
     if (!checked) return this.setVal(field.key, "");
     const seed = typeof field.default === "function" ? field.default(this.values()) : field.default;
     this.setVal(field.key, seed || field.options?.[0]?.value || "");
+  }
+  // a "repo-checks" field's value is the array of ticked option values; toggling
+  // one re-derives dependent fields the same way any other field's onChange does
+  toggleRepoCheck(field, value, checked) {
+    const current = this.values()[field.key] || [];
+    const next = checked ? [...current, value] : current.filter((v) => v !== value);
+    this.setVal(field.key, next);
   }
   onKey(ev) {
     if (ev.key === "Enter") this.ok();
@@ -2110,9 +2130,12 @@ var CodePlugin = class extends Plugin {
     });
     return res.exists;
   }
-  // last commits on a branch (ref; defaults to the repo's current branch)
-  async commits(path, ref = "") {
-    const res = await postJSON("/api/code/log", { path, ref });
+  // last commits on a branch (ref; defaults to the repo's current branch). `base`
+  // (the branch's own base, e.g. "master") + `pullRemote` make each commit carry
+  // an "ahead" flag — reachable from ref but not the base branch, i.e. unique to
+  // this branch and so safe to reword (see rewordCommit).
+  async commits(path, ref = "", { base = "", pullRemote = "" } = {}) {
+    const res = await postJSON("/api/code/log", { path, ref, base, pull_remote: pullRemote });
     if (!res.ok) throw new Error(res.error || "git log failed");
     return res.commits;
   }
@@ -2377,6 +2400,42 @@ ${res.remote_error}`,
     } finally {
       this.busy.set(false);
     }
+  }
+  // stage all changes and commit with a user-supplied message (see
+  // dialogs.js's editCommitMessage — the "Commit" menu action's caller)
+  async commit(path, repo, message) {
+    this.busy.set(true);
+    try {
+      this.eventLog.add(`commit (${repo})`);
+      await postJSON("/api/code/commit", { path, message });
+      await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
+    } catch (e) {
+      this.eventLog.add(`commit failed (${repo})`);
+      this.dialogs.open({
+        title: "Commit failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    } finally {
+      this.busy.set(false);
+    }
+  }
+  // rewrite an existing commit's message (CommitsDialog's edit affordance —
+  // only ever offered for commits already flagged "ahead" of the base branch,
+  // and the backend re-checks that itself before touching anything). Throws on
+  // failure — the caller (CommitsDialog) owns showing that error, since it needs
+  // to keep its own dialog open rather than this cutting straight to a generic one.
+  async rewordCommit(path, sha, message, { base = "", pullRemote = "" } = {}) {
+    const res = await postJSON("/api/code/reword", {
+      path,
+      sha,
+      message,
+      base,
+      pull_remote: pullRemote
+    });
+    if (!res.ok) throw new Error(res.error || "git reword failed");
   }
   async discard(path, repo) {
     const ok = await this.dialogs.open({
@@ -4286,10 +4345,12 @@ var DirtyBadge = class extends Component {
 var DirtyMenu = class extends Component {
   static template = xml`
     <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
+      <button class="dash-menu-item" t-on-click="() => this.commitDialog()">Commit</button>
       <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
   code = usePlugin(CodePlugin);
+  dialogs = usePlugin(DialogPlugin);
   open = signal(false);
   _path = null;
   _repo = null;
@@ -4313,6 +4374,22 @@ var DirtyMenu = class extends Component {
     this._el.style.top = `${rect.bottom + 4}px`;
     this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
+  // prompt for a message (the shared textarea editor — also used by CommitsDialog's
+  // reword affordance) then stage everything and commit with it. path/repo are
+  // captured before the (async) dialog opens, so a commit started here always
+  // targets the repo the menu was opened for, even if another dirty badge is
+  // clicked while this one's dialog is still open.
+  async commitDialog() {
+    this.open.set(false);
+    const path = this._path;
+    const repo = this._repo;
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Commit \u2014 ${repo}`,
+      okLabel: "Commit"
+    });
+    if (!message) return;
+    this.code.commit(path, repo, message);
+  }
   wipCommit() {
     this.open.set(false);
     this.code.wipCommit(this._path, this._repo);
@@ -4322,6 +4399,25 @@ var DirtyMenu = class extends Component {
     this.code.discard(this._path, this._repo);
   }
 };
+async function editCommitMessage(dialogs, { title, initialMessage = "", okLabel = "Commit" }) {
+  const res = await dialogs.open({
+    title,
+    okLabel,
+    cls: "commit-msg-dialog",
+    validate: (v) => (v.message || "").trim() ? "" : "a commit message is required",
+    fields: [
+      {
+        key: "message",
+        type: "textarea",
+        label: "Message",
+        value: initialMessage,
+        rows: 8,
+        placeholder: "commit message"
+      }
+    ]
+  });
+  return res ? res.message.trim() : null;
+}
 function loadScript(src, isLoaded) {
   return new Promise((resolve, reject) => {
     if (isLoaded()) return resolve();
@@ -4560,9 +4656,12 @@ var CommitsDialog = class extends Component {
             </div>
             <div t-if="this.isExpanded(c.sha)" class="commit-detail">
               <div class="commit-detail-meta">
-                <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
-                <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
-                <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
+                <span class="commit-detail-left">
+                  <a t-if="this.props.github" class="commit-detail-hash" target="_blank" t-att-href="this.commitUrl(c)" t-att-title="'open ' + c.sha + ' on GitHub'"><t t-out="c.sha"/><t t-out="this.externalIcon"/></a>
+                  <span t-else="" class="commit-detail-hash" t-out="c.sha"/>
+                  <span class="commit-detail-date" t-out="this.fullDate(c.date)"/>
+                </span>
+                <button t-if="c.ahead" class="commit-edit-btn" title="edit this commit's message" t-on-click.stop="() => this.editMessage(c)">edit</button>
               </div>
               <pre class="commit-body" t-out="this.message(c)"/>
             </div>
@@ -4576,9 +4675,14 @@ var CommitsDialog = class extends Component {
     path: t.string(),
     label: t.string(),
     ref: t.string(),
-    github: t.string().optional()
+    github: t.string().optional(),
+    base: t.string().optional(),
+    // the branch's own base (e.g. "master") — gates which
+    // commits are "ahead" (this branch's own, editable) vs inherited from it
+    pullRemote: t.string().optional()
   });
   code = usePlugin(CodePlugin);
+  dialogs = usePlugin(DialogPlugin);
   externalIcon = m(ICONS.external);
   commits = signal([]);
   loading = signal(true);
@@ -4594,12 +4698,43 @@ var CommitsDialog = class extends Component {
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
   }
   async load() {
+    this.loading.set(true);
     try {
-      this.commits.set(await this.code.commits(this.props.path, this.props.ref));
+      this.commits.set(
+        await this.code.commits(this.props.path, this.props.ref, {
+          base: this.props.base,
+          pullRemote: this.props.pullRemote
+        })
+      );
     } catch (e) {
       this.error.set(e.message);
     } finally {
       this.loading.set(false);
+    }
+  }
+  // open the shared textarea editor prefilled with this commit's current
+  // message; on confirm, reword it server-side and reload the list
+  async editMessage(c) {
+    const message = await editCommitMessage(this.dialogs, {
+      title: "Edit commit message",
+      initialMessage: this.message(c),
+      okLabel: "Save"
+    });
+    if (!message) return;
+    try {
+      await this.code.rewordCommit(this.props.path, c.sha, message, {
+        base: this.props.base,
+        pullRemote: this.props.pullRemote
+      });
+      await this.load();
+    } catch (e) {
+      this.dialogs.open({
+        title: "Edit commit message failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
     }
   }
   when(date) {
@@ -8550,6 +8685,7 @@ var baseBranchOf = (branch) => (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) 
 function categoryOptions(config) {
   return (config.config.workspace_categories || []).map((c) => ({ value: c.id, label: c.id }));
 }
+var configFromRepos = (repoIds, branch) => repoBranchList.format(repoIds.map((repo) => ({ repo, branch })));
 async function startCreateWorkspace(plugins, prefill = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   await db.load();
@@ -8557,6 +8693,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const existing = config.config.workspaces || [];
   const dbNames = new Set(db.databases().map((d) => d.name));
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
+  const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
+  const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
   const res = await dialogs.open({
     title: "New workspace",
     okLabel: "Create",
@@ -8588,6 +8726,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
           const branch = tpl2.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl2.checkouts.find((c) => c.repo === "community")?.branch || "";
           return {
             name: branch,
+            repos: tpl2.checkouts.map((c) => c.repo),
             config: repoBranchList.format(tpl2.checkouts),
             db: tpl2.db || "",
             args: tpl2.on_create_args || "",
@@ -8612,19 +8751,27 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.name ?? "",
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
-          const oldName = oldValues.name;
-          if (!oldName) return null;
-          return {
-            config: (currentValues.config || "").replaceAll(oldName, newName),
-            db: (currentValues.db || "").replaceAll(oldName, newName)
-          };
+          const updates = { config: configFromRepos(currentValues.repos || [], newName.trim()) };
+          if (oldValues.name)
+            updates.db = (currentValues.db || "").replaceAll(oldValues.name, newName);
+          return updates;
         }
+      },
+      {
+        key: "repos",
+        type: "repo-checks",
+        label: "Repositories",
+        value: prefillRepoIds,
+        options: repoOptions,
+        onChange: (repoIds, currentValues) => ({
+          config: configFromRepos(repoIds, (currentValues.name || "").trim())
+        })
       },
       {
         key: "config",
         type: "text",
         label: "Config",
-        value: prefill.config ?? "",
+        value: prefill.config ?? (prefill.name ? configFromRepos(prefillRepoIds, prefill.name.trim()) : ""),
         placeholder: "community:master,enterprise:master"
       },
       {
@@ -9690,6 +9837,7 @@ var CodePane = class extends Component {
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
                 <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
                 <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
               </div>
@@ -9993,7 +10141,9 @@ var CodePane = class extends Component {
       path: r.path,
       ref: r.current || "",
       label: `${r.id} \xB7 ${r.current || "?"}`,
-      github: r.github || ""
+      github: r.github || "",
+      base: r.base || "",
+      pullRemote: r.pull_remote || ""
     });
   }
   // open GitHub's PR-creation page for this repo's current branch
@@ -10111,6 +10261,18 @@ var CodePane = class extends Component {
   }
   touchActivity() {
     this.config.workspace(this.props.ws.id)?.touchActivity();
+  }
+  // prompt for a message (the shared textarea editor — also used by the dirty
+  // badge's own Commit entry and CommitsDialog's reword affordance) then stage
+  // everything and commit with it
+  async commitDialog(r) {
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Commit \u2014 ${r.repo}`,
+      okLabel: "Commit"
+    });
+    if (!message) return;
+    this.touchActivity();
+    return this.code.commit(r.path, r.repo, message);
   }
   wipCommit(r) {
     this.touchActivity();
