@@ -10113,17 +10113,32 @@ var CodePane = class extends Component {
   get rebasableRepos() {
     return this.repos.filter((r) => this.canRebaseRepo(r));
   }
+  // "Fetch & rebase all" operates on the repos' CURRENT branches (git can't rebase
+  // a branch without checking it out), so it only means "rebase this workspace's
+  // branches" when every checkout is what its repo actually has checked out. A
+  // worktree workspace never qualifies: its branches live in the worktree, so the
+  // main checkouts this pane rebases are someone else's by construction.
+  get wsCheckedOut() {
+    const rows = this.checkoutRows;
+    return rows.length > 0 && rows.every((r) => r.checkedOut);
+  }
   canRebaseAll() {
-    return this.rebasableRepos.length > 0;
+    return this.wsCheckedOut && this.rebasableRepos.length > 0;
   }
   rebaseAllTitle() {
+    if (this.props.ws.location === "worktree")
+      return "not available for worktree workspaces \u2014 it would rebase the main checkout, not the worktree";
+    if (!this.wsCheckedOut)
+      return "this workspace is not active \u2014 load it first, so rebasing applies to its branches";
     const repos = this.rebasableRepos;
     if (!repos.length)
       return "nothing to rebase \u2014 repositories are dirty, missing, or have no local path";
     return `fetch and rebase ${repos.map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${this._baseBranch(r.current)}`).join(", ")}`;
   }
   // fetch + rebase every shown repo's current branch onto its base, in one call
+  // (guarded on wsCheckedOut: current branches == this workspace's branches)
   async rebaseAll() {
+    if (!this.wsCheckedOut) return;
     const repos = this.rebasableRepos.map((r) => ({
       repo: r.id,
       base: this._baseBranch(r.current),
