@@ -195,7 +195,8 @@ export class TodoScreen extends Component {
   add() {
     const title = this.draft().trim();
     if (!title) return;
-    this._updateTodos((todos) => [...todos, { id: uid(), title, done: false }]);
+    // newest first
+    this._updateTodos((todos) => [{ id: uid(), title, done: false }, ...todos]);
     this.draft.set("");
     this.newTodo()?.focus();
   }

@@ -900,13 +900,9 @@ section.hidden {
   background: var(--l-hover);
 }
 .todo-rail-item.active {
-  background: #000; /* the .wt-dot-active (loaded workspace) black */
-  color: #fff;
+  background: var(--l-accent-soft); /* same highlight as .wt-item.selected */
+  color: var(--l-accent);
   font-weight: 600;
-}
-.todo-rail-item.active .todo-rail-count {
-  color: #fff;
-  background: oklch(1 0 0 / 0.22);
 }
 .todo-rail-name {
   flex: 1;
