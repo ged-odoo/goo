@@ -866,6 +866,7 @@ section.hidden {
 .todo-form input {
   flex: 1;
   min-width: 0;
+  padding: 9px 12px;
   color: var(--l-text);
   border-color: var(--l-line);
   background: var(--l-card);
