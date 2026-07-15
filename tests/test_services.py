@@ -221,6 +221,76 @@ class RunbotServiceTest(unittest.TestCase):
             svc.statuses(["gone"]), {"gone": {"result": "", "running": False, "url": ""}}
         )
 
+    BUNDLE_HTML = (
+        "<title>Bundle master-tref-pr-3-nby</title>"
+        '<a href="https://github.com/odoo-dev/odoo/tree/master-tref-pr-3-nby">branch</a>'
+        '<a href="https://github.com/odoo/odoo/pull/269266">old pr</a>'
+        '<a href="https://github.com/odoo/odoo/pull/274706">pr</a>'
+        '<a href="https://github.com/odoo-dev/enterprise/tree/master-tref-pr-3-nby">branch</a>'
+        '<a href="https://github.com/odoo/enterprise/pull/123261">pr</a>'
+        '<a href="https://github.com/odoo/enterprise/pull/123261">pr again</a>'
+    )
+
+    def test_bundle_info_canonical_url(self):
+        # a canonical /runbot/bundle/<id> URL answers 200 directly
+        io = FakeIO(
+            http_nofollow={"bundle/master-tref-pr-3-nby-475950": (200, "", self.BUNDLE_HTML)}
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        info, error = svc.bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby-475950"
+        )
+        self.assertIsNone(error)
+        self.assertEqual(info["name"], "master-tref-pr-3-nby")
+        self.assertEqual(
+            info["branches"],
+            [
+                {"github": "odoo-dev/odoo", "branch": "master-tref-pr-3-nby"},
+                {"github": "odoo-dev/enterprise", "branch": "master-tref-pr-3-nby"},
+            ],
+        )
+        # PRs deduped, order preserved
+        self.assertEqual(
+            info["prs"],
+            [
+                {"github": "odoo/odoo", "number": 269266},
+                {"github": "odoo/odoo", "number": 274706},
+                {"github": "odoo/enterprise", "number": 123261},
+            ],
+        )
+
+    def test_bundle_info_name_url_follows_302(self):
+        # a name URL 302-redirects to the canonical page, which is then read
+        io = FakeIO(
+            http_nofollow={"bundle/master-tref-pr-3-nby": (302, "/runbot/bundle/475950", "")},
+            http={"bundle/475950": (self.BUNDLE_HTML, None)},
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        info, error = svc.bundle_info("https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby")
+        self.assertIsNone(error)
+        self.assertEqual(info["name"], "master-tref-pr-3-nby")
+
+    def test_bundle_info_rejects_foreign_and_missing(self):
+        svc = services.RunbotService(FakeIO(), TTLCache(ttl=0))
+        info, error = svc.bundle_info("https://example.com/runbot/bundle/x")
+        self.assertIsNone(info)
+        self.assertIn("not a runbot bundle URL", error)
+        # 301 = id-misresolve (no bundle of that name) — must not follow
+        io = FakeIO(http_nofollow={"bundle/nope-33": (301, "/runbot/bundle/foreign-33", "")})
+        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/nope-33"
+        )
+        self.assertIsNone(info)
+        self.assertIn("no such bundle", error)
+
+    def test_bundle_info_non_bundle_page(self):
+        io = FakeIO(http_nofollow={"bundle/x": (200, "", "<title>Odoo runbot</title>")})
+        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/x"
+        )
+        self.assertIsNone(info)
+        self.assertIn("not a runbot bundle", error)
+
     def test_badge_fallback_when_bundle_unreachable(self):
         # name match (302), but the canonical page can't be read → name-keyed badge
         io = FakeIO(

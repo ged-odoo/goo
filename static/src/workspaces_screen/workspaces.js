@@ -40,6 +40,7 @@ import {
   categoryOptions,
   deleteWorkspaceDialog,
   startCreateWorkspace,
+  startNewWorkspaceWizard,
 } from "./dialogs.js";
 import { AddonsPane, AssetsPane, TestsPane } from "./panes.js";
 
@@ -1926,7 +1927,7 @@ export class WorkspacesScreen extends Component {
   }
 
   create() {
-    return startCreateWorkspace(this._dialogPlugins());
+    return startNewWorkspaceWizard(this._dialogPlugins());
   }
 
   adoptCheckout() {

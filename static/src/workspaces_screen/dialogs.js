@@ -9,6 +9,8 @@ import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 import { postJSON, repoBranchList } from "../core/utils.js";
 
+import { Component, onMounted, onWillUnmount, signal, t, useProps, xml } from "@odoo/owl";
+
 // the canonical base branch a work branch's name derives from: 16.0-owl-fix →
 // 16.0, saas-19.4-x → saas-19.4, anything else → master
 const baseBranchOf = (branch) =>
@@ -38,14 +40,202 @@ export function categoryOptions(config) {
 const configFromRepos = (repoIds, branch) =>
   repoBranchList.format(repoIds.map((repo) => ({ repo, branch })));
 
-// Create a workspace through the unified dialog (validated before it closes).
-// plugins: { config, dialogs, db, code, eventLog, wt }. `prefill` seeds the form
-// (the remote-branch flow passes the fetched branch): { name, config, db,
-// template, createBranches }.
+// The values a template prefills into the create form (also the payload its
+// select's onChange used to produce, before the source moved to the wizard's
+// first step): named after its enterprise/community branch, its checkouts as
+// the config, plus db / args / demo data.
+export function templatePrefill(tpl) {
+  if (!tpl) return {};
+  const branch =
+    tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
+    tpl.checkouts.find((c) => c.repo === "community")?.branch ||
+    "";
+  return {
+    template: tpl.id,
+    name: branch,
+    config: repoBranchList.format(tpl.checkouts),
+    db: tpl.db || "",
+    args: tpl.on_create_args || "",
+    demoData: tpl.demo_data ?? true,
+  };
+}
+
+// The wizard's FIRST step: pick the workspace's source — a template (or blank),
+// or a runbot bundle URL (a colleague's branches + PRs). The bundle lookup runs
+// here so its errors show in place; resolves to
+// { source: "template", template } | { source: "bundle", info } | null.
+export class WorkspaceSourceDialog extends Component {
+  static template = xml`
+    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+      <div class="dialog ws-wiz" t-on-click.stop="() => {}">
+        <h2 class="dialog-title">New workspace</h2>
+        <div class="dialog-body">
+          <label class="ws-wiz-option" t-att-class="{selected: this.source() === 'template'}">
+            <input type="radio" name="ws-source" value="template" t-att-checked="this.source() === 'template'" t-on-change="() => this.source.set('template')"/>
+            <span class="ws-wiz-opt-body">
+              <span class="ws-wiz-opt-title">From a template</span>
+              <span class="ws-wiz-opt-hint dim">fork fresh branches from one of your templates — or start blank</span>
+              <select class="ws-wiz-select" t-att-disabled="this.source() !== 'template'"
+                      t-on-change="(ev) => this.template.set(ev.target.value)">
+                <option t-foreach="this.props.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id" t-att-selected="this.template() === tpl.id" t-out="tpl.name"/>
+                <option value="" t-att-selected="!this.template()">— start blank —</option>
+              </select>
+            </span>
+          </label>
+          <label class="ws-wiz-option" t-att-class="{selected: this.source() === 'bundle'}">
+            <input type="radio" name="ws-source" value="bundle" t-att-checked="this.source() === 'bundle'" t-on-change="() => this.source.set('bundle')"/>
+            <span class="ws-wiz-opt-body">
+              <span class="ws-wiz-opt-title">From a runbot bundle</span>
+              <span class="ws-wiz-opt-hint dim">paste a bundle URL (e.g. a colleague's work) — goo fetches its branches locally</span>
+              <input type="text" class="ws-wiz-url" placeholder="https://runbot.odoo.com/runbot/bundle/…"
+                     t-att-value="this.url()" t-att-disabled="this.source() !== 'bundle'"
+                     t-on-input="(ev) => this.url.set(ev.target.value)"
+                     t-on-keydown="(ev) => ev.key === 'Enter' &amp;&amp; this.continue_()"/>
+            </span>
+          </label>
+          <div t-if="this.error()" class="form-error" t-out="this.error()"/>
+        </div>
+        <div class="dialog-foot">
+          <button class="pbtn primary" t-att-disabled="!this.canContinue" t-on-click="() => this.continue_()">
+            <t t-if="this.busy()">Reading bundle…</t><t t-else="">Continue</t>
+          </button>
+          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+
+  props = useProps({ done: t.function(), templates: t.any() });
+  source = signal("template");
+  template = signal("");
+  url = signal("");
+  busy = signal(false);
+  error = signal("");
+
+  setup() {
+    this.template.set(this.props.templates[0]?.id ?? "");
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    onMounted(() => document.addEventListener("keydown", onKey));
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+  }
+
+  done(result) {
+    this.props.done(result);
+  }
+
+  get canContinue() {
+    if (this.busy()) return false;
+    return this.source() === "template" || !!this.url().trim();
+  }
+
+  async continue_() {
+    if (!this.canContinue) return;
+    if (this.source() === "template") {
+      return this.done({ source: "template", template: this.template() });
+    }
+    this.busy.set(true);
+    this.error.set("");
+    try {
+      const info = await postJSON("/api/runbot/bundle-info", { url: this.url().trim() });
+      this.done({ source: "bundle", info });
+    } catch (e) {
+      this.error.set(e.message);
+    } finally {
+      this.busy.set(false);
+    }
+  }
+}
+
+// The wizard: step 1 picks the source, step 2 is the create form prefilled from
+// it. A bundle source first fetches the bundle's branches into the local repos
+// (from the remote that carries them — the canonical repo, or the shared dev
+// fork for colleagues' work), so the form opens with everything in place and
+// "Create branches" off.
+export async function startNewWorkspaceWizard(plugins) {
+  const { config, dialogs, code, eventLog } = plugins;
+  const res = await dialogs.openComponent(WorkspaceSourceDialog, {
+    templates: config.config.templates || [],
+  });
+  if (!res) return;
+  if (res.source === "template") {
+    const tpl = (config.config.templates || []).find((x) => x.id === res.template);
+    return startCreateWorkspace(plugins, templatePrefill(tpl));
+  }
+  const info = res.info;
+  // map the bundle's github repos onto the configured ones by repo name —
+  // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo
+  const matches = [];
+  for (const { github, branch } of info.branches || []) {
+    const repoName = github.split("/")[1];
+    const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
+    if (!r || !r.path) continue;
+    // canonical repo → its pull remote; anything else is the shared dev fork,
+    // which is what the configured push remote points at
+    const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
+    matches.push({ repo: r, branch, remote });
+  }
+  if (!matches.length) {
+    dialogs.open({
+      title: "Workspace from bundle",
+      message: `none of the bundle's repositories (${(info.branches || []).map((b) => b.github).join(", ") || "none listed"}) match your configured repos`,
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+    return;
+  }
+  // fetch every branch concurrently, each as a timed event-log row
+  const results = await Promise.all(
+    matches.map(async (m) => {
+      const eid = eventLog.begin(`fetching ${m.branch} (${m.repo.id}) from ${m.remote}`);
+      try {
+        await postJSON("/api/code/remote-branch/fetch", {
+          path: m.repo.path,
+          branch: m.branch,
+          pull_remote: m.remote,
+        });
+        eventLog.finish(eid, "done");
+        return { ...m, ok: true };
+      } catch (e) {
+        eventLog.finish(eid, "error");
+        return { ...m, ok: false, error: e.message };
+      }
+    }),
+  );
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length) {
+    dialogs.open({
+      title: "Fetching bundle branches failed",
+      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+      cls: "dialog-error",
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+    if (failed.length === results.length) return;
+  }
+  const got = results.filter((r) => r.ok);
+  // the fetched branches must show up in the form's world (branch pickers, the
+  // created workspace's presence checks) — refresh just those repos
+  await code.refreshBranches(new Set(got.map((m) => m.repo.id)));
+  return startCreateWorkspace(plugins, {
+    name: info.name,
+    config: repoBranchList.format(got.map((m) => ({ repo: m.repo.id, branch: m.branch }))),
+    db: info.name,
+    template: "",
+    createBranches: false,
+  });
+}
+
+// Create a workspace through the unified form — the wizard's SECOND step (the
+// source — template or runbot bundle — was chosen in step one and arrives here
+// as `prefill`; the form itself no longer has a template field).
+// plugins: { config, dialogs, db, code, eventLog, wt }. `prefill`: { name,
+// config, db, args, demoData, template, category, createBranches }.
 export async function startCreateWorkspace(plugins, prefill = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   await db.load(); // populate the "Clone db" select
   const templates = config.config.templates || [];
+  const tpl = templates.find((t) => t.id === prefill.template) || null;
   const existing = config.config.workspaces || [];
   const dbNames = new Set(db.databases().map((d) => d.name));
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
@@ -58,7 +248,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
     ? repoBranchList.parse(prefill.config).map((c) => c.repo)
     : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
   const res = await dialogs.open({
-    title: "New workspace",
+    title: tpl ? `New workspace — from template "${tpl.name}"` : "New workspace",
     okLabel: "Create",
     validate: (v) => {
       const name = (v.name || "").trim();
@@ -66,8 +256,8 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       if (existing.some((w) => w.name === name))
         return `a workspace named "${name}" already exists`;
       if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if (v.location === "worktree" && !v.template)
-        return "a worktree workspace needs a template — its branches fork from it";
+      if (v.location === "worktree" && !tpl)
+        return "a worktree workspace needs a template — go back and pick one as the source";
       if ((v.cloneDb || "") && !(v.db || "").trim())
         return "set a database name to clone the selected database into";
       if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
@@ -75,30 +265,6 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       return "";
     },
     fields: [
-      {
-        key: "template",
-        type: "select",
-        label: "Template",
-        placeholder: "— start blank —",
-        options: templates.map((t) => ({ value: t.id, label: t.name })),
-        value: prefill.template ?? templates[0]?.id ?? "",
-        onChange: (tplId) => {
-          const tpl = templates.find((t) => t.id === tplId);
-          if (!tpl) return null;
-          const branch =
-            tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
-            tpl.checkouts.find((c) => c.repo === "community")?.branch ||
-            "";
-          return {
-            name: branch,
-            repos: tpl.checkouts.map((c) => c.repo),
-            config: repoBranchList.format(tpl.checkouts),
-            db: tpl.db || "",
-            args: tpl.on_create_args || "",
-            demoData: tpl.demo_data ?? true,
-          };
-        },
-      },
       {
         key: "location",
         type: "select",
@@ -151,7 +317,13 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.db ?? "",
         placeholder: "database name",
       },
-      { key: "args", type: "text", label: "Start args", placeholder: "-i sale_management" },
+      {
+        key: "args",
+        type: "text",
+        label: "Start args",
+        value: prefill.args ?? "",
+        placeholder: "-i sale_management",
+      },
       ...(config.config.workspace_categories_enabled
         ? [
             {
@@ -170,13 +342,17 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         label: "Clone db",
         options: dbOptions,
         value: "",
-        default: (v) => {
-          const tpl = templates.find((t) => t.id === v.template);
+        default: () => {
           if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
           return dbOptions[0]?.value || "";
         },
       },
-      { key: "demoData", type: "checkbox", label: "Demo data", value: true },
+      {
+        key: "demoData",
+        type: "checkbox",
+        label: "Demo data",
+        value: prefill.demoData ?? true,
+      },
       {
         key: "createBranches",
         type: "checkbox",
@@ -188,7 +364,6 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   });
   if (!res) return;
   const checkouts = repoBranchList.parse(res.config.trim());
-  const tpl = templates.find((t) => t.id === res.template);
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
   );

@@ -1657,6 +1657,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing branches list"})
             states = RUNBOT.statuses(branches, refresh=bool((body or {}).get("refresh")))
             self._send_json(200, {"ok": True, "states": states})
+        elif path == "/api/runbot/bundle-info":
+            # resolve a pasted bundle URL to its branch name + repos + PRs (the
+            # "workspace from a runbot bundle" wizard step)
+            body, err = self._read_json()
+            url = (body or {}).get("url")
+            if err or not url:
+                return self._send_json(400, {"ok": False, "error": "missing url"})
+            info, error = RUNBOT.bundle_info(url)
+            if error:
+                return self._send_json(400, {"ok": False, "error": error})
+            self._send_json(200, {"ok": True, **info})
         elif path == "/api/nightly":
             body, _ = self._read_json()
             data = body or {}

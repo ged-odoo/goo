@@ -3449,6 +3449,69 @@ a.dash-ci:hover {
 .dialog.rbd {
   width: min(520px, 92vw);
 }
+/* new-workspace wizard, step 1: source picker (template / runbot bundle) */
+.dialog.ws-wiz {
+  width: min(520px, 92vw);
+}
+.ws-wiz-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: 0.12s;
+}
+.ws-wiz-option:hover {
+  background: var(--l-hover);
+}
+.ws-wiz-option.selected {
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
+.ws-wiz-option input[type="radio"] {
+  margin-top: 3px;
+  accent-color: var(--l-accent);
+}
+.ws-wiz-opt-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-wiz-opt-title {
+  font-weight: 600;
+  color: var(--l-text);
+}
+.ws-wiz-opt-hint {
+  font-size: 12px;
+}
+.ws-wiz-select,
+.ws-wiz-url {
+  font-size: 12.5px;
+  color: var(--l-text);
+  background: var(--l-card);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ws-wiz-url {
+  font-family: var(--mono);
+}
+.ws-wiz-select:disabled,
+.ws-wiz-url:disabled {
+  opacity: 0.5;
+}
+.ws-wiz-url:focus,
+.ws-wiz-select:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
 .dialog.commit-msg-dialog {
   width: min(560px, 92vw);
 }

@@ -457,6 +457,37 @@ class RunbotService:
         running = "bg-info-subtle" in latest or "fa-spin" in latest
         return {"result": result, "running": running, "url": url}
 
+    def bundle_info(self, url):
+        """The bundle a pasted runbot URL names: (info, error) with info =
+        {name, branches, prs}. `name` is the bundle (= branch) name from the
+        page title; `branches` lists the github repos carrying the branch (the
+        page's `tree` links — dev forks for colleagues' work); `prs` the pull
+        requests the bundle shows. Accepts canonical (/runbot/bundle/<id>) and
+        name URLs — same 302-follow / 301-misresolve rules as _status."""
+        m = re.match(r"https?://runbot\.odoo\.com(/runbot/bundle/[^\s?#]+)", (url or "").strip())
+        if not m:
+            return None, "not a runbot bundle URL (https://runbot.odoo.com/runbot/bundle/…)"
+        status, location, html, _ = self.io.http_get_nofollow(RUNBOT_BASE + m.group(1))
+        if status == 302:  # name URL → the canonical bundle page
+            html, _ = self.io.http_get(urllib.parse.urljoin(RUNBOT_BASE, location))
+        elif status != 200:  # 301 (id-misresolve), 404, or error
+            return None, f"no such bundle (HTTP {status or 'unreachable'})"
+        if not html:
+            return None, "could not read the bundle page"
+        tm = re.search(r"<title>\s*Bundle\s+([^<]+?)\s*</title>", html)
+        if not tm:
+            return None, "that page is not a runbot bundle"
+        branches, prs, seen = [], [], set()
+        for github, branch in re.findall(r'github\.com/([\w.-]+/[\w.-]+)/tree/([^"\s<>]+)', html):
+            if ("t", github, branch) not in seen:
+                seen.add(("t", github, branch))
+                branches.append({"github": github, "branch": branch})
+        for github, number in re.findall(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", html):
+            if ("p", github, number) not in seen:
+                seen.add(("p", github, number))
+                prs.append({"github": github, "number": int(number)})
+        return {"name": tm.group(1), "branches": branches, "prs": prs}, None
+
     def _badge(self, branch):
         """Parse the runbot badge SVG: "success" / "failure" / "pending" / ""."""
         svg, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/badge/1/{urllib.parse.quote(branch)}.svg")
