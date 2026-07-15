@@ -9865,7 +9865,9 @@ var CodePane = class extends Component {
             </span>
             <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
           </div>
-          <div t-if="r.subject" class="ws-commit dim ws-co-sec">
+          <div t-if="r.subject" class="ws-commit dim ws-co-sec" t-att-class="{editable: r.sha and r.path}"
+               t-att-title="r.sha and r.path ? 'click to edit this commit message' : ''"
+               t-on-click="() => this.editCommit(r)">
             <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
           </div>
         </div>
@@ -10178,6 +10180,7 @@ var CodePane = class extends Component {
         synced: !!(b && b.remote && b.synced),
         // …and the local tip is what's on the remote
         subject: b?.subject || "",
+        sha: b?.sha || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
         github: entry?.github || "",
@@ -10281,6 +10284,33 @@ var CodePane = class extends Component {
   discard(r) {
     this.touchActivity();
     return this.code.discard(r.path, r.repo);
+  }
+  // click the commit line on a checkout card to reword its head commit (the
+  // same shared textarea editor + reword call as CommitsDialog's edit button)
+  async editCommit(r) {
+    if (!r.sha || !r.path) return;
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Edit commit message \u2014 ${r.repo}`,
+      initialMessage: r.subject,
+      okLabel: "Save"
+    });
+    if (!message) return;
+    try {
+      await this.code.rewordCommit(r.path, r.sha, message, {
+        base: r.base,
+        pullRemote: r.entry?.pull_remote || ""
+      });
+      this.touchActivity();
+      await this.load(true);
+    } catch (e) {
+      this.dialogs.open({
+        title: "Edit commit message failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    }
   }
   // the PR's GitHub state for the pill: open / draft / closed / merged (the
   // runbot/CI signal lives in the workspace header, not per card)
