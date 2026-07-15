@@ -288,9 +288,10 @@ export class Workspace extends Model {
     const repos = cos
       .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
-    const switched = repos.filter((r) => repoMap[r.repo]?.current !== r.branch);
     eventLog.add(`activating workspace ${this.name()}`);
-    for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
+    // no per-repo pre-log: the backend announces each checkout as a timed SSE
+    // event ("checking out …" with a live "..." resolving to ok/failed) — a
+    // plain line here would just duplicate it
     // stop the server and switch branches concurrently (independent ops)
     const stopping =
       s.state === "running" || s.state === "starting"

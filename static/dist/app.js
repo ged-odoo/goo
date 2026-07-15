@@ -3057,9 +3057,7 @@ var Workspace = class extends Model {
     this.touchActivity();
     const pathByRepo = code.groups().pathByRepo;
     const repos = cos.map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch })).filter((r) => r.path);
-    const switched = repos.filter((r) => repoMap[r.repo]?.current !== r.branch);
     eventLog.add(`activating workspace ${this.name()}`);
-    for (const r of switched) eventLog.add(`checking out ${r.branch} (${r.repo})`);
     const stopping = s.state === "running" || s.state === "starting" ? server.stop({ trackActivity: false }) : null;
     await Promise.all([stopping, code.checkout(repos)]);
     server.setLastWorkspace(this.id);
@@ -5155,7 +5153,6 @@ var BranchesScreen = class extends Component {
   }
   checkout(row) {
     if (this.checkoutBlocked(row)) return;
-    this.code.eventLog.add(`checking out ${row.branch} (${row.repo})`);
     this.code.checkout([{ repo: row.repo, path: row.path, branch: row.branch }]);
   }
   pushBranch(row) {

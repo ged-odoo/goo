@@ -369,7 +369,7 @@ export class BranchesScreen extends Component {
 
   checkout(row) {
     if (this.checkoutBlocked(row)) return;
-    this.code.eventLog.add(`checking out ${row.branch} (${row.repo})`);
+    // the backend announces the checkout as a timed SSE event — no pre-log
     this.code.checkout([{ repo: row.repo, path: row.path, branch: row.branch }]);
   }
 
