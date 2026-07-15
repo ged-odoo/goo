@@ -14,10 +14,23 @@ import { postJSON, repoBranchList } from "../core/utils.js";
 const baseBranchOf = (branch) =>
   (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 
+// the reserved category: archived workspaces group here, always rendered as the
+// LAST list group (even when categories are disabled). Not part of the
+// configurable workspace_categories order.
+export const ARCHIVED_CATEGORY = "archived";
+
 // the Category select options for the create/edit dialogs (shown only when the
-// workspace-categories setting is on; the empty placeholder = uncategorized)
+// workspace-categories setting is on; the empty placeholder = uncategorized).
+// "archived" is always offered last, so an archived workspace's Edit dialog can
+// show — and keep — its real category.
 export function categoryOptions(config) {
-  return (config.config.workspace_categories || []).map((c) => ({ value: c.id, label: c.id }));
+  const opts = (config.config.workspace_categories || []).map((c) => ({
+    value: c.id,
+    label: c.id,
+  }));
+  if (!opts.some((o) => o.value === ARCHIVED_CATEGORY))
+    opts.push({ value: ARCHIVED_CATEGORY, label: ARCHIVED_CATEGORY });
+  return opts;
 }
 
 // the Config string for a set of ticked repo ids, all forking the same branch

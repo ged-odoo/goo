@@ -256,6 +256,12 @@ export class Workspace extends Model {
     this.touchActivity();
   }
 
+  // move the workspace to <category> ("" = uncategorized) leaving the rest —
+  // including its activity stamp — untouched (archiving is shelving, not use)
+  setCategory(category) {
+    this.category.set(category || "");
+  }
+
   // ── action: stop the server, switch to this workspace, check out its branches ─
   // restore: re-checkout even when this workspace is already the active one — the
   // recovery path when a manual `git checkout` drifted the main checkout away from

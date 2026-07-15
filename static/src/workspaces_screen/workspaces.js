@@ -35,6 +35,7 @@ import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo } from "../core/utils.js";
 import {
+  ARCHIVED_CATEGORY,
   adoptCurrentCheckout,
   categoryOptions,
   deleteWorkspaceDialog,
@@ -936,6 +937,7 @@ export class WorkspacesScreen extends Component {
                   <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
                     <button class="dash-menu-item" title="edit name / branches / database / args" t-on-click="() => this.headMenu(() => this.edit(this.sel))">Edit workspace…</button>
+                    <button class="dash-menu-item" t-att-title="this.isArchived(this.sel) ? 'move it back to uncategorized' : 'move it to the archived group (keeps branches, db and settings)'" t-on-click="() => this.headMenu(() => this.toggleArchived(this.sel))" t-out="this.isArchived(this.sel) ? 'Unarchive workspace' : 'Archive workspace'"/>
                     <button class="dash-menu-item danger" t-att-disabled="!this.canDropDb(this.sel)" t-att-title="this.dropDbTitle(this.sel)" t-on-click="() => this.headMenu(() => this.dropDb(this.sel))">Drop database</button>
                     <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
                   </div>
@@ -1175,7 +1177,8 @@ export class WorkspacesScreen extends Component {
   // branch), and not already covered by a PR's GitHub CI rollup
   _runbotBranches() {
     const seen = new Set();
-    for (const ws of this.config.config.workspaces || [])
+    for (const ws of this.config.config.workspaces || []) {
+      if (ws.category === ARCHIVED_CATEGORY) continue; // dormant — don't poll
       for (const row of this.wsRows(ws)) {
         if (!row.present || this.code.isExternalRepo(row.github)) continue;
         if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
@@ -1183,14 +1186,17 @@ export class WorkspacesScreen extends Component {
         if (ci && ci.checks && ci.checks.length) continue;
         seen.add(row.branch);
       }
+    }
     return [...seen];
   }
 
-  // the unique {github, number} of every PR across the list (for mergebot)
+  // the unique {github, number} of every PR across the list (for mergebot),
+  // skipping archived workspaces (dormant — don't poll)
   _prs() {
     const seen = new Set();
     const prs = [];
-    for (const ws of this.config.config.workspaces || [])
+    for (const ws of this.config.config.workspaces || []) {
+      if (ws.category === ARCHIVED_CATEGORY) continue;
       for (const row of this.wsRows(ws)) {
         if (!row.pr || !row.github || this.code.isExternalRepo(row.github)) continue;
         const key = `${row.github}#${row.pr.number}`;
@@ -1198,6 +1204,7 @@ export class WorkspacesScreen extends Component {
         seen.add(key);
         prs.push({ github: row.github, number: row.pr.number });
       }
+    }
     return prs;
   }
 
@@ -1398,19 +1405,42 @@ export class WorkspacesScreen extends Component {
   // the list partitioned into category groups (config order, uncategorized last),
   // preserving the chosen sort within each group. With categories disabled, one
   // anonymous group — the template renders a header only for named groups.
+  // "archived" is reserved: its group always renders last (after uncategorized),
+  // and — unlike the other categories — even when categories are disabled.
   get listGroups() {
     const list = this.list;
-    if (!this.categoriesEnabled) return [{ id: "", name: "", items: list }];
-    const cats = (this.config.config.workspace_categories || []).map((c) => c.id);
-    const byCat = new Map(cats.map((c) => [c, []]));
-    const rest = []; // no category, or one that was removed from the list
-    for (const ws of list) {
-      if (byCat.has(ws.category)) byCat.get(ws.category).push(ws);
-      else rest.push(ws);
+    const archived = list.filter((ws) => ws.category === ARCHIVED_CATEGORY);
+    const active = list.filter((ws) => ws.category !== ARCHIVED_CATEGORY);
+    let groups;
+    if (!this.categoriesEnabled) {
+      groups = [{ id: "", name: "", items: active }];
+    } else {
+      const cats = (this.config.config.workspace_categories || [])
+        .map((c) => c.id)
+        .filter((c) => c !== ARCHIVED_CATEGORY); // reserved — never in config order
+      const byCat = new Map(cats.map((c) => [c, []]));
+      const rest = []; // no category, or one that was removed from the list
+      for (const ws of active) {
+        if (byCat.has(ws.category)) byCat.get(ws.category).push(ws);
+        else rest.push(ws);
+      }
+      groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) }));
+      if (rest.length) groups.push({ id: "\0none", name: "uncategorized", items: rest });
     }
-    const groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) }));
-    if (rest.length) groups.push({ id: "\0none", name: "uncategorized", items: rest });
+    if (archived.length)
+      groups.push({ id: ARCHIVED_CATEGORY, name: ARCHIVED_CATEGORY, items: archived });
     return groups.filter((g) => g.items.length);
+  }
+
+  isArchived(ws) {
+    return ws.category === ARCHIVED_CATEGORY;
+  }
+
+  // shelve / restore: archived workspaces keep everything (branches, db, server
+  // config) — they just live in the always-last "archived" group and are skipped
+  // by the list's runbot/mergebot polling. Unarchive returns to uncategorized.
+  toggleArchived(ws) {
+    this.config.workspace(ws.id)?.setCategory(this.isArchived(ws) ? "" : ARCHIVED_CATEGORY);
   }
 
   isCollapsed(id) {
