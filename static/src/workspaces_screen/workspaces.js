@@ -262,7 +262,31 @@ export class CodePane extends Component {
 
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
-    if (ids.size) return this.code.loadWorkspace(this.props.ws.id, ids, force);
+    if (!ids.size) return;
+    // a manual Refresh re-scrapes only THIS workspace's runbot bundles + mergebot
+    // PRs (the one-shot scope) — not every other workspace's badges
+    const scope = force ? this._statusScope() : null;
+    return this.code.loadWorkspace(this.props.ws.id, ids, force, scope);
+  }
+
+  // the workspace's runbot branch names + mergebot PR keys: each checkout's
+  // configured branch plus whatever is actually checked out (the sync strip
+  // badges the live branch), skipping external repos (never scraped)
+  _statusScope() {
+    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    const groups = this.code.groups();
+    const branches = new Set();
+    const prs = new Set();
+    for (const c of this.props.ws.checkouts || []) {
+      const github = groups.githubByRepo[c.repo] || "";
+      if (this.code.isExternalRepo(github)) continue;
+      for (const branch of new Set([c.branch, byId[c.repo]?.current].filter(Boolean))) {
+        branches.add(branch);
+        const pr = groups.prIndex[branchKey(c.repo, branch)];
+        if (pr && github) prs.add(`${github}#${pr.number}`);
+      }
+    }
+    return { branches, prs };
   }
 
   refreshTitle() {

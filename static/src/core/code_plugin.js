@@ -44,13 +44,15 @@ export class CodePlugin extends Plugin {
   // chip so a long fetch doesn't read as a silent failure. Session-local: it
   // tracks the ops THIS browser started.
   working = signal({});
-  // one-shot refresh flags, armed by a forced load(): the next mergebot / runbot
-  // fetch re-asks EVERYTHING it's given (server cache bypassed) instead of only the
-  // unknown keys, updating the held records in place — stale-while-revalidate, so
-  // the badges never blink out during a refresh. Consumed by the fetch that acts on
+  // one-shot refresh scopes, armed by a forced load(): the next mergebot / runbot
+  // fetch re-asks the given keys IN SCOPE (server cache bypassed) instead of only
+  // the unknown keys, updating the held records in place — stale-while-revalidate,
+  // so the badges never blink out during a refresh. `true` = everything (a
+  // full-list refresh); a Set = just those keys (one workspace's refresh must not
+  // re-scrape every other workspace's badges). Consumed by the fetch that acts on
   // them, so the have-based dedup (the loop guard) resumes right after.
-  _mbRefresh = false;
-  _rbRefresh = false;
+  _mbRefresh = null; // null | true | Set<"github#number">
+  _rbRefresh = null; // null | true | Set<branch name>
   // workspace + repo scope -> its current automatic load. Switching away and back
   // while a request is still running should join it, not start another scan.
   _workspaceLoads = new Map();
@@ -70,22 +72,23 @@ export class CodePlugin extends Plugin {
   // mergebot state for the given PRs. Only fetch what we don't already hold and
   // isn't already in flight — that `have`-based dedup is what stops the screens'
   // load effects (which re-run when the signal updates) from looping. An armed one-shot
-  // refresh widens the batch to every given PR (held ones included) and asks the
-  // server to re-scrape; the held badges stay visible and update in place.
+  // refresh widens the batch to the given PRs in scope (held ones included) and asks
+  // the server to re-scrape; the held badges stay visible and update in place.
   async loadMergebot(prs) {
     const refresh = this._mbRefresh;
+    const inScope = (k) => refresh === true || (refresh instanceof Set && refresh.has(k));
     const have = this.mergebot();
     const forwardPorts = this.mbForwardPorts();
     const todo = prs.filter((p) => {
       const k = `${p.github}#${p.number}`;
-      return (refresh || !(k in have) || !(k in forwardPorts)) && !this.store.mbPending.has(k);
+      return (inScope(k) || !(k in have) || !(k in forwardPorts)) && !this.store.mbPending.has(k);
     });
     if (!todo.length) return;
-    this._mbRefresh = false; // consumed by this batch — dedup resumes when it lands
+    this._mbRefresh = null; // consumed by this batch — dedup resumes when it lands
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
-      const res = await postJSON("/api/mergebot", { prs: todo, refresh });
+      const res = await postJSON("/api/mergebot", { prs: todo, refresh: keys.some(inScope) });
       // don't pin blanks: a state the scrape couldn't produce (fresh PR not yet
       // indexed, transient mergebot failure) must stay re-askable — a stored ""
       // satisfies the `k in have` dedup forever and permanently blanks the badge
@@ -114,13 +117,16 @@ export class CodePlugin extends Plugin {
   // loadMergebot
   async loadRunbot(branches) {
     const refresh = this._rbRefresh;
+    const inScope = (b) => refresh === true || (refresh instanceof Set && refresh.has(b));
     const have = this.runbot();
-    const todo = branches.filter((b) => (refresh || !(b in have)) && !this.store.rbPending.has(b));
+    const todo = branches.filter(
+      (b) => (inScope(b) || !(b in have)) && !this.store.rbPending.has(b),
+    );
     if (!todo.length) return;
-    this._rbRefresh = false; // consumed by this batch
+    this._rbRefresh = null; // consumed by this batch
     todo.forEach((b) => this.store.rbPending.add(b));
     try {
-      const res = await postJSON("/api/runbot", { branches: todo, refresh });
+      const res = await postJSON("/api/runbot", { branches: todo, refresh: todo.some(inScope) });
       this.store.mergeRunbot(res.states);
     } catch {
       /* leave status blank on failure */
@@ -129,12 +135,24 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // widen a one-shot refresh scope with another: `true` (everything) absorbs
+  // sets, sets union — an armed scope is never narrowed by a later, smaller one
+  _widenScope(cur, next) {
+    if (cur === true || next === true) return true;
+    if (!cur || !next) return cur || next;
+    return new Set([...cur, ...next]);
+  }
+
   // force-refresh the given runbot branches + mergebot PRs: arms the one-shot
-  // flags so both loaders re-ask everything (server cache bypassed) and update
-  // the held records in place — the badges stay visible throughout. Resolves
+  // scopes so both loaders re-ask exactly those keys (server cache bypassed) and
+  // update the held records in place — the badges stay visible throughout. Resolves
   // when both re-scrapes have landed (drives the list's refresh spinner).
   async refreshStatuses(branches, prs) {
-    this._mbRefresh = this._rbRefresh = true;
+    this._rbRefresh = this._widenScope(this._rbRefresh, new Set(branches || []));
+    this._mbRefresh = this._widenScope(
+      this._mbRefresh,
+      new Set((prs || []).map((p) => `${p.github}#${p.number}`)),
+    );
     await Promise.all([this.loadRunbot(branches || []), this.loadMergebot(prs || [])]);
   }
 
@@ -170,12 +188,20 @@ export class CodePlugin extends Plugin {
   // ids — a screen often only shows a subset of the repos, so there's
   // no point reading the rest: PR fetches hit GitHub, and each branch read is ~8 git
   // subprocesses. null = every repo (the Branches/PRs tabs, which show all).
-  async load(force = false, prRepoIds = null, branchRepoIds = null) {
+  // `statusScope` ({branches: Set, prs: Set}) narrows a forced load's runbot/mergebot
+  // re-scrape the same way; null = re-ask everything (the full-list refreshers).
+  async load(force = false, prRepoIds = null, branchRepoIds = null, statusScope = null) {
     this.loading.set(true);
     this.error.set("");
     // stale-while-revalidate: the held runbot/mergebot badges stay on screen; the
-    // armed one-shot flags make the next fetches re-ask everything and update in place
-    if (force) this._mbRefresh = this._rbRefresh = true;
+    // armed one-shot scopes make the next fetches re-ask them and update in place
+    if (force) {
+      this._rbRefresh = this._widenScope(
+        this._rbRefresh,
+        statusScope ? statusScope.branches : true,
+      );
+      this._mbRefresh = this._widenScope(this._mbRefresh, statusScope ? statusScope.prs : true);
+    }
     const at = Date.now(); // request-start stamp — the freshness of these snapshots
     const repos = this.reposWithGithub();
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
@@ -212,17 +238,20 @@ export class CodePlugin extends Plugin {
       localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos }));
     }
     // branches + authored PRs have landed; resolve the leftover branches (remote,
-    // non-base, no authored PR) by head ref so forward-port PRs still show. Fire and
-    // forget — they stream into the view as they resolve.
-    this.loadHeadPrs(force);
+    // non-base, no authored PR) by head ref so forward-port PRs still show — in the
+    // same repo scope as the branch fetch (each lookup is a `gh` call; a one-workspace
+    // load must not re-ask every other repo's branches). Fire and forget — they
+    // stream into the view as they resolve.
+    this.loadHeadPrs(force, branchRepoIds);
   }
 
   // Look up PRs by head ref for branches an authored `prs()` fetch left without one
   // — forward ports (fw-bot authored) and colleagues' PRs. Only remote, non-base
   // branches with no authored PR are asked, and only once each (null is cached as
-  // "looked up, none found") unless force re-asks. Never triggered from an effect
-  // that reads groups(), so updating headPrs can't re-drive a load.
-  async loadHeadPrs(force = false) {
+  // "looked up, none found") unless force re-asks. `repoIds` (a Set) limits the walk
+  // to those repos; null = all. Never triggered from an effect that reads groups(),
+  // so updating headPrs can't re-drive a load.
+  async loadHeadPrs(force = false, repoIds = null) {
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -232,6 +261,7 @@ export class CodePlugin extends Plugin {
     const seen = new Set();
     const pairs = [];
     for (const repo of this.branchRepos()) {
+      if (repoIds && !repoIds.has(repo.id)) continue;
       const github = githubByRepo[repo.id];
       if (!github) continue;
       for (const b of repo.branches) {
@@ -295,7 +325,7 @@ export class CodePlugin extends Plugin {
   // Selection-driven workspace loads are cache-aware for ten minutes. Manual
   // Refresh passes force=true and always bypasses this frontend freshness guard
   // (and the backend's PR cache through load()).
-  loadWorkspace(workspaceId, repoIds, force = false) {
+  loadWorkspace(workspaceId, repoIds, force = false, statusScope = null) {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     const refreshedAt = this.workspaceRefreshedAt(ids);
     if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
@@ -306,8 +336,10 @@ export class CodePlugin extends Plugin {
     // A manual refresh made during an automatic request must still force a second
     // load after it; ordinary selection changes can simply share the pending one.
     if (pending)
-      return force ? pending.then(() => this.loadWorkspace(workspaceId, ids, true)) : pending;
-    const request = this.load(force, ids, ids)
+      return force
+        ? pending.then(() => this.loadWorkspace(workspaceId, ids, true, statusScope))
+        : pending;
+    const request = this.load(force, ids, ids, statusScope)
       .then(() => true)
       .finally(() => {
         if (this._workspaceLoads.get(key) === request) {
