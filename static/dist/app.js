@@ -9812,6 +9812,7 @@ var CodePane = class extends Component {
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
+        <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllForceTitle()" t-on-click="() => this.pushAllForce()"><t t-out="this.pushIcon"/>Push all (force)</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" t-att-title="this.refreshTitle()" t-on-click="() => this.load(true)">
           <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
         </button>
@@ -10102,6 +10103,29 @@ var CodePane = class extends Component {
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
         message: `Push ${this._pushList(rows)}?`
+      }
+    );
+    if (pushed) this.touchActivity();
+  }
+  pushAllForceTitle() {
+    const rows = this.pushableRows;
+    if (!rows.length) {
+      return this.checkoutRows.some((r) => r.canPush) ? "nothing to push \u2014 every work branch is already in sync with its remote" : "nothing to push \u2014 no local work branches (base branches are never pushed)";
+    }
+    return `force-push ${this._pushList(rows)} with --force-with-lease`;
+  }
+  // force-push every work-branch checkout to its repo's push remote, one confirm for the batch
+  async pushAllForce() {
+    const rows = this.pushableRows;
+    if (!rows.length) return;
+    const pushed = await pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      rows.map((r) => ({ path: r.path, branch: r.branch })),
+      {
+        title: `Force-push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
+        message: `Force-push ${this._pushList(rows)} with --force-with-lease? This overwrites the remote branches.`,
+        force: true
       }
     );
     if (pushed) this.touchActivity();
