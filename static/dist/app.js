@@ -8497,6 +8497,9 @@ var TodoScreen = class extends Component {
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
+    useEffect(() => {
+      this.newTodo()?.focus();
+    });
   }
   // the selected list (falls back to the first — a list always exists)
   get list() {

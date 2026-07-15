@@ -1,4 +1,4 @@
-import { Component, onMounted, onWillUnmount, usePlugin, signal, xml } from "@odoo/owl";
+import { Component, onMounted, onWillUnmount, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { ICONS, m } from "../core/common.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
 import { Panel } from "../core/panel.js";
@@ -114,6 +114,11 @@ export class TodoScreen extends Component {
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
+    // autofocus the new-todo input: the effect tracks the ref signal, so it runs
+    // once the input is mounted (and again if it's ever remounted)
+    useEffect(() => {
+      this.newTodo()?.focus();
+    });
   }
 
   // the selected list (falls back to the first — a list always exists)

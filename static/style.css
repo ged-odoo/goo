@@ -900,10 +900,13 @@ section.hidden {
   background: var(--l-hover);
 }
 .todo-rail-item.active {
-  background: var(--l-card);
-  color: var(--l-text);
+  background: #000; /* the .wt-dot-active (loaded workspace) black */
+  color: #fff;
   font-weight: 600;
-  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.08);
+}
+.todo-rail-item.active .todo-rail-count {
+  color: #fff;
+  background: oklch(1 0 0 / 0.22);
 }
 .todo-rail-name {
   flex: 1;
