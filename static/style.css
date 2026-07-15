@@ -140,23 +140,6 @@ a {
   font-weight: 600;
   color: var(--text-dim);
 }
-/* goo self-update badge (shown when the checkout is behind origin/master) */
-.nav-update {
-  margin-left: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-  border-radius: 6px;
-  padding: 2px 8px;
-  cursor: pointer;
-  transition: 0.13s;
-}
-.nav-update:hover {
-  background: var(--accent);
-  color: #fff;
-}
 /* full-screen overlay while goo updates + restarts (the page then reloads itself) */
 .goo-updating {
   position: fixed;
@@ -615,9 +598,8 @@ a {
 :root.sidebar-collapsed {
   --sidebar-width: 62px;
 }
-/* the label + topbar extras that don't fit the icon rail */
-:root.sidebar-collapsed .logo .version,
-:root.sidebar-collapsed .nav-update {
+/* the topbar extras that don't fit the icon rail */
+:root.sidebar-collapsed .logo .version {
   display: none;
 }
 .nav-label {
@@ -643,6 +625,44 @@ a {
 .nav-spacer {
   flex: 1 1 auto;
   min-height: 8px;
+}
+/* goo self-update CTA (shown when the checkout is behind origin/master),
+   just above the collapse toggle so it survives the collapsed rail */
+.nav-update {
+  color: var(--accent);
+  font-weight: 600;
+}
+.nav-update:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.nav-update svg {
+  opacity: 1;
+}
+.nav-update-glyph {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+/* the "!" only shows on the collapsed rail, where the label can't */
+.nav-update-bang {
+  display: none;
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  min-width: 13px;
+  height: 13px;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 50%;
+}
+.sidebar.collapsed .nav-update-bang {
+  display: flex;
 }
 .nav-collapse {
   color: var(--text-dim);

@@ -35,7 +35,7 @@ export class Topbar extends Component {
   static template = xml`
     <header class="topbar">
       <div class="top-left">
-        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/><button t-if="this.updateAvailable" class="nav-update" t-att-title="this.updateTip" t-on-click="() => this.update.promptUpdate()">↑ update</button></div>
+        <div class="logo"><a class="name" href="https://github.com/ged-odoo/goo" target="_blank" title="GED Odoo Overseer — open on GitHub">goo</a><span class="version" t-out="this.version"/></div>
       </div>
       <div t-if="this.target" class="nav-target" t-att-class="this.stateClass" t-att-title="this.tooltip">
         <span class="nt-name">
@@ -85,7 +85,6 @@ export class Topbar extends Component {
 
   server = usePlugin(ServerPlugin);
   config = usePlugin(ConfigPlugin);
-  update = usePlugin(UpdatePlugin);
   eventLog = usePlugin(EventLogPlugin);
   code = usePlugin(CodePlugin); // activation guards read the live branch state
   store = usePlugin(StorePlugin); // running worktree servers for the switcher menu
@@ -112,19 +111,6 @@ export class Topbar extends Component {
 
   isMenu(r) {
     return Array.isArray(r.children);
-  }
-
-  // goo's own checkout is behind origin/master (see UpdatePlugin)
-  get updateAvailable() {
-    return (this.update.info()?.behind || 0) > 0;
-  }
-
-  get updateTip() {
-    const u = this.update.info() || {};
-    let tip = `${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
-    if (u.ahead) tip += `, ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} ahead`;
-    if (u.dirty) tip += ", working tree dirty";
-    return tip;
   }
 
   get active() {
@@ -227,6 +213,11 @@ export class Sidebar extends Component {
         <span class="nav-label" t-out="item.label"/>
       </button>
       <div class="nav-spacer"/>
+      <button t-if="this.updateAvailable" class="nav-item nav-update" t-att-title="this.updateTip"
+              t-on-click="() => this.update.promptUpdate()">
+        <span class="nav-update-glyph"><t t-out="this.updateIcon"/><span class="nav-update-bang">!</span></span>
+        <span class="nav-label">Update goo</span>
+      </button>
       <button class="nav-item nav-collapse" t-att-title="this.collapsed() ? 'Expand sidebar' : 'Collapse sidebar'"
               t-on-click="() => this.toggleCollapsed()">
         <t t-out="this.collapseIcon"/>
@@ -236,7 +227,9 @@ export class Sidebar extends Component {
 
   router = usePlugin(RouterPlugin);
   config = usePlugin(ConfigPlugin);
+  update = usePlugin(UpdatePlugin);
   collapseIcon = m(ICONS.collapse);
+  updateIcon = m(ICONS.push);
   collapsed = signal(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
 
   setup() {
@@ -253,6 +246,19 @@ export class Sidebar extends Component {
 
   toggleCollapsed() {
     this.collapsed.set(!this.collapsed());
+  }
+
+  // goo's own checkout is behind origin/master (see UpdatePlugin)
+  get updateAvailable() {
+    return (this.update.info()?.behind || 0) > 0;
+  }
+
+  get updateTip() {
+    const u = this.update.info() || {};
+    let tip = `${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
+    if (u.ahead) tip += `, ${u.ahead} local commit${u.ahead === 1 ? "" : "s"} ahead`;
+    if (u.dirty) tip += ", working tree dirty";
+    return `${tip} — click to update goo`;
   }
 
   // sidebar tabs from config (order + visibility, see TabsEditor); falls back to
