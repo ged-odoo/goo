@@ -849,12 +849,16 @@ section.hidden {
 }
 
 /* Todo screen */
+/* the new-todo form sits in the card, between the head and the list */
 .todo-form {
   display: flex;
   gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--l-line-soft);
 }
 .todo-form input {
-  width: min(420px, 45vw);
+  flex: 1;
+  min-width: 0;
   color: var(--l-text);
   border-color: var(--l-line);
   background: var(--l-card);
@@ -912,16 +916,6 @@ section.hidden {
   background: var(--l-line-soft);
   border-radius: 9px;
   padding: 2px 6px;
-}
-.todo-rail-add {
-  padding: 8px 12px;
-  border-radius: 8px;
-  text-align: left;
-  color: var(--l-text-dim);
-}
-.todo-rail-add:hover {
-  color: var(--l-accent);
-  background: var(--l-hover);
 }
 .todo-card {
   flex: 1 1 auto;

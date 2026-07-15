@@ -8428,12 +8428,7 @@ var TodoScreen = class extends Component {
     <section>
       <Panel title="'Todo'">
         <t t-set-slot="bottom-left">
-          <form class="todo-form" t-on-submit.prevent="() => this.add()">
-            <input t-ref="this.newTodo" type="text" t-att-value="this.draft()"
-                   t-on-input="ev => this.draft.set(ev.target.value)"
-                   placeholder="What needs to be done?" autocomplete="off" aria-label="New todo"/>
-            <button type="submit" class="pbtn" t-att-disabled="!this.draft().trim()">Add todo</button>
-          </form>
+          <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
         </t>
         <t t-set-slot="bottom-right">
           <span class="row-count" t-out="this.summary"/>
@@ -8448,7 +8443,6 @@ var TodoScreen = class extends Component {
               <span class="todo-rail-name" t-out="l.name"/>
               <span t-if="this.openCount(l)" class="todo-rail-count" t-out="this.openCount(l)"/>
             </button>
-            <button class="todo-rail-add" t-on-click="() => this.addList()">+ New list</button>
           </div>
           <div class="todo-card">
             <div class="todo-card-head">
@@ -8463,6 +8457,12 @@ var TodoScreen = class extends Component {
                 </div>
               </div>
             </div>
+            <form class="todo-form" t-on-submit.prevent="() => this.add()">
+              <input t-ref="this.newTodo" type="text" t-att-value="this.draft()"
+                     t-on-input="ev => this.draft.set(ev.target.value)"
+                     placeholder="What needs to be done?" autocomplete="off" aria-label="New todo"/>
+              <button type="submit" class="pbtn" t-att-disabled="!this.draft().trim()">Add todo</button>
+            </form>
             <div t-if="!this.list.todos.length" class="todo-empty">
               <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
               <span>No todos yet.</span>
@@ -8521,7 +8521,7 @@ var TodoScreen = class extends Component {
   }
   // ── lists ──────────────────────────────────────────────────────────────────
   async addList() {
-    const res = await this._nameDialog("New list", "Create", "");
+    const res = await this._nameDialog("New project", "Create", "");
     if (!res) return;
     const list = { id: uid(), name: res, todos: [] };
     this.lists.set([...this.lists(), list]);
