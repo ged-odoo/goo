@@ -1431,22 +1431,49 @@ var StorePlugin = class extends Plugin {
 };
 
 // static/src/core/event_log_plugin.js
-var MAX = 500;
+var MAX = 1e3;
+var STORAGE_KEY = "oo-event-log";
+function storedLog() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    if (raw && Array.isArray(raw.entries)) {
+      const entries = raw.entries.filter((e) => e && typeof e.id === "number" && typeof e.text === "string").map((e) => e.status === "pending" ? { ...e, status: "", eid: "" } : e);
+      return { entries, lastReadId: raw.lastReadId || 0 };
+    }
+  } catch {
+  }
+  return { entries: [], lastReadId: 0 };
+}
 var EventLogPlugin = class extends Plugin {
   static sequence = 1;
-  entries = signal([]);
-  // [{ id, at, text }]
+  _stored = storedLog();
+  // read once — entries + read marker from the same snapshot
+  entries = signal(this._stored.entries);
+  // [{ id, at, text, anchor, level, status?, eid? }]
   open = signal(false);
   // overlay panel visibility
-  lastReadId = signal(0);
-  // highest entry id seen the last time the panel was open
-  _seq = 0;
+  lastReadId = signal(this._stored.lastReadId);
+  // highest entry id seen when the panel was last open
+  _seq = this._stored.entries.reduce((m2, e) => Math.max(m2, e.id), 0);
+  // cap + set + persist — every entries mutation funnels through here
+  _commit(next) {
+    this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
+    this._persist();
+  }
+  _persist() {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ entries: this.entries(), lastReadId: this.lastReadId() })
+      );
+    } catch {
+    }
+  }
   // `anchor` (optional) is a DOM id of a log row the UI can scroll to. It is kept
   // client-side only — the server log still receives just the text. `level`
   // (e.g. "error") flags the entry so the UI can highlight it.
   add(text, anchor = "", level = "") {
-    const next = [...this.entries(), { id: ++this._seq, at: Date.now(), text, anchor, level }];
-    this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
+    this._commit([...this.entries(), { id: ++this._seq, at: Date.now(), text, anchor, level }]);
     postJSON("/api/event", { text }).catch(() => {
     });
   }
@@ -1464,8 +1491,7 @@ var EventLogPlugin = class extends Plugin {
       status: "pending",
       eid
     };
-    const next = [...this.entries(), row];
-    this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
+    this._commit([...this.entries(), row]);
   }
   // Begin a *client-initiated* long-running event (e.g. starting the server): same
   // pending row as start(), but it mints and returns the correlation id so the
@@ -1488,16 +1514,15 @@ var EventLogPlugin = class extends Plugin {
       found = true;
       return { ...e, status, level: level || e.level };
     });
-    if (found) this.entries.set(entries);
+    if (found) this._commit(entries);
     else if (text) {
       const row = { id: ++this._seq, at: Date.now(), text, anchor: "", level, status, eid };
-      const next = [...entries, row];
-      this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
+      this._commit([...entries, row]);
     }
   }
   // Drop a pending event by its id (e.g. the user cancelled before it really began).
   drop(eid) {
-    this.entries.set(this.entries().filter((e) => e.eid !== eid));
+    this._commit(this.entries().filter((e) => e.eid !== eid));
   }
   toggle() {
     this.open.set(!this.open());
@@ -1506,6 +1531,7 @@ var EventLogPlugin = class extends Plugin {
   // mark every current entry as read (clears the unread badge)
   markRead() {
     this.lastReadId.set(this._seq);
+    this._persist();
   }
   // events that arrived since the panel was last open (0 while it's open)
   unread() {
@@ -1513,7 +1539,7 @@ var EventLogPlugin = class extends Plugin {
     return this.entries().filter((e) => e.id > this.lastReadId()).length;
   }
   clear() {
-    this.entries.set([]);
+    this._commit([]);
   }
 };
 
@@ -6707,7 +6733,7 @@ var EventLog = class extends Component {
 };
 
 // static/src/memory_screen/memory_plugin.js
-var STORAGE_KEY = "oo-memory-builds";
+var STORAGE_KEY2 = "oo-memory-builds";
 var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
 var MemoryPlugin = class extends Plugin {
   static sequence = 4;
@@ -6721,7 +6747,7 @@ var MemoryPlugin = class extends Plugin {
   batchError = signal("");
   _loadBuilds() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(STORAGE_KEY2);
       const parsed = raw ? JSON.parse(raw) : null;
       return Array.isArray(parsed) && parsed.length ? parsed : [{ label: "", url: "" }];
     } catch {
@@ -6730,7 +6756,7 @@ var MemoryPlugin = class extends Plugin {
   }
   _saveBuilds(builds) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(builds));
+      localStorage.setItem(STORAGE_KEY2, JSON.stringify(builds));
     } catch {
     }
   }
@@ -8395,11 +8421,11 @@ var TerminalDialog = class extends Component {
 };
 
 // static/src/todo_screen/todo.js
-var STORAGE_KEY2 = "oo-todos";
+var STORAGE_KEY3 = "oo-todos";
 var uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 function storedState() {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY2) || "null");
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY3) || "null");
     const cleanTodos = (todos) => (Array.isArray(todos) ? todos : []).filter(
       (item) => item && typeof item.id === "string" && typeof item.title === "string"
     );
@@ -8598,7 +8624,7 @@ var TodoScreen = class extends Component {
   }
   _save() {
     localStorage.setItem(
-      STORAGE_KEY2,
+      STORAGE_KEY3,
       JSON.stringify({ lists: this.lists(), selected: this.selected() })
     );
   }
