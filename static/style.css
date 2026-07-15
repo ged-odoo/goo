@@ -849,12 +849,19 @@ section.hidden {
 }
 
 /* Todo screen */
-/* the new-todo form sits in the card, between the head and the list */
+/* the form + card column next to the rail */
+.todo-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* the new-todo form sits on its own, just above the card */
 .todo-form {
   display: flex;
   gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--l-line-soft);
 }
 .todo-form input {
   flex: 1;
@@ -918,9 +925,6 @@ section.hidden {
   padding: 2px 6px;
 }
 .todo-card {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 760px;
   overflow: visible; /* the list-actions kebab menu must escape the card */
   background: var(--l-card);
   border: 1px solid var(--l-line);

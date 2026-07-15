@@ -59,37 +59,39 @@ export class TodoScreen extends Component {
               <span t-if="this.openCount(l)" class="todo-rail-count" t-out="this.openCount(l)"/>
             </button>
           </div>
-          <div class="todo-card">
-            <div class="todo-card-head">
-              <span class="todo-card-title" t-out="this.list.name"/>
-              <div class="dash-kebab-wrap">
-                <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="list actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
-                <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
-                  <button class="dash-menu-item" t-on-click="() => this.menuAct(() => this.renameList())">Rename</button>
-                  <button class="dash-menu-item danger" t-att-disabled="this.lists().length === 1"
-                          t-att-title="this.lists().length === 1 ? 'the last list cannot be deleted' : ''"
-                          t-on-click="() => this.menuAct(() => this.deleteList())">Delete list</button>
-                </div>
-              </div>
-            </div>
+          <div class="todo-main">
             <form class="todo-form" t-on-submit.prevent="() => this.add()">
               <input t-ref="this.newTodo" type="text" t-att-value="this.draft()"
                      t-on-input="ev => this.draft.set(ev.target.value)"
                      placeholder="What needs to be done?" autocomplete="off" aria-label="New todo"/>
               <button type="submit" class="pbtn" t-att-disabled="!this.draft().trim()">Add todo</button>
             </form>
-            <div t-if="!this.list.todos.length" class="todo-empty">
-              <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
-              <span>No todos yet.</span>
-            </div>
-            <div t-else="" class="todo-list">
-              <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                   t-att-class="{done: todo.done}">
-                <label class="todo-check">
-                  <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
-                  <span t-out="todo.title"/>
-                </label>
-                <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+            <div class="todo-card">
+              <div class="todo-card-head">
+                <span class="todo-card-title" t-out="this.list.name"/>
+                <div class="dash-kebab-wrap">
+                  <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="list actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
+                  <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
+                    <button class="dash-menu-item" t-on-click="() => this.menuAct(() => this.renameList())">Rename</button>
+                    <button class="dash-menu-item danger" t-att-disabled="this.lists().length === 1"
+                            t-att-title="this.lists().length === 1 ? 'the last list cannot be deleted' : ''"
+                            t-on-click="() => this.menuAct(() => this.deleteList())">Delete list</button>
+                  </div>
+                </div>
+              </div>
+              <div t-if="!this.list.todos.length" class="todo-empty">
+                <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
+                <span>No todos yet.</span>
+              </div>
+              <div t-else="" class="todo-list">
+                <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
+                     t-att-class="{done: todo.done}">
+                  <label class="todo-check">
+                    <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
+                    <span t-out="todo.title"/>
+                  </label>
+                  <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+                </div>
               </div>
             </div>
           </div>
