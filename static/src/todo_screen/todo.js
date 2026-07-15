@@ -85,7 +85,7 @@ export class TodoScreen extends Component {
               </div>
               <div t-else="" class="todo-list">
                 <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                     t-att-class="{done: todo.done}">
+                     t-att-class="{done: todo.done}" t-att-title="this.createdTitle(todo)">
                   <label class="todo-check">
                     <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
                     <span t-out="todo.title"/>
@@ -196,9 +196,24 @@ export class TodoScreen extends Component {
     const title = this.draft().trim();
     if (!title) return;
     // newest first
-    this._updateTodos((todos) => [{ id: uid(), title, done: false }, ...todos]);
+    this._updateTodos((todos) => [
+      { id: uid(), title, done: false, created: Date.now() },
+      ...todos,
+    ]);
     this.draft.set("");
     this.newTodo()?.focus();
+  }
+
+  // the row tooltip: when the todo was created. New todos store `created`;
+  // older ones carry the same timestamp as their id's Date.now() prefix.
+  createdTitle(todo) {
+    const ts = todo.created || Number((todo.id || "").split("-")[0]);
+    if (!ts) return "";
+    const abs = new Date(ts).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    return `created ${abs}`;
   }
 
   toggle(id) {
