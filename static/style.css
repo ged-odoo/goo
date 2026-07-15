@@ -4561,6 +4561,13 @@ a.commit-detail-hash svg {
   white-space: normal; /* let the subject wrap inside the card instead of clipping */
   margin-top: 0;
 }
+.ws-co-card .ws-commit.editable {
+  cursor: pointer;
+}
+.ws-co-card .ws-commit.editable:hover {
+  color: var(--l-text-mid);
+  text-decoration: underline;
+}
 /* Mergebot's forward-port matrix, shown below the checkout cards. The branch is a
    stable first column; linked repositories stack inside the status column. */
 .ws-fp-heading {
