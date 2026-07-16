@@ -1,6 +1,7 @@
 import { Component, onMounted, onWillUnmount, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { ICONS, m } from "../core/common.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
+import { startRowDrag, dropIndex } from "../core/drag.js";
 import { Panel } from "../core/panel.js";
 
 const STORAGE_KEY = "oo-todos";
@@ -124,7 +125,7 @@ export class TodoScreen extends Component {
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
     // never leak the drag ghost / window listeners if we unmount mid-drag
-    onWillUnmount(() => this._drag && this._dragEnd(true));
+    onWillUnmount(() => this._dragStop?.(true));
     // autofocus the new-todo input: the effect tracks the ref signal, so it runs
     // once the input is mounted (and again if it's ever remounted)
     useEffect(() => {
@@ -270,87 +271,41 @@ export class TodoScreen extends Component {
   }
 
   // ── drag-and-drop resequencing ───────────────────────────────────────────────
-  // Pointer-based (not HTML5 dnd, whose drag image would be a static snapshot of
-  // the tiny handle): the grabbed row lifts into a fixed-position ghost that
+  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the list as the pointer crosses its neighbours' midlines. Drop
   // persists the order; Escape restores the grab-time order.
   onDragStart(ev, todo) {
-    if (ev.button !== 0) return;
-    ev.preventDefault(); // no text selection while dragging
-    const row = ev.target.closest(".todo-row");
-    if (!row) return;
-    const rect = row.getBoundingClientRect();
-    this._drag = {
-      id: todo.id,
-      offsetX: ev.clientX - rect.left,
-      offsetY: ev.clientY - rect.top,
-      original: this.list.todos, // grab-time order, restored on Escape
-      ghost: this._makeGhost(row, rect),
-      onMove: (e) => this._dragMove(e),
-      onUp: () => this._dragEnd(true),
-      onKey: (e) => e.key === "Escape" && this._dragEnd(false),
-    };
+    const original = this.list.todos; // grab-time order, restored on Escape
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".todo-row"),
+      onMove: (e) => this._dragMove(e, todo.id),
+      onEnd: (commit) => {
+        this._dragStop = null;
+        this.dragId.set("");
+        if (commit) this._save();
+        else this._updateTodos(() => original);
+      },
+    });
+    if (!stop) return;
+    this._dragStop = stop;
     this.dragId.set(todo.id);
-    this._dragMove(ev);
-    window.addEventListener("pointermove", this._drag.onMove);
-    window.addEventListener("pointerup", this._drag.onUp);
-    window.addEventListener("pointercancel", this._drag.onUp);
-    window.addEventListener("keydown", this._drag.onKey);
-    document.body.classList.add("todo-grabbing");
   }
 
-  // the floating copy of the row that tracks the cursor (visual only — plain
-  // DOM, outside owl's tree, discarded on drop)
-  _makeGhost(row, rect) {
-    const ghost = row.cloneNode(true);
-    ghost.classList.add("todo-ghost");
-    ghost.classList.remove("dragging");
-    ghost.style.width = `${rect.width}px`;
-    document.body.appendChild(ghost);
-    return ghost;
-  }
-
-  _dragMove(ev) {
-    const d = this._drag;
-    if (!d) return;
-    d.ghost.style.transform = `translate(${ev.clientX - d.offsetX}px, ${ev.clientY - d.offsetY}px)`;
-    // live reorder: the dimmed source row follows the pointer through the list.
-    // Insertion index = first row (ghost's own excluded) whose midline is below
-    // the pointer; DOM order matches array order, so index math lines up.
+  _dragMove(ev, id) {
     const rows = [...(this.listEl()?.querySelectorAll(".todo-row") || [])];
-    const others = rows.filter((r) => !r.classList.contains("dragging"));
-    let to = others.length;
-    for (let i = 0; i < others.length; i++) {
-      const r = others[i].getBoundingClientRect();
-      if (ev.clientY < r.top + r.height / 2) {
-        to = i;
-        break;
-      }
-    }
+    const to = dropIndex(
+      ev,
+      rows.filter((r) => !r.classList.contains("dragging")),
+    );
     const todos = this.list.todos;
-    const from = todos.findIndex((t) => t.id === d.id);
+    const from = todos.findIndex((t) => t.id === id);
     if (from < 0 || from === to) return;
     const next = [...todos];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     // reorder in memory only — persisted once, on drop
     this.lists.set(this.lists().map((l) => (l.id === this.list.id ? { ...l, todos: next } : l)));
-  }
-
-  _dragEnd(commit) {
-    const d = this._drag;
-    if (!d) return;
-    this._drag = null;
-    window.removeEventListener("pointermove", d.onMove);
-    window.removeEventListener("pointerup", d.onUp);
-    window.removeEventListener("pointercancel", d.onUp);
-    window.removeEventListener("keydown", d.onKey);
-    document.body.classList.remove("todo-grabbing");
-    d.ghost.remove();
-    this.dragId.set("");
-    if (commit) this._save();
-    else this._updateTodos(() => d.original); // Escape: back to the grab-time order
   }
 
   _updateTodos(fn) {

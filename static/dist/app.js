@@ -5239,12 +5239,66 @@ var BranchesScreen = class extends Component {
   }
 };
 
+// static/src/core/drag.js
+function startRowDrag(ev, { row, onMove, onEnd }) {
+  if (ev.button !== 0 || !row) return null;
+  ev.preventDefault();
+  const rect = row.getBoundingClientRect();
+  const offsetX = ev.clientX - rect.left;
+  const offsetY = ev.clientY - rect.top;
+  const ghost = row.cloneNode(true);
+  ghost.classList.add("drag-ghost");
+  ghost.classList.remove("dragging", "drag-over");
+  ghost.style.width = `${rect.width}px`;
+  const src = row.querySelectorAll("input, select, textarea");
+  ghost.querySelectorAll("input, select, textarea").forEach((el, i) => {
+    if (!src[i]) return;
+    el.value = src[i].value;
+    el.checked = src[i].checked;
+  });
+  document.body.appendChild(ghost);
+  const place = (e) => {
+    ghost.style.transform = `translate(${e.clientX - offsetX}px, ${e.clientY - offsetY}px)`;
+  };
+  const move = (e) => {
+    place(e);
+    onMove(e);
+  };
+  const stop = (commit) => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("keydown", key);
+    document.body.classList.remove("drag-grabbing");
+    ghost.remove();
+    onEnd(commit);
+  };
+  const up = () => stop(true);
+  const cancel = () => stop(false);
+  const key = (e) => e.key === "Escape" && stop(false);
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", cancel);
+  window.addEventListener("keydown", key);
+  document.body.classList.add("drag-grabbing");
+  place(ev);
+  onMove(ev);
+  return stop;
+}
+function dropIndex(ev, rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i].getBoundingClientRect();
+    if (ev.clientY < r.top + r.height / 2) return i;
+  }
+  return rows.length;
+}
+
 // static/src/config_screen/config.js
 var ListEditor = class extends Component {
   static template = xml`
     <div class="config-block">
       <h2 class="subtitle" t-out="this.spec.title"/>
-      <div class="rows" data-form-type="other">
+      <div class="rows" data-form-type="other" t-ref="this.rowsEl">
         <t t-if="this.spec.card">
           <div t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-card">
             <button class="row-remove edit-card-remove" title="remove" t-on-click="() => this.removeRow(row_index)">✕</button>
@@ -5265,10 +5319,9 @@ var ListEditor = class extends Component {
           </div>
         </t>
         <div t-if="!this.spec.card" t-foreach="this.rows()" t-as="row" t-key="row_index" class="edit-row"
-             t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
-             t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
-          <span t-if="this.spec.reorderable" class="row-handle" draggable="true" title="drag to reorder"
-                t-on-dragstart="ev => this.onDragStart(ev, row_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+             t-att-class="{dragging: this.dragIndex() === row_index}">
+          <span t-if="this.spec.reorderable" class="row-handle" title="drag to reorder"
+                t-on-pointerdown="ev => this.onDragStart(ev, row_index)">⠿</span>
           <t t-foreach="this.spec.fields" t-as="f" t-key="f.key">
             <label t-if="f.type === 'checkbox'" class="edit-check" t-att-title="f.title || f.name">
               <input type="checkbox" t-att-checked="row[f.key]" t-on-change="ev => { row[f.key] = ev.target.checked; this.saveAuto(); }"/>
@@ -5291,14 +5344,14 @@ var ListEditor = class extends Component {
   config = usePlugin(ConfigPlugin);
   spec = SPECS[this.props.kind];
   rows = signal([]);
+  rowsEl = signal.ref(HTMLElement);
   msgText = signal("");
   msgCls = signal("");
   dragIndex = signal(-1);
   // row being dragged (-1 = none); only set for reorderable specs
-  dragOverIndex = signal(-1);
-  // row the drag is hovering over
   setup() {
     this.load();
+    onWillUnmount(() => this._dragStop?.(true));
   }
   // card layout: the spec's fields grouped by their `row` (default 1), order kept
   get cardRows() {
@@ -5310,35 +5363,37 @@ var ListEditor = class extends Component {
     }
     return [...rows.values()];
   }
+  // shared pointer drag (core/drag.js): ghost follows the cursor, the dimmed
+  // row live-reorders under it; drop persists, Escape restores the grab order
   onDragStart(ev, i) {
+    const original = this.rows();
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".edit-row"),
+      onMove: (e) => this._dragMove(e),
+      onEnd: (commit) => {
+        this._dragStop = null;
+        this.dragIndex.set(-1);
+        if (commit) this.saveAuto();
+        else this.rows.set(original);
+      }
+    });
+    if (!stop) return;
+    this._dragStop = stop;
     this.dragIndex.set(i);
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", String(i));
   }
-  onDragOver(ev, i) {
-    if (this.dragIndex() < 0) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "move";
-    if (this.dragOverIndex() !== i) this.dragOverIndex.set(i);
-  }
-  onDrop(ev, i) {
-    if (this.dragIndex() < 0) return;
-    ev.preventDefault();
-    this.reorderRows(this.dragIndex(), i);
-    this.onDragEnd();
-  }
-  onDragEnd() {
-    this.dragIndex.set(-1);
-    this.dragOverIndex.set(-1);
-  }
-  // move the dragged row to sit immediately before the drop target, then persist
-  reorderRows(from, to) {
-    if (from < 0 || to < 0 || from === to) return;
-    const rows = [...this.rows()];
-    const [moved] = rows.splice(from, 1);
-    rows.splice(from < to ? to - 1 : to, 0, moved);
-    this.rows.set(rows);
-    this.saveAuto();
+  _dragMove(ev) {
+    const from = this.dragIndex();
+    if (from < 0) return;
+    const others = [...this.rowsEl()?.querySelectorAll(".edit-row") || []].filter(
+      (r) => !r.classList.contains("dragging")
+    );
+    const to = dropIndex(ev, others);
+    if (to === from) return;
+    const next = [...this.rows()];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    this.rows.set(next);
+    this.dragIndex.set(to);
   }
   load() {
     this.rows.set(
@@ -5397,12 +5452,11 @@ var TabsEditor = class extends Component {
     <div class="config-block">
       <h2 class="subtitle">Tabs</h2>
       <p class="dim">Show, hide and reorder the sidebar tabs (drag the handle to reorder).</p>
-      <div class="rows" data-form-type="other">
-        <div t-foreach="this.rows" t-as="row" t-key="row.id" class="edit-row"
-             t-att-class="{dragging: this.dragIndex() === row_index, 'drag-over': this.dragOverIndex() === row_index}"
-             t-on-dragover="ev => this.onDragOver(ev, row_index)" t-on-drop="ev => this.onDrop(ev, row_index)">
-          <span class="row-handle" draggable="true" title="drag to reorder"
-                t-on-dragstart="ev => this.onDragStart(ev, row_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+      <div class="rows" data-form-type="other" t-ref="this.rowsEl">
+        <div t-foreach="this.viewRows" t-as="row" t-key="row.id" class="edit-row"
+             t-att-class="{dragging: this.dragId() === row.id}">
+          <span class="row-handle" title="drag to reorder"
+                t-on-pointerdown="ev => this.onDragStart(ev, row)">⠿</span>
           <label class="tab-row">
             <input type="checkbox" t-att-checked="row.visible" t-att-disabled="row.id === 'config'"
                    t-att-title="row.id === 'config' ? 'the Configuration tab is always shown' : ''"
@@ -5413,8 +5467,18 @@ var TabsEditor = class extends Component {
       </div>
     </div>`;
   config = usePlugin(ConfigPlugin);
-  dragIndex = signal(-1);
-  dragOverIndex = signal(-1);
+  rowsEl = signal.ref(HTMLElement);
+  dragId = signal("");
+  // id of the tab row being dragged ("" = none)
+  // drag-time order override: `rows` derives from config, which must only be
+  // written once (on drop) — during the drag the template renders this instead
+  dragRows = signal(null);
+  setup() {
+    onWillUnmount(() => this._dragStop?.(true));
+  }
+  get viewRows() {
+    return this.dragRows() || this.rows;
+  }
   // configured order, with any NAV tab missing from config slotted in at its
   // natural position (see mergedTabIds, so a newly-added tab shows up next to its
   // neighbours). Config is always visible; new tabs default to visible.
@@ -5435,31 +5499,38 @@ var TabsEditor = class extends Component {
     if (id === "config") return;
     this._save(this.rows.map((r) => r.id === id ? { ...r, visible } : r));
   }
-  onDragStart(ev, i) {
-    this.dragIndex.set(i);
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", String(i));
+  // shared pointer drag (core/drag.js): ghost follows the cursor, the dimmed
+  // row live-reorders under it; drop writes the order to config once
+  onDragStart(ev, row) {
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".edit-row"),
+      onMove: (e) => this._dragMove(e),
+      onEnd: (commit) => {
+        this._dragStop = null;
+        const rows = this.dragRows();
+        this.dragId.set("");
+        this.dragRows.set(null);
+        if (commit && rows) this._save(rows);
+      }
+    });
+    if (!stop) return;
+    this._dragStop = stop;
+    this.dragRows.set(this.rows);
+    this.dragId.set(row.id);
   }
-  onDragOver(ev, i) {
-    if (this.dragIndex() < 0) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = "move";
-    if (this.dragOverIndex() !== i) this.dragOverIndex.set(i);
-  }
-  onDrop(ev, i) {
-    if (this.dragIndex() < 0) return;
-    ev.preventDefault();
-    const from = this.dragIndex();
-    this.onDragEnd();
-    if (from === i) return;
-    const rows = [...this.rows];
-    const [moved] = rows.splice(from, 1);
-    rows.splice(from < i ? i - 1 : i, 0, moved);
-    this._save(rows);
-  }
-  onDragEnd() {
-    this.dragIndex.set(-1);
-    this.dragOverIndex.set(-1);
+  _dragMove(ev) {
+    const cur = this.dragRows();
+    if (!cur) return;
+    const others = [...this.rowsEl()?.querySelectorAll(".edit-row") || []].filter(
+      (r) => !r.classList.contains("dragging")
+    );
+    const to = dropIndex(ev, others);
+    const from = cur.findIndex((r) => r.id === this.dragId());
+    if (from < 0 || from === to) return;
+    const next = [...cur];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    this.dragRows.set(next);
   }
 };
 var LinksEditor = class extends Component {
@@ -5470,23 +5541,21 @@ var LinksEditor = class extends Component {
       <div class="links-tree" data-form-type="other">
         <t t-foreach="this.items()" t-as="it" t-key="it._id">
           <div t-if="this.isMenu(it)" class="link-menu">
-            <div class="edit-row link-menu-head" t-att-class="{dragging: this.dragId() === it._id, 'drag-over': this.overId() === it._id}"
-                 t-on-dragover="ev => this.onOver(ev, it._id)" t-on-drop="ev => this.onDrop(ev, it._id)">
-              <span class="row-handle" draggable="true" title="drag to reorder"
-                    t-on-dragstart="ev => this.onDragStart(ev, it._id)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+            <div class="edit-row link-menu-head" t-att-data-id="it._id"
+                 t-att-class="{dragging: this.dragId() === it._id, 'drag-over': this.overId() === it._id}">
+              <span class="row-handle" title="drag to reorder"
+                    t-on-pointerdown="ev => this.onDragStart(ev, it._id)">⠿</span>
               <span class="link-menu-caret">▾</span>
               <input class="w-flex" placeholder="menu name" t-att-value="it.label"
                      t-on-input="ev => this.edit(it, 'label', ev.target.value)" t-on-change="() => this.save()"/>
               <span class="link-menu-tag">menu</span>
               <button class="row-remove" title="remove menu" t-on-click="() => this.remove(it._id)">✕</button>
             </div>
-            <div class="link-menu-body" t-att-class="{'drag-over': this.overInto() === it._id}"
-                 t-on-dragover="ev => this.onOverInto(ev, it._id)" t-on-drop="ev => this.onDropInto(ev, it._id)">
-              <div t-foreach="it.children" t-as="c" t-key="c._id" class="edit-row link-child"
-                   t-att-class="{dragging: this.dragId() === c._id, 'drag-over': this.overId() === c._id}"
-                   t-on-dragover="ev => this.onOver(ev, c._id)" t-on-drop="ev => this.onDrop(ev, c._id)">
-                <span class="row-handle" draggable="true" title="drag to move"
-                      t-on-dragstart="ev => this.onDragStart(ev, c._id)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+            <div class="link-menu-body" t-att-data-menu-id="it._id" t-att-class="{'drag-over': this.overInto() === it._id}">
+              <div t-foreach="it.children" t-as="c" t-key="c._id" class="edit-row link-child" t-att-data-id="c._id"
+                   t-att-class="{dragging: this.dragId() === c._id, 'drag-over': this.overId() === c._id}">
+                <span class="row-handle" title="drag to move"
+                      t-on-pointerdown="ev => this.onDragStart(ev, c._id)">⠿</span>
                 <input class="w-name" placeholder="label" t-att-value="c.label"
                        t-on-input="ev => this.edit(c, 'label', ev.target.value)" t-on-change="() => this.save()"/>
                 <input class="w-flex" placeholder="href (https://…)" t-att-value="c.href"
@@ -5496,10 +5565,10 @@ var LinksEditor = class extends Component {
               <button class="link-add-child" t-on-click="() => this.addLink(it._id)">+ link</button>
             </div>
           </div>
-          <div t-else="" class="edit-row link-row" t-att-class="{dragging: this.dragId() === it._id, 'drag-over': this.overId() === it._id}"
-               t-on-dragover="ev => this.onOver(ev, it._id)" t-on-drop="ev => this.onDrop(ev, it._id)">
-            <span class="row-handle" draggable="true" title="drag to reorder / into a menu"
-                  t-on-dragstart="ev => this.onDragStart(ev, it._id)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+          <div t-else="" class="edit-row link-row" t-att-data-id="it._id"
+               t-att-class="{dragging: this.dragId() === it._id, 'drag-over': this.overId() === it._id}">
+            <span class="row-handle" title="drag to reorder / into a menu"
+                  t-on-pointerdown="ev => this.onDragStart(ev, it._id)">⠿</span>
             <input class="w-name" placeholder="label" t-att-value="it.label"
                    t-on-input="ev => this.edit(it, 'label', ev.target.value)" t-on-change="() => this.save()"/>
             <input class="w-flex" placeholder="href (https://…)" t-att-value="it.href"
@@ -5507,8 +5576,7 @@ var LinksEditor = class extends Component {
             <button class="row-remove" title="remove" t-on-click="() => this.remove(it._id)">✕</button>
           </div>
         </t>
-        <div t-if="this.dragId()" class="links-drop-end" t-att-class="{'drag-over': this.overEnd()}"
-             t-on-dragover="ev => this.onOverEnd(ev)" t-on-drop="ev => this.onDropEnd(ev)">move here for top level</div>
+        <div t-if="this.dragId()" class="links-drop-end" t-att-class="{'drag-over': this.overEnd()}">move here for top level</div>
       </div>
       <div class="config-actions">
         <button t-on-click="() => this.addLink(null)">Add link</button>
@@ -5529,6 +5597,7 @@ var LinksEditor = class extends Component {
   _nextId = 1;
   setup() {
     this.load();
+    onWillUnmount(() => this._dragStop?.(true));
   }
   isMenu(n) {
     return Array.isArray(n.children);
@@ -5581,54 +5650,55 @@ var LinksEditor = class extends Component {
     }
     return null;
   }
+  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost
+  // that follows the cursor. Unlike the flat editors there's no live reorder —
+  // three distinct drop targets exist (before a row, into a menu's body, the
+  // trailing top-level zone), so moving keeps the highlight semantics: the
+  // pointer is hit-tested (the ghost is pointer-events:none, so
+  // elementFromPoint sees through it) and the drop dispatches on what's lit.
   onDragStart(ev, id) {
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".edit-row"),
+      onMove: (e) => this._dragMove(e),
+      onEnd: (commit) => this._dragEnd(commit)
+    });
+    if (!stop) return;
+    this._dragStop = stop;
     this.dragId.set(id);
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", String(id));
   }
-  onDragEnd() {
+  _dragMove(ev) {
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const row = el?.closest(".edit-row");
+    const rowId = row ? Number(row.dataset.id || 0) : 0;
+    if (rowId && rowId !== this.dragId()) {
+      this.overId.set(rowId);
+      this.overInto.set(0);
+      this.overEnd.set(false);
+      return;
+    }
+    const body = rowId ? null : el?.closest(".link-menu-body");
+    if (body) {
+      this.overInto.set(Number(body.dataset.menuId || 0));
+      this.overId.set(0);
+      this.overEnd.set(false);
+      return;
+    }
+    this.overEnd.set(!rowId && !!el?.closest(".links-drop-end"));
+    this.overId.set(0);
+    this.overInto.set(0);
+  }
+  _dragEnd(commit) {
+    this._dragStop = null;
+    const drag = this.dragId();
+    const target = { row: this.overId(), into: this.overInto(), end: this.overEnd() };
     this.dragId.set(0);
     this.overId.set(0);
     this.overInto.set(0);
     this.overEnd.set(false);
-  }
-  onOver(ev, id) {
-    if (!this.dragId()) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (this.overId() !== id) this.overId.set(id);
-    this.overInto.set(0);
-    this.overEnd.set(false);
-  }
-  onOverInto(ev, menuId) {
-    if (!this.dragId()) return;
-    ev.preventDefault();
-    if (this.overInto() !== menuId) this.overInto.set(menuId);
-    this.overId.set(0);
-    this.overEnd.set(false);
-  }
-  onOverEnd(ev) {
-    if (!this.dragId()) return;
-    ev.preventDefault();
-    this.overEnd.set(true);
-    this.overId.set(0);
-    this.overInto.set(0);
-  }
-  onDrop(ev, targetId) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    this._moveBefore(this.dragId(), targetId);
-    this.onDragEnd();
-  }
-  onDropInto(ev, menuId) {
-    ev.preventDefault();
-    this._moveInto(this.dragId(), menuId);
-    this.onDragEnd();
-  }
-  onDropEnd(ev) {
-    ev.preventDefault();
-    this._moveEnd(this.dragId());
-    this.onDragEnd();
+    if (!commit || !drag) return;
+    if (target.row) this._moveBefore(drag, target.row);
+    else if (target.into) this._moveInto(drag, target.into);
+    else if (target.end) this._moveEnd(drag);
   }
   // place the dragged node immediately before the target row, in the target's
   // container (top level or a menu). Menus can't nest (depth 1).
@@ -8533,7 +8603,7 @@ var TodoScreen = class extends Component {
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
-    onWillUnmount(() => this._drag && this._dragEnd(true));
+    onWillUnmount(() => this._dragStop?.(true));
     useEffect(() => {
       this.newTodo()?.focus();
     });
@@ -8657,81 +8727,39 @@ var TodoScreen = class extends Component {
     this._updateTodos((todos) => todos.filter((todo) => !todo.done));
   }
   // ── drag-and-drop resequencing ───────────────────────────────────────────────
-  // Pointer-based (not HTML5 dnd, whose drag image would be a static snapshot of
-  // the tiny handle): the grabbed row lifts into a fixed-position ghost that
+  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the list as the pointer crosses its neighbours' midlines. Drop
   // persists the order; Escape restores the grab-time order.
   onDragStart(ev, todo) {
-    if (ev.button !== 0) return;
-    ev.preventDefault();
-    const row = ev.target.closest(".todo-row");
-    if (!row) return;
-    const rect = row.getBoundingClientRect();
-    this._drag = {
-      id: todo.id,
-      offsetX: ev.clientX - rect.left,
-      offsetY: ev.clientY - rect.top,
-      original: this.list.todos,
-      // grab-time order, restored on Escape
-      ghost: this._makeGhost(row, rect),
-      onMove: (e) => this._dragMove(e),
-      onUp: () => this._dragEnd(true),
-      onKey: (e) => e.key === "Escape" && this._dragEnd(false)
-    };
-    this.dragId.set(todo.id);
-    this._dragMove(ev);
-    window.addEventListener("pointermove", this._drag.onMove);
-    window.addEventListener("pointerup", this._drag.onUp);
-    window.addEventListener("pointercancel", this._drag.onUp);
-    window.addEventListener("keydown", this._drag.onKey);
-    document.body.classList.add("todo-grabbing");
-  }
-  // the floating copy of the row that tracks the cursor (visual only — plain
-  // DOM, outside owl's tree, discarded on drop)
-  _makeGhost(row, rect) {
-    const ghost = row.cloneNode(true);
-    ghost.classList.add("todo-ghost");
-    ghost.classList.remove("dragging");
-    ghost.style.width = `${rect.width}px`;
-    document.body.appendChild(ghost);
-    return ghost;
-  }
-  _dragMove(ev) {
-    const d = this._drag;
-    if (!d) return;
-    d.ghost.style.transform = `translate(${ev.clientX - d.offsetX}px, ${ev.clientY - d.offsetY}px)`;
-    const rows = [...this.listEl()?.querySelectorAll(".todo-row") || []];
-    const others = rows.filter((r) => !r.classList.contains("dragging"));
-    let to = others.length;
-    for (let i = 0; i < others.length; i++) {
-      const r = others[i].getBoundingClientRect();
-      if (ev.clientY < r.top + r.height / 2) {
-        to = i;
-        break;
+    const original = this.list.todos;
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".todo-row"),
+      onMove: (e) => this._dragMove(e, todo.id),
+      onEnd: (commit) => {
+        this._dragStop = null;
+        this.dragId.set("");
+        if (commit) this._save();
+        else this._updateTodos(() => original);
       }
-    }
+    });
+    if (!stop) return;
+    this._dragStop = stop;
+    this.dragId.set(todo.id);
+  }
+  _dragMove(ev, id) {
+    const rows = [...this.listEl()?.querySelectorAll(".todo-row") || []];
+    const to = dropIndex(
+      ev,
+      rows.filter((r) => !r.classList.contains("dragging"))
+    );
     const todos = this.list.todos;
-    const from = todos.findIndex((t2) => t2.id === d.id);
+    const from = todos.findIndex((t2) => t2.id === id);
     if (from < 0 || from === to) return;
     const next = [...todos];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     this.lists.set(this.lists().map((l) => l.id === this.list.id ? { ...l, todos: next } : l));
-  }
-  _dragEnd(commit) {
-    const d = this._drag;
-    if (!d) return;
-    this._drag = null;
-    window.removeEventListener("pointermove", d.onMove);
-    window.removeEventListener("pointerup", d.onUp);
-    window.removeEventListener("pointercancel", d.onUp);
-    window.removeEventListener("keydown", d.onKey);
-    document.body.classList.remove("todo-grabbing");
-    d.ghost.remove();
-    this.dragId.set("");
-    if (commit) this._save();
-    else this._updateTodos(() => d.original);
   }
   _updateTodos(fn) {
     this._updateList(this.list.id, (l) => ({ ...l, todos: fn(l.todos) }));

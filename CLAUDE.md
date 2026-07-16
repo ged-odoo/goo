@@ -61,7 +61,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     slots: title-extra/top-middle/top-right/bottom-left/bottom-right), the `event_log.js` panel,
     and `app.js` = `Topbar`/`Sidebar`/
     `App` + the `SCREENS` registry, which `main.js` imports), and the leaf libs `config.js`,
-    `utils.js`, `presets.js`, `log_buffer.js`. `appBus` is a single shared `EventBus` exported
+    `utils.js`, `presets.js`, `log_buffer.js`, `drag.js` (the shared pointer-based
+    row drag-and-drop: cursor-following ghost + midline drop index — every
+    reorderable list uses it, never HTML5 dnd). `appBus` is a single shared `EventBus` exported
     from `core/common.js` — import it, never re-instantiate.
   - One folder per screen, each suffixed `_screen/` (`dashboard_screen/`, `code_screen/`,
     `workspaces_screen/`, `branches_screen/`, `prs_screen/`, `databases_screen/`,

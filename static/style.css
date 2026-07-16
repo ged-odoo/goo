@@ -990,24 +990,21 @@ section.hidden {
 .todo-row.dragging {
   opacity: 0.35;
 }
-/* the floating row that follows the cursor during a drag (cloned into <body>,
-   positioned via transform) */
-.todo-ghost {
+/* the floating row that follows the cursor during any pointer drag (see
+   core/drag.js — a clone appended to <body>, positioned via transform; it
+   keeps its original row class, so layout/padding come from that) */
+.drag-ghost {
   position: fixed;
   top: 0;
   left: 0;
   z-index: 300;
   pointer-events: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px 8px 16px;
   background: var(--l-card);
   border: 1px solid var(--l-accent-line);
   border-radius: 10px;
   box-shadow: 0 10px 28px oklch(0.27 0.012 264 / 0.22);
 }
-body.todo-grabbing {
+body.drag-grabbing {
   cursor: grabbing;
   user-select: none;
 }
