@@ -8498,11 +8498,17 @@ var TodoScreen = class extends Component {
               </div>
               <div t-else="" class="todo-list">
                 <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                     t-att-class="{done: todo.done}" t-att-title="this.createdTitle(todo)">
-                  <label class="todo-check">
-                    <input type="checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
-                    <span t-out="todo.title"/>
-                  </label>
+                     t-att-class="{done: todo.done, dragging: this.dragIndex() === todo_index, 'drag-over': this.dragOverIndex() === todo_index}"
+                     t-att-title="this.createdTitle(todo)"
+                     t-on-dragover="ev => this.onDragOver(ev, todo_index)" t-on-drop="ev => this.onDrop(ev, todo_index)">
+                  <span class="row-handle" draggable="true" title="drag to reorder"
+                        t-on-dragstart="ev => this.onDragStart(ev, todo_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+                  <div class="todo-check">
+                    <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
+                    <button type="button" class="todo-title" t-on-click="() => this.editNote(todo)" t-out="todo.title"/>
+                  </div>
+                  <button class="todo-star" t-att-class="{on: todo.starred}"
+                          t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
                   <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
                 </div>
               </div>
@@ -8518,6 +8524,10 @@ var TodoScreen = class extends Component {
   selected = signal(this._stored.selected);
   draft = signal("");
   menuOpen = signal(false);
+  dragIndex = signal(-1);
+  // todo row being dragged (-1 = none)
+  dragOverIndex = signal(-1);
+  // todo row the drag is hovering over
   newTodo = signal.ref(HTMLInputElement);
   todoIcon = m(ICONS.todo);
   kebabIcon = m(ICONS.kebab);
@@ -8587,12 +8597,14 @@ var TodoScreen = class extends Component {
       fields: [{ key: "name", type: "text", label: "Name", value, placeholder: "list name" }]
     }).then((res) => res ? res.name.trim() : "");
   }
-  // ── todos (on the selected list) ───────────────────────────────────────────
+  // ── todos (on the selected list) ────────────────────────────────────────────
+  // new todos go to the front, so the default order is last-created-first;
+  // drag-and-drop (below) then lets the array order be reshuffled freely.
   add() {
     const title = this.draft().trim();
     if (!title) return;
     this._updateTodos((todos) => [
-      { id: uid(), title, done: false, created: Date.now() },
+      { id: uid(), title, done: false, created: Date.now(), starred: false, description: "" },
       ...todos
     ]);
     this.draft.set("");
@@ -8614,11 +8626,68 @@ var TodoScreen = class extends Component {
       (todos) => todos.map((todo) => todo.id === id ? { ...todo, done: !todo.done } : todo)
     );
   }
+  toggleStar(id) {
+    this._updateTodos(
+      (todos) => todos.map((todo) => todo.id === id ? { ...todo, starred: !todo.starred } : todo)
+    );
+  }
+  async editNote(todo) {
+    const res = await this.dialogs.open({
+      title: todo.title,
+      okLabel: "Save",
+      fields: [
+        {
+          key: "description",
+          type: "textarea",
+          label: "Description",
+          value: todo.description || "",
+          rows: 8,
+          placeholder: "description"
+        }
+      ]
+    });
+    if (!res) return;
+    this._updateTodos(
+      (todos) => todos.map((t2) => t2.id === todo.id ? { ...t2, description: res.description } : t2)
+    );
+  }
   remove(id) {
     this._updateTodos((todos) => todos.filter((todo) => todo.id !== id));
   }
   clearCompleted() {
     this._updateTodos((todos) => todos.filter((todo) => !todo.done));
+  }
+  // ── drag-and-drop resequencing ───────────────────────────────────────────────
+  onDragStart(ev, i) {
+    this.dragIndex.set(i);
+    ev.dataTransfer.effectAllowed = "move";
+    ev.dataTransfer.setData("text/plain", String(i));
+  }
+  onDragOver(ev, i) {
+    if (this.dragIndex() < 0) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+    if (this.dragOverIndex() !== i) this.dragOverIndex.set(i);
+  }
+  onDrop(ev, i) {
+    if (this.dragIndex() < 0) return;
+    ev.preventDefault();
+    this.reorderTodos(this.dragIndex(), i);
+    this.onDragEnd();
+  }
+  onDragEnd() {
+    this.dragIndex.set(-1);
+    this.dragOverIndex.set(-1);
+  }
+  // move the dragged todo to sit immediately before the drop target, then persist
+  reorderTodos(from, to) {
+    if (from < 0 || to < 0 || from === to) return;
+    this._updateTodos((todos) => {
+      const next = [...todos];
+      const [moved] = next.splice(from, 1);
+      next.splice(from < to ? to - 1 : to, 0, moved);
+      return next;
+    });
   }
   _updateTodos(fn) {
     this._updateList(this.list.id, (l) => ({ ...l, todos: fn(l.todos) }));
