@@ -85,13 +85,12 @@ export class TodoScreen extends Component {
                 <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
                 <span>No todos yet.</span>
               </div>
-              <div t-else="" class="todo-list">
+              <div t-else="" class="todo-list" t-ref="this.listEl">
                 <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                     t-att-class="{done: todo.done, dragging: this.dragIndex() === todo_index, 'drag-over': this.dragOverIndex() === todo_index}"
-                     t-att-title="this.createdTitle(todo)"
-                     t-on-dragover="ev => this.onDragOver(ev, todo_index)" t-on-drop="ev => this.onDrop(ev, todo_index)">
-                  <span class="row-handle" draggable="true" title="drag to reorder"
-                        t-on-dragstart="ev => this.onDragStart(ev, todo_index)" t-on-dragend="() => this.onDragEnd()">⠿</span>
+                     t-att-class="{done: todo.done, dragging: this.dragId() === todo.id}"
+                     t-att-title="this.createdTitle(todo)">
+                  <span class="row-handle" title="drag to reorder"
+                        t-on-pointerdown="ev => this.onDragStart(ev, todo)">⠿</span>
                   <div class="todo-check">
                     <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
                     <button type="button" class="todo-title" t-on-click="() => this.editNote(todo)" t-out="todo.title"/>
@@ -113,9 +112,9 @@ export class TodoScreen extends Component {
   selected = signal(this._stored.selected);
   draft = signal("");
   menuOpen = signal(false);
-  dragIndex = signal(-1); // todo row being dragged (-1 = none)
-  dragOverIndex = signal(-1); // todo row the drag is hovering over
+  dragId = signal(""); // id of the todo being dragged ("" = none)
   newTodo = signal.ref(HTMLInputElement);
+  listEl = signal.ref(HTMLElement);
   todoIcon = m(ICONS.todo);
   kebabIcon = m(ICONS.kebab);
 
@@ -124,6 +123,8 @@ export class TodoScreen extends Component {
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
+    // never leak the drag ghost / window listeners if we unmount mid-drag
+    onWillUnmount(() => this._drag && this._dragEnd(true));
     // autofocus the new-todo input: the effect tracks the ref signal, so it runs
     // once the input is mounted (and again if it's ever remounted)
     useEffect(() => {
@@ -269,40 +270,87 @@ export class TodoScreen extends Component {
   }
 
   // ── drag-and-drop resequencing ───────────────────────────────────────────────
-  onDragStart(ev, i) {
-    this.dragIndex.set(i);
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", String(i)); // some browsers need data to start a drag
+  // Pointer-based (not HTML5 dnd, whose drag image would be a static snapshot of
+  // the tiny handle): the grabbed row lifts into a fixed-position ghost that
+  // follows the cursor, while the real row — dimmed in place — live-reorders
+  // through the list as the pointer crosses its neighbours' midlines. Drop
+  // persists the order; Escape restores the grab-time order.
+  onDragStart(ev, todo) {
+    if (ev.button !== 0) return;
+    ev.preventDefault(); // no text selection while dragging
+    const row = ev.target.closest(".todo-row");
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    this._drag = {
+      id: todo.id,
+      offsetX: ev.clientX - rect.left,
+      offsetY: ev.clientY - rect.top,
+      original: this.list.todos, // grab-time order, restored on Escape
+      ghost: this._makeGhost(row, rect),
+      onMove: (e) => this._dragMove(e),
+      onUp: () => this._dragEnd(true),
+      onKey: (e) => e.key === "Escape" && this._dragEnd(false),
+    };
+    this.dragId.set(todo.id);
+    this._dragMove(ev);
+    window.addEventListener("pointermove", this._drag.onMove);
+    window.addEventListener("pointerup", this._drag.onUp);
+    window.addEventListener("pointercancel", this._drag.onUp);
+    window.addEventListener("keydown", this._drag.onKey);
+    document.body.classList.add("todo-grabbing");
   }
 
-  onDragOver(ev, i) {
-    if (this.dragIndex() < 0) return;
-    ev.preventDefault(); // mark this row as a valid drop target
-    ev.dataTransfer.dropEffect = "move";
-    if (this.dragOverIndex() !== i) this.dragOverIndex.set(i);
+  // the floating copy of the row that tracks the cursor (visual only — plain
+  // DOM, outside owl's tree, discarded on drop)
+  _makeGhost(row, rect) {
+    const ghost = row.cloneNode(true);
+    ghost.classList.add("todo-ghost");
+    ghost.classList.remove("dragging");
+    ghost.style.width = `${rect.width}px`;
+    document.body.appendChild(ghost);
+    return ghost;
   }
 
-  onDrop(ev, i) {
-    if (this.dragIndex() < 0) return;
-    ev.preventDefault();
-    this.reorderTodos(this.dragIndex(), i);
-    this.onDragEnd();
+  _dragMove(ev) {
+    const d = this._drag;
+    if (!d) return;
+    d.ghost.style.transform = `translate(${ev.clientX - d.offsetX}px, ${ev.clientY - d.offsetY}px)`;
+    // live reorder: the dimmed source row follows the pointer through the list.
+    // Insertion index = first row (ghost's own excluded) whose midline is below
+    // the pointer; DOM order matches array order, so index math lines up.
+    const rows = [...(this.listEl()?.querySelectorAll(".todo-row") || [])];
+    const others = rows.filter((r) => !r.classList.contains("dragging"));
+    let to = others.length;
+    for (let i = 0; i < others.length; i++) {
+      const r = others[i].getBoundingClientRect();
+      if (ev.clientY < r.top + r.height / 2) {
+        to = i;
+        break;
+      }
+    }
+    const todos = this.list.todos;
+    const from = todos.findIndex((t) => t.id === d.id);
+    if (from < 0 || from === to) return;
+    const next = [...todos];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    // reorder in memory only — persisted once, on drop
+    this.lists.set(this.lists().map((l) => (l.id === this.list.id ? { ...l, todos: next } : l)));
   }
 
-  onDragEnd() {
-    this.dragIndex.set(-1);
-    this.dragOverIndex.set(-1);
-  }
-
-  // move the dragged todo to sit immediately before the drop target, then persist
-  reorderTodos(from, to) {
-    if (from < 0 || to < 0 || from === to) return;
-    this._updateTodos((todos) => {
-      const next = [...todos];
-      const [moved] = next.splice(from, 1);
-      next.splice(from < to ? to - 1 : to, 0, moved); // account for the removed row's shift
-      return next;
-    });
+  _dragEnd(commit) {
+    const d = this._drag;
+    if (!d) return;
+    this._drag = null;
+    window.removeEventListener("pointermove", d.onMove);
+    window.removeEventListener("pointerup", d.onUp);
+    window.removeEventListener("pointercancel", d.onUp);
+    window.removeEventListener("keydown", d.onKey);
+    document.body.classList.remove("todo-grabbing");
+    d.ghost.remove();
+    this.dragId.set("");
+    if (commit) this._save();
+    else this._updateTodos(() => d.original); // Escape: back to the grab-time order
   }
 
   _updateTodos(fn) {
