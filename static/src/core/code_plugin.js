@@ -908,8 +908,9 @@ export class CodePlugin extends Plugin {
 
   // reorder and/or squash this branch's own ("ahead") commits (the workspace
   // history view's drag-to-reorder + squash affordance). plan: the desired
-  // final order, oldest-first, [{sha, squash}] — squash folds a commit into
-  // whichever entry precedes it. The backend re-validates the plan covers
+  // final order, oldest-first, [{sha, squash, drop, message?}] — squash folds a
+  // commit into whichever entry precedes it, drop removes it, and message replaces
+  // a picked commit's full message. The backend re-validates the plan covers
   // exactly the commits ahead of <base> before touching anything. Throws on
   // failure — same convention as rewordCommit, the caller keeps its own error
   // UI open. The thrown Error's `inProgress` flag distinguishes a conflict

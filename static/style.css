@@ -4970,6 +4970,14 @@ a.commit-detail-hash svg {
   display: flex;
   align-items: stretch;
   border-bottom: 1px solid var(--l-line-soft);
+  transition: background-color 0.12s ease;
+}
+.ws-history-row:hover {
+  background: var(--l-hover);
+}
+.ws-history-row.selected {
+  background: var(--l-accent-soft);
+  box-shadow: inset 3px 0 var(--l-accent);
 }
 .ws-history-row.dragging {
   opacity: 0.35;
@@ -4988,13 +4996,6 @@ a.commit-detail-hash svg {
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-.ws-history-commit:hover {
-  background: var(--l-card);
-}
-.ws-history-commit.selected {
-  background: var(--l-accent-soft);
-  box-shadow: inset 3px 0 var(--l-accent);
 }
 .ws-history-commit-date {
   grid-row: 1 / span 2;
@@ -5026,8 +5027,9 @@ a.commit-detail-hash svg {
   align-self: center;
   margin-right: 8px;
   padding: 1px 5px;
-  font-family: var(--mono);
-  font-size: 12px;
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 800;
   line-height: 1;
   color: var(--l-text-faint);
   background: transparent;
@@ -5132,7 +5134,53 @@ a.commit-detail-hash svg {
   margin: 0;
   color: var(--l-text);
   font-size: 18px;
+  font-weight: 600;
   line-height: 1.35;
+}
+.ws-history-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ws-history-title-row > .ws-history-title {
+  flex: 1;
+  min-width: 0;
+}
+.ws-history-actions {
+  margin-top: -3px;
+}
+.ws-history-actions .dash-menu {
+  min-width: 140px;
+}
+.ws-history-title-input {
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  font-family: inherit;
+}
+.ws-history-title-input:hover,
+.ws-history-body-input:hover {
+  border-color: var(--l-line);
+}
+.ws-history-title-input:focus,
+.ws-history-body-input:focus {
+  outline: none;
+  border-color: var(--l-accent);
+  background: var(--l-card);
+  box-shadow: 0 0 0 2px var(--l-accent-soft);
+}
+.ws-history-title-input.invalid {
+  border-color: var(--l-red);
+}
+.ws-history-message-saving {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--l-text-dim);
+  font-size: 11px;
 }
 .ws-history-body {
   margin: 10px 0 0;
@@ -5142,14 +5190,26 @@ a.commit-detail-hash svg {
   line-height: 1.5;
   white-space: pre-wrap;
 }
+.ws-history-body-input {
+  width: 100%;
+  min-height: 68px;
+  padding: 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  field-sizing: content;
+  resize: vertical;
+}
 .ws-history-diff {
   margin-top: 22px;
   border: 1px solid var(--l-line);
   background: #fff;
   color: #1f2328;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  line-height: 1.55;
+  font-family:
+    "Monaspace Neon", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 11px;
+  line-height: 1.6;
 }
 .ws-history-diff-line {
   min-width: max-content;

@@ -158,41 +158,67 @@ export class CodePane extends Component {
           <div class="ws-history-layout">
             <aside class="ws-history-list" t-ref="this.historyListEl">
               <div t-foreach="this.historyOrderedCommits" t-as="commit" t-key="commit.sha"
-                   class="ws-history-row" t-att-class="{dragging: this.historyDragSha() === commit.sha, 'ws-history-row-ahead': commit.ahead}"
+                   class="ws-history-row" t-att-class="{dragging: this.historyDragSha() === commit.sha, selected: commit.sha === this.historySelected(), 'ws-history-row-ahead': commit.ahead}"
                    t-att-data-sha="commit.sha">
                 <span t-if="commit.ahead and this.historyAheadCount > 1 and !this.historyConflict()" class="row-handle" title="drag to reorder"
                       t-on-pointerdown.stop="(ev) => this.onHistoryRowDragStart(ev, commit)">⠿</span>
                 <span t-else="" class="row-handle-spacer"/>
-                <button class="ws-history-commit" t-att-class="{selected: commit.sha === this.historySelected()}"
-                        t-on-click="() => this.selectHistoryCommit(commit)">
+                <button class="ws-history-commit" t-on-click="() => this.selectHistoryCommit(commit)">
                   <span class="ws-history-commit-date" t-att-title="this.fullCommitDate(commit.date)" t-out="this.shortCommitDate(commit.date)"/>
-                  <span class="ws-history-commit-title" t-out="commit.subject"/>
+                  <span class="ws-history-commit-title" t-out="this.historySubject(commit)"/>
                   <span class="ws-history-commit-author" t-out="commit.author"/>
                 </button>
                 <button t-if="this.canSquashHistory(commit.sha) and !this.historyConflict()" class="commit-squash-btn" t-att-class="{on: this.isHistorySquashed(commit.sha)}"
                         t-att-title="this.isHistorySquashed(commit.sha) ? 'squashed into the commit below — click to undo' : 'squash into the commit below'"
-                        t-on-click.stop="() => this.toggleHistorySquash(commit.sha)">⌄</button>
+                        t-on-click.stop="() => this.toggleHistorySquash(commit.sha)">↓</button>
                 <span t-else="" class="commit-squash-spacer"/>
               </div>
             </aside>
             <section class="ws-history-detail">
               <t t-if="this.historyCommit">
-                <h2 class="ws-history-title" t-out="this.historyCommit.subject"/>
-                <div class="ws-history-meta">
-                  <div class="ws-history-meta-row">
-                    <span class="ws-history-author" t-out="this.historyCommit.author"/>
-                    <span class="ws-history-hash" t-out="this.historyCommit.sha"/>
+                <div class="ws-history-message-zone" t-on-focusout="(ev) => this.saveHistoryMessageOnBlur(ev)">
+                  <div class="ws-history-title-row">
+                    <input t-if="this.historyCommitEditable" class="ws-history-title ws-history-title-input" type="text"
+                           t-att-class="{invalid: !this.historySubject(this.historyCommit).trim()}"
+                           aria-label="commit title" t-att-value="this.historySubject(this.historyCommit)"
+                           t-att-disabled="this.historyApplying() or this.historyConflict()"
+                           t-on-input="(ev) => this.updateHistoryMessage(this.historyCommit, 'subject', ev.target.value)"/>
+                    <h2 t-else="" class="ws-history-title" t-out="this.historySubject(this.historyCommit)"/>
+                    <div t-if="this.historyCommitEditable" class="dash-kebab-wrap ws-history-actions">
+                      <button class="dash-kebab" t-att-class="{open: this.historyMenuSha() === this.historyCommit.sha}"
+                              title="more actions" t-att-disabled="this.historyApplying() or this.historyConflict()"
+                              t-on-click.stop="() => this.toggleHistoryMenu(this.historyCommit.sha)"><t t-out="this.kebabIcon"/></button>
+                      <div t-if="this.historyMenuSha() === this.historyCommit.sha" class="dash-menu" t-on-click.stop="">
+                        <button class="dash-menu-item danger" t-att-disabled="this.historyStructureDirty"
+                                t-att-title="this.historyStructureDirty ? 'apply or reset the pending reorder/squash first' : 'drop this commit'"
+                                t-on-click="() => this.dropHistoryCommit(this.historyCommit)">Drop commit</button>
+                      </div>
+                    </div>
                   </div>
-                  <div class="ws-history-meta-row">
-                    <span t-out="this.fullCommitDate(this.historyCommit.date)"/>
-                    <span t-if="!this.historyDiffLoading() and !this.historyDiffError()" class="ws-history-diffstats">
-                      <span class="add" t-out="'+' + this.historyDiffStats.added"/>
-                      <span class="del" t-out="'-' + this.historyDiffStats.deleted"/>
-                    </span>
-                    <span t-else="" class="ws-history-diffstats">…</span>
+                  <div class="ws-history-meta">
+                    <div class="ws-history-meta-row">
+                      <span class="ws-history-author" t-out="this.historyCommit.author"/>
+                      <span class="ws-history-hash" t-out="this.historyCommit.sha"/>
+                    </div>
+                    <div class="ws-history-meta-row">
+                      <span t-out="this.fullCommitDate(this.historyCommit.date)"/>
+                      <span t-if="!this.historyDiffLoading() and !this.historyDiffError()" class="ws-history-diffstats">
+                        <span class="add" t-out="'+' + this.historyDiffStats.added"/>
+                        <span class="del" t-out="'-' + this.historyDiffStats.deleted"/>
+                      </span>
+                      <span t-else="" class="ws-history-diffstats">…</span>
+                    </div>
                   </div>
+                  <textarea t-if="this.historyCommitEditable" class="ws-history-body ws-history-body-input"
+                            aria-label="commit message" placeholder="Commit message (optional)"
+                            t-att-value="this.historyBody(this.historyCommit)"
+                            t-att-disabled="this.historyApplying() or this.historyConflict()"
+                            t-on-input="(ev) => this.updateHistoryMessage(this.historyCommit, 'body', ev.target.value)"/>
+                  <pre t-elif="this.historyBody(this.historyCommit)" class="ws-history-body" t-out="this.historyBody(this.historyCommit)"/>
+                  <span t-if="this.historyApplying() and Object.keys(this.historyMessageEdits()).length" class="ws-history-message-saving">
+                    <span class="ws-refresh-spin"/>Saving commit message…
+                  </span>
                 </div>
-                <pre t-if="this.historyCommit.body" class="ws-history-body" t-out="this.historyCommit.body"/>
                 <div t-if="this.historyDiffLoading()" class="ws-history-diff-state dim"><span class="ws-refresh-spin"/>Loading diff…</div>
                 <div t-elif="this.historyDiffError()" class="ws-history-diff-state form-error" t-out="this.historyDiffError()"/>
                 <div t-elif="!this.historyDiff()" class="ws-history-diff-state dim">This commit has no file changes.</div>
@@ -210,11 +236,11 @@ export class CodePane extends Component {
             <button class="pbtn" t-att-disabled="this.historyApplying()" t-on-click="() => this.abortHistoryConflict()">Abort rebase</button>
             <button class="pbtn primary" t-on-click="() => this.openHistoryConflictTerminal()">Open terminal</button>
           </div>
-          <div t-elif="this.historyDirty" class="commits-foot">
+          <div t-elif="this.historyStructureDirty" class="commits-foot">
             <span class="dim" t-out="this.historyPlanSummary"/>
             <span class="wt-sp"/>
             <button class="pbtn" t-att-disabled="this.historyApplying()" t-on-click="() => this.resetHistoryPlan()">Reset</button>
-            <button class="pbtn primary" t-att-disabled="this.historyApplying()" t-on-click="() => this.applyHistoryPlan()">
+            <button class="pbtn primary" t-att-disabled="this.historyApplying() or !this.historyPlanValid" t-on-click="() => this.applyHistoryPlan()">
               <t t-if="this.historyApplying()">Applying…</t><t t-else="">Apply</t>
             </button>
           </div>
@@ -351,6 +377,12 @@ export class CodePane extends Component {
   // one rebase.
   historyPlanIds = signal([]);
   historySquashSet = signal(new Set());
+  historyDropSet = signal(new Set());
+  // sha -> {subject, body}; only entries that differ from git are retained.
+  // Message edits travel with the reorder/squash plan and are applied by the
+  // same interactive rebase, so editing never invalidates the pending shas.
+  historyMessageEdits = signal({});
+  historyMenuSha = signal("");
   historyDragSha = signal(""); // sha of the row being dragged ("" = none)
   historyApplying = signal(false);
   // set only when applyHistoryPlan's rebase conflicted and was left mid-flight,
@@ -361,11 +393,19 @@ export class CodePane extends Component {
   _historySequence = 0;
   _diffSequence = 0;
   _historyPendingKey = "";
+  _historyActionActive = false;
 
   setup() {
     // close the repo chip menu on any outside click
-    const closeMenu = () => this.menuId() && this.menuId.set("");
-    const onKeydown = (ev) => ev.key === "Escape" && this.historyRow() && this.closeHistory();
+    const closeMenu = () => {
+      if (this.menuId()) this.menuId.set("");
+      if (this.historyMenuSha()) this.historyMenuSha.set("");
+    };
+    const onKeydown = (ev) => {
+      if (ev.key !== "Escape" || !this.historyRow()) return;
+      if (this.historyMenuSha()) this.historyMenuSha.set("");
+      else this.closeHistory();
+    };
     onMounted(() => document.addEventListener("click", closeMenu));
     onMounted(() => document.addEventListener("keydown", onKeydown));
     onWillUnmount(() => {
@@ -378,6 +418,10 @@ export class CodePane extends Component {
 
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
+  }
+
+  toggleHistoryMenu(sha) {
+    this.historyMenuSha.set(this.historyMenuSha() === sha ? "" : sha);
   }
 
   // repositories shown in the sync strip: this workspace's repos, in config order,
@@ -718,6 +762,9 @@ export class CodePane extends Component {
     this.historyDiffError.set("");
     this.historyPlanIds.set([]);
     this.historySquashSet.set(new Set());
+    this.historyDropSet.set(new Set());
+    this.historyMessageEdits.set({});
+    this.historyMenuSha.set("");
     this.historyConflict.set("");
   }
 
@@ -741,6 +788,79 @@ export class CodePane extends Component {
 
   get historyCommit() {
     return this.historyCommits().find((commit) => commit.sha === this.historySelected()) || null;
+  }
+
+  get historyCommitEditable() {
+    return this.isHistoryCommitEditable(this.historyCommit);
+  }
+
+  isHistoryCommitEditable(commit) {
+    return !!commit?.ahead && !this.isHistorySquashed(commit.sha);
+  }
+
+  historySubject(commit) {
+    return this.historyMessageEdits()[commit?.sha]?.subject ?? commit?.subject ?? "";
+  }
+
+  historyBody(commit) {
+    return this.historyMessageEdits()[commit?.sha]?.body ?? commit?.body ?? "";
+  }
+
+  updateHistoryMessage(commit, field, value) {
+    if (!this.isHistoryCommitEditable(commit) || this.historyApplying() || this.historyConflict()) {
+      return;
+    }
+    const next = {
+      subject: this.historySubject(commit),
+      body: this.historyBody(commit),
+      [field]: value,
+    };
+    const edits = { ...this.historyMessageEdits() };
+    if (next.subject === commit.subject && next.body === commit.body) delete edits[commit.sha];
+    else edits[commit.sha] = next;
+    this.historyMessageEdits.set(edits);
+  }
+
+  saveHistoryMessageOnBlur(ev) {
+    // Title + body are one editing zone: tabbing/clicking from one to the other
+    // must not trigger two rebases. Leaving the zone applies the pending message
+    // (and any reorder/squash plan it belongs to) as one atomic history rewrite.
+    if (this._historyActionActive) return;
+    if (ev.relatedTarget && ev.currentTarget.contains(ev.relatedTarget)) return;
+    if (!Object.keys(this.historyMessageEdits()).length || !this.historyPlanValid) return;
+    this.applyHistoryPlan();
+  }
+
+  async dropHistoryCommit(commit) {
+    if (
+      !this.isHistoryCommitEditable(commit) ||
+      this.historyApplying() ||
+      this.historyConflict() ||
+      this.historyStructureDirty
+    ) {
+      return;
+    }
+    // Opening the confirmation moves focus out of the message fields. Suppress
+    // their normal blur-save while the destructive action owns that transition.
+    this._historyActionActive = true;
+    this.historyMenuSha.set("");
+    let confirmed;
+    try {
+      confirmed = await this.dialogs.open({
+        title: `Drop "${this.historySubject(commit)}"?`,
+        message: "This permanently removes the commit and its changes from this branch.",
+        okLabel: "Drop",
+      });
+    } finally {
+      this._historyActionActive = false;
+    }
+    if (!confirmed) return;
+
+    const edits = { ...this.historyMessageEdits() };
+    delete edits[commit.sha];
+    this.historyMessageEdits.set(edits);
+    this.historyDropSet.set(new Set([commit.sha]));
+    await this.applyHistoryPlan();
   }
 
   shortCommitDate(date) {
@@ -803,23 +923,55 @@ export class CodePane extends Component {
     if (this.historyApplying() || this.historyConflict() || !this.canSquashHistory(sha)) return;
     const s = new Set(this.historySquashSet());
     if (s.has(sha)) s.delete(sha);
-    else s.add(sha);
+    else {
+      s.add(sha);
+      // A squashed commit disappears into the commit below it, so it cannot
+      // retain an independent message. Avoid silently applying an invisible edit.
+      const edits = { ...this.historyMessageEdits() };
+      delete edits[sha];
+      this.historyMessageEdits.set(edits);
+    }
     this.historySquashSet.set(s);
   }
 
   get historyDirty() {
+    return this.historyStructureDirty || Object.keys(this.historyMessageEdits()).length > 0;
+  }
+
+  get historyStructureDirty() {
     const original = this.historyCommits()
       .filter((c) => c.ahead)
       .map((c) => c.sha);
     return (
-      this.historyPlanIds().join("\0") !== original.join("\0") || this.historySquashSet().size > 0
+      this.historyPlanIds().join("\0") !== original.join("\0") ||
+      this.historySquashSet().size > 0 ||
+      this.historyDropSet().size > 0
     );
+  }
+
+  get historyPlanValid() {
+    return Object.values(this.historyMessageEdits()).every((edit) => edit.subject.trim());
   }
 
   get historyPlanSummary() {
     const total = this.historyPlanIds().length;
     const squashed = this.historySquashSet().size;
-    return squashed ? `${total} commits → ${total - squashed}` : "reordered";
+    const dropped = this.historyDropSet().size;
+    const edited = Object.keys(this.historyMessageEdits()).length;
+    const changes = [];
+    if (squashed) changes.push(`${total} commits → ${total - squashed}`);
+    else if (
+      this.historyPlanIds().join("\0") !==
+      this.historyCommits()
+        .filter((commit) => commit.ahead)
+        .map((commit) => commit.sha)
+        .join("\0")
+    ) {
+      changes.push("reordered");
+    }
+    if (dropped) changes.push(`${dropped} dropped`);
+    if (edited) changes.push(`${edited} message${edited === 1 ? "" : "s"} edited`);
+    return changes.join(" · ");
   }
 
   resetHistoryPlan() {
@@ -829,6 +981,8 @@ export class CodePane extends Component {
         .map((c) => c.sha),
     );
     this.historySquashSet.set(new Set());
+    this.historyDropSet.set(new Set());
+    this.historyMessageEdits.set({});
   }
 
   // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
@@ -872,12 +1026,30 @@ export class CodePane extends Component {
   // terminal to resolve it by hand, rather than a dismissable popup that could
   // be closed while a rebase sits half-applied.
   async applyHistoryPlan() {
-    if (this.historyApplying() || this.historyConflict() || !this.historyDirty) return;
+    if (
+      this.historyApplying() ||
+      this.historyConflict() ||
+      !this.historyDirty ||
+      !this.historyPlanValid
+    ) {
+      return;
+    }
     const row = this.historyRow();
     if (!row) return;
-    const plan = [...this.historyPlanIds()]
-      .reverse()
-      .map((sha) => ({ sha, squash: this.historySquashSet().has(sha) }));
+    const edits = this.historyMessageEdits();
+    const plan = [...this.historyPlanIds()].reverse().map((sha) => {
+      const entry = {
+        sha,
+        squash: this.historySquashSet().has(sha),
+        drop: this.historyDropSet().has(sha),
+      };
+      if (edits[sha]) {
+        entry.message = edits[sha].body
+          ? `${edits[sha].subject.trim()}\n\n${edits[sha].body}`
+          : edits[sha].subject.trim();
+      }
+      return entry;
+    });
     this.historyApplying.set(true);
     try {
       await this.code.rewriteHistory(row.path, row.base, plan, row.entry?.pull_remote || "");
@@ -889,7 +1061,7 @@ export class CodePane extends Component {
         this.historyConflict.set(e.message);
       } else {
         this.dialogs.open({
-          title: "Reorder/squash failed",
+          title: "Edit history failed",
           message: e.message,
           cls: "dialog-error",
           okLabel: "OK",

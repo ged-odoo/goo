@@ -1978,11 +1978,13 @@ class GitService:
         """Reorder and/or squash this branch's own commits via a scripted,
         non-interactive `git rebase -i`.
 
-        `plan` is the desired FINAL order, oldest-first: [{sha, squash}, ...].
+        `plan` is the desired FINAL order, oldest-first:
+        [{sha, squash, drop, message?}, ...].
         squash=True folds that commit into whichever entry precedes it in the
-        list — its own message is discarded; the resulting group keeps the
-        untouched original message of its first (oldest, non-squash) commit,
-        exactly like a lone pick that's never re-messaged. Re-validates
+        list — its own message is discarded. `message`, when present on a pick,
+        replaces that commit's full message; for a squash group it becomes the
+        resulting group's message. drop=True removes that commit and its changes.
+        Re-validates
         server-side that `plan` covers exactly this branch's commits ahead of
         <base> (see reword_commit) — never touches base/shared history, and
         refuses a plan whose oldest entry is itself a squash (nothing precedes
@@ -1992,22 +1994,43 @@ class GitService:
         validation failure returns it False, since git was never touched.
 
         Mechanics: GIT_SEQUENCE_EDITOR overwrites git's default todo with our
-        exact pick/squash order (the same non-interactive "cp a prepared file
+        exact pick/reword/squash order (the same non-interactive "cp a prepared file
         over whatever git drafted" trick reword_commit uses for its fixup
-        message) — no reliance on git's own reordering/autosquash. Squash
-        still opens a message editor once per group to combine messages; GIT_EDITOR
-        points at a tiny counter script that pops each group's prepared message
-        off an ordered queue (one shared substitution isn't enough here since a
-        plan can contain several independent squash groups).
+        message) — no reliance on git's own reordering/autosquash. Reworded
+        picks and squash groups open a message editor; GIT_EDITOR points at a
+        tiny counter script that pops each prepared message off an ordered queue
+        (one shared substitution isn't enough when a plan contains several edits
+        and/or independent squash groups).
         """
         path = os.path.expanduser(path)
-        shas = [e["sha"] for e in plan]
-        if not shas:
+        if not plan:
             return False, "nothing to reorder", False
-        if plan[0].get("squash"):
-            return False, "the oldest commit can't be squashed — nothing precedes it", False
+        for entry in plan:
+            if not isinstance(entry, dict) or not isinstance(entry.get("sha"), str):
+                return False, "invalid history plan", False
+            if "message" in entry and (
+                not isinstance(entry["message"], str) or not entry["message"].strip()
+            ):
+                return False, "commit messages can't be empty", False
+            if entry.get("squash") and "message" in entry:
+                return False, "a squashed commit can't keep an independent message", False
+            if entry.get("drop") and (entry.get("squash") or "message" in entry):
+                return False, "a dropped commit can't be squashed or reworded", False
+        shas = [entry["sha"] for entry in plan]
+        has_kept_commit = False
+        previous_dropped = False
+        for entry in plan:
+            if entry.get("drop"):
+                previous_dropped = True
+                continue
+            if entry.get("squash") and not has_kept_commit:
+                return False, "the oldest commit can't be squashed — nothing precedes it", False
+            if entry.get("squash") and previous_dropped:
+                return False, "a commit can't be squashed into a dropped commit", False
+            has_kept_commit = True
+            previous_dropped = False
         ahead = self._ahead_shas(path, "HEAD", base, pull_remote)
-        if not ahead or set(shas) != ahead:
+        if not ahead or len(shas) != len(ahead) or set(shas) != ahead:
             return False, "the commit list changed — reload and try again", False
         base_ref = None
         for candidate in (f"{pull_remote or 'origin'}/{base}", base):
@@ -2018,33 +2041,52 @@ class GitService:
         if not base_ref:
             return False, "couldn't resolve the base branch", False
 
-        # group consecutive squash entries under the pick that precedes them —
-        # only a group of 2+ ever opens a message editor (a lone pick's message
-        # is left untouched, matching how git itself skips the editor for it)
+        # Group consecutive squash entries under the pick that precedes them.
+        # A lone edited pick uses `reword`; a squash group keeps (or replaces)
+        # its root's message through the squash editor.
         groups = []
         for e in plan:
-            if e.get("squash") and groups:
-                groups[-1].append(e["sha"])
+            if e.get("drop"):
+                groups.append([e])
+            elif e.get("squash") and groups and not groups[-1][0].get("drop"):
+                groups[-1].append(e)
             else:
-                groups.append([e["sha"]])
+                groups.append([e])
 
         tmp_dir = tempfile.mkdtemp()
         try:
             todo_file = os.path.join(tmp_dir, "todo")
-            with open(todo_file, "w") as f:
-                f.write(
-                    "\n".join(f"{'squash' if e.get('squash') else 'pick'} {e['sha']}" for e in plan)
-                    + "\n"
-                )
+            todo_lines = []
+            queued_messages = []
             counter = 0
             for g in groups:
-                if len(g) < 2:
+                root = g[0]
+                if root.get("drop"):
+                    todo_lines.append(f"drop {root['sha']}")
+                    continue
+                if len(g) == 1:
+                    todo_lines.append(f"{'reword' if 'message' in root else 'pick'} {root['sha']}")
+                    if "message" in root:
+                        queued_messages.append(root["message"])
+                    continue
+                todo_lines.append(f"pick {root['sha']}")
+                todo_lines.extend(f"squash {entry['sha']}" for entry in g[1:])
+                if "message" in root:
+                    queued_messages.append(root["message"])
                     continue
                 msg_r = self.io.run(
-                    ["git", "-C", path, "log", "-1", "--format=%B", g[0]], timeout=15, quiet=True
+                    ["git", "-C", path, "log", "-1", "--format=%B", root["sha"]],
+                    timeout=15,
+                    quiet=True,
                 )
+                if msg_r.returncode != 0:
+                    return False, msg_r.stderr.strip() or "couldn't read commit message", False
+                queued_messages.append(msg_r.stdout)
+            with open(todo_file, "w") as f:
+                f.write("\n".join(todo_lines) + "\n")
+            for message in queued_messages:
                 with open(os.path.join(tmp_dir, f"{counter}.msg"), "w") as f:
-                    f.write(msg_r.stdout)
+                    f.write(message if message.endswith("\n") else message + "\n")
                 counter += 1
             with open(os.path.join(tmp_dir, "counter"), "w") as f:
                 f.write("0")

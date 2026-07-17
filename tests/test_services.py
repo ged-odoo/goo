@@ -1544,6 +1544,83 @@ class GitServiceTest(unittest.TestCase):
         self.assertIn("--autostash", rebase_call)
         self.assertIn("basesha", rebase_call)
 
+    def test_rewrite_history_rewords_picks_and_squash_roots(self):
+        class CapturingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                result = super().run(cmd, **kwargs)
+                if isinstance(cmd, list) and "rebase" in cmd:
+                    queue_dir = pathlib.Path(kwargs["env"]["GOO_QUEUE_DIR"])
+                    self.todo = (queue_dir / "todo").read_text()
+                    self.messages = [path.read_text() for path in sorted(queue_dir.glob("*.msg"))]
+                return result
+
+        io = CapturingIO(
+            runs={
+                "rev-list origin/master..HEAD": completed(stdout="a\nb\nc\n"),
+                "rev-parse origin/master": completed(stdout="basesha\n"),
+            }
+        )
+        plan = [
+            {"sha": "a", "message": "new A\n\nbody A"},
+            {"sha": "b", "message": "new B"},
+            {"sha": "c", "squash": True},
+        ]
+        ok, err, in_progress = services.GitService(io).rewrite_history("/repo", "master", plan)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertFalse(in_progress)
+        self.assertEqual(io.todo, "reword a\npick b\nsquash c\n")
+        self.assertEqual(io.messages, ["new A\n\nbody A\n", "new B\n"])
+        self.assertFalse(any("log -1 --format=%B" in " ".join(call) for call in io.run_calls))
+
+    def test_rewrite_history_rejects_message_on_squashed_commit(self):
+        ok, err, in_progress = services.GitService(FakeIO()).rewrite_history(
+            "/repo",
+            "master",
+            [{"sha": "a"}, {"sha": "b", "squash": True, "message": "lost"}],
+        )
+        self.assertFalse(ok)
+        self.assertIn("independent message", err)
+        self.assertFalse(in_progress)
+
+    def test_rewrite_history_rejects_empty_message(self):
+        ok, err, in_progress = services.GitService(FakeIO()).rewrite_history(
+            "/repo", "master", [{"sha": "a", "message": "  "}]
+        )
+        self.assertFalse(ok)
+        self.assertIn("can't be empty", err)
+        self.assertFalse(in_progress)
+
+    def test_rewrite_history_drops_commit(self):
+        class CapturingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                result = super().run(cmd, **kwargs)
+                if isinstance(cmd, list) and "rebase" in cmd:
+                    queue_dir = pathlib.Path(kwargs["env"]["GOO_QUEUE_DIR"])
+                    self.todo = (queue_dir / "todo").read_text()
+                return result
+
+        io = CapturingIO(
+            runs={
+                "rev-list origin/master..HEAD": completed(stdout="a\nb\n"),
+                "rev-parse origin/master": completed(stdout="basesha\n"),
+            }
+        )
+        plan = [{"sha": "a", "drop": True}, {"sha": "b"}]
+        ok, err, in_progress = services.GitService(io).rewrite_history("/repo", "master", plan)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertFalse(in_progress)
+        self.assertEqual(io.todo, "drop a\npick b\n")
+
+    def test_rewrite_history_rejects_rewording_dropped_commit(self):
+        ok, err, in_progress = services.GitService(FakeIO()).rewrite_history(
+            "/repo", "master", [{"sha": "a", "drop": True, "message": "lost"}]
+        )
+        self.assertFalse(ok)
+        self.assertIn("dropped commit", err)
+        self.assertFalse(in_progress)
+
     def test_rewrite_history_rejects_squash_as_first_entry(self):
         ok, err, in_progress = services.GitService(FakeIO()).rewrite_history(
             "/repo", "master", [{"sha": "a", "squash": True}]
