@@ -844,6 +844,29 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // stage all changes and fold them into the HEAD commit with a (possibly
+  // edited) message — git commit --amend (see dialogs.js's editCommitMessage —
+  // the "Amend commit" menu action's caller)
+  async amendCommit(path, repo, message) {
+    this.busy.set(true);
+    try {
+      this.eventLog.add(`amend commit (${repo})`);
+      await postJSON("/api/code/amend", { path, message });
+      await this.refreshBranches(new Set([repo]));
+    } catch (e) {
+      this.eventLog.add(`amend commit failed (${repo})`);
+      this.dialogs.open({
+        title: "Amend commit failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
   // rewrite an existing commit's message (CommitsDialog's edit affordance —
   // only ever offered for commits already flagged "ahead" of the base branch,
   // and the backend re-checks that itself before touching anything). Throws on

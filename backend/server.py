@@ -2086,6 +2086,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(400, {"ok": False, "error": "missing path or message"})
             ok, error = GIT.commit(repo_path, message)
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/amend":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            message = (body or {}).get("message")
+            if err or not repo_path or not (message or "").strip():
+                return self._send_json(400, {"ok": False, "error": "missing path or message"})
+            ok, error = GIT.amend_commit(repo_path, message)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
         elif path == "/api/code/reword":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")

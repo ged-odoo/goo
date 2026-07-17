@@ -189,6 +189,7 @@ export class DirtyMenu extends Component {
     <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
       <button class="dash-menu-item" t-on-click="() => this.commitDialog()">Commit</button>
       <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
+      <button class="dash-menu-item" t-on-click="() => this.amendDialog()">Amend commit</button>
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
 
@@ -240,6 +241,26 @@ export class DirtyMenu extends Component {
   wipCommit() {
     this.open.set(false);
     this.code.wipCommit(this._path, this._repo);
+  }
+
+  // the current HEAD commit's subject, for the amend dialog's prefill
+  _headSubject() {
+    const repo = this.code.branchRepos().find((r) => r.id === this._repo);
+    const b = (repo?.branches || []).find((x) => x.name === repo.current);
+    return b?.subject || "";
+  }
+
+  async amendDialog() {
+    this.open.set(false);
+    const path = this._path;
+    const repo = this._repo;
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Amend commit — ${repo}`,
+      initialMessage: this._headSubject(),
+      okLabel: "Amend",
+    });
+    if (!message) return;
+    this.code.amendCommit(path, repo, message);
   }
 
   discard() {

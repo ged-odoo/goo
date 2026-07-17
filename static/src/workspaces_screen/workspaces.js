@@ -179,6 +179,7 @@ export class CodePane extends Component {
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
                 <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
                 <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-att-disabled="!r.sha" t-on-click="() => this.menuAct(() => this.amendDialog(r))">Amend commit</button>
                 <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
               </div>
             </div>
@@ -755,6 +756,18 @@ export class CodePane extends Component {
   wipCommit(r) {
     this.touchActivity();
     return this.code.wipCommit(r.path, r.repo);
+  }
+
+  // stage all changes and fold them into HEAD with a (possibly edited) message
+  async amendDialog(r) {
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Amend commit — ${r.repo}`,
+      initialMessage: r.subject,
+      okLabel: "Amend",
+    });
+    if (!message) return;
+    this.touchActivity();
+    return this.code.amendCommit(r.path, r.repo, message);
   }
 
   discard(r) {

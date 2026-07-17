@@ -1897,6 +1897,24 @@ class GitService:
         """Stage all changes and create a WIP commit. Returns (ok, error)."""
         return self.commit(path, "[WIP]")
 
+    def amend_commit(self, path, message):
+        """Stage all changes and fold them into the HEAD commit with the given
+        message (git commit --amend). Returns (ok, error)."""
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(["git", "-C", path, "add", "-A"], timeout=30)
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git add failed"
+            r = self.io.run(
+                ["git", "-C", path, "commit", "--no-verify", "--amend", "-m", message],
+                timeout=30,
+            )
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git commit --amend failed"
+            return True, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
     def _ahead_shas(self, path, ref, base, pull_remote):
         """The set of commit shas reachable from <ref> (default HEAD) but not from
         the base branch — its fetched <pull_remote>/<base> tip, falling back to a
