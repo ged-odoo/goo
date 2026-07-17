@@ -2109,6 +2109,36 @@ class Handler(BaseHTTPRequestHandler):
                 pull_remote=(body or {}).get("pull_remote") or "origin",
             )
             self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/rebase-plan":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            base = (body or {}).get("base")
+            plan = (body or {}).get("plan")
+            if err or not repo_path or not base or not isinstance(plan, list):
+                return self._send_json(400, {"ok": False, "error": "missing path, base, or plan"})
+            ok, error, in_progress = GIT.rewrite_history(
+                repo_path, base, plan, pull_remote=(body or {}).get("pull_remote") or "origin"
+            )
+            self._send_json(
+                200 if ok else 400, {"ok": ok, "error": error, "in_progress": in_progress}
+            )
+        elif path == "/api/code/rebase-abort":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            if err or not repo_path:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            ok, error = GIT.abort_rebase(repo_path)
+            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
+        elif path == "/api/code/rebase-status":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            if err or not repo_path:
+                return self._send_json(400, {"ok": False, "error": "missing path"})
+            in_progress, error = GIT.rebase_status(repo_path)
+            self._send_json(
+                200 if error is None else 400,
+                {"ok": error is None, "in_progress": in_progress, "error": error},
+            )
         elif path == "/api/code/discard":
             body, err = self._read_json()
             repo_path = (body or {}).get("path")

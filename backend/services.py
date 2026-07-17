@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -1929,6 +1930,149 @@ class GitService:
             if r.returncode == 0:
                 return set(r.stdout.split())
         return None
+
+    def _rebase_in_progress(self, path):
+        """Whether <path> currently has a rebase left mid-flight (conflict, or
+        any other stop) — the standard `.git/rebase-merge` (interactive; what
+        rewrite_history always uses) or `.git/rebase-apply` (plain am-style)
+        state directories, resolved via --git-path so this also works from a
+        linked worktree."""
+        for kind in ("rebase-merge", "rebase-apply"):
+            r = self.io.run(
+                ["git", "-C", path, "rev-parse", "--git-path", kind], timeout=10, quiet=True
+            )
+            if r.returncode != 0:
+                continue
+            git_path = r.stdout.strip()
+            if not os.path.isabs(git_path):
+                git_path = os.path.join(path, git_path)
+            if self.io.is_dir(git_path):
+                return True
+        return False
+
+    def abort_rebase(self, path):
+        """Abort an in-progress rebase (git rebase --abort), restoring the
+        branch to its pre-rebase state. Returns (ok, error)."""
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(["git", "-C", path, "rebase", "--abort"], timeout=30)
+            if r.returncode != 0:
+                return False, r.stderr.strip() or "git rebase --abort failed"
+            return True, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
+    def rebase_status(self, path):
+        """Whether <path> already has a rebase left mid-flight — from a
+        conflicted rewrite_history (or anything else, e.g. a manual rebase run
+        outside goo) — checked fresh on every history view load, not just
+        right after applying a plan, so a stuck rebase from a previous session
+        is never silently invisible. (in_progress, error)."""
+        path = os.path.expanduser(path)
+        try:
+            return self._rebase_in_progress(path), None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
+    def rewrite_history(self, path, base, plan, pull_remote="origin"):
+        """Reorder and/or squash this branch's own commits via a scripted,
+        non-interactive `git rebase -i`.
+
+        `plan` is the desired FINAL order, oldest-first: [{sha, squash}, ...].
+        squash=True folds that commit into whichever entry precedes it in the
+        list — its own message is discarded; the resulting group keeps the
+        untouched original message of its first (oldest, non-squash) commit,
+        exactly like a lone pick that's never re-messaged. Re-validates
+        server-side that `plan` covers exactly this branch's commits ahead of
+        <base> (see reword_commit) — never touches base/shared history, and
+        refuses a plan whose oldest entry is itself a squash (nothing precedes
+        it). Returns (ok, error, in_progress) — in_progress is True only when
+        the rebase itself conflicted and was left mid-flight (see
+        _rebase_in_progress/abort_rebase for the recovery path); every earlier
+        validation failure returns it False, since git was never touched.
+
+        Mechanics: GIT_SEQUENCE_EDITOR overwrites git's default todo with our
+        exact pick/squash order (the same non-interactive "cp a prepared file
+        over whatever git drafted" trick reword_commit uses for its fixup
+        message) — no reliance on git's own reordering/autosquash. Squash
+        still opens a message editor once per group to combine messages; GIT_EDITOR
+        points at a tiny counter script that pops each group's prepared message
+        off an ordered queue (one shared substitution isn't enough here since a
+        plan can contain several independent squash groups).
+        """
+        path = os.path.expanduser(path)
+        shas = [e["sha"] for e in plan]
+        if not shas:
+            return False, "nothing to reorder", False
+        if plan[0].get("squash"):
+            return False, "the oldest commit can't be squashed — nothing precedes it", False
+        ahead = self._ahead_shas(path, "HEAD", base, pull_remote)
+        if not ahead or set(shas) != ahead:
+            return False, "the commit list changed — reload and try again", False
+        base_ref = None
+        for candidate in (f"{pull_remote or 'origin'}/{base}", base):
+            r = self.io.run(["git", "-C", path, "rev-parse", candidate], timeout=15, quiet=True)
+            if r.returncode == 0:
+                base_ref = r.stdout.strip()
+                break
+        if not base_ref:
+            return False, "couldn't resolve the base branch", False
+
+        # group consecutive squash entries under the pick that precedes them —
+        # only a group of 2+ ever opens a message editor (a lone pick's message
+        # is left untouched, matching how git itself skips the editor for it)
+        groups = []
+        for e in plan:
+            if e.get("squash") and groups:
+                groups[-1].append(e["sha"])
+            else:
+                groups.append([e["sha"]])
+
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            todo_file = os.path.join(tmp_dir, "todo")
+            with open(todo_file, "w") as f:
+                f.write(
+                    "\n".join(f"{'squash' if e.get('squash') else 'pick'} {e['sha']}" for e in plan)
+                    + "\n"
+                )
+            counter = 0
+            for g in groups:
+                if len(g) < 2:
+                    continue
+                msg_r = self.io.run(
+                    ["git", "-C", path, "log", "-1", "--format=%B", g[0]], timeout=15, quiet=True
+                )
+                with open(os.path.join(tmp_dir, f"{counter}.msg"), "w") as f:
+                    f.write(msg_r.stdout)
+                counter += 1
+            with open(os.path.join(tmp_dir, "counter"), "w") as f:
+                f.write("0")
+            editor_script = os.path.join(tmp_dir, "editor.sh")
+            with open(editor_script, "w") as f:
+                f.write(
+                    "#!/bin/sh\n"
+                    'n=$(cat "$GOO_QUEUE_DIR/counter")\n'
+                    'cp "$GOO_QUEUE_DIR/$n.msg" "$1"\n'
+                    'echo $((n+1)) > "$GOO_QUEUE_DIR/counter"\n'
+                )
+            env = {
+                **os.environ,
+                "GIT_SEQUENCE_EDITOR": f"cp {shlex.quote(todo_file)}",
+                "GIT_EDITOR": f"sh {shlex.quote(editor_script)}",
+                "GOO_QUEUE_DIR": tmp_dir,
+            }
+            r = self.io.run(
+                ["git", "-C", path, "rebase", "--autostash", "-i", base_ref], timeout=120, env=env
+            )
+            if r.returncode != 0:
+                in_progress = self._rebase_in_progress(path)
+                return False, r.stderr.strip() or "git rebase failed", in_progress
+            return True, None, False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e), False
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def reword_commit(self, path, sha, message, base="", pull_remote="origin"):
         """Rewrite an existing commit's message, leaving its content untouched.

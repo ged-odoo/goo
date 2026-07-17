@@ -33,6 +33,7 @@ import {
 import { pushBranchesDialog } from "../core/dialogs.js";
 import { Panel } from "../core/panel.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
+import { startRowDrag, dropIndex } from "../core/drag.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo, nestByParent } from "../core/utils.js";
 import {
@@ -155,17 +156,27 @@ export class CodePane extends Component {
             <span class="ws-branch" t-out="this.historyRow().branch"/>
           </div>
           <div class="ws-history-layout">
-            <aside class="ws-history-list">
+            <aside class="ws-history-list" t-ref="this.historyListEl">
               <div t-if="this.historyLoading()" class="ws-history-state dim"><span class="ws-refresh-spin"/>Loading commits…</div>
               <div t-elif="this.historyError()" class="ws-history-state form-error" t-out="this.historyError()"/>
               <div t-elif="!this.historyCommits().length" class="ws-history-state dim">No commits found.</div>
-              <button t-foreach="this.historyCommits()" t-as="commit" t-key="commit.sha"
-                      class="ws-history-commit" t-att-class="{selected: commit.sha === this.historySelected()}"
-                      t-on-click="() => this.selectHistoryCommit(commit)">
-                <span class="ws-history-commit-date" t-att-title="this.fullCommitDate(commit.date)" t-out="this.shortCommitDate(commit.date)"/>
-                <span class="ws-history-commit-title" t-out="commit.subject"/>
-                <span class="ws-history-commit-author" t-out="commit.author"/>
-              </button>
+              <div t-foreach="this.historyOrderedCommits" t-as="commit" t-key="commit.sha"
+                   class="ws-history-row" t-att-class="{dragging: this.historyDragSha() === commit.sha, 'ws-history-row-ahead': commit.ahead}"
+                   t-att-data-sha="commit.sha">
+                <span t-if="commit.ahead and this.historyAheadCount > 1 and !this.historyConflict()" class="row-handle" title="drag to reorder"
+                      t-on-pointerdown.stop="(ev) => this.onHistoryRowDragStart(ev, commit)">⠿</span>
+                <span t-else="" class="row-handle-spacer"/>
+                <button class="ws-history-commit" t-att-class="{selected: commit.sha === this.historySelected()}"
+                        t-on-click="() => this.selectHistoryCommit(commit)">
+                  <span class="ws-history-commit-date" t-att-title="this.fullCommitDate(commit.date)" t-out="this.shortCommitDate(commit.date)"/>
+                  <span class="ws-history-commit-title" t-out="commit.subject"/>
+                  <span class="ws-history-commit-author" t-out="commit.author"/>
+                </button>
+                <button t-if="this.canSquashHistory(commit.sha) and !this.historyConflict()" class="commit-squash-btn" t-att-class="{on: this.isHistorySquashed(commit.sha)}"
+                        t-att-title="this.isHistorySquashed(commit.sha) ? 'squashed into the commit below — click to undo' : 'squash into the commit below'"
+                        t-on-click.stop="() => this.toggleHistorySquash(commit.sha)">⌄</button>
+                <span t-else="" class="commit-squash-spacer"/>
+              </div>
             </aside>
             <section class="ws-history-detail">
               <t t-if="this.historyCommit">
@@ -187,6 +198,20 @@ export class CodePane extends Component {
               </t>
               <div t-elif="!this.historyLoading()" class="ws-history-state dim">Select a commit to see its details.</div>
             </section>
+          </div>
+          <div t-if="this.historyConflict()" class="commits-conflict">
+            <span class="commits-conflict-msg" t-out="this.historyConflict()"/>
+            <span class="wt-sp"/>
+            <button class="pbtn" t-att-disabled="this.historyApplying()" t-on-click="() => this.abortHistoryConflict()">Abort rebase</button>
+            <button class="pbtn primary" t-on-click="() => this.openHistoryConflictTerminal()">Open terminal</button>
+          </div>
+          <div t-elif="this.historyDirty" class="commits-foot">
+            <span class="dim" t-out="this.historyPlanSummary"/>
+            <span class="wt-sp"/>
+            <button class="pbtn" t-att-disabled="this.historyApplying()" t-on-click="() => this.resetHistoryPlan()">Reset</button>
+            <button class="pbtn primary" t-att-disabled="this.historyApplying()" t-on-click="() => this.applyHistoryPlan()">
+              <t t-if="this.historyApplying()">Applying…</t><t t-else="">Apply</t>
+            </button>
           </div>
         </div>
       </t>
@@ -318,6 +343,21 @@ export class CodePane extends Component {
   historyDiff = signal("");
   historyDiffLoading = signal(false);
   historyDiffError = signal("");
+  // the reorder/squash plan, kept purely client-side until "Apply": historyPlanIds
+  // is the desired order of "ahead" shas in DISPLAY order (newest-first, same as
+  // historyCommits()); historySquashSet marks a sha as folding into whichever
+  // entry ends up directly BELOW it (older) once historyPlanIds is applied.
+  // Nothing here touches git until applyHistoryPlan() sends the whole thing as
+  // one rebase.
+  historyPlanIds = signal([]);
+  historySquashSet = signal(new Set());
+  historyDragSha = signal(""); // sha of the row being dragged ("" = none)
+  historyApplying = signal(false);
+  // set only when applyHistoryPlan's rebase conflicted and was left mid-flight,
+  // OR openHistory found one already stuck from a previous session — the error
+  // message, "" once resolved
+  historyConflict = signal("");
+  historyListEl = signal.ref(HTMLElement);
   _historySequence = 0;
   _diffSequence = 0;
 
@@ -655,15 +695,25 @@ export class CodePane extends Component {
     this.historyDiff.set("");
     this.historyDiffError.set("");
     this.historyLoading.set(true);
+    this.historyConflict.set("");
     const sequence = ++this._historySequence;
     try {
-      const commits = await this.code.commits(r.path, r.branch, {
-        base: r.base,
-        pullRemote: r.entry?.pull_remote || "",
-        count: 100,
-      });
+      const [commits, stuck] = await Promise.all([
+        this.code.commits(r.path, r.branch, {
+          base: r.base,
+          pullRemote: r.entry?.pull_remote || "",
+          count: 100,
+        }),
+        // checked fresh every open — not just right after applyHistoryPlan's own
+        // conflict — so a rebase left stuck from a previous session is never
+        // invisible. A failed check is treated as "not stuck" rather than
+        // blocking the list on an unrelated error.
+        this.code.rebaseStatus(r.path).catch(() => false),
+      ]);
       if (sequence !== this._historySequence) return;
       this.historyCommits.set(commits);
+      this.resetHistoryPlan();
+      this.historyConflict.set(stuck ? "a rebase is already in progress in this repository" : "");
       if (commits.length) await this.selectHistoryCommit(commits[0]);
     } catch (e) {
       if (sequence === this._historySequence) this.historyError.set(e.message);
@@ -683,6 +733,9 @@ export class CodePane extends Component {
     this.historyDiff.set("");
     this.historyDiffLoading.set(false);
     this.historyDiffError.set("");
+    this.historyPlanIds.set([]);
+    this.historySquashSet.set(new Set());
+    this.historyConflict.set("");
   }
 
   async selectHistoryCommit(commit) {
@@ -728,6 +781,171 @@ export class CodePane extends Component {
         else if (/^(diff --git|index |--- |\+\+\+ )/.test(text)) cls = "meta";
         return { id, text, cls };
       });
+  }
+
+  // ── history: reorder / squash ────────────────────────────────────────────────
+  // the ahead ("own", reorderable) commits in their pending historyPlanIds
+  // order, followed by the frozen inherited tail in its original (untouched)
+  // order — ahead commits are always the top segment of historyCommits(), so
+  // this only ever reshuffles within that segment, never past it
+  get historyOrderedCommits() {
+    const byId = new Map(this.historyCommits().map((c) => [c.sha, c]));
+    const tail = this.historyCommits().filter((c) => !c.ahead);
+    return [
+      ...this.historyPlanIds()
+        .map((sha) => byId.get(sha))
+        .filter(Boolean),
+      ...tail,
+    ];
+  }
+
+  get historyAheadCount() {
+    return this.historyPlanIds().length;
+  }
+
+  // any commit but the oldest ahead one can squash into whatever ends up
+  // directly below it
+  canSquashHistory(sha) {
+    const ids = this.historyPlanIds();
+    const i = ids.indexOf(sha);
+    return i >= 0 && i < ids.length - 1;
+  }
+
+  isHistorySquashed(sha) {
+    return this.historySquashSet().has(sha);
+  }
+
+  toggleHistorySquash(sha) {
+    if (this.historyApplying() || this.historyConflict() || !this.canSquashHistory(sha)) return;
+    const s = new Set(this.historySquashSet());
+    if (s.has(sha)) s.delete(sha);
+    else s.add(sha);
+    this.historySquashSet.set(s);
+  }
+
+  get historyDirty() {
+    const original = this.historyCommits()
+      .filter((c) => c.ahead)
+      .map((c) => c.sha);
+    return (
+      this.historyPlanIds().join("\0") !== original.join("\0") || this.historySquashSet().size > 0
+    );
+  }
+
+  get historyPlanSummary() {
+    const total = this.historyPlanIds().length;
+    const squashed = this.historySquashSet().size;
+    return squashed ? `${total} commits → ${total - squashed}` : "reordered";
+  }
+
+  resetHistoryPlan() {
+    this.historyPlanIds.set(
+      this.historyCommits()
+        .filter((c) => c.ahead)
+        .map((c) => c.sha),
+    );
+    this.historySquashSet.set(new Set());
+  }
+
+  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
+  // follows the cursor, while the real row — dimmed in place — live-reorders
+  // through the ahead rows as the pointer crosses their midlines. Drop just
+  // updates the pending plan (git untouched until Apply); Escape restores it.
+  onHistoryRowDragStart(ev, commit) {
+    if (this.historyApplying() || this.historyConflict()) return;
+    const original = this.historyPlanIds();
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".ws-history-row"),
+      onMove: (e) => this._historyDragMove(e, commit.sha),
+      onEnd: (didCommit) => {
+        this.historyDragSha.set("");
+        if (!didCommit) this.historyPlanIds.set(original);
+      },
+    });
+    if (!stop) return;
+    this.historyDragSha.set(commit.sha);
+  }
+
+  _historyDragMove(ev, sha) {
+    const rows = [...(this.historyListEl()?.querySelectorAll(".ws-history-row-ahead") || [])];
+    const to = dropIndex(
+      ev,
+      rows.filter((r) => !r.classList.contains("dragging")),
+    );
+    const ids = this.historyPlanIds();
+    const from = ids.indexOf(sha);
+    if (from < 0 || from === to) return;
+    const next = [...ids];
+    next.splice(from, 1);
+    next.splice(to, 0, sha);
+    this.historyPlanIds.set(next);
+  }
+
+  // send the whole pending plan as one rebase — oldest-first, as the backend
+  // expects (historyPlanIds is newest-first, matching the display). A conflict
+  // doesn't get the generic error dialog — it leaves the rebase mid-flight, so
+  // the panel switches to a persistent banner offering to abort it or open a
+  // terminal to resolve it by hand, rather than a dismissable popup that could
+  // be closed while a rebase sits half-applied.
+  async applyHistoryPlan() {
+    if (this.historyApplying() || this.historyConflict() || !this.historyDirty) return;
+    const row = this.historyRow();
+    if (!row) return;
+    const plan = [...this.historyPlanIds()]
+      .reverse()
+      .map((sha) => ({ sha, squash: this.historySquashSet().has(sha) }));
+    this.historyApplying.set(true);
+    try {
+      await this.code.rewriteHistory(row.path, row.base, plan, row.entry?.pull_remote || "");
+      // a rebase changes shas/subjects the checkout card also shows — refresh
+      // this repo's branch state so "back to checkouts" isn't stale
+      await Promise.all([this.code.refreshBranches(new Set([row.repo])), this.openHistory(row)]);
+    } catch (e) {
+      if (e.inProgress) {
+        this.historyConflict.set(e.message);
+      } else {
+        this.dialogs.open({
+          title: "Reorder/squash failed",
+          message: e.message,
+          cls: "dialog-error",
+          okLabel: "OK",
+          cancelLabel: null,
+        });
+      }
+    } finally {
+      this.historyApplying.set(false);
+    }
+  }
+
+  async abortHistoryConflict() {
+    if (this.historyApplying()) return;
+    const row = this.historyRow();
+    if (!row) return;
+    this.historyApplying.set(true);
+    try {
+      await this.code.abortRebase(row.path);
+      this.historyConflict.set("");
+      await Promise.all([this.code.refreshBranches(new Set([row.repo])), this.openHistory(row)]);
+    } catch (e) {
+      this.dialogs.open({
+        title: "Abort failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
+    } finally {
+      this.historyApplying.set(false);
+    }
+  }
+
+  // let the user resolve the conflict by hand (git status / add / rebase
+  // --continue or --abort); the banner stays up until they either abort here
+  // or reopen the history (which reloads and drops the banner once resolved)
+  openHistoryConflictTerminal() {
+    const row = this.historyRow();
+    if (!row) return;
+    this.dialogs.openComponent(TerminalDialog, { path: row.path, label: `${row.repo} history` });
   }
 
   // open GitHub's PR-creation page for this repo's current branch

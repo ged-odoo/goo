@@ -4961,14 +4961,27 @@ a.commit-detail-hash svg {
   padding: 18px;
   font-size: 12px;
 }
+/* one history row: an optional drag handle, the commit button itself (or its
+   spacer twin so unreorderable/inherited rows still line up), then an optional
+   squash toggle — the commit button used to own the list's row border, now
+   shared with its handle/squash siblings on the wrapper */
+.ws-history-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.ws-history-row.dragging {
+  opacity: 0.35;
+}
 .ws-history-commit {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);
   gap: 3px 10px;
   padding: 7px 10px;
   border: 0;
-  border-bottom: 1px solid var(--l-line-soft);
   background: transparent;
   color: var(--l-text);
   font: inherit;
@@ -5002,6 +5015,66 @@ a.commit-detail-hash svg {
 .ws-history-commit-author {
   color: var(--l-text-dim);
   font-size: 10.5px;
+}
+.row-handle-spacer {
+  flex: none;
+  width: 22px;
+}
+.commit-squash-btn {
+  flex: none;
+  align-self: center;
+  margin-right: 8px;
+  padding: 1px 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--l-text-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.commit-squash-btn:hover {
+  color: var(--l-text);
+  border-color: var(--l-panel-line);
+}
+.commit-squash-btn.on {
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+  border-color: var(--l-accent-line);
+}
+.commit-squash-spacer {
+  flex: none;
+  width: 28px;
+}
+.commits-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--l-line-soft);
+  background: var(--l-card);
+  font-size: 12px;
+}
+/* a rebase left mid-flight by a conflict — a persistent banner (not a
+   dismissable dialog) offering the only two sane next steps */
+.commits-conflict {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--l-red);
+  background: var(--l-red-bg);
+  font-size: 12px;
+}
+.commits-conflict-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--l-red);
 }
 .ws-history-detail {
   min-width: 0;

@@ -1527,6 +1527,87 @@ class GitServiceTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNone(err)
 
+    def test_rewrite_history_reorders_and_squashes(self):
+        io = FakeIO(
+            runs={
+                "rev-list origin/master..HEAD": completed(stdout="a\nb\n"),
+                "rev-parse origin/master": completed(stdout="basesha\n"),
+                "log -1 --format=%B a": completed(stdout="keep me\n"),
+            }
+        )
+        plan = [{"sha": "a"}, {"sha": "b", "squash": True}]
+        ok, err, in_progress = services.GitService(io).rewrite_history("/repo", "master", plan)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertFalse(in_progress)
+        [rebase_call] = [c for c in io.run_calls if "rebase" in c]
+        self.assertIn("--autostash", rebase_call)
+        self.assertIn("basesha", rebase_call)
+
+    def test_rewrite_history_rejects_squash_as_first_entry(self):
+        ok, err, in_progress = services.GitService(FakeIO()).rewrite_history(
+            "/repo", "master", [{"sha": "a", "squash": True}]
+        )
+        self.assertFalse(ok)
+        self.assertIn("oldest commit", err)
+        self.assertFalse(in_progress)
+
+    def test_rewrite_history_rejects_stale_plan(self):
+        io = FakeIO(runs={"rev-list origin/master..HEAD": completed(stdout="a\nc\n")})
+        ok, err, in_progress = services.GitService(io).rewrite_history(
+            "/repo", "master", [{"sha": "a"}, {"sha": "b"}]
+        )
+        self.assertFalse(ok)
+        self.assertIn("changed", err)
+        self.assertFalse(in_progress)
+
+    def test_rewrite_history_reports_conflict_left_in_progress(self):
+        io = FakeIO(
+            runs={
+                "rev-list origin/master..HEAD": completed(stdout="a\nb\n"),
+                "rev-parse origin/master": completed(stdout="basesha\n"),
+                "log -1 --format=%B a": completed(stdout="keep me\n"),
+                "rebase --autostash -i basesha": completed(
+                    returncode=1, stderr="error: could not apply b"
+                ),
+                "rev-parse --git-path rebase-merge": completed(stdout=".git/rebase-merge\n"),
+            },
+            dirs={"/repo/.git/rebase-merge": []},
+        )
+        plan = [{"sha": "a"}, {"sha": "b", "squash": True}]
+        ok, err, in_progress = services.GitService(io).rewrite_history("/repo", "master", plan)
+        self.assertFalse(ok)
+        self.assertIn("could not apply", err)
+        self.assertTrue(in_progress)
+
+    def test_abort_rebase_runs_git_abort(self):
+        io = FakeIO(run_result=completed())
+        ok, err = services.GitService(io).abort_rebase("/repo")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        [abort_call] = [c for c in io.run_calls if "rebase" in c]
+        self.assertIn("--abort", abort_call)
+
+    def test_rebase_status_detects_stuck_rebase(self):
+        io = FakeIO(
+            runs={"rev-parse --git-path rebase-merge": completed(stdout=".git/rebase-merge\n")},
+            dirs={"/repo/.git/rebase-merge": []},
+        )
+        in_progress, err = services.GitService(io).rebase_status("/repo")
+        self.assertTrue(in_progress)
+        self.assertIsNone(err)
+
+    def test_rebase_status_clean_when_no_rebase_dirs(self):
+        io = FakeIO(
+            runs={
+                "rev-parse --git-path rebase-merge": completed(stdout=".git/rebase-merge\n"),
+                "rev-parse --git-path rebase-apply": completed(stdout=".git/rebase-apply\n"),
+            }
+        )
+        in_progress, err = services.GitService(io).rebase_status("/repo")
+        self.assertFalse(in_progress)
+        self.assertIsNone(err)
+
     def test_push_branch_pushes_to_push_remote(self):
         io = FakeIO()
         ok, err = services.GitService(io).push_branch("/r", "master-x", push_remote="fork")

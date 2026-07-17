@@ -186,7 +186,11 @@ export function buildLogRow(line) {
   return div;
 }
 
-// POST JSON; returns parsed body. Throws Error(message) on non-ok.
+// POST JSON; returns parsed body. Throws Error(message) on non-ok — the parsed
+// body is attached as `.data`, so a caller that needs more than the message
+// (e.g. rewriteHistory's `in_progress` flag) can still get at it: the backend
+// sends a non-2xx status for any `{ok: false}` reply, so a plain `if (!res.ok)`
+// check AFTER a postJSON call is unreachable — postJSON already threw.
 export async function postJSON(path, body) {
   const resp = await fetch(path, {
     method: "POST",
@@ -194,7 +198,11 @@ export async function postJSON(path, body) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.error || resp.status);
+  if (!resp.ok) {
+    const err = new Error(data.error || resp.status);
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 

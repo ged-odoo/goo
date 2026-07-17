@@ -906,6 +906,44 @@ export class CodePlugin extends Plugin {
     if (!res.ok) throw new Error(res.error || "git reword failed");
   }
 
+  // reorder and/or squash this branch's own ("ahead") commits (the workspace
+  // history view's drag-to-reorder + squash affordance). plan: the desired
+  // final order, oldest-first, [{sha, squash}] — squash folds a commit into
+  // whichever entry precedes it. The backend re-validates the plan covers
+  // exactly the commits ahead of <base> before touching anything. Throws on
+  // failure — same convention as rewordCommit, the caller keeps its own error
+  // UI open. The thrown Error's `inProgress` flag distinguishes a conflict
+  // (the rebase was left mid-flight — the caller should offer abortRebase or a
+  // terminal) from every earlier validation failure (nothing was touched).
+  // postJSON already throws on the backend's non-2xx failure reply, so the
+  // flag has to be read off that thrown error's attached `.data`, not a
+  // `res.ok` check here.
+  async rewriteHistory(path, base, plan, pullRemote = "") {
+    try {
+      await postJSON("/api/code/rebase-plan", { path, base, plan, pull_remote: pullRemote });
+    } catch (e) {
+      e.inProgress = !!e.data?.in_progress;
+      throw e;
+    }
+  }
+
+  // abort an in-progress rebase left by a conflicted rewriteHistory, restoring
+  // the branch to its pre-rebase state. Throws on failure.
+  async abortRebase(path) {
+    const res = await postJSON("/api/code/rebase-abort", { path });
+    if (!res.ok) throw new Error(res.error || "git rebase --abort failed");
+  }
+
+  // whether <path> already has a rebase left mid-flight — checked fresh on
+  // every history view load (not just right after applying a plan), so a
+  // stuck rebase from a previous session is never silently invisible. Throws
+  // on failure (the caller falls back to treating it as unknown/not stuck).
+  async rebaseStatus(path) {
+    const res = await postJSON("/api/code/rebase-status", { path });
+    if (!res.ok) throw new Error(res.error || "couldn't check rebase status");
+    return !!res.in_progress;
+  }
+
   async discard(path, repo) {
     const ok = await this.dialogs.open({
       title: `Discard changes in ${repo}?`,
