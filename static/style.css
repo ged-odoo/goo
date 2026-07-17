@@ -871,12 +871,13 @@ section.hidden {
 /* Todo screen */
 /* the form + card column next to the rail */
 .todo-main {
-  flex: 1 1 auto;
+  flex: 0 1 760px;
   min-width: 0;
   max-width: 760px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow-y: auto;
 }
 /* the new-todo form sits on its own, just above the card */
 .todo-form {
@@ -893,13 +894,17 @@ section.hidden {
 }
 .todo-content {
   align-items: stretch;
+  padding-left: 24px;
+  overflow: hidden;
 }
 /* rail of lists on the left, the selected list's card on the right */
 .todo-layout {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 14px;
-  width: min(980px, 100%);
+  width: 100%;
 }
 .todo-rail {
   flex: none;
@@ -907,6 +912,7 @@ section.hidden {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
 }
 .todo-rail-item {
   display: flex;
@@ -984,6 +990,9 @@ section.hidden {
 }
 .todo-row:hover {
   background: var(--l-hover);
+}
+.todo-row.selected {
+  background: var(--l-accent-soft);
 }
 /* the in-list copy of the row being dragged: dimmed placeholder that
    live-reorders under the ghost */
@@ -1068,6 +1077,107 @@ body.drag-grabbing {
 .todo-delete:hover {
   color: var(--l-red);
   background: oklch(0.55 0.21 25 / 0.1);
+}
+.todo-details {
+  flex: 1 1 320px;
+  min-width: 280px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.todo-details-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.todo-details-heading {
+  flex: 1;
+  min-width: 0;
+}
+.todo-details-project {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--l-accent);
+}
+.todo-details-title {
+  display: block;
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--l-text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.todo-details-title:hover {
+  border-color: var(--l-line);
+}
+.todo-details-title:focus {
+  outline: none;
+  background: var(--l-bg);
+  border-color: var(--l-accent-line);
+  box-shadow: 0 0 0 2px var(--l-accent-soft);
+}
+.todo-details-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--l-text-faint);
+  font-size: 20px;
+  line-height: 1;
+}
+.todo-details-close:hover {
+  color: var(--l-text);
+  background: var(--l-hover);
+}
+.todo-details-label {
+  flex: none;
+  padding: 14px 16px 7px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--l-text-faint);
+}
+.todo-details-description {
+  flex: 1;
+  min-height: 160px;
+  margin: 0 16px;
+  padding: 12px;
+  resize: none;
+  font: inherit;
+  line-height: 1.55;
+  color: var(--l-text);
+  background: var(--l-bg);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+}
+.todo-details-description:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+  box-shadow: 0 0 0 2px var(--l-accent-soft);
+}
+.todo-details-foot {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px 12px;
+  font-size: 11px;
+  color: var(--l-text-faint);
 }
 .todo-empty {
   min-height: 150px;

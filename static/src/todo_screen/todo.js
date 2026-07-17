@@ -88,13 +88,13 @@ export class TodoScreen extends Component {
               </div>
               <div t-else="" class="todo-list" t-ref="this.listEl">
                 <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                     t-att-class="{done: todo.done, dragging: this.dragId() === todo.id}"
+                     t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
                      t-att-title="this.createdTitle(todo)">
                   <span class="row-handle" title="drag to reorder"
                         t-on-pointerdown="ev => this.onDragStart(ev, todo)">⠿</span>
                   <div class="todo-check">
                     <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
-                    <button type="button" class="todo-title" t-on-click="() => this.editNote(todo)" t-out="todo.title"/>
+                    <button type="button" class="todo-title" t-on-click="() => this.openTodo(todo.id)" t-out="todo.title"/>
                   </div>
                   <button class="todo-star" t-att-class="{on: todo.starred}"
                           t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
@@ -103,6 +103,28 @@ export class TodoScreen extends Component {
               </div>
             </div>
           </div>
+          <aside t-if="this.detailTodo" class="todo-details">
+            <div class="todo-details-head">
+              <div class="todo-details-heading">
+                <span class="todo-details-project" t-out="this.list.name"/>
+                <input type="text" class="todo-details-title" aria-label="Todo title"
+                       t-att-value="this.detailTodo.title"
+                       t-on-change="ev => this.updateTitle(this.detailTodo.id, ev)"
+                       t-on-keydown="ev => this.onTitleKeydown(ev)"/>
+              </div>
+              <button type="button" class="todo-details-close" title="Close details"
+                      aria-label="Close details" t-on-click="() => this.closeTodo()">×</button>
+            </div>
+            <label class="todo-details-label" for="todo-description">Description</label>
+            <textarea id="todo-description" class="todo-details-description"
+                      t-att-value="this.detailTodo.description || ''"
+                      t-on-input="ev => this.updateDescription(this.detailTodo.id, ev.target.value)"
+                      placeholder="Add a description…"/>
+            <div class="todo-details-foot">
+              <span t-out="this.createdTitle(this.detailTodo)"/>
+              <span>Saved automatically</span>
+            </div>
+          </aside>
         </div>
       </div>
     </section>`;
@@ -113,6 +135,7 @@ export class TodoScreen extends Component {
   selected = signal(this._stored.selected);
   draft = signal("");
   menuOpen = signal(false);
+  detailTodoId = signal("");
   dragId = signal(""); // id of the todo being dragged ("" = none)
   newTodo = signal.ref(HTMLInputElement);
   listEl = signal.ref(HTMLElement);
@@ -138,6 +161,10 @@ export class TodoScreen extends Component {
     return this.lists().find((l) => l.id === this.selected()) || this.lists()[0];
   }
 
+  get detailTodo() {
+    return this.list.todos.find((todo) => todo.id === this.detailTodoId());
+  }
+
   openCount(l) {
     return l.todos.filter((todo) => !todo.done).length;
   }
@@ -152,6 +179,7 @@ export class TodoScreen extends Component {
   }
 
   select(id) {
+    this.detailTodoId.set("");
     this.selected.set(id);
     this._save();
     this.newTodo()?.focus();
@@ -209,10 +237,16 @@ export class TodoScreen extends Component {
   add() {
     const title = this.draft().trim();
     if (!title) return;
-    this._updateTodos((todos) => [
-      { id: uid(), title, done: false, created: Date.now(), starred: false, description: "" },
-      ...todos,
-    ]);
+    const todo = {
+      id: uid(),
+      title,
+      done: false,
+      created: Date.now(),
+      starred: false,
+      description: "",
+    };
+    this._updateTodos((todos) => [todo, ...todos]);
+    this.openTodo(todo.id);
     this.draft.set("");
     this.newTodo()?.focus();
   }
@@ -241,32 +275,47 @@ export class TodoScreen extends Component {
     );
   }
 
-  async editNote(todo) {
-    const res = await this.dialogs.open({
-      title: todo.title,
-      okLabel: "Save",
-      fields: [
-        {
-          key: "description",
-          type: "textarea",
-          label: "Description",
-          value: todo.description || "",
-          rows: 8,
-          placeholder: "description",
-        },
-      ],
-    });
-    if (!res) return;
+  openTodo(id) {
+    this.detailTodoId.set(id);
+  }
+
+  closeTodo() {
+    this.detailTodoId.set("");
+  }
+
+  updateDescription(id, description) {
     this._updateTodos((todos) =>
-      todos.map((t) => (t.id === todo.id ? { ...t, description: res.description } : t)),
+      todos.map((todo) => (todo.id === id ? { ...todo, description } : todo)),
     );
   }
 
+  updateTitle(id, ev) {
+    const title = ev.target.value.trim();
+    if (!title) {
+      ev.target.value = this.detailTodo?.title || "";
+      return;
+    }
+    ev.target.value = title;
+    this._updateTodos((todos) => todos.map((todo) => (todo.id === id ? { ...todo, title } : todo)));
+  }
+
+  onTitleKeydown(ev) {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      ev.currentTarget.blur();
+    } else if (ev.key === "Escape") {
+      ev.currentTarget.value = this.detailTodo?.title || "";
+      ev.currentTarget.blur();
+    }
+  }
+
   remove(id) {
+    if (this.detailTodoId() === id) this.closeTodo();
     this._updateTodos((todos) => todos.filter((todo) => todo.id !== id));
   }
 
   clearCompleted() {
+    if (this.detailTodo?.done) this.closeTodo();
     this._updateTodos((todos) => todos.filter((todo) => !todo.done));
   }
 
