@@ -4566,7 +4566,7 @@ a.commit-detail-hash svg {
   flex-direction: column;
   gap: 6px;
   padding: 16px 30px 0;
-  background: var(--l-panel);
+  background: var(--l-bg);
   border-bottom: 1px solid var(--l-panel-line);
 }
 .wt-detail-empty {
