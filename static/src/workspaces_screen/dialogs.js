@@ -7,7 +7,8 @@
 import { BASE_BRANCH_RE } from "../core/config.js";
 import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
-import { postJSON, repoBranchList } from "../core/utils.js";
+import { postJSON, repoBranchList, descendantWorkspaces } from "../core/utils.js";
+import { cascadeRemoveDescendants } from "../core/workspace_plugin.js";
 
 import { Component, onMounted, onWillUnmount, signal, t, useProps, xml } from "@odoo/owl";
 
@@ -230,7 +231,10 @@ export async function startNewWorkspaceWizard(plugins) {
 // source — template or runbot bundle — was chosen in step one and arrives here
 // as `prefill`; the form itself no longer has a template field).
 // plugins: { config, dialogs, db, code, eventLog, wt }. `prefill`: { name,
-// config, db, args, demoData, template, category, createBranches }.
+// config, db, args, demoData, template, category, createBranches, parent }.
+// `parent` isn't a form field — it's implicit from how the create flow was
+// invoked (e.g. a forward-port row's "sub workspace" button) and is passed
+// straight into the created workspace.
 export async function startCreateWorkspace(plugins, prefill = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   await db.load(); // populate the "Clone db" select
@@ -386,6 +390,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       demo_data: !!res.demoData,
       favorite: false,
       category: res.category || "",
+      parent: prefill.parent || "",
     });
     return;
   }
@@ -400,6 +405,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
     last_activity: now,
     favorite: false,
     category: res.category || "",
+    parent: prefill.parent || "",
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
     demo_data: !!res.demoData,
@@ -452,6 +458,96 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
     db: branch,
     template: "",
     createBranches: false,
+  });
+}
+
+// An existing sub-workspace already spawned from `parentWs` for this forward-port row
+// (matched by parent + the row's branch — that pair is what a prior click of the
+// button created). Exported so the button can label itself "Open" instead of
+// "Create" and so a re-click jumps to the existing workspace instead of duplicating it.
+export function findSubWorkspace(config, parentWs, row) {
+  return (
+    (config.config.workspaces || []).find(
+      (w) => w.parent === parentWs.id && (w.checkouts || []).some((c) => c.branch === row.branch),
+    ) || null
+  );
+}
+
+// Create a sub-workspace for one forward-port row: fetch the row's branch across every
+// repo the row lists (resolved from each cell's github slug → a configured repo, matched
+// against ALL configured repos, not just parentWs's own checkouts — a forward-port row
+// can name a repo the parent workspace doesn't itself check out), then open the
+// prefilled create form with `parent` set to the spawning workspace's id. A repo whose
+// branch doesn't exist upstream yet (a "waiting" row) just fails its own fetch — errors
+// are reported per-repo and the flow proceeds with whichever succeeded, aborting only
+// if every fetch failed (same pattern as startNewWorkspaceWizard's bundle path). If a
+// sub-workspace was already created for this row, this just opens it instead.
+// plugins: { config, dialogs, db, code, eventLog, wt }. parentWs: the workspace (plain
+// blob) the button was clicked from. row: a forwardPortChains row — { branch, cells }.
+export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) {
+  const { config, dialogs, code, eventLog, wt } = plugins;
+  const existing = findSubWorkspace(config, parentWs, row);
+  if (existing) {
+    wt.select(existing.id);
+    return;
+  }
+  const branch = row.branch;
+  const repoFor = (slug) => {
+    const exact = (config.config.repos || []).find((r) => r.github === slug);
+    if (exact) return exact;
+    const name = slug.split("/")[1];
+    return (config.config.repos || []).find((r) => (r.github || "").split("/")[1] === name) || null;
+  };
+  const matches = (row.cells || [])
+    .map((cell) => repoFor(cell.repository))
+    .filter((r) => r && r.path);
+  if (!matches.length) {
+    return dialogs.open({
+      title: "Create sub workspace",
+      message: `none of this row's repositories (${(row.cells || []).map((c) => c.repository).join(", ") || "none"}) match your configured repos`,
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  }
+  const results = await Promise.all(
+    matches.map(async (r) => {
+      const eid = eventLog.begin(`fetching ${branch} (${r.id}) from ${r.pull_remote || "origin"}`);
+      try {
+        await postJSON("/api/code/remote-branch/fetch", {
+          path: r.path,
+          branch,
+          pull_remote: r.pull_remote || "origin",
+        });
+        eventLog.finish(eid, "done");
+        return { repo: r, ok: true };
+      } catch (e) {
+        eventLog.finish(eid, "error");
+        return { repo: r, ok: false, error: e.message };
+      }
+    }),
+  );
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length) {
+    dialogs.open({
+      title: "Fetching forward-port branch failed",
+      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+      cls: "dialog-error",
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+    if (failed.length === results.length) return;
+  }
+  const got = results.filter((r) => r.ok).map((r) => r.repo.id);
+  await code.refreshBranches(new Set(got));
+  const name = `${parentWs.name}-${branch}`;
+  return startCreateWorkspace(plugins, {
+    name,
+    config: repoBranchList.format(got.map((repo) => ({ repo, branch }))),
+    db: name,
+    template: "",
+    createBranches: false,
+    parent: parentWs.id,
+    category: parentWs.category || "",
   });
 }
 
@@ -551,9 +647,10 @@ export async function adoptCurrentCheckout(plugins) {
 // wt.remove — the backend owns their on-disk cleanup.)
 export async function deleteWorkspaceDialog(
   ws,
-  { config, code, db, eventLog, repoMap, isActive, dialogs },
+  { config, code, db, eventLog, repoMap, isActive, dialogs, wt, server },
 ) {
   if (isActive) return; // the loaded workspace cannot be deleted
+  const descendants = descendantWorkspaces(config.config.workspaces || [], ws.id);
   const groups = code.groups();
   // deletable branches: present locally and not a base/primary branch
   const branches = (ws.checkouts || [])
@@ -608,7 +705,11 @@ export async function deleteWorkspaceDialog(
 
   const res = await dialogs.open({
     title: `Delete "${ws.name}"?`,
-    message: "The workspace will be removed from your list. This cannot be undone.",
+    message:
+      "The workspace will be removed from your list. This cannot be undone." +
+      (descendants.length
+        ? ` This also removes ${descendants.length} sub-workspace${descendants.length === 1 ? "" : "s"} spawned from it.`
+        : ""),
     okLabel: "Delete",
     fields,
   });
@@ -628,4 +729,18 @@ export async function deleteWorkspaceDialog(
   config.updateConfig({
     workspaces: config.config.workspaces.filter((w) => w.id !== ws.id),
   });
+  const { skipped } = await cascadeRemoveDescendants({ config, wt, eventLog, server }, ws);
+  if (skipped.length) {
+    await dialogs.open({
+      title: "Some sub-workspaces were kept",
+      message: skipped
+        .map(
+          (w) =>
+            `"${w.name}" is still busy (its server is running, or it's the loaded workspace) — kept, no longer linked to the deleted parent.`,
+        )
+        .join("\n"),
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  }
 }

@@ -14,7 +14,7 @@ import { CodePlugin } from "./code_plugin.js";
 import { EventLogPlugin } from "./event_log_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
-import { postJSON, worktreeDirFor } from "./utils.js";
+import { postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.js";
 
 import { Plugin, usePlugin, signal } from "@odoo/owl";
 
@@ -213,7 +213,7 @@ export class WorkspacePlugin extends Plugin {
   // persist the workspace (canonical `workspaces` write — the create path deals it
   // the next stable port) and select it.
   // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
-  //         baseId?, on_create_args?, demo_data?, favorite? }
+  //         baseId?, on_create_args?, demo_data?, favorite?, parent? }
   async createWorktree({
     name,
     dbName,
@@ -225,6 +225,7 @@ export class WorkspacePlugin extends Plugin {
     demo_data = true,
     favorite = false,
     category = "",
+    parent = "",
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -237,6 +238,7 @@ export class WorkspacePlugin extends Plugin {
       last_activity: now,
       favorite,
       category,
+      parent,
       db: dbName,
       on_create_args,
       demo_data,
@@ -337,21 +339,13 @@ export class WorkspacePlugin extends Plugin {
     await this.startServer(tgt);
   }
 
-  async remove(tgt) {
-    if (this.running(tgt))
-      return this._error(
-        "Stop the server first",
-        "Stop the workspace's server before removing it.",
-      );
-    const res = await this.dialogs.open({
-      title: `Remove workspace "${tgt.name}"?`,
-      message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.`,
-      fields: [
-        { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false },
-      ],
-      okLabel: "Remove",
-    });
-    if (!res) return;
+  // the actual cleanup (backend worktree removal + optional db drop + config/local
+  // bookkeeping) — shared by the interactive `remove` (after its own confirm dialog)
+  // and the silent cascade (no confirm, no dropDb prompt — a db drop wasn't
+  // explicitly asked for a cascaded child, matching the interactive default of
+  // leaving it alone unless the checkbox was ticked). Returns false (kept) on
+  // failure, true on success.
+  async _removeCleanup(tgt, { dropDb = false } = {}) {
     const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
       repo,
       mainPath,
@@ -367,9 +361,10 @@ export class WorkspacePlugin extends Plugin {
     } catch (e) {
       // the worktree is still on disk / registered with git — keep the target so
       // there's a UI handle to retry, rather than orphaning it.
-      return this._error("Worktree removal failed", e.message);
+      this._error("Worktree removal failed", e.message);
+      return false;
     }
-    if (res.dropDb && tgt.db) {
+    if (dropDb && tgt.db) {
       try {
         await postJSON("/api/databases/drop", {
           name: tgt.db,
@@ -388,6 +383,55 @@ export class WorkspacePlugin extends Plugin {
     this.store.dropServer(tgt.id);
     this.logs.delete(tgt.id);
     if (this.selectedId() === tgt.id) this.selectedId.set("");
+    return true;
+  }
+
+  async remove(tgt) {
+    if (this.running(tgt))
+      return this._error(
+        "Stop the server first",
+        "Stop the workspace's server before removing it.",
+      );
+    const descendants = descendantWorkspaces(this.config.config.workspaces || [], tgt.id);
+    const res = await this.dialogs.open({
+      title: `Remove workspace "${tgt.name}"?`,
+      message:
+        `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.` +
+        (descendants.length
+          ? ` This also removes ${descendants.length} sub-workspace${descendants.length === 1 ? "" : "s"} spawned from it.`
+          : ""),
+      fields: [
+        { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false },
+      ],
+      okLabel: "Remove",
+    });
+    if (!res) return;
+    if (!(await this._removeCleanup(tgt, { dropDb: !!res.dropDb }))) return;
+    const { skipped } = await cascadeRemoveDescendants(
+      { config: this.config, wt: this, eventLog: this.eventLog, server: this.server },
+      tgt,
+    );
+    if (skipped.length) this._notifyKept(skipped);
+  }
+
+  // silent per-child removal the cascade drives — no confirm, no dropDb prompt
+  async removeSilently(tgt) {
+    if (this.running(tgt)) return false;
+    return this._removeCleanup(tgt, { dropDb: false });
+  }
+
+  _notifyKept(skipped) {
+    this.dialogs.open({
+      title: "Some sub-workspaces were kept",
+      message: skipped
+        .map(
+          (w) =>
+            `"${w.name}" is still busy (its server is running, or it's the loaded workspace) — kept, no longer linked to the deleted parent.`,
+        )
+        .join("\n"),
+      okLabel: "OK",
+      cancelLabel: null,
+    });
   }
 
   // open the worktree's repo folders in the configured editor (all in one window);
@@ -419,4 +463,55 @@ export class WorkspacePlugin extends Plugin {
     this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
     return false;
   }
+}
+
+// Silently remove every descendant of `parentWs`, level-by-level (breadth-first),
+// each cleaned up through its own location's mechanism: worktree children via the same
+// on-disk + server cleanup `remove()` itself uses (minus the confirm dialog and the
+// "drop db" offer); main-located children are just dropped from config (no branch
+// delete / PR close / db drop — those are deleteWorkspaceDialog's explicit, interactive
+// niceties, not implied by a parent's removal). A descendant that can't be cleanly
+// removed right now (its worktree server is running, or it's the loaded main-located
+// workspace — the exact same predicates removeBlocked uses) stops the cascade at that
+// node: it's demoted to root but its OWN subtree is left completely untouched, since
+// nobody asked to touch that branch of the tree. plugins: { config, wt, eventLog, server }.
+export async function cascadeRemoveDescendants(plugins, parentWs) {
+  const { config, wt, eventLog, server } = plugins;
+  const skipped = [];
+  let frontier = directChildren(config.config.workspaces || [], parentWs.id);
+  while (frontier.length) {
+    const next = [];
+    for (const child of frontier) {
+      const live = (config.config.workspaces || []).find((w) => w.id === child.id);
+      if (!live) continue;
+      const isWt = live.location === "worktree";
+      const busy = isWt ? wt.running(live) : isLoadedMainWorkspace(server, live);
+      if (busy) {
+        skipped.push(live);
+        config.workspace(live.id)?.setParent("");
+        continue; // its children stay with it — not cascaded further
+      }
+      eventLog.add(`removing workspace ${live.name} (cascaded with "${parentWs.name}")`);
+      next.push(...directChildren(config.config.workspaces || [], live.id));
+      if (isWt) await wt.removeSilently(live);
+      else
+        config.updateConfig({
+          workspaces: (config.config.workspaces || []).filter((w) => w.id !== live.id),
+        });
+    }
+    frontier = next;
+  }
+  return { skipped };
+}
+
+function directChildren(list, id) {
+  return list.filter((w) => w.parent === id);
+}
+
+function isLoadedMainWorkspace(server, ws) {
+  if (ws.location === "worktree") return false;
+  const s = server.status();
+  const activeId =
+    s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
+  return ws.id === activeId;
 }

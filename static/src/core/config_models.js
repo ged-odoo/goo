@@ -189,6 +189,9 @@ export class Workspace extends Model {
   last_activity = fields.char(); // ISO timestamp; intentional workspace actions only
   favorite = fields.bool();
   category = fields.char(); // a workspace_categories id ("" = uncategorized)
+  parent = fields.char(); // the id of the workspace this one was spawned from
+  // ("" = none/root); cascade-deleted with it — see cascadeRemoveDescendants
+  // (workspace_plugin.js)
   notes = fields.char(); // free-form user notes (the Details tab)
   db = fields.char();
   on_create_args = fields.char();
@@ -260,6 +263,14 @@ export class Workspace extends Model {
   // including its activity stamp — untouched (archiving is shelving, not use)
   setCategory(category) {
     this.category.set(category || "");
+  }
+
+  // demote to root ("" = no parent) — used only by cascadeRemoveDescendants
+  // when this workspace's own removal was blocked; parent is otherwise fixed
+  // once, at creation
+  setParent(parent) {
+    this.parent.set(parent || "");
+    this._configPlugin().touch();
   }
 
   // ── action: stop the server, switch to this workspace, check out its branches ─
@@ -427,6 +438,7 @@ function workspaceData(w) {
     last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
     category: w.category ?? "",
+    parent: w.parent ?? "",
     notes: w.notes ?? "",
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
@@ -494,6 +506,7 @@ export function toConfig(orm) {
     last_activity: w.last_activity(),
     favorite: w.favorite(),
     category: w.category(),
+    parent: w.parent(),
     notes: w.notes(),
     db: w.db(),
     on_create_args: w.on_create_args(),
@@ -589,6 +602,7 @@ function reconcileWorkspaces(orm, desired) {
         "name",
         "favorite",
         "category",
+        "parent",
         "notes",
         "db",
         "on_create_args",
@@ -620,6 +634,14 @@ function reconcileWorkspaces(orm, desired) {
   for (const c of orm.records(Checkout)) {
     const ws = c.workspace();
     if (!ws || !live.has(ws.id)) orm.delete(c);
+  }
+  // heal a dangling `parent` (referenced workspace no longer exists) by demoting the
+  // child to root. Should never actually trigger — every real removal path cascades
+  // its descendants (cascadeRemoveDescendants, workspace_plugin.js) — this is just a
+  // cheap safety net for any path that isn't (or a future one that forgets to be).
+  const liveIds = new Set(orm.records(Workspace).map((r) => r.id));
+  for (const rec of orm.records(Workspace)) {
+    if (rec.parent() && !liveIds.has(rec.parent())) rec.parent.set("");
   }
   // persist the desired ORDER too: orm.records() returns insertion order and the
   // in-place reconcile above never moves records, so a reorder patch (the Targets

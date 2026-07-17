@@ -464,6 +464,45 @@ function worktreeSlug(tgt) {
 function worktreeDirFor(worktreeDir, tgt) {
   return `${(worktreeDir || "/tmp").replace(/\/+$/, "")}/${worktreeSlug(tgt)}`;
 }
+function descendantWorkspaces(list, id) {
+  const byParent = /* @__PURE__ */ new Map();
+  for (const w of list) {
+    if (!w.parent) continue;
+    if (!byParent.has(w.parent)) byParent.set(w.parent, []);
+    byParent.get(w.parent).push(w);
+  }
+  const out = [];
+  let frontier = byParent.get(id) || [];
+  while (frontier.length) {
+    out.push(...frontier);
+    frontier = frontier.flatMap((w) => byParent.get(w.id) || []);
+  }
+  return out;
+}
+function nestByParent(items) {
+  const byId = new Map(items.map((ws) => [ws.id, ws]));
+  const childrenOf = /* @__PURE__ */ new Map();
+  for (const ws of items) {
+    const p = ws.parent && byId.has(ws.parent) ? ws.parent : "";
+    if (!p) continue;
+    if (!childrenOf.has(p)) childrenOf.set(p, []);
+    childrenOf.get(p).push(ws);
+  }
+  const out = [];
+  const emitted = /* @__PURE__ */ new Set();
+  const emit = (ws, depth) => {
+    if (emitted.has(ws.id)) return;
+    emitted.add(ws.id);
+    out.push({ ws, depth });
+    for (const child of childrenOf.get(ws.id) || []) emit(child, depth + 1);
+  };
+  for (const ws of items) {
+    const p = ws.parent && byId.has(ws.parent) ? ws.parent : "";
+    if (!p) emit(ws, 0);
+  }
+  for (const ws of items) if (!emitted.has(ws.id)) emit(ws, 0);
+  return out;
+}
 var repoBranchList = {
   format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
   parse: (s) => s.split(",").map((x) => x.trim()).filter(Boolean).map((pair) => {
@@ -2995,6 +3034,10 @@ var Workspace = class extends Model {
   favorite = fields.bool();
   category = fields.char();
   // a workspace_categories id ("" = uncategorized)
+  parent = fields.char();
+  // the id of the workspace this one was spawned from
+  // ("" = none/root); cascade-deleted with it — see cascadeRemoveDescendants
+  // (workspace_plugin.js)
   notes = fields.char();
   // free-form user notes (the Details tab)
   db = fields.char();
@@ -3060,6 +3103,13 @@ var Workspace = class extends Model {
   // including its activity stamp — untouched (archiving is shelving, not use)
   setCategory(category) {
     this.category.set(category || "");
+  }
+  // demote to root ("" = no parent) — used only by cascadeRemoveDescendants
+  // when this workspace's own removal was blocked; parent is otherwise fixed
+  // once, at creation
+  setParent(parent) {
+    this.parent.set(parent || "");
+    this._configPlugin().touch();
   }
   // ── action: stop the server, switch to this workspace, check out its branches ─
   // restore: re-checkout even when this workspace is already the active one — the
@@ -3187,6 +3237,7 @@ function workspaceData(w) {
     last_activity: w.last_activity ?? "",
     favorite: !!w.favorite,
     category: w.category ?? "",
+    parent: w.parent ?? "",
     notes: w.notes ?? "",
     db: w.db ?? "",
     on_create_args: w.on_create_args ?? "",
@@ -3250,6 +3301,7 @@ function toConfig(orm) {
     last_activity: w.last_activity(),
     favorite: w.favorite(),
     category: w.category(),
+    parent: w.parent(),
     notes: w.notes(),
     db: w.db(),
     on_create_args: w.on_create_args(),
@@ -3334,6 +3386,7 @@ function reconcileWorkspaces(orm, desired) {
         "name",
         "favorite",
         "category",
+        "parent",
         "notes",
         "db",
         "on_create_args",
@@ -3364,6 +3417,10 @@ function reconcileWorkspaces(orm, desired) {
   for (const c of orm.records(Checkout)) {
     const ws = c.workspace();
     if (!ws || !live.has(ws.id)) orm.delete(c);
+  }
+  const liveIds = new Set(orm.records(Workspace).map((r) => r.id));
+  for (const rec of orm.records(Workspace)) {
+    if (rec.parent() && !liveIds.has(rec.parent())) rec.parent.set("");
   }
   const have = orm.records(Workspace).map((r) => r.id);
   const want = desired.map((w) => w.id);
@@ -3991,7 +4048,7 @@ var WorkspacePlugin = class extends Plugin {
   // persist the workspace (canonical `workspaces` write — the create path deals it
   // the next stable port) and select it.
   // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
-  //         baseId?, on_create_args?, demo_data?, favorite? }
+  //         baseId?, on_create_args?, demo_data?, favorite?, parent? }
   async createWorktree({
     name,
     dbName,
@@ -4002,7 +4059,8 @@ var WorkspacePlugin = class extends Plugin {
     on_create_args = "",
     demo_data = true,
     favorite = false,
-    category = ""
+    category = "",
+    parent = ""
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -4015,6 +4073,7 @@ var WorkspacePlugin = class extends Plugin {
       last_activity: now,
       favorite,
       category,
+      parent,
       db: dbName,
       on_create_args,
       demo_data,
@@ -4094,21 +4153,13 @@ var WorkspacePlugin = class extends Plugin {
     await this.stopServer(tgt);
     await this.startServer(tgt);
   }
-  async remove(tgt) {
-    if (this.running(tgt))
-      return this._error(
-        "Stop the server first",
-        "Stop the workspace's server before removing it."
-      );
-    const res = await this.dialogs.open({
-      title: `Remove workspace "${tgt.name}"?`,
-      message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.`,
-      fields: [
-        { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false }
-      ],
-      okLabel: "Remove"
-    });
-    if (!res) return;
+  // the actual cleanup (backend worktree removal + optional db drop + config/local
+  // bookkeeping) — shared by the interactive `remove` (after its own confirm dialog)
+  // and the silent cascade (no confirm, no dropDb prompt — a db drop wasn't
+  // explicitly asked for a cascaded child, matching the interactive default of
+  // leaving it alone unless the checkbox was ticked). Returns false (kept) on
+  // failure, true on success.
+  async _removeCleanup(tgt, { dropDb = false } = {}) {
     const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
       repo,
       mainPath,
@@ -4122,9 +4173,10 @@ var WorkspacePlugin = class extends Plugin {
         repos
       });
     } catch (e) {
-      return this._error("Worktree removal failed", e.message);
+      this._error("Worktree removal failed", e.message);
+      return false;
     }
-    if (res.dropDb && tgt.db) {
+    if (dropDb && tgt.db) {
       try {
         await postJSON("/api/databases/drop", {
           name: tgt.db,
@@ -4140,6 +4192,45 @@ var WorkspacePlugin = class extends Plugin {
     this.store.dropServer(tgt.id);
     this.logs.delete(tgt.id);
     if (this.selectedId() === tgt.id) this.selectedId.set("");
+    return true;
+  }
+  async remove(tgt) {
+    if (this.running(tgt))
+      return this._error(
+        "Stop the server first",
+        "Stop the workspace's server before removing it."
+      );
+    const descendants = descendantWorkspaces(this.config.config.workspaces || [], tgt.id);
+    const res = await this.dialogs.open({
+      title: `Remove workspace "${tgt.name}"?`,
+      message: `This deletes ${this.dirPath(tgt)} and its git worktrees. Uncommitted changes there are lost.` + (descendants.length ? ` This also removes ${descendants.length} sub-workspace${descendants.length === 1 ? "" : "s"} spawned from it.` : ""),
+      fields: [
+        { key: "dropDb", type: "checkbox", label: `Also drop database "${tgt.db}"`, value: false }
+      ],
+      okLabel: "Remove"
+    });
+    if (!res) return;
+    if (!await this._removeCleanup(tgt, { dropDb: !!res.dropDb })) return;
+    const { skipped } = await cascadeRemoveDescendants(
+      { config: this.config, wt: this, eventLog: this.eventLog, server: this.server },
+      tgt
+    );
+    if (skipped.length) this._notifyKept(skipped);
+  }
+  // silent per-child removal the cascade drives — no confirm, no dropDb prompt
+  async removeSilently(tgt) {
+    if (this.running(tgt)) return false;
+    return this._removeCleanup(tgt, { dropDb: false });
+  }
+  _notifyKept(skipped) {
+    this.dialogs.open({
+      title: "Some sub-workspaces were kept",
+      message: skipped.map(
+        (w) => `"${w.name}" is still busy (its server is running, or it's the loaded workspace) \u2014 kept, no longer linked to the deleted parent.`
+      ).join("\n"),
+      okLabel: "OK",
+      cancelLabel: null
+    });
   }
   // open the worktree's repo folders in the configured editor (all in one window);
   // works whether or not the server is running — it's just the checkout on disk
@@ -4164,6 +4255,43 @@ var WorkspacePlugin = class extends Plugin {
     return false;
   }
 };
+async function cascadeRemoveDescendants(plugins, parentWs) {
+  const { config, wt, eventLog, server } = plugins;
+  const skipped = [];
+  let frontier = directChildren(config.config.workspaces || [], parentWs.id);
+  while (frontier.length) {
+    const next = [];
+    for (const child of frontier) {
+      const live = (config.config.workspaces || []).find((w) => w.id === child.id);
+      if (!live) continue;
+      const isWt = live.location === "worktree";
+      const busy = isWt ? wt.running(live) : isLoadedMainWorkspace(server, live);
+      if (busy) {
+        skipped.push(live);
+        config.workspace(live.id)?.setParent("");
+        continue;
+      }
+      eventLog.add(`removing workspace ${live.name} (cascaded with "${parentWs.name}")`);
+      next.push(...directChildren(config.config.workspaces || [], live.id));
+      if (isWt) await wt.removeSilently(live);
+      else
+        config.updateConfig({
+          workspaces: (config.config.workspaces || []).filter((w) => w.id !== live.id)
+        });
+    }
+    frontier = next;
+  }
+  return { skipped };
+}
+function directChildren(list, id) {
+  return list.filter((w) => w.parent === id);
+}
+function isLoadedMainWorkspace(server, ws) {
+  if (ws.location === "worktree") return false;
+  const s = server.status();
+  const activeId = s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
+  return ws.id === activeId;
+}
 
 // static/src/core/update_plugin.js
 var UpdatePlugin = class extends Plugin {
@@ -4851,6 +4979,7 @@ var BranchesScreen = class extends Component {
   static components = { SearchBox, DirtyBadge, Panel };
   worktree = usePlugin(WorkspacePlugin);
   // "wt" badge on branches owned by a worktree
+  server = usePlugin(ServerPlugin);
   static template = xml`
     <section>
       <Panel title="'Branches'">
@@ -5106,6 +5235,27 @@ var BranchesScreen = class extends Component {
       this.config.updateConfig({
         workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id))
       });
+      for (const t2 of drop) {
+        const { skipped } = await cascadeRemoveDescendants(
+          {
+            config: this.config,
+            wt: this.worktree,
+            eventLog: this.code.eventLog,
+            server: this.server
+          },
+          t2
+        );
+        if (skipped.length) {
+          await this.dialogs.open({
+            title: "Some sub-workspaces were kept",
+            message: skipped.map(
+              (w) => `"${w.name}" is still busy \u2014 kept, no longer linked to the deleted parent.`
+            ).join("\n"),
+            okLabel: "OK",
+            cancelLabel: null
+          });
+        }
+      }
     }
   }
   // sort by a column; clicking the active column flips the direction
@@ -9214,7 +9364,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       on_create_args: (res.args || "").trim(),
       demo_data: !!res.demoData,
       favorite: false,
-      category: res.category || ""
+      category: res.category || "",
+      parent: prefill.parent || ""
     });
     return;
   }
@@ -9226,6 +9377,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     last_activity: now,
     favorite: false,
     category: res.category || "",
+    parent: prefill.parent || "",
     db: (res.db || "").trim(),
     on_create_args: (res.args || "").trim(),
     demo_data: !!res.demoData,
@@ -9252,6 +9404,75 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     await db.cloneStoppingServer(res.cloneDb, ws.db);
   }
   wt.select(ws.id);
+}
+function findSubWorkspace(config, parentWs, row) {
+  return (config.config.workspaces || []).find(
+    (w) => w.parent === parentWs.id && (w.checkouts || []).some((c) => c.branch === row.branch)
+  ) || null;
+}
+async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) {
+  const { config, dialogs, code, eventLog, wt } = plugins;
+  const existing = findSubWorkspace(config, parentWs, row);
+  if (existing) {
+    wt.select(existing.id);
+    return;
+  }
+  const branch = row.branch;
+  const repoFor = (slug) => {
+    const exact = (config.config.repos || []).find((r) => r.github === slug);
+    if (exact) return exact;
+    const name2 = slug.split("/")[1];
+    return (config.config.repos || []).find((r) => (r.github || "").split("/")[1] === name2) || null;
+  };
+  const matches = (row.cells || []).map((cell) => repoFor(cell.repository)).filter((r) => r && r.path);
+  if (!matches.length) {
+    return dialogs.open({
+      title: "Create sub workspace",
+      message: `none of this row's repositories (${(row.cells || []).map((c) => c.repository).join(", ") || "none"}) match your configured repos`,
+      okLabel: "OK",
+      cancelLabel: null
+    });
+  }
+  const results = await Promise.all(
+    matches.map(async (r) => {
+      const eid = eventLog.begin(`fetching ${branch} (${r.id}) from ${r.pull_remote || "origin"}`);
+      try {
+        await postJSON("/api/code/remote-branch/fetch", {
+          path: r.path,
+          branch,
+          pull_remote: r.pull_remote || "origin"
+        });
+        eventLog.finish(eid, "done");
+        return { repo: r, ok: true };
+      } catch (e) {
+        eventLog.finish(eid, "error");
+        return { repo: r, ok: false, error: e.message };
+      }
+    })
+  );
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length) {
+    dialogs.open({
+      title: "Fetching forward-port branch failed",
+      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+      cls: "dialog-error",
+      okLabel: "OK",
+      cancelLabel: null
+    });
+    if (failed.length === results.length) return;
+  }
+  const got = results.filter((r) => r.ok).map((r) => r.repo.id);
+  await code.refreshBranches(new Set(got));
+  const name = `${parentWs.name}-${branch}`;
+  return startCreateWorkspace(plugins, {
+    name,
+    config: repoBranchList.format(got.map((repo) => ({ repo, branch }))),
+    db: name,
+    template: "",
+    createBranches: false,
+    parent: parentWs.id,
+    category: parentWs.category || ""
+  });
 }
 async function adoptCurrentCheckout(plugins) {
   const { config, dialogs, code, eventLog, wt, server } = plugins;
@@ -9319,8 +9540,9 @@ async function adoptCurrentCheckout(plugins) {
   await makeLoaded(ws);
   wt.select(ws.id);
 }
-async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, isActive, dialogs }) {
+async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, isActive, dialogs, wt, server }) {
   if (isActive) return;
+  const descendants = descendantWorkspaces(config.config.workspaces || [], ws.id);
   const groups = code.groups();
   const branches = (ws.checkouts || []).map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) })).filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch)).map((x) => ({
     repo: x.repo,
@@ -9364,7 +9586,7 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
     });
   const res = await dialogs.open({
     title: `Delete "${ws.name}"?`,
-    message: "The workspace will be removed from your list. This cannot be undone.",
+    message: "The workspace will be removed from your list. This cannot be undone." + (descendants.length ? ` This also removes ${descendants.length} sub-workspace${descendants.length === 1 ? "" : "s"} spawned from it.` : ""),
     okLabel: "Delete",
     fields: fields2
   });
@@ -9380,6 +9602,17 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
   config.updateConfig({
     workspaces: config.config.workspaces.filter((w) => w.id !== ws.id)
   });
+  const { skipped } = await cascadeRemoveDescendants({ config, wt, eventLog, server }, ws);
+  if (skipped.length) {
+    await dialogs.open({
+      title: "Some sub-workspaces were kept",
+      message: skipped.map(
+        (w) => `"${w.name}" is still busy (its server is running, or it's the loaded workspace) \u2014 kept, no longer linked to the deleted parent.`
+      ).join("\n"),
+      okLabel: "OK",
+      cancelLabel: null
+    });
+  }
 }
 
 // static/src/addons_screen/addons_plugin.js
@@ -10281,6 +10514,11 @@ var CodePane = class extends Component {
                   </span>
                 </div>
               </div>
+              <button class="pbtn ghost ws-fp-subws"
+                      t-att-title="this.subWorkspaceFor(row) ? 'open the existing sub workspace for this forward port' : 'check out this forward port locally as a new sub workspace'"
+                      t-on-click.stop="() => this.createSubWorkspace(row)">
+                <t t-if="this.subWorkspaceFor(row)">Open sub workspace</t><t t-else="">Create sub workspace</t>
+              </button>
             </div>
           </div>
         </div>
@@ -10292,6 +10530,8 @@ var CodePane = class extends Component {
   config = usePlugin(ConfigPlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
+  db = usePlugin(DatabasePlugin);
+  wt = usePlugin(WorkspacePlugin);
   codeIcon = m(ICONS.code);
   // "Editor" toolbar button
   kebabIcon = m(ICONS.kebab);
@@ -10672,6 +10912,22 @@ var CodePane = class extends Component {
     }
     return chains;
   }
+  _dialogPlugins() {
+    return {
+      config: this.config,
+      dialogs: this.dialogs,
+      db: this.db,
+      code: this.code,
+      eventLog: this.eventLog,
+      wt: this.wt
+    };
+  }
+  createSubWorkspace(row) {
+    return createSubWorkspaceFromForwardPort(this._dialogPlugins(), this.props.ws, row);
+  }
+  subWorkspaceFor(row) {
+    return findSubWorkspace(this.config, this.props.ws, row);
+  }
   rPlusKey(pull) {
     return `${pull.github}#${pull.number}`;
   }
@@ -10859,16 +11115,17 @@ var WorkspacesScreen = class extends Component {
                 <span class="wt-group-count" t-out="grp.items.length"/>
               </button>
               <t t-if="!grp.name || !this.isCollapsed(grp.id)">
-                <button t-foreach="grp.items" t-as="ws" t-key="ws.id" class="wt-item"
-                        t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
-                        t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
-                  <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
-                  <span class="wt-item-name" t-out="ws.name"/>
-                  <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
-                  <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+                <button t-foreach="grp.items" t-as="row" t-key="row.ws.id" class="wt-item"
+                        t-att-class="{selected: row.ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(row.ws.id)"
+                        t-att-style="'padding-left:' + (16 + row.depth * 16) + 'px'"
+                        t-att-title="this.branchOf(row.ws) + ' · ' + (row.ws.db || '') + (this.isDrifted(row.ws) ? ' · checkout drifted' : '')">
+                  <span class="wt-dot" t-att-class="this.listDotClass(row.ws)"/>
+                  <span class="wt-item-name" t-out="row.ws.name"/>
+                  <span t-if="this.isDrifted(row.ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
+                  <span t-if="this.isWt(row.ws)" class="wt-badge" title="worktree workspace">wt</span>
                   <span class="wt-sp"/>
-                  <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
-                  <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
+                  <span class="wt-status-dot" t-att-class="this.ciDotClass(row.ws)" t-att-title="this.ciDotTitle(row.ws)"/>
+                  <span class="wt-status-dot" t-att-class="this.mbDotClass(row.ws)" t-att-title="this.mbDotTitle(row.ws)"/>
                 </button>
               </t>
             </div>
@@ -11332,7 +11589,7 @@ var WorkspacesScreen = class extends Component {
     }
     if (archived.length)
       groups.push({ id: ARCHIVED_CATEGORY, name: ARCHIVED_CATEGORY, items: archived });
-    return groups.filter((g) => g.items.length);
+    return groups.filter((g) => g.items.length).map((g) => ({ ...g, items: nestByParent(g.items) }));
   }
   isArchived(ws) {
     return ws.category === ARCHIVED_CATEGORY;
@@ -11664,7 +11921,9 @@ var WorkspacesScreen = class extends Component {
       eventLog: this.eventLog,
       repoMap: this.repoMap,
       isActive: this.isLoaded(ws),
-      dialogs: this.dialogs
+      dialogs: this.dialogs,
+      wt: this.wt,
+      server: this.server
     });
   }
   // ── terminal gating: never show another workspace's server PTY ───────────────

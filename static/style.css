@@ -4724,7 +4724,7 @@ a.commit-detail-hash svg {
 }
 .ws-fp-row {
   display: grid;
-  grid-template-columns: 105px minmax(0, 1fr);
+  grid-template-columns: 105px minmax(0, 1fr) auto;
   min-height: 35px;
   border-bottom: 1px solid var(--l-line-soft);
 }
@@ -4792,6 +4792,13 @@ a.ws-fp-branch:hover {
   color: var(--l-accent);
   border-color: var(--l-accent-line);
   background: var(--l-accent-soft);
+}
+.ws-fp-subws {
+  align-self: center;
+  margin: 0 12px;
+  padding: 3px 10px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .ws-fp-detail,
 .ws-fp-waiting {
