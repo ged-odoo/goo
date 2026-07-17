@@ -157,9 +157,6 @@ export class CodePane extends Component {
           </div>
           <div class="ws-history-layout">
             <aside class="ws-history-list" t-ref="this.historyListEl">
-              <div t-if="this.historyLoading()" class="ws-history-state dim"><span class="ws-refresh-spin"/>Loading commits…</div>
-              <div t-elif="this.historyError()" class="ws-history-state form-error" t-out="this.historyError()"/>
-              <div t-elif="!this.historyCommits().length" class="ws-history-state dim">No commits found.</div>
               <div t-foreach="this.historyOrderedCommits" t-as="commit" t-key="commit.sha"
                    class="ws-history-row" t-att-class="{dragging: this.historyDragSha() === commit.sha, 'ws-history-row-ahead': commit.ahead}"
                    t-att-data-sha="commit.sha">
@@ -180,12 +177,21 @@ export class CodePane extends Component {
             </aside>
             <section class="ws-history-detail">
               <t t-if="this.historyCommit">
-                <dl class="ws-history-meta">
-                  <dt>Hash</dt><dd class="ws-history-hash" t-out="this.historyCommit.sha"/>
-                  <dt>Author</dt><dd t-out="this.historyCommit.author"/>
-                  <dt>Date</dt><dd t-out="this.fullCommitDate(this.historyCommit.date)"/>
-                </dl>
                 <h2 class="ws-history-title" t-out="this.historyCommit.subject"/>
+                <div class="ws-history-meta">
+                  <div class="ws-history-meta-row">
+                    <span class="ws-history-author" t-out="this.historyCommit.author"/>
+                    <span class="ws-history-hash" t-out="this.historyCommit.sha"/>
+                  </div>
+                  <div class="ws-history-meta-row">
+                    <span t-out="this.fullCommitDate(this.historyCommit.date)"/>
+                    <span t-if="!this.historyDiffLoading() and !this.historyDiffError()" class="ws-history-diffstats">
+                      <span class="add" t-out="'+' + this.historyDiffStats.added"/>
+                      <span class="del" t-out="'-' + this.historyDiffStats.deleted"/>
+                    </span>
+                    <span t-else="" class="ws-history-diffstats">…</span>
+                  </div>
+                </div>
                 <pre t-if="this.historyCommit.body" class="ws-history-body" t-out="this.historyCommit.body"/>
                 <div class="ws-history-diff-head">Diff</div>
                 <div t-if="this.historyDiffLoading()" class="ws-history-diff-state dim"><span class="ws-refresh-spin"/>Loading diff…</div>
@@ -196,7 +202,7 @@ export class CodePane extends Component {
                        class="ws-history-diff-line" t-att-class="line.cls" t-out="line.text || ' '"/>
                 </div>
               </t>
-              <div t-elif="!this.historyLoading()" class="ws-history-state dim">Select a commit to see its details.</div>
+              <div t-else="" class="ws-history-state dim">Select a commit to see its details.</div>
             </section>
           </div>
           <div t-if="this.historyConflict()" class="commits-conflict">
@@ -338,8 +344,6 @@ export class CodePane extends Component {
   historyRow = signal(null);
   historyCommits = signal([]);
   historySelected = signal("");
-  historyLoading = signal(false);
-  historyError = signal("");
   historyDiff = signal("");
   historyDiffLoading = signal(false);
   historyDiffError = signal("");
@@ -360,6 +364,7 @@ export class CodePane extends Component {
   historyListEl = signal.ref(HTMLElement);
   _historySequence = 0;
   _diffSequence = 0;
+  _historyPendingKey = "";
 
   setup() {
     // close the repo chip menu on any outside click
@@ -368,6 +373,8 @@ export class CodePane extends Component {
     onMounted(() => document.addEventListener("click", closeMenu));
     onMounted(() => document.addEventListener("keydown", onKeydown));
     onWillUnmount(() => {
+      this._historySequence++;
+      this._diffSequence++;
       document.removeEventListener("click", closeMenu);
       document.removeEventListener("keydown", onKeydown);
     });
@@ -681,24 +688,20 @@ export class CodePane extends Component {
     this.code.openEditor(r.path, r.repo);
   }
 
-  // Replace the checkout table with this branch's history. The branch tip is the
-  // first row because git log is already newest-first; selecting a row loads only
-  // that commit's diff, keeping the initial history request compact.
+  // Load the branch history + its head diff behind the still-visible checkout
+  // table, then set historyRow last as the single visibility gate. This avoids an
+  // empty intermediate history render while the two git requests are in flight.
   async openHistory(r) {
     if (!r.path || !r.sha) return;
+    if (this._historyPendingKey === r.key) return;
     this.touchActivity();
     this.menuId.set("");
-    this.historyRow.set(r);
-    this.historyCommits.set([]);
-    this.historySelected.set("");
-    this.historyError.set("");
-    this.historyDiff.set("");
-    this.historyDiffError.set("");
-    this.historyLoading.set(true);
     this.historyConflict.set("");
+    this._historyPendingKey = r.key;
     const sequence = ++this._historySequence;
+    ++this._diffSequence;
     try {
-      const [commits, stuck] = await Promise.all([
+      const [commits, stuck, clickedDiff] = await Promise.all([
         this.code.commits(r.path, r.branch, {
           base: r.base,
           pullRemote: r.entry?.pull_remote || "",
@@ -709,16 +712,38 @@ export class CodePane extends Component {
         // invisible. A failed check is treated as "not stuck" rather than
         // blocking the list on an unrelated error.
         this.code.rebaseStatus(r.path).catch(() => false),
+        this.code.commitDiff(r.path, r.sha),
       ]);
       if (sequence !== this._historySequence) return;
+      if (!commits.length) throw new Error(`No commits found for ${r.branch}.`);
+      const head = commits[0];
+      // The branch may have advanced since checkoutRows was last refreshed. In
+      // that rare case, load the returned head instead of revealing a mismatched
+      // selected commit and patch.
+      const diff = head.sha === r.sha ? clickedDiff : await this.code.commitDiff(r.path, head.sha);
+      if (sequence !== this._historySequence) return;
+
+      // All history state is populated while the checkout template is still the
+      // active branch. Setting historyRow last reveals a complete first frame.
       this.historyCommits.set(commits);
       this.resetHistoryPlan();
       this.historyConflict.set(stuck ? "a rebase is already in progress in this repository" : "");
-      if (commits.length) await this.selectHistoryCommit(commits[0]);
+      this.historySelected.set(head.sha);
+      this.historyDiff.set(diff);
+      this.historyDiffLoading.set(false);
+      this.historyDiffError.set("");
+      this.historyRow.set(r);
     } catch (e) {
-      if (sequence === this._historySequence) this.historyError.set(e.message);
+      if (sequence !== this._historySequence) return;
+      this.dialogs.open({
+        title: "Could not load commit history",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null,
+      });
     } finally {
-      if (sequence === this._historySequence) this.historyLoading.set(false);
+      if (sequence === this._historySequence) this._historyPendingKey = "";
     }
   }
 
@@ -728,8 +753,6 @@ export class CodePane extends Component {
     this.historyRow.set(null);
     this.historyCommits.set([]);
     this.historySelected.set("");
-    this.historyLoading.set(false);
-    this.historyError.set("");
     this.historyDiff.set("");
     this.historyDiffLoading.set(false);
     this.historyDiffError.set("");
@@ -946,6 +969,16 @@ export class CodePane extends Component {
     const row = this.historyRow();
     if (!row) return;
     this.dialogs.openComponent(TerminalDialog, { path: row.path, label: `${row.repo} history` });
+  }
+
+  get historyDiffStats() {
+    let added = 0;
+    let deleted = 0;
+    for (const line of this.historyDiff().split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) added++;
+      else if (line.startsWith("-") && !line.startsWith("---")) deleted++;
+    }
+    return { added, deleted };
   }
 
   // open GitHub's PR-creation page for this repo's current branch

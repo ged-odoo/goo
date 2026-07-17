@@ -5083,24 +5083,49 @@ a.commit-detail-hash svg {
   background: var(--l-card);
 }
 .ws-history-meta {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 5px 14px;
-  margin: 0 0 18px;
+  width: 500px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 9px 0 18px;
+  padding: 7px 10px;
+  background: var(--l-bg);
+  color: var(--l-text-dim);
   font-size: 11.5px;
 }
-.ws-history-meta dt {
-  color: var(--l-text-dim);
-}
-.ws-history-meta dd {
+.ws-history-meta-row {
   min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.ws-history-author {
+  color: var(--l-text-mid);
+  font-weight: 600;
 }
 .ws-history-hash {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--mono);
   font-size: 11px;
+  white-space: nowrap;
   user-select: all;
+}
+.ws-history-diffstats {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.ws-history-diffstats .add {
+  color: #1a7f37;
+}
+.ws-history-diffstats .del {
+  color: #cf222e;
 }
 .ws-history-title {
   margin: 0;
