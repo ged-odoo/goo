@@ -11256,14 +11256,17 @@ var WorkspacesScreen = class extends Component {
         <t t-set-slot="title-extra">
           <button class="pbtn primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">Add</button>
         </t>
-        <t t-set-slot="top-middle">
-          <SearchBox value="this.query"/>
-        </t>
         <t t-set-slot="top-right">
           <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
             <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
             <t t-else="" t-out="this.refreshIcon"/>
           </button>
+        </t>
+      </Panel>
+      <div class="content wt-content">
+        <div class="wt-list">
+          <div class="wt-list-head">
+            <SearchBox value="this.query"/>
           <div class="wt-order-wrap">
             <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
               <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
@@ -11274,10 +11277,7 @@ var WorkspacesScreen = class extends Component {
               </button>
             </div>
           </div>
-        </t>
-      </Panel>
-      <div class="content wt-content">
-        <div class="wt-list">
+          </div>
           <div class="wt-list-items">
             <div t-if="!this.list.length" class="wt-empty dim">
               <t t-if="this.query()">No workspace matches.</t>
@@ -11289,24 +11289,26 @@ var WorkspacesScreen = class extends Component {
             </div>
             <div t-foreach="this.listGroups" t-as="grp" t-key="grp.id" class="wt-group">
               <button t-if="grp.name" class="wt-group-head" t-att-title="(this.isCollapsed(grp.id) ? 'expand' : 'collapse') + ' ' + grp.name" t-on-click="() => this.toggleGroup(grp.id)">
-                <span class="wt-group-caret" t-out="this.isCollapsed(grp.id) ? '▸' : '▾'"/>
+                <span class="wt-group-caret" t-att-class="{collapsed: this.isCollapsed(grp.id)}"/>
                 <span class="wt-group-name" t-out="grp.name"/>
                 <span class="wt-sp"/>
                 <span class="wt-group-count" t-out="grp.items.length"/>
               </button>
               <t t-if="!grp.name || !this.isCollapsed(grp.id)">
-                <button t-foreach="grp.items" t-as="row" t-key="row.ws.id" class="wt-item"
-                        t-att-class="{selected: row.ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(row.ws.id)"
-                        t-att-style="'padding-left:' + (16 + row.depth * 16) + 'px'"
-                        t-att-title="this.branchOf(row.ws) + ' · ' + (row.ws.db || '') + (this.isDrifted(row.ws) ? ' · checkout drifted' : '')">
-                  <span class="wt-dot" t-att-class="this.listDotClass(row.ws)"/>
-                  <span class="wt-item-name" t-out="row.ws.name"/>
-                  <span t-if="this.isDrifted(row.ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
-                  <span t-if="this.isWt(row.ws)" class="wt-badge" title="worktree workspace">wt</span>
-                  <span class="wt-sp"/>
-                  <span class="wt-status-dot" t-att-class="this.ciDotClass(row.ws)" t-att-title="this.ciDotTitle(row.ws)"/>
-                  <span class="wt-status-dot" t-att-class="this.mbDotClass(row.ws)" t-att-title="this.mbDotTitle(row.ws)"/>
-                </button>
+                <div class="wt-group-items" t-att-class="{'with-header': !!grp.name}">
+                  <button t-foreach="grp.items" t-as="row" t-key="row.ws.id" class="wt-item"
+                          t-att-class="{selected: row.ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(row.ws.id)"
+                          t-att-style="'padding-left:' + (16 + row.depth * 16) + 'px'"
+                          t-att-title="this.branchOf(row.ws) + ' · ' + (row.ws.db || '') + (this.isDrifted(row.ws) ? ' · checkout drifted' : '')">
+                    <span class="wt-dot" t-att-class="this.listDotClass(row.ws)"/>
+                    <span class="wt-item-name" t-out="row.ws.name"/>
+                    <span t-if="this.isDrifted(row.ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
+                    <span t-if="this.isWt(row.ws)" class="wt-badge" title="worktree workspace">wt</span>
+                    <span class="wt-sp"/>
+                    <span class="wt-status-dot" t-att-class="this.ciDotClass(row.ws)" t-att-title="this.ciDotTitle(row.ws)"/>
+                    <span class="wt-status-dot" t-att-class="this.mbDotClass(row.ws)" t-att-title="this.mbDotTitle(row.ws)"/>
+                  </button>
+                </div>
               </t>
             </div>
           </div>

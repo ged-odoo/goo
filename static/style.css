@@ -3381,28 +3381,49 @@ a.dash-ci:hover {
   border-color: var(--l-accent-line);
 }
 
-/* workspace-list category groups: the items stay a flat list; each category gets
-   a collapsible header — a light rounded bar with caret + name + count pill */
+/* workspace-list category groups: compact full-width bars followed by rows on a
+   subtle branch line, matching the repository-tree shape of the data */
 .wt-group-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  margin: 6px 0 6px;
-  padding: 6px 15px;
+  height: 34px;
+  margin: 0;
+  padding: 0 10px;
   border: none;
   border-radius: 0;
-  background: var(--l-panel);
+  background: transparent;
   cursor: pointer;
   text-align: left;
 }
 .wt-group-head:hover {
   background: var(--l-line-soft);
 }
+.wt-group + .wt-group .wt-group-head {
+  margin-top: 8px;
+}
 .wt-group-caret {
+  position: relative;
+  width: 10px;
+  height: 10px;
   flex: none;
-  font-size: 9px;
-  color: var(--l-text-faint);
+  color: var(--l-text-dim);
+}
+.wt-group-caret::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.12s ease;
+}
+.wt-group-caret.collapsed::before {
+  transform: rotate(-45deg);
 }
 .wt-group-name {
   font-size: 13px;
@@ -3414,13 +3435,31 @@ a.dash-ci:hover {
 }
 .wt-group-count {
   flex: none;
+  min-width: 24px;
+  height: 18px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
   color: var(--l-text-mid);
   background: var(--l-card);
-  border: 1px solid var(--l-line);
-  border-radius: 20px;
-  padding: 1px 9px;
+  border: none;
+  border-radius: 9px;
+  padding: 0 7px;
+}
+.wt-group-items {
+  position: relative;
+  margin-left: 12px;
+  padding-top: 2px;
+}
+.wt-group-items.with-header::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 15px;
+  width: 1px;
+  background: var(--l-line);
 }
 
 /* card list layout (spec.card): one bordered card per item, labeled fields over rows */
@@ -4239,13 +4278,42 @@ a.commit-detail-hash svg {
 .wt-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   min-height: 0;
   background: var(--l-card);
   border-right: 1px solid var(--l-line);
-  padding: 12px 10px;
+  padding: 0;
 }
-/* workspace panel create / refresh / ordering controls */
+/* search + ordering above the workspace list */
+.wt-list-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 10px;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.wt-list-head .search-box {
+  flex: 1;
+  min-width: 0;
+}
+.wt-list-head input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 12px;
+  color: var(--l-text);
+  background: var(--l-bg);
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.wt-list-head input::placeholder {
+  color: var(--l-text-faint);
+}
+.wt-list-head input:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+}
 .wt-order-wrap {
   position: relative;
   flex: none;
@@ -4350,7 +4418,6 @@ a.commit-detail-hash svg {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  margin-inline: -10px;
 }
 .wt-empty {
   padding: 10px 4px;
@@ -4366,19 +4433,29 @@ a.commit-detail-hash svg {
   margin: 0 0 4px;
 }
 .wt-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: calc(100% - 12px);
-  margin: 4px 6px;
-  padding: 5px 9px 5px 16px;
+  gap: 5px;
+  width: calc(100% - 23px);
+  min-height: 29px;
+  margin: 0 8px 0 15px;
+  padding: 4px 8px 4px 16px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
   text-align: left;
   cursor: pointer;
   font: inherit;
   color: var(--l-text);
+}
+.wt-group-items.with-header .wt-item::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 11px;
+  border-top: 1px solid var(--l-line);
 }
 /* the two trailing status dots (after the name): runbot then mergebot. Neutral grey
    when there's no status; coloured by the run/pass/fail (CI) or mergebot category. */
@@ -4430,8 +4507,8 @@ a.commit-detail-hash svg {
 /* status dot on a list row (wt-dot + wt-dot-<state>) */
 .wt-dot {
   flex: none;
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--l-text-faint);
 }
@@ -4448,7 +4525,7 @@ a.commit-detail-hash svg {
   background: var(--amber);
 }
 .wt-dot-stopped {
-  background: transparent;
+  display: none;
 }
 /* solid black dot: the loaded (active) workspace + any worktree, when its server
    isn't starting/up (a live server keeps the green/amber state colour instead) */
