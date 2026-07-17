@@ -193,7 +193,6 @@ export class CodePane extends Component {
                   </div>
                 </div>
                 <pre t-if="this.historyCommit.body" class="ws-history-body" t-out="this.historyCommit.body"/>
-                <div class="ws-history-diff-head">Diff</div>
                 <div t-if="this.historyDiffLoading()" class="ws-history-diff-state dim"><span class="ws-refresh-spin"/>Loading diff…</div>
                 <div t-elif="this.historyDiffError()" class="ws-history-diff-state form-error" t-out="this.historyDiffError()"/>
                 <div t-elif="!this.historyDiff()" class="ws-history-diff-state dim">This commit has no file changes.</div>
@@ -796,12 +795,13 @@ export class CodePane extends Component {
   get historyDiffLines() {
     return this.historyDiff()
       .split("\n")
+      .filter((text) => !text.startsWith("diff --git ") && !text.startsWith("index "))
       .map((text, id) => {
         let cls = "";
         if (text.startsWith("+") && !text.startsWith("+++")) cls = "add";
         else if (text.startsWith("-") && !text.startsWith("---")) cls = "del";
         else if (text.startsWith("@@")) cls = "hunk";
-        else if (/^(diff --git|index |--- |\+\+\+ )/.test(text)) cls = "meta";
+        else if (/^(--- |\+\+\+ )/.test(text)) cls = "meta";
         return { id, text, cls };
       });
   }

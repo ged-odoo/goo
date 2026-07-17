@@ -5141,15 +5141,8 @@ a.commit-detail-hash svg {
   line-height: 1.5;
   white-space: pre-wrap;
 }
-.ws-history-diff-head {
-  margin: 22px 0 8px;
-  color: var(--l-text-dim);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-}
 .ws-history-diff {
+  margin-top: 22px;
   border: 1px solid var(--l-line);
   background: #fff;
   color: #1f2328;
