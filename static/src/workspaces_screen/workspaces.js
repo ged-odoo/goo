@@ -915,6 +915,10 @@ export class WorkspacesScreen extends Component {
         <t t-set-slot="title-extra">
           <button class="pbtn primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">Add</button>
         </t>
+        <t t-set-slot="top-middle">
+          <span t-if="this.sel" class="wt-panel-name" t-att-title="this.sel.name + ' — double-click to edit'"
+                t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
+        </t>
         <t t-set-slot="top-right">
           <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
             <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
@@ -977,7 +981,14 @@ export class WorkspacesScreen extends Component {
             <div class="wt-detail-top">
             <div class="wt-detail-head">
               <div class="wt-head-row">
-                <h2 t-out="this.sel.name" title="double-click to edit this workspace" t-on-dblclick="() => this.edit(this.sel)"/>
+                <!-- one primary slot: a main-located workspace that isn't loaded offers
+                     Activate (check out its branches first); once loaded — and always
+                     for worktrees — the slot is the Start/Stop toggle -->
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
+                <t t-else="">
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                </t>
                 <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
                 <t t-if="ci">
                   <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
@@ -996,8 +1007,10 @@ export class WorkspacesScreen extends Component {
                 </a>
                 <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
                 <span class="wt-sp"/>
-                <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-                <button class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+                <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+                <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+                <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
+                <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
                 <div class="dash-kebab-wrap">
                   <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                   <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -1007,20 +1020,6 @@ export class WorkspacesScreen extends Component {
                     <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
                   </div>
                 </div>
-              </div>
-              <div class="wt-meta">
-                <!-- one primary slot: a main-located workspace that isn't loaded offers
-                     Activate (check out its branches first); once loaded — and always
-                     for worktrees — the slot is the Start/Stop toggle -->
-                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
-                <t t-else="">
-                  <button t-if="!this.isLive(this.sel)" class="pbtn primary" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                  <button t-else="" class="pbtn stop" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
-                </t>
-                <t t-set="br" t-value="this.branchSummary(this.sel)"/>
-                <span t-att-title="br.title"><t t-out="br.label"/> <b t-out="br.value"/></span>
-                <span>db <b t-out="this.sel.db || '—'"/></span>
-                <span t-if="this.portOf(this.sel)">port <b t-out="this.portOf(this.sel)"/></span>
               </div>
             </div>
             <div class="wt-tabs">
@@ -1104,6 +1103,7 @@ export class WorkspacesScreen extends Component {
   server = usePlugin(ServerPlugin);
   store = usePlugin(StorePlugin);
   externalIcon = m(ICONS.external);
+  databaseIcon = m(ICONS.databases);
   kebabIcon = m(ICONS.kebab);
   sortIcon = m(ICONS.sort);
   checkIcon = m(ICONS.check);
@@ -1548,17 +1548,6 @@ export class WorkspacesScreen extends Component {
       timeStyle: "short",
     });
     return `${abs} · ${timeAgo(ts)}`;
-  }
-
-  // the header's branch chip: the shared branch name when every checkout agrees
-  // (the usual convention), else just the distinct-name count — one label can't
-  // honestly name two branches (the Code tab's cards carry the per-repo detail).
-  // The tooltip always spells out the full repo:branch mapping.
-  branchSummary(ws) {
-    const names = [...new Set((ws.checkouts || []).map((c) => c.branch))];
-    const title = (ws.checkouts || []).map((c) => `${c.repo}:${c.branch}`).join(", ");
-    if (names.length <= 1) return { label: "branch", value: names[0] || "—", title };
-    return { label: "", value: `${names.length} branches`, title };
   }
 
   // ── per-location server state ────────────────────────────────────────────────
