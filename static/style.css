@@ -4909,6 +4909,7 @@ a.commit-detail-hash svg {
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--l-line);
+  border-right: 0;
   background: var(--l-card);
 }
 .ws-history-head {

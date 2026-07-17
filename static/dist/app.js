@@ -10700,9 +10700,6 @@ var CodePane = class extends Component {
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllForceTitle()" t-on-click="() => this.pushAllForce()"><t t-out="this.pushIcon"/>Push all (force)</button>
-        <button class="pbtn ghost ws-tool ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.refreshTitle()" t-on-click="() => this.load(true)">
-          <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
-        </button>
       </div>
 
       <div t-if="!this.checkoutRows.length" class="dim ws-empty-note">This workspace has no checkouts.</div>
@@ -10853,37 +10850,6 @@ var CodePane = class extends Component {
       document.removeEventListener("click", closeMenu);
       document.removeEventListener("keydown", onKeydown);
     });
-  }
-  load(force) {
-    const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
-    if (!ids.size) return;
-    const scope = force ? this._statusScope() : null;
-    return this.code.loadWorkspace(this.props.ws.id, ids, force, scope);
-  }
-  // the workspace's runbot branch names + mergebot PR keys: each checkout's
-  // configured branch plus whatever is actually checked out (the sync strip
-  // badges the live branch), skipping external repos (never scraped)
-  _statusScope() {
-    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
-    const groups = this.code.groups();
-    const branches = /* @__PURE__ */ new Set();
-    const prs = /* @__PURE__ */ new Set();
-    for (const c of this.props.ws.checkouts || []) {
-      const github = groups.githubByRepo[c.repo] || "";
-      if (this.code.isExternalRepo(github)) continue;
-      for (const branch of new Set([c.branch, byId[c.repo]?.current].filter(Boolean))) {
-        branches.add(branch);
-        const pr = groups.prIndex[branchKey(c.repo, branch)];
-        if (pr && github) prs.add(`${github}#${pr.number}`);
-      }
-    }
-    return { branches, prs };
-  }
-  refreshTitle() {
-    const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
-    const at = this.code.workspaceRefreshedAt(ids);
-    const last = at ? timeAgo(new Date(at).toISOString()) : "never";
-    return `refresh branches + pull requests \xB7 last refreshed ${last}`;
   }
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
@@ -11698,6 +11664,9 @@ var WorkspacesScreen = class extends Component {
                   <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
                   <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
                 </t>
+                <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
+                  <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
+                </button>
                 <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
                 <t t-if="ci">
                   <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
@@ -11896,6 +11865,36 @@ var WorkspacesScreen = class extends Component {
     for (const ws of this.config.config.workspaces || [])
       for (const c of ws.checkouts || []) ids.add(c.repo);
     return ids;
+  }
+  // Force-refresh only the selected workspace's repositories and widen the
+  // one-shot runbot/mergebot scope to its configured + currently checked-out
+  // branches. This is the same targeted refresh formerly owned by CodePane.
+  refreshWorkspace(ws) {
+    const ids = new Set((ws.checkouts || []).map((c) => c.repo));
+    if (!ids.size) return;
+    return this.code.loadWorkspace(ws.id, ids, true, this._workspaceStatusScope(ws));
+  }
+  _workspaceStatusScope(ws) {
+    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
+    const groups = this.code.groups();
+    const branches = /* @__PURE__ */ new Set();
+    const prs = /* @__PURE__ */ new Set();
+    for (const c of ws.checkouts || []) {
+      const github = groups.githubByRepo[c.repo] || "";
+      if (this.code.isExternalRepo(github)) continue;
+      for (const branch of new Set([c.branch, byId[c.repo]?.current].filter(Boolean))) {
+        branches.add(branch);
+        const pr = groups.prIndex[branchKey(c.repo, branch)];
+        if (pr && github) prs.add(`${github}#${pr.number}`);
+      }
+    }
+    return { branches, prs };
+  }
+  workspaceRefreshTitle(ws) {
+    const ids = new Set((ws.checkouts || []).map((c) => c.repo));
+    const at = this.code.workspaceRefreshedAt(ids);
+    const last = at ? timeAgo(new Date(at).toISOString()) : "never";
+    return `refresh branches + pull requests \xB7 last refreshed ${last}`;
   }
   // ── list badges (runbot/CI + mergebot), scoped to a workspace's checkouts ────
   // one row per checkout with its local + remote/PR state
