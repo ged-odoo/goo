@@ -55,9 +55,14 @@ export class TodoScreen extends Component {
       </Panel>
       <div class="content todo-content">
         <div class="todo-layout">
-          <div class="todo-rail">
+          <div class="todo-rail" t-ref="this.railEl">
             <button t-foreach="this.lists()" t-as="l" t-key="l.id" class="todo-rail-item"
-                    t-att-class="{active: l.id === this.selected()}" t-on-click="() => this.select(l.id)">
+                    t-att-data-list-id="l.id"
+                    t-att-class="{active: l.id === this.selected(), dragging: this.listDragId() === l.id}"
+                    t-on-click="() => this.select(l.id)">
+              <span class="row-handle todo-rail-handle" title="Drag to reorder"
+                    t-on-pointerdown.stop="ev => this.onListDragStart(ev, l)"
+                    t-on-click.stop="() => {}">⠿</span>
               <span class="todo-rail-name" t-out="l.name"/>
               <span t-if="this.openCount(l)" class="todo-rail-count" t-out="this.openCount(l)"/>
             </button>
@@ -136,8 +141,10 @@ export class TodoScreen extends Component {
   draft = signal("");
   menuOpen = signal(false);
   detailTodoId = signal("");
+  listDragId = signal("");
   dragId = signal(""); // id of the todo being dragged ("" = none)
   newTodo = signal.ref(HTMLInputElement);
+  railEl = signal.ref(HTMLElement);
   listEl = signal.ref(HTMLElement);
   todoIcon = m(ICONS.todo);
   kebabIcon = m(ICONS.kebab);
@@ -320,6 +327,40 @@ export class TodoScreen extends Component {
   }
 
   // ── drag-and-drop resequencing ───────────────────────────────────────────────
+  // Projects use the same live-reordering interaction as todo rows. Their order
+  // is only persisted on drop; Escape restores the grab-time order.
+  onListDragStart(ev, list) {
+    const original = this.lists();
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".todo-rail-item"),
+      onMove: (e) => this._listDragMove(e, list.id),
+      onEnd: (commit) => {
+        this._dragStop = null;
+        this.listDragId.set("");
+        if (commit) this._save();
+        else this.lists.set(original);
+      },
+    });
+    if (!stop) return;
+    this._dragStop = stop;
+    this.listDragId.set(list.id);
+  }
+
+  _listDragMove(ev, id) {
+    const rows = [...(this.railEl()?.querySelectorAll(".todo-rail-item") || [])];
+    const to = dropIndex(
+      ev,
+      rows.filter((row) => row.dataset.listId !== id),
+    );
+    const lists = this.lists();
+    const from = lists.findIndex((list) => list.id === id);
+    if (from < 0 || from === to) return;
+    const next = [...lists];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    this.lists.set(next);
+  }
+
   // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the list as the pointer crosses its neighbours' midlines. Drop

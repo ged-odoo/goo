@@ -917,8 +917,8 @@ section.hidden {
 .todo-rail-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 5px;
+  padding: 8px 10px 8px 5px;
   border-radius: 8px;
   color: var(--l-text-mid);
   text-align: left;
@@ -930,6 +930,12 @@ section.hidden {
   background: var(--l-accent-soft); /* same highlight as .wt-item.selected */
   color: var(--l-accent);
   font-weight: 600;
+}
+.todo-rail-item.dragging {
+  opacity: 0.35;
+}
+.todo-rail-handle {
+  margin: -8px 0;
 }
 .todo-rail-name {
   flex: 1;
