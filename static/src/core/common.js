@@ -243,7 +243,8 @@ export class DirtyMenu extends Component {
     this.code.wipCommit(this._path, this._repo);
   }
 
-  // the current HEAD commit's subject, for the amend dialog's prefill
+  // the current HEAD commit's subject, for the amend dialog's prefill fallback if
+  // fetching the full message fails
   _headSubject() {
     const repo = this.code.branchRepos().find((r) => r.id === this._repo);
     const b = (repo?.branches || []).find((x) => x.name === repo.current);
@@ -254,9 +255,15 @@ export class DirtyMenu extends Component {
     this.open.set(false);
     const path = this._path;
     const repo = this._repo;
+    let initialMessage;
+    try {
+      initialMessage = await this.code.commitMessage(path);
+    } catch {
+      initialMessage = this._headSubject();
+    }
     const message = await editCommitMessage(this.dialogs, {
       title: `Amend commit — ${repo}`,
-      initialMessage: this._headSubject(),
+      initialMessage,
       okLabel: "Amend",
     });
     if (!message) return;

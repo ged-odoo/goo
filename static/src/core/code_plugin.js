@@ -538,6 +538,17 @@ export class CodePlugin extends Plugin {
     return res.commits;
   }
 
+  // the full message (subject + body) of a single commit — ref defaults to HEAD.
+  // Checkout rows only ever carry the subject line (branches()/log's summaries never
+  // fetch the body up front, since most commits are never opened for editing) — this
+  // is the on-demand fetch for the edit/amend dialogs' prefill, so a multi-line
+  // message isn't silently truncated to its first line. "" if the commit isn't found.
+  async commitMessage(path, ref = "") {
+    const [head] = await this.commits(path, ref);
+    if (!head) return "";
+    return head.body ? `${head.subject}\n\n${head.body}` : head.subject;
+  }
+
   // surface a failure in the app's error dialog (scrollable, styled) rather than a
   // native alert() — git errors like "already checked out at <worktree>" can be long
   _errorDialog(title, message) {

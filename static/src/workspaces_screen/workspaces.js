@@ -758,11 +758,23 @@ export class CodePane extends Component {
     return this.code.wipCommit(r.path, r.repo);
   }
 
+  // the row's subject line is a summary only (branchRepos never fetches commit
+  // bodies up front) — fetch the full message on demand for an edit/amend dialog's
+  // prefill, so a multi-line message isn't silently truncated to its first line;
+  // falls back to the subject alone if the fetch fails
+  async _fullCommitMessage(r) {
+    try {
+      return await this.code.commitMessage(r.path, r.sha);
+    } catch {
+      return r.subject;
+    }
+  }
+
   // stage all changes and fold them into HEAD with a (possibly edited) message
   async amendDialog(r) {
     const message = await editCommitMessage(this.dialogs, {
       title: `Amend commit — ${r.repo}`,
-      initialMessage: r.subject,
+      initialMessage: await this._fullCommitMessage(r),
       okLabel: "Amend",
     });
     if (!message) return;
@@ -781,7 +793,7 @@ export class CodePane extends Component {
     if (!r.sha || !r.path) return;
     const message = await editCommitMessage(this.dialogs, {
       title: `Edit commit message — ${r.repo}`,
-      initialMessage: r.subject,
+      initialMessage: await this._fullCommitMessage(r),
       okLabel: "Save",
     });
     if (!message) return;
