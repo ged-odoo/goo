@@ -2516,6 +2516,28 @@ ${res.remote_error}`,
       this.busy.set(false);
     }
   }
+  // stage all changes and fold them into the HEAD commit with a (possibly
+  // edited) message — git commit --amend (see dialogs.js's editCommitMessage —
+  // the "Amend commit" menu action's caller)
+  async amendCommit(path, repo, message) {
+    this.busy.set(true);
+    try {
+      this.eventLog.add(`amend commit (${repo})`);
+      await postJSON("/api/code/amend", { path, message });
+      await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
+    } catch (e) {
+      this.eventLog.add(`amend commit failed (${repo})`);
+      this.dialogs.open({
+        title: "Amend commit failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    } finally {
+      this.busy.set(false);
+    }
+  }
   // rewrite an existing commit's message (CommitsDialog's edit affordance —
   // only ever offered for commits already flagged "ahead" of the base branch,
   // and the backend re-checks that itself before touching anything). Throws on
@@ -4546,6 +4568,7 @@ var DirtyMenu = class extends Component {
     <div class="dash-menu dirty-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
       <button class="dash-menu-item" t-on-click="() => this.commitDialog()">Commit</button>
       <button class="dash-menu-item" t-on-click="() => this.wipCommit()">WIP commit</button>
+      <button class="dash-menu-item" t-on-click="() => this.amendDialog()">Amend commit</button>
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
   code = usePlugin(CodePlugin);
@@ -4592,6 +4615,24 @@ var DirtyMenu = class extends Component {
   wipCommit() {
     this.open.set(false);
     this.code.wipCommit(this._path, this._repo);
+  }
+  // the current HEAD commit's subject, for the amend dialog's prefill
+  _headSubject() {
+    const repo = this.code.branchRepos().find((r) => r.id === this._repo);
+    const b = (repo?.branches || []).find((x) => x.name === repo.current);
+    return b?.subject || "";
+  }
+  async amendDialog() {
+    this.open.set(false);
+    const path = this._path;
+    const repo = this._repo;
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Amend commit \u2014 ${repo}`,
+      initialMessage: this._headSubject(),
+      okLabel: "Amend"
+    });
+    if (!message) return;
+    this.code.amendCommit(path, repo, message);
   }
   discard() {
     this.open.set(false);
@@ -10454,6 +10495,7 @@ var CodePane = class extends Component {
                 <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
                 <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
                 <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
+                <button t-if="r.dirty" class="dash-menu-item" t-att-disabled="!r.sha" t-on-click="() => this.menuAct(() => this.amendDialog(r))">Amend commit</button>
                 <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
               </div>
             </div>
@@ -10977,6 +11019,17 @@ var CodePane = class extends Component {
   wipCommit(r) {
     this.touchActivity();
     return this.code.wipCommit(r.path, r.repo);
+  }
+  // stage all changes and fold them into HEAD with a (possibly edited) message
+  async amendDialog(r) {
+    const message = await editCommitMessage(this.dialogs, {
+      title: `Amend commit \u2014 ${r.repo}`,
+      initialMessage: r.subject,
+      okLabel: "Amend"
+    });
+    if (!message) return;
+    this.touchActivity();
+    return this.code.amendCommit(r.path, r.repo, message);
   }
   discard(r) {
     this.touchActivity();

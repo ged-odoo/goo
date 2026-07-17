@@ -1228,6 +1228,26 @@ class GitServiceTest(unittest.TestCase):
         [commit_call] = [c for c in io.run_calls if "commit" in c]
         self.assertIn("[WIP]", commit_call)
 
+    def test_amend_commit_stages_and_amends(self):
+        io = FakeIO(run_result=completed())
+        ok, err = services.GitService(io).amend_commit("/repo", "new message")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        [commit_call] = [c for c in io.run_calls if "commit" in c]
+        self.assertIn("--amend", commit_call)
+        self.assertIn("new message", commit_call)
+
+    def test_amend_commit_reports_git_error(self):
+        io = FakeIO(
+            runs={
+                "add -A": completed(),
+                "commit": completed(returncode=1, stderr="error: could not amend commit"),
+            }
+        )
+        ok, err = services.GitService(io).amend_commit("/repo", "new message")
+        self.assertFalse(ok)
+        self.assertIn("could not amend", err)
+
     def test_checkout_notifies_timed_event(self):
         notes = []
         svc = services.GitService(
