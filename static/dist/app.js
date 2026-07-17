@@ -2233,6 +2233,18 @@ var CodePlugin = class extends Plugin {
     if (!res.ok) throw new Error(res.error || "git log failed");
     return res.commits;
   }
+  // the full message (subject + body) of a single commit — ref defaults to HEAD.
+  // Checkout rows only ever carry the subject line (branches()/log's summaries never
+  // fetch the body up front, since most commits are never opened for editing) — this
+  // is the on-demand fetch for the edit/amend dialogs' prefill, so a multi-line
+  // message isn't silently truncated to its first line. "" if the commit isn't found.
+  async commitMessage(path, ref = "") {
+    const [head] = await this.commits(path, ref);
+    if (!head) return "";
+    return head.body ? `${head.subject}
+
+${head.body}` : head.subject;
+  }
   // surface a failure in the app's error dialog (scrollable, styled) rather than a
   // native alert() — git errors like "already checked out at <worktree>" can be long
   _errorDialog(title, message) {
@@ -4616,7 +4628,8 @@ var DirtyMenu = class extends Component {
     this.open.set(false);
     this.code.wipCommit(this._path, this._repo);
   }
-  // the current HEAD commit's subject, for the amend dialog's prefill
+  // the current HEAD commit's subject, for the amend dialog's prefill fallback if
+  // fetching the full message fails
   _headSubject() {
     const repo = this.code.branchRepos().find((r) => r.id === this._repo);
     const b = (repo?.branches || []).find((x) => x.name === repo.current);
@@ -4626,9 +4639,15 @@ var DirtyMenu = class extends Component {
     this.open.set(false);
     const path = this._path;
     const repo = this._repo;
+    let initialMessage;
+    try {
+      initialMessage = await this.code.commitMessage(path);
+    } catch {
+      initialMessage = this._headSubject();
+    }
     const message = await editCommitMessage(this.dialogs, {
       title: `Amend commit \u2014 ${repo}`,
-      initialMessage: this._headSubject(),
+      initialMessage,
       okLabel: "Amend"
     });
     if (!message) return;
@@ -11020,11 +11039,22 @@ var CodePane = class extends Component {
     this.touchActivity();
     return this.code.wipCommit(r.path, r.repo);
   }
+  // the row's subject line is a summary only (branchRepos never fetches commit
+  // bodies up front) — fetch the full message on demand for an edit/amend dialog's
+  // prefill, so a multi-line message isn't silently truncated to its first line;
+  // falls back to the subject alone if the fetch fails
+  async _fullCommitMessage(r) {
+    try {
+      return await this.code.commitMessage(r.path, r.sha);
+    } catch {
+      return r.subject;
+    }
+  }
   // stage all changes and fold them into HEAD with a (possibly edited) message
   async amendDialog(r) {
     const message = await editCommitMessage(this.dialogs, {
       title: `Amend commit \u2014 ${r.repo}`,
-      initialMessage: r.subject,
+      initialMessage: await this._fullCommitMessage(r),
       okLabel: "Amend"
     });
     if (!message) return;
@@ -11041,7 +11071,7 @@ var CodePane = class extends Component {
     if (!r.sha || !r.path) return;
     const message = await editCommitMessage(this.dialogs, {
       title: `Edit commit message \u2014 ${r.repo}`,
-      initialMessage: r.subject,
+      initialMessage: await this._fullCommitMessage(r),
       okLabel: "Save"
     });
     if (!message) return;
