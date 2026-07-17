@@ -4,8 +4,9 @@ import { timeAgo } from "../core/utils.js";
 import { CodePlugin } from "../core/code_plugin.js";
 import { ConfigPlugin } from "../core/config_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
+import { ServerPlugin } from "../core/server_plugin.js";
 
-import { WorkspacePlugin } from "../core/workspace_plugin.js";
+import { WorkspacePlugin, cascadeRemoveDescendants } from "../core/workspace_plugin.js";
 import { DirtyBadge, ICONS, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 import { CommitsDialog } from "../core/dialogs.js";
@@ -15,6 +16,7 @@ import { pushBranchesDialog } from "../core/dialogs.js";
 export class BranchesScreen extends Component {
   static components = { SearchBox, DirtyBadge, Panel };
   worktree = usePlugin(WorkspacePlugin); // "wt" badge on branches owned by a worktree
+  server = usePlugin(ServerPlugin);
   static template = xml`
     <section>
       <Panel title="'Branches'">
@@ -283,6 +285,29 @@ export class BranchesScreen extends Component {
       this.config.updateConfig({
         workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id)),
       });
+      for (const t of drop) {
+        const { skipped } = await cascadeRemoveDescendants(
+          {
+            config: this.config,
+            wt: this.worktree,
+            eventLog: this.code.eventLog,
+            server: this.server,
+          },
+          t,
+        );
+        if (skipped.length) {
+          await this.dialogs.open({
+            title: "Some sub-workspaces were kept",
+            message: skipped
+              .map(
+                (w) => `"${w.name}" is still busy — kept, no longer linked to the deleted parent.`,
+              )
+              .join("\n"),
+            okLabel: "OK",
+            cancelLabel: null,
+          });
+        }
+      }
     }
   }
 

@@ -214,6 +214,59 @@ export function worktreeDirFor(worktreeDir, tgt) {
   return `${(worktreeDir || "/tmp").replace(/\/+$/, "")}/${worktreeSlug(tgt)}`;
 }
 
+// every descendant of `id` within a workspaces blob array (plain {id, parent, ...}
+// objects — config.config.workspaces shape), flattened recursively (all levels), in
+// parent-before-child order. Pure/read-only — used to size a cascade-delete
+// confirmation message. The actual cascade executor (cascadeRemoveDescendants,
+// workspace_plugin.js) walks level-by-level instead, so it can stop descending into a
+// child that couldn't be removed and leave its own subtree untouched.
+export function descendantWorkspaces(list, id) {
+  const byParent = new Map();
+  for (const w of list) {
+    if (!w.parent) continue;
+    if (!byParent.has(w.parent)) byParent.set(w.parent, []);
+    byParent.get(w.parent).push(w);
+  }
+  const out = [];
+  let frontier = byParent.get(id) || [];
+  while (frontier.length) {
+    out.push(...frontier);
+    frontier = frontier.flatMap((w) => byParent.get(w.id) || []);
+  }
+  return out;
+}
+
+// re-order an already-sorted, already-grouped workspace list so each item directly
+// follows its parent, tagging every item with its nesting depth (0 = root). The chosen
+// sort order is preserved independently among roots and among each parent's children —
+// both simply keep their relative order from `items`. An item whose parent isn't present
+// in THIS list (filtered out by search, a different category group, etc.) renders as an
+// ordinary top-level (depth 0) entry — never dropped. Returns [{ ws, depth }].
+export function nestByParent(items) {
+  const byId = new Map(items.map((ws) => [ws.id, ws]));
+  const childrenOf = new Map();
+  for (const ws of items) {
+    const p = ws.parent && byId.has(ws.parent) ? ws.parent : "";
+    if (!p) continue;
+    if (!childrenOf.has(p)) childrenOf.set(p, []);
+    childrenOf.get(p).push(ws);
+  }
+  const out = [];
+  const emitted = new Set();
+  const emit = (ws, depth) => {
+    if (emitted.has(ws.id)) return; // cycle guard — parent is set once at creation to
+    emitted.add(ws.id); // an existing ancestor, never user-edited, so this shouldn't
+    out.push({ ws, depth }); // trigger, but stay safe
+    for (const child of childrenOf.get(ws.id) || []) emit(child, depth + 1);
+  };
+  for (const ws of items) {
+    const p = ws.parent && byId.has(ws.parent) ? ws.parent : "";
+    if (!p) emit(ws, 0);
+  }
+  for (const ws of items) if (!emitted.has(ws.id)) emit(ws, 0); // never drop an item
+  return out;
+}
+
 // the "repo:branch,repo:branch" config-string format used by the workspace /
 // template create+edit dialogs — one line both ways
 export const repoBranchList = {

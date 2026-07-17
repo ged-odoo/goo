@@ -33,12 +33,14 @@ import {
 import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
-import { repoBranchList, timeAgo } from "../core/utils.js";
+import { repoBranchList, timeAgo, nestByParent } from "../core/utils.js";
 import {
   ARCHIVED_CATEGORY,
   adoptCurrentCheckout,
   categoryOptions,
+  createSubWorkspaceFromForwardPort,
   deleteWorkspaceDialog,
+  findSubWorkspace,
   startCreateWorkspace,
   startNewWorkspaceWizard,
 } from "./dialogs.js";
@@ -237,6 +239,11 @@ export class CodePane extends Component {
                   </span>
                 </div>
               </div>
+              <button class="pbtn ghost ws-fp-subws"
+                      t-att-title="this.subWorkspaceFor(row) ? 'open the existing sub workspace for this forward port' : 'check out this forward port locally as a new sub workspace'"
+                      t-on-click.stop="() => this.createSubWorkspace(row)">
+                <t t-if="this.subWorkspaceFor(row)">Open sub workspace</t><t t-else="">Create sub workspace</t>
+              </button>
             </div>
           </div>
         </div>
@@ -249,6 +256,8 @@ export class CodePane extends Component {
   config = usePlugin(ConfigPlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
+  db = usePlugin(DatabasePlugin);
+  wt = usePlugin(WorkspacePlugin);
   codeIcon = m(ICONS.code); // "Editor" toolbar button
   kebabIcon = m(ICONS.kebab); // the per-checkout actions menu
   pushIcon = m(ICONS.push); // the "Push all" toolbar button
@@ -669,6 +678,25 @@ export class CodePane extends Component {
     return chains;
   }
 
+  _dialogPlugins() {
+    return {
+      config: this.config,
+      dialogs: this.dialogs,
+      db: this.db,
+      code: this.code,
+      eventLog: this.eventLog,
+      wt: this.wt,
+    };
+  }
+
+  createSubWorkspace(row) {
+    return createSubWorkspaceFromForwardPort(this._dialogPlugins(), this.props.ws, row);
+  }
+
+  subWorkspaceFor(row) {
+    return findSubWorkspace(this.config, this.props.ws, row);
+  }
+
   rPlusKey(pull) {
     return `${pull.github}#${pull.number}`;
   }
@@ -893,16 +921,17 @@ export class WorkspacesScreen extends Component {
                 <span class="wt-group-count" t-out="grp.items.length"/>
               </button>
               <t t-if="!grp.name || !this.isCollapsed(grp.id)">
-                <button t-foreach="grp.items" t-as="ws" t-key="ws.id" class="wt-item"
-                        t-att-class="{selected: ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(ws.id)"
-                        t-att-title="this.branchOf(ws) + ' · ' + (ws.db || '') + (this.isDrifted(ws) ? ' · checkout drifted' : '')">
-                  <span class="wt-dot" t-att-class="this.listDotClass(ws)"/>
-                  <span class="wt-item-name" t-out="ws.name"/>
-                  <span t-if="this.isDrifted(ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
-                  <span t-if="this.isWt(ws)" class="wt-badge" title="worktree workspace">wt</span>
+                <button t-foreach="grp.items" t-as="row" t-key="row.ws.id" class="wt-item"
+                        t-att-class="{selected: row.ws.id === this.wt.selectedId()}" t-on-click="() => this.wt.select(row.ws.id)"
+                        t-att-style="'padding-left:' + (16 + row.depth * 16) + 'px'"
+                        t-att-title="this.branchOf(row.ws) + ' · ' + (row.ws.db || '') + (this.isDrifted(row.ws) ? ' · checkout drifted' : '')">
+                  <span class="wt-dot" t-att-class="this.listDotClass(row.ws)"/>
+                  <span class="wt-item-name" t-out="row.ws.name"/>
+                  <span t-if="this.isDrifted(row.ws)" class="wt-badge wt-badge-drift" title="checkout drifted — the main checkout no longer matches this workspace">drift</span>
+                  <span t-if="this.isWt(row.ws)" class="wt-badge" title="worktree workspace">wt</span>
                   <span class="wt-sp"/>
-                  <span class="wt-status-dot" t-att-class="this.ciDotClass(ws)" t-att-title="this.ciDotTitle(ws)"/>
-                  <span class="wt-status-dot" t-att-class="this.mbDotClass(ws)" t-att-title="this.mbDotTitle(ws)"/>
+                  <span class="wt-status-dot" t-att-class="this.ciDotClass(row.ws)" t-att-title="this.ciDotTitle(row.ws)"/>
+                  <span class="wt-status-dot" t-att-class="this.mbDotClass(row.ws)" t-att-title="this.mbDotTitle(row.ws)"/>
                 </button>
               </t>
             </div>
@@ -1430,7 +1459,11 @@ export class WorkspacesScreen extends Component {
     }
     if (archived.length)
       groups.push({ id: ARCHIVED_CATEGORY, name: ARCHIVED_CATEGORY, items: archived });
-    return groups.filter((g) => g.items.length);
+    // nest each group's items so a child sits directly below its parent, indented —
+    // an item whose parent isn't in this same group renders flat (depth 0), never dropped
+    return groups
+      .filter((g) => g.items.length)
+      .map((g) => ({ ...g, items: nestByParent(g.items) }));
   }
 
   isArchived(ws) {
@@ -1844,6 +1877,8 @@ export class WorkspacesScreen extends Component {
       repoMap: this.repoMap,
       isActive: this.isLoaded(ws),
       dialogs: this.dialogs,
+      wt: this.wt,
+      server: this.server,
     });
   }
 
