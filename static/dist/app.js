@@ -10573,11 +10573,11 @@ var CodePane = class extends Component {
     <div class="ws-code">
       <div class="ws-sec">
         <span>Checkouts</span>
-        <button class="pbtn ghost ws-tool" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
+        <button class="pbtn ghost ws-tool ws-tool-start" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canRebaseAll()" t-att-title="this.rebaseAllTitle()" t-on-click="() => this.rebaseAll()"><span class="restart"/>Fetch &amp; rebase all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllTitle()" t-on-click="() => this.pushAll()"><t t-out="this.pushIcon"/>Push all</button>
         <button class="pbtn ghost ws-tool" t-att-disabled="!this.canPushAll()" t-att-title="this.pushAllForceTitle()" t-on-click="() => this.pushAllForce()"><t t-out="this.pushIcon"/>Push all (force)</button>
-        <button class="pbtn ghost ws-tool" t-att-disabled="this.code.loading()" t-att-title="this.refreshTitle()" t-on-click="() => this.load(true)">
+        <button class="pbtn ghost ws-tool ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.refreshTitle()" t-on-click="() => this.load(true)">
           <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
         </button>
       </div>
@@ -10586,27 +10586,15 @@ var CodePane = class extends Component {
 
       <div class="ws-co-grid">
         <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
-          <div class="ws-co-head">
-            <span class="ws-repo-tag" t-out="r.repo"/>
+          <span class="ws-repo-tag" t-out="r.repo"/>
+          <div class="ws-co-main">
             <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
                t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
             <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
-            <span class="wt-sp"/>
-            <div class="dash-kebab-wrap" t-if="r.entry">
-              <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
-              <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
-                <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canRebase" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.rebaseRepo(r.entry))">Fetch &amp; rebase</button>
-                <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushRow(r))">Push</button>
-                <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushForceRow(r))">Push (force)</button>
-                <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
-                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
-                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
-                <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
-                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
-                <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
-                <button t-if="r.dirty" class="dash-menu-item" t-att-disabled="!r.sha" t-on-click="() => this.menuAct(() => this.amendDialog(r))">Amend commit</button>
-                <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
-              </div>
+            <div t-if="r.subject" class="ws-commit dim" t-att-class="{editable: r.sha and r.path}"
+                 t-att-title="r.sha and r.path ? 'click to edit this commit message' : ''"
+                 t-on-click="() => this.editCommit(r)">
+              <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
             </div>
           </div>
           <div class="ws-co-badges">
@@ -10631,10 +10619,22 @@ var CodePane = class extends Component {
             </span>
             <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
           </div>
-          <div t-if="r.subject" class="ws-commit dim ws-co-sec" t-att-class="{editable: r.sha and r.path}"
-               t-att-title="r.sha and r.path ? 'click to edit this commit message' : ''"
-               t-on-click="() => this.editCommit(r)">
-            <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
+          <button t-if="r.canPush" class="pbtn ghost ws-co-push" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.pushRow(r)"><t t-out="this.pushIcon"/>Push</button>
+          <div class="dash-kebab-wrap ws-co-menu" t-if="r.entry">
+            <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
+            <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
+              <button t-if="r.checkedOut" class="dash-menu-item" t-att-disabled="!r.canRebase" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click="() => this.menuAct(() => this.rebaseRepo(r.entry))">Fetch &amp; rebase</button>
+              <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushRow(r))">Push</button>
+              <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushForceRow(r))">Push (force)</button>
+              <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
+              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
+              <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
+              <button t-if="r.dirty" class="dash-menu-item" t-att-disabled="!r.sha" t-on-click="() => this.menuAct(() => this.amendDialog(r))">Amend commit</button>
+              <button t-if="r.dirty" class="dash-menu-item danger" t-on-click="() => this.menuAct(() => this.discard(r))">Discard changes</button>
+            </div>
           </div>
         </div>
       </div>

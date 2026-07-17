@@ -864,7 +864,7 @@ section.hidden {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  background: var(--l-bg);
+  background: var(--l-card);
 }
 /* full-bleed content (running server logs): no padding, no console chrome */
 .content.flush {
@@ -4280,7 +4280,7 @@ a.commit-detail-hash svg {
   flex-direction: column;
   gap: 0;
   min-height: 0;
-  background: var(--l-card);
+  background: var(--l-bg);
   border-right: 1px solid var(--l-line);
   padding: 0;
 }
@@ -4313,7 +4313,7 @@ a.commit-detail-hash svg {
   min-width: 0;
   padding: 6px 12px;
   color: var(--l-text);
-  background: var(--l-bg);
+  background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 8px;
   font-size: 12.5px;
@@ -4737,6 +4737,8 @@ a.commit-detail-hash svg {
 }
 .ws-code {
   flex: 1;
+  width: 100%;
+  max-width: 1000px;
   min-height: 0;
   overflow-y: auto;
   padding: 4px 2px;
@@ -4761,46 +4763,41 @@ a.commit-detail-hash svg {
   letter-spacing: 0;
 }
 .ws-refresh {
-  margin-left: auto;
   padding: 3px 8px;
 }
 /* Code-tab toolbar buttons (refresh / Editor / Fetch & rebase all) */
 .ws-tool {
   padding: 4px 9px;
   font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.ws-tool-start {
+  margin-left: auto;
 }
 .ws-tool .restart {
   margin: 0;
 }
-/* checkout cards, side by side: fixed-ish width columns so two repos sit next to
-   each other on a wide screen instead of two sparse full-width rows; wraps to one
-   column when the detail is narrow */
+/* checkouts as compact table-like rows: repository | branch + commit | state |
+   primary push action | overflow actions */
 .ws-co-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(390px, 520px));
-  gap: 10px;
+  border-top: 1px solid var(--l-line-soft);
 }
 .ws-co-card {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  min-width: 0;
-  border: 1px solid var(--l-line);
-  background: var(--l-card);
-  border-radius: 10px;
-  padding: 11px 14px 12px;
-  /* lift the card off the panel — it's near-white on light gray otherwise */
-  box-shadow:
-    0 1px 2px oklch(0.27 0.012 264 / 0.05),
-    0 4px 14px oklch(0.27 0.012 264 / 0.08);
-}
-.ws-co-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(88px, 110px) minmax(220px, 1fr) minmax(160px, 240px) 64px 28px;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
+  min-height: 60px;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--l-line-soft);
+}
+.ws-co-main {
   min-width: 0;
 }
 .ws-co-branch {
+  display: block;
   font-size: 13px;
   min-width: 0;
 }
@@ -4809,12 +4806,7 @@ a.commit-detail-hash svg {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  min-height: 18px; /* keeps cards aligned when one has no badges (missing branch) */
-}
-/* the commit section sits under a hairline */
-.ws-co-sec {
-  border-top: 1px solid var(--l-line-soft);
-  padding-top: 7px;
+  min-width: 0;
 }
 .ws-pr-create {
   color: var(--l-accent);
@@ -4872,16 +4864,30 @@ a.commit-detail-hash svg {
 .ws-rebase-inline:hover {
   filter: brightness(0.97);
 }
-.ws-co-card .ws-commit {
-  white-space: normal; /* let the subject wrap inside the card instead of clipping */
-  margin-top: 0;
+.ws-co-main .ws-commit {
+  margin-top: 2px;
+  white-space: nowrap;
 }
-.ws-co-card .ws-commit.editable {
+.ws-co-main .ws-commit.editable {
   cursor: pointer;
 }
-.ws-co-card .ws-commit.editable:hover {
+.ws-co-main .ws-commit.editable:hover {
   color: var(--l-text-mid);
   text-decoration: underline;
+}
+.ws-co-push {
+  grid-column: 4;
+  justify-self: end;
+  padding: 4px 6px;
+  color: var(--l-accent);
+}
+.ws-co-push:hover:not(:disabled) {
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+}
+.ws-co-menu {
+  grid-column: 5;
+  justify-self: end;
 }
 /* Mergebot's forward-port matrix, shown below the checkout cards. The branch is a
    stable first column; linked repositories stack inside the status column. */
