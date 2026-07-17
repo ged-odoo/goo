@@ -1395,6 +1395,21 @@ class GitServiceTest(unittest.TestCase):
             },
         )
 
+    def test_commit_diff_returns_commit_patch(self):
+        sha = "a" * 40
+        io = FakeIO(runs={"git -C /r show": completed(stdout="diff --git a/a b/a\n")})
+        diff, err = services.GitService(io).commit_diff("/r", sha)
+        self.assertIsNone(err)
+        self.assertEqual(diff, "diff --git a/a b/a\n")
+        self.assertEqual(io.run_calls[0][-2:], [sha, "--"])
+
+    def test_commit_diff_rejects_invalid_hash(self):
+        io = FakeIO()
+        diff, err = services.GitService(io).commit_diff("/r", "--stat")
+        self.assertIsNone(diff)
+        self.assertEqual(err, "invalid commit hash")
+        self.assertFalse(io.run_calls)
+
     def test_log_marks_commits_ahead_of_base(self):
         rec = (
             "sha1\x1fAlice\x1f2024-06-20\x1f[FIX] a\x1f\x1e"

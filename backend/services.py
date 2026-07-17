@@ -2043,6 +2043,33 @@ class GitService:
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return None, str(e)
 
+    def commit_diff(self, path, sha):
+        """Return the patch introduced by one commit as (diff, error)."""
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
+            return None, "invalid commit hash"
+        path = os.path.expanduser(path)
+        try:
+            r = self.io.run(
+                [
+                    "git",
+                    "-C",
+                    path,
+                    "show",
+                    "--format=",
+                    "--no-ext-diff",
+                    "--no-color",
+                    "--find-renames",
+                    sha,
+                    "--",
+                ],
+                timeout=30,
+            )
+            if r.returncode != 0:
+                return None, r.stderr.strip() or "git show failed"
+            return r.stdout, None
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+
     def fetch_remote_branch(self, path, branch, pull_remote="origin"):
         """Fetch a remote branch and create/reset the local branch to track it
         (git fetch <pull_remote> {branch}:{branch}). Returns (ok, error)."""

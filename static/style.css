@@ -4694,6 +4694,9 @@ a.commit-detail-hash svg {
   flex-direction: column;
   padding: 14px 30px 22px;
 }
+.wt-panes:has(.ws-code.history-open) {
+  padding: 0;
+}
 /* underline tabs sitting on the header band's bottom hairline (not pill buttons) */
 .wt-tabs {
   display: flex;
@@ -4737,11 +4740,17 @@ a.commit-detail-hash svg {
 }
 .ws-code {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 1000px;
   min-height: 0;
   overflow-y: auto;
   padding: 4px 2px;
+}
+.ws-code.history-open {
+  max-width: none;
+  padding: 0;
 }
 .ws-sec {
   display: flex;
@@ -4868,10 +4877,10 @@ a.commit-detail-hash svg {
   margin-top: 2px;
   white-space: nowrap;
 }
-.ws-co-main .ws-commit.editable {
+.ws-co-main .ws-commit.viewable {
   cursor: pointer;
 }
-.ws-co-main .ws-commit.editable:hover {
+.ws-co-main .ws-commit.viewable:hover {
   color: var(--l-text-mid);
   text-decoration: underline;
 }
@@ -4888,6 +4897,196 @@ a.commit-detail-hash svg {
 .ws-co-menu {
   grid-column: 5;
   justify-self: end;
+}
+
+/* Inline branch history: a compact newest-first timeline on the left and the
+   selected commit's metadata + patch on the right. Both columns scroll on their
+   own so a large diff does not move the branch tip out of view. */
+.ws-history {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--l-line);
+  background: var(--l-card);
+}
+.ws-history-head {
+  flex: none;
+  height: 43px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--l-line);
+  background: var(--l-card);
+}
+.ws-history-back {
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--l-text-mid);
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ws-history-back:hover {
+  color: var(--l-text);
+  border-color: var(--l-line);
+  background: var(--l-card);
+}
+.ws-history-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(350px, 420px) minmax(0, 1fr);
+}
+.ws-history-list {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--l-line);
+  background: var(--l-card);
+}
+.ws-history-state,
+.ws-history-diff-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 18px;
+  font-size: 12px;
+}
+.ws-history-commit {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 3px 10px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--l-line-soft);
+  background: transparent;
+  color: var(--l-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ws-history-commit:hover {
+  background: var(--l-card);
+}
+.ws-history-commit.selected {
+  background: var(--l-accent-soft);
+  box-shadow: inset 3px 0 var(--l-accent);
+}
+.ws-history-commit-date {
+  grid-row: 1 / span 2;
+  color: var(--l-text-dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.ws-history-commit-title,
+.ws-history-commit-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-history-commit-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.ws-history-commit-author {
+  color: var(--l-text-dim);
+  font-size: 10.5px;
+}
+.ws-history-detail {
+  min-width: 0;
+  overflow: auto;
+  padding: 20px 22px 28px;
+  background: var(--l-card);
+}
+.ws-history-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 0 0 18px;
+  font-size: 11.5px;
+}
+.ws-history-meta dt {
+  color: var(--l-text-dim);
+}
+.ws-history-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ws-history-hash {
+  font-family: var(--mono);
+  font-size: 11px;
+  user-select: all;
+}
+.ws-history-title {
+  margin: 0;
+  color: var(--l-text);
+  font-size: 18px;
+  line-height: 1.35;
+}
+.ws-history-body {
+  margin: 10px 0 0;
+  color: var(--l-text-mid);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.ws-history-diff-head {
+  margin: 22px 0 8px;
+  color: var(--l-text-dim);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.ws-history-diff {
+  border: 1px solid var(--l-line);
+  background: var(--l-bg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+.ws-history-diff-line {
+  min-width: max-content;
+  padding: 0 10px;
+  white-space: pre;
+}
+.ws-history-diff-line.add {
+  color: var(--green);
+  background: var(--green-bg);
+}
+.ws-history-diff-line.del {
+  color: var(--red);
+  background: var(--red-bg);
+}
+.ws-history-diff-line.hunk {
+  color: var(--l-accent);
+  background: var(--l-accent-soft);
+}
+.ws-history-diff-line.meta {
+  color: var(--l-text-dim);
+  background: var(--l-panel);
+}
+
+@media (max-width: 760px) {
+  .ws-history-layout {
+    grid-template-columns: minmax(240px, 46%) minmax(0, 1fr);
+  }
+  .ws-history-detail {
+    padding: 16px;
+  }
 }
 /* Mergebot's forward-port matrix, shown below the checkout cards. The branch is a
    stable first column; linked repositories stack inside the status column. */

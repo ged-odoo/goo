@@ -2130,6 +2130,17 @@ class Handler(BaseHTTPRequestHandler):
                 200 if error is None else 400,
                 {"ok": error is None, "commits": commits or [], "error": error},
             )
+        elif path == "/api/code/commit/diff":
+            body, err = self._read_json()
+            repo_path = (body or {}).get("path")
+            sha = (body or {}).get("sha")
+            if err or not repo_path or not sha:
+                return self._send_json(400, {"ok": False, "error": "missing path or sha"})
+            diff, error = GIT.commit_diff(repo_path, sha)
+            self._send_json(
+                200 if error is None else 400,
+                {"ok": error is None, "diff": diff or "", "error": error},
+            )
         elif path == "/api/event":
             body, err = self._read_json()
             text = (body or {}).get("text")

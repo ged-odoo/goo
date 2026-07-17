@@ -532,10 +532,22 @@ export class CodePlugin extends Plugin {
   // (the branch's own base, e.g. "master") + `pullRemote` make each commit carry
   // an "ahead" flag — reachable from ref but not the base branch, i.e. unique to
   // this branch and so safe to reword (see rewordCommit).
-  async commits(path, ref = "", { base = "", pullRemote = "" } = {}) {
-    const res = await postJSON("/api/code/log", { path, ref, base, pull_remote: pullRemote });
+  async commits(path, ref = "", { base = "", pullRemote = "", count = 20 } = {}) {
+    const res = await postJSON("/api/code/log", {
+      path,
+      ref,
+      base,
+      pull_remote: pullRemote,
+      count,
+    });
     if (!res.ok) throw new Error(res.error || "git log failed");
     return res.commits;
+  }
+
+  async commitDiff(path, sha) {
+    const res = await postJSON("/api/code/commit/diff", { path, sha });
+    if (!res.ok) throw new Error(res.error || "git show failed");
+    return res.diff || "";
   }
 
   // the full message (subject + body) of a single commit — ref defaults to HEAD.

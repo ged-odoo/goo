@@ -2228,10 +2228,21 @@ var CodePlugin = class extends Plugin {
   // (the branch's own base, e.g. "master") + `pullRemote` make each commit carry
   // an "ahead" flag — reachable from ref but not the base branch, i.e. unique to
   // this branch and so safe to reword (see rewordCommit).
-  async commits(path, ref = "", { base = "", pullRemote = "" } = {}) {
-    const res = await postJSON("/api/code/log", { path, ref, base, pull_remote: pullRemote });
+  async commits(path, ref = "", { base = "", pullRemote = "", count = 20 } = {}) {
+    const res = await postJSON("/api/code/log", {
+      path,
+      ref,
+      base,
+      pull_remote: pullRemote,
+      count
+    });
     if (!res.ok) throw new Error(res.error || "git log failed");
     return res.commits;
+  }
+  async commitDiff(path, sha) {
+    const res = await postJSON("/api/code/commit/diff", { path, sha });
+    if (!res.ok) throw new Error(res.error || "git show failed");
+    return res.diff || "";
   }
   // the full message (subject + body) of a single commit — ref defaults to HEAD.
   // Checkout rows only ever carry the subject line (branches()/log's summaries never
@@ -10570,7 +10581,51 @@ var ClaudeChat = class extends Component {
 var CodePane = class extends Component {
   static components = { DirtyBadge };
   static template = xml`
-    <div class="ws-code">
+    <div class="ws-code" t-att-class="{'history-open': this.historyRow()}">
+      <t t-if="this.historyRow()">
+        <div class="ws-history">
+          <div class="ws-history-head">
+            <button class="ws-history-back" title="back to checkouts" t-on-click="() => this.closeHistory()">←</button>
+            <span class="ws-repo-tag" t-out="this.historyRow().repo"/>
+            <span class="ws-branch" t-out="this.historyRow().branch"/>
+          </div>
+          <div class="ws-history-layout">
+            <aside class="ws-history-list">
+              <div t-if="this.historyLoading()" class="ws-history-state dim"><span class="ws-refresh-spin"/>Loading commits…</div>
+              <div t-elif="this.historyError()" class="ws-history-state form-error" t-out="this.historyError()"/>
+              <div t-elif="!this.historyCommits().length" class="ws-history-state dim">No commits found.</div>
+              <button t-foreach="this.historyCommits()" t-as="commit" t-key="commit.sha"
+                      class="ws-history-commit" t-att-class="{selected: commit.sha === this.historySelected()}"
+                      t-on-click="() => this.selectHistoryCommit(commit)">
+                <span class="ws-history-commit-date" t-att-title="this.fullCommitDate(commit.date)" t-out="this.shortCommitDate(commit.date)"/>
+                <span class="ws-history-commit-title" t-out="commit.subject"/>
+                <span class="ws-history-commit-author" t-out="commit.author"/>
+              </button>
+            </aside>
+            <section class="ws-history-detail">
+              <t t-if="this.historyCommit">
+                <dl class="ws-history-meta">
+                  <dt>Hash</dt><dd class="ws-history-hash" t-out="this.historyCommit.sha"/>
+                  <dt>Author</dt><dd t-out="this.historyCommit.author"/>
+                  <dt>Date</dt><dd t-out="this.fullCommitDate(this.historyCommit.date)"/>
+                </dl>
+                <h2 class="ws-history-title" t-out="this.historyCommit.subject"/>
+                <pre t-if="this.historyCommit.body" class="ws-history-body" t-out="this.historyCommit.body"/>
+                <div class="ws-history-diff-head">Diff</div>
+                <div t-if="this.historyDiffLoading()" class="ws-history-diff-state dim"><span class="ws-refresh-spin"/>Loading diff…</div>
+                <div t-elif="this.historyDiffError()" class="ws-history-diff-state form-error" t-out="this.historyDiffError()"/>
+                <div t-elif="!this.historyDiff()" class="ws-history-diff-state dim">This commit has no file changes.</div>
+                <div t-else="" class="ws-history-diff">
+                  <div t-foreach="this.historyDiffLines" t-as="line" t-key="line.id"
+                       class="ws-history-diff-line" t-att-class="line.cls" t-out="line.text || ' '"/>
+                </div>
+              </t>
+              <div t-elif="!this.historyLoading()" class="ws-history-state dim">Select a commit to see its details.</div>
+            </section>
+          </div>
+        </div>
+      </t>
+      <t t-else="">
       <div class="ws-sec">
         <span>Checkouts</span>
         <button class="pbtn ghost ws-tool ws-tool-start" t-att-disabled="!this.editorPaths.length" t-att-title="this.editAllTitle()" t-on-click="() => this.openAllEditors()"><t t-out="this.codeIcon"/>Editor</button>
@@ -10591,9 +10646,9 @@ var CodePane = class extends Component {
             <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
                t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
             <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
-            <div t-if="r.subject" class="ws-commit dim" t-att-class="{editable: r.sha and r.path}"
-                 t-att-title="r.sha and r.path ? 'click to edit this commit message' : ''"
-                 t-on-click="() => this.editCommit(r)">
+            <div t-if="r.subject" class="ws-commit dim" t-att-class="{viewable: r.sha and r.path}"
+                 t-att-title="r.sha and r.path ? 'view the commit history for this branch' : ''"
+                 t-on-click="() => this.openHistory(r)">
               <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
             </div>
           </div>
@@ -10629,7 +10684,7 @@ var CodePane = class extends Component {
               <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
-              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openCommits(r.entry))">See commits</button>
+              <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openHistory(r))">See commits</button>
               <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.commitDialog(r))">Commit</button>
               <button t-if="r.dirty" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.wipCommit(r))">WIP commit</button>
               <button t-if="r.dirty" class="dash-menu-item" t-att-disabled="!r.sha" t-on-click="() => this.menuAct(() => this.amendDialog(r))">Amend commit</button>
@@ -10674,6 +10729,7 @@ var CodePane = class extends Component {
           </div>
         </div>
       </t>
+      </t>
     </div>`;
   props = useProps({ ws: t.any() });
   code = usePlugin(CodePlugin);
@@ -10693,10 +10749,25 @@ var CodePane = class extends Component {
   // key of the checkout whose action menu is open ("" = none)
   rPlusPosts = signal({});
   // "github#number" -> "posting" | "posted"
+  historyRow = signal(null);
+  historyCommits = signal([]);
+  historySelected = signal("");
+  historyLoading = signal(false);
+  historyError = signal("");
+  historyDiff = signal("");
+  historyDiffLoading = signal(false);
+  historyDiffError = signal("");
+  _historySequence = 0;
+  _diffSequence = 0;
   setup() {
     const closeMenu = () => this.menuId() && this.menuId.set("");
+    const onKeydown = (ev) => ev.key === "Escape" && this.historyRow() && this.closeHistory();
     onMounted(() => document.addEventListener("click", closeMenu));
-    onWillUnmount(() => document.removeEventListener("click", closeMenu));
+    onMounted(() => document.addEventListener("keydown", onKeydown));
+    onWillUnmount(() => {
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("keydown", onKeydown);
+    });
   }
   load(force) {
     const ids = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
@@ -10967,17 +11038,84 @@ var CodePane = class extends Component {
     this.touchActivity();
     this.code.openEditor(r.path, r.repo);
   }
-  // show the last commits on this repo's current branch
-  openCommits(r) {
-    if (!r.path) return;
+  // Replace the checkout table with this branch's history. The branch tip is the
+  // first row because git log is already newest-first; selecting a row loads only
+  // that commit's diff, keeping the initial history request compact.
+  async openHistory(r) {
+    if (!r.path || !r.sha) return;
     this.touchActivity();
-    this.dialogs.openComponent(CommitsDialog, {
-      path: r.path,
-      ref: r.current || "",
-      label: `${r.id} \xB7 ${r.current || "?"}`,
-      github: r.github || "",
-      base: r.base || "",
-      pullRemote: r.pull_remote || ""
+    this.menuId.set("");
+    this.historyRow.set(r);
+    this.historyCommits.set([]);
+    this.historySelected.set("");
+    this.historyError.set("");
+    this.historyDiff.set("");
+    this.historyDiffError.set("");
+    this.historyLoading.set(true);
+    const sequence = ++this._historySequence;
+    try {
+      const commits = await this.code.commits(r.path, r.branch, {
+        base: r.base,
+        pullRemote: r.entry?.pull_remote || "",
+        count: 100
+      });
+      if (sequence !== this._historySequence) return;
+      this.historyCommits.set(commits);
+      if (commits.length) await this.selectHistoryCommit(commits[0]);
+    } catch (e) {
+      if (sequence === this._historySequence) this.historyError.set(e.message);
+    } finally {
+      if (sequence === this._historySequence) this.historyLoading.set(false);
+    }
+  }
+  closeHistory() {
+    this._historySequence++;
+    this._diffSequence++;
+    this.historyRow.set(null);
+    this.historyCommits.set([]);
+    this.historySelected.set("");
+    this.historyLoading.set(false);
+    this.historyError.set("");
+    this.historyDiff.set("");
+    this.historyDiffLoading.set(false);
+    this.historyDiffError.set("");
+  }
+  async selectHistoryCommit(commit) {
+    const row = this.historyRow();
+    if (!row || !commit || commit.sha === this.historySelected() && this.historyDiff()) return;
+    this.historySelected.set(commit.sha);
+    this.historyDiff.set("");
+    this.historyDiffError.set("");
+    this.historyDiffLoading.set(true);
+    const sequence = ++this._diffSequence;
+    try {
+      const diff = await this.code.commitDiff(row.path, commit.sha);
+      if (sequence === this._diffSequence) this.historyDiff.set(diff);
+    } catch (e) {
+      if (sequence === this._diffSequence) this.historyDiffError.set(e.message);
+    } finally {
+      if (sequence === this._diffSequence) this.historyDiffLoading.set(false);
+    }
+  }
+  get historyCommit() {
+    return this.historyCommits().find((commit) => commit.sha === this.historySelected()) || null;
+  }
+  shortCommitDate(date) {
+    return date ? timeAgo(date) : "\u2014";
+  }
+  fullCommitDate(date) {
+    if (!date) return "\u2014";
+    const value = new Date(date);
+    return Number.isNaN(value.getTime()) ? date : value.toLocaleString();
+  }
+  get historyDiffLines() {
+    return this.historyDiff().split("\n").map((text, id) => {
+      let cls = "";
+      if (text.startsWith("+") && !text.startsWith("+++")) cls = "add";
+      else if (text.startsWith("-") && !text.startsWith("---")) cls = "del";
+      else if (text.startsWith("@@")) cls = "hunk";
+      else if (/^(diff --git|index |--- |\+\+\+ )/.test(text)) cls = "meta";
+      return { id, text, cls };
     });
   }
   // open GitHub's PR-creation page for this repo's current branch
@@ -11154,33 +11292,6 @@ var CodePane = class extends Component {
   discard(r) {
     this.touchActivity();
     return this.code.discard(r.path, r.repo);
-  }
-  // click the commit line on a checkout card to reword its head commit (the
-  // same shared textarea editor + reword call as CommitsDialog's edit button)
-  async editCommit(r) {
-    if (!r.sha || !r.path) return;
-    const message = await editCommitMessage(this.dialogs, {
-      title: `Edit commit message \u2014 ${r.repo}`,
-      initialMessage: await this._fullCommitMessage(r),
-      okLabel: "Save"
-    });
-    if (!message) return;
-    try {
-      await this.code.rewordCommit(r.path, r.sha, message, {
-        base: r.base,
-        pullRemote: r.entry?.pull_remote || ""
-      });
-      this.touchActivity();
-      await this.load(true);
-    } catch (e) {
-      this.dialogs.open({
-        title: "Edit commit message failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
-    }
   }
   // the PR's GitHub state for the pill: open / draft / closed / merged (the
   // runbot/CI signal lives in the workspace header, not per card)
