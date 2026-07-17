@@ -16,6 +16,13 @@ export class PrsScreen extends Component {
   static template = xml`
     <section>
       <Panel title="'PRs'">
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <span class="sub" t-out="this.count"/>
+            <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
+            <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
+          </div>
+        </t>
         <t t-set-slot="top-middle">
           <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
           <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
@@ -35,13 +42,6 @@ export class PrsScreen extends Component {
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
           <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
-          <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.count"/>
         </t>
       </Panel>
       <div class="content br-fill">

@@ -10,15 +10,15 @@ export class DatabasesScreen extends Component {
   static template = xml`
     <section>
       <Panel title="'Databases'">
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <span class="sub" t-out="this.count"/>
+            <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
+          </div>
+        </t>
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
           <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.count"/>
         </t>
       </Panel>
       <div class="content br-fill">

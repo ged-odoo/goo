@@ -546,10 +546,12 @@ export class ConfigScreen extends Component {
   static template = xml`
     <section>
       <Panel title="'Configuration'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
-          <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
-          <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
+            <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
+            <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
+          </div>
         </t>
       </Panel>
       <div class="content">

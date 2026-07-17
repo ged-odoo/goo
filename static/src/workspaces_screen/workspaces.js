@@ -31,6 +31,7 @@ import {
   mbCategory,
 } from "../core/common.js";
 import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
+import { Panel } from "../core/panel.js";
 import { TerminalDialog, attachXterm } from "../core/terminal.js";
 import { branchKey } from "../core/models.js";
 import { repoBranchList, timeAgo, nestByParent } from "../core/utils.js";
@@ -905,30 +906,37 @@ export class WorkspacesScreen extends Component {
     AddonsPane,
     AssetsPane,
     SearchBox,
+    Panel,
   };
 
   static template = xml`
     <section>
-      <div class="content wt-content">
-        <div class="wt-list">
-          <div class="wt-list-head">
-            <SearchBox value="this.query"/>
-            <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
-            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
-              <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
-              <t t-else="" t-out="this.refreshIcon"/>
+      <Panel title="'Workspaces'">
+        <t t-set-slot="title-extra">
+          <button class="pbtn primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">Add</button>
+        </t>
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.query"/>
+        </t>
+        <t t-set-slot="top-right">
+          <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
+            <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
+            <t t-else="" t-out="this.refreshIcon"/>
+          </button>
+          <div class="wt-order-wrap">
+            <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
+              <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
             </button>
-            <div class="wt-order-wrap">
-              <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
-                <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
+            <div t-if="this.orderMenuOpen()" class="dash-menu wt-order-menu" t-on-click.stop="">
+              <button t-foreach="this.orderOptions" t-as="option" t-key="option.value" class="dash-menu-item" t-att-class="{selected: option.value === this.order()}" t-on-click="() => this.chooseOrder(option.value)">
+                <span class="wt-order-check"><t t-if="option.value === this.order()" t-out="this.checkIcon"/></span><t t-out="option.label"/>
               </button>
-              <div t-if="this.orderMenuOpen()" class="dash-menu wt-order-menu" t-on-click.stop="">
-                <button t-foreach="this.orderOptions" t-as="option" t-key="option.value" class="dash-menu-item" t-att-class="{selected: option.value === this.order()}" t-on-click="() => this.chooseOrder(option.value)">
-                  <span class="wt-order-check"><t t-if="option.value === this.order()" t-out="this.checkIcon"/></span><t t-out="option.label"/>
-                </button>
-              </div>
             </div>
           </div>
+        </t>
+      </Panel>
+      <div class="content wt-content">
+        <div class="wt-list">
           <div class="wt-list-items">
             <div t-if="!this.list.length" class="wt-empty dim">
               <t t-if="this.query()">No workspace matches.</t>

@@ -4769,7 +4769,7 @@ function useDragResize({ w = 780, h = 440, place = null } = {}) {
 // static/src/core/panel.js
 var Panel = class extends Component {
   static template = xml`
-    <div class="panel">
+    <div class="panel" t-att-class="{'panel-two-rows': this.hasBottomRow}">
       <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
         <div t-if="this.hasSlot('title-extra')" class="panel-title">
           <h1 t-out="this.props.title"/>
@@ -4796,6 +4796,9 @@ var Panel = class extends Component {
   });
   hasSlot(name) {
     return name in (this.props.slots || {});
+  }
+  get hasBottomRow() {
+    return this.hasSlot("bottom-left") || this.hasSlot("bottom-right");
   }
 };
 
@@ -5043,6 +5046,12 @@ var BranchesScreen = class extends Component {
   static template = xml`
     <section>
       <Panel title="'Branches'">
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <span class="sub" t-out="this.count"/>
+            <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
+          </div>
+        </t>
         <t t-set-slot="top-middle">
           <SearchBox value="this.search"/>
           <select t-att-value="this.repoFilter()" t-on-change="ev => this.repoFilter.set(ev.target.value)" title="filter by repository">
@@ -5053,12 +5062,6 @@ var BranchesScreen = class extends Component {
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
           <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.count"/>
         </t>
       </Panel>
       <div class="content br-fill">
@@ -5977,10 +5980,12 @@ var ConfigScreen = class extends Component {
   static template = xml`
     <section>
       <Panel title="'Configuration'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
-          <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
-          <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <button class="pbtn" t-on-click="() => this.openPresets()">Presets</button>
+            <button class="pbtn" t-att-disabled="this.checking()" t-on-click="() => this.checkUpdate()"><t t-out="this.refreshIcon"/><t t-out="this.checking() ? 'Checking…' : 'Check for update'"/></button>
+            <span t-if="this.upToDate()" class="check-uptodate">✓ up to date</span>
+          </div>
         </t>
       </Panel>
       <div class="content">
@@ -6501,15 +6506,15 @@ var DatabasesScreen = class extends Component {
   static template = xml`
     <section>
       <Panel title="'Databases'">
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <span class="sub" t-out="this.count"/>
+            <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
+          </div>
+        </t>
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
           <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.dropSelected()">Drop <t t-out="this.selectedCount"/></button>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.count"/>
         </t>
       </Panel>
       <div class="content br-fill">
@@ -7768,14 +7773,16 @@ var MemoryScreen = class extends Component {
   static template = xml`
     <section class="mem-screen">
       <Panel title="'Memory'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
-            <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
-          </button>
-          <label class="toggle" t-att-class="{on: this.memory.withMobile()}" t-on-click="() => this.toggleMobile()">
-            <span class="switch"/> With mobile
-          </label>
-          <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
+              <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
+            </button>
+            <label class="toggle" t-att-class="{on: this.memory.withMobile()}" t-on-click="() => this.toggleMobile()">
+              <span class="switch"/> With mobile
+            </label>
+            <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
+          </div>
         </t>
       </Panel>
       <div class="content mem-content">
@@ -8191,6 +8198,13 @@ var PrsScreen = class extends Component {
   static template = xml`
     <section>
       <Panel title="'PRs'">
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <span class="sub" t-out="this.count"/>
+            <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
+            <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
+          </div>
+        </t>
         <t t-set-slot="top-middle">
           <button class="pbtn" t-att-class="{active: this.mode() === 'mine'}" t-on-click="() => this.setMode('mine')">Mine</button>
           <button class="pbtn" t-att-class="{active: this.mode() === 'reviewing'}" t-on-click="() => this.setMode('reviewing')">Reviewing</button>
@@ -8210,13 +8224,6 @@ var PrsScreen = class extends Component {
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
           <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
-        </t>
-        <t t-set-slot="bottom-left">
-          <button t-if="this.mode() === 'mine' and this.selectedCount" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedCount"/></button>
-          <span t-if="this.mode() === 'reviewing'" class="dash-subtitle">Pull requests you commented on, but didn't author, in the last 14 days.</span>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.count"/>
         </t>
       </Panel>
       <div class="content br-fill">
@@ -8735,12 +8742,12 @@ var TodoScreen = class extends Component {
   static template = xml`
     <section>
       <Panel title="'Todo'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.summary"/>
-          <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
+            <span class="sub" t-out="this.summary"/>
+            <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+          </div>
         </t>
       </Panel>
       <div class="content todo-content">
@@ -11240,30 +11247,37 @@ var WorkspacesScreen = class extends Component {
     TestsPane,
     AddonsPane,
     AssetsPane,
-    SearchBox
+    SearchBox,
+    Panel
   };
   static template = xml`
     <section>
-      <div class="content wt-content">
-        <div class="wt-list">
-          <div class="wt-list-head">
-            <SearchBox value="this.query"/>
-            <button class="wt-new primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">+</button>
-            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
-              <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
-              <t t-else="" t-out="this.refreshIcon"/>
+      <Panel title="'Workspaces'">
+        <t t-set-slot="title-extra">
+          <button class="pbtn primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">Add</button>
+        </t>
+        <t t-set-slot="top-middle">
+          <SearchBox value="this.query"/>
+        </t>
+        <t t-set-slot="top-right">
+          <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
+            <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
+            <t t-else="" t-out="this.refreshIcon"/>
+          </button>
+          <div class="wt-order-wrap">
+            <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
+              <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
             </button>
-            <div class="wt-order-wrap">
-              <button class="wt-order" t-att-class="{open: this.orderMenuOpen()}" t-att-title="'order workspaces: ' + this.orderLabel" t-on-click.stop="() => this.orderMenuOpen.set(!this.orderMenuOpen())">
-                <t t-out="this.sortIcon"/><span class="wt-order-caret">▾</span>
+            <div t-if="this.orderMenuOpen()" class="dash-menu wt-order-menu" t-on-click.stop="">
+              <button t-foreach="this.orderOptions" t-as="option" t-key="option.value" class="dash-menu-item" t-att-class="{selected: option.value === this.order()}" t-on-click="() => this.chooseOrder(option.value)">
+                <span class="wt-order-check"><t t-if="option.value === this.order()" t-out="this.checkIcon"/></span><t t-out="option.label"/>
               </button>
-              <div t-if="this.orderMenuOpen()" class="dash-menu wt-order-menu" t-on-click.stop="">
-                <button t-foreach="this.orderOptions" t-as="option" t-key="option.value" class="dash-menu-item" t-att-class="{selected: option.value === this.order()}" t-on-click="() => this.chooseOrder(option.value)">
-                  <span class="wt-order-check"><t t-if="option.value === this.order()" t-out="this.checkIcon"/></span><t t-out="option.label"/>
-                </button>
-              </div>
             </div>
           </div>
+        </t>
+      </Panel>
+      <div class="content wt-content">
+        <div class="wt-list">
           <div class="wt-list-items">
             <div t-if="!this.list.length" class="wt-empty dim">
               <t t-if="this.query()">No workspace matches.</t>

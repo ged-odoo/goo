@@ -45,12 +45,12 @@ export class TodoScreen extends Component {
   static template = xml`
     <section>
       <Panel title="'Todo'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
-        </t>
-        <t t-set-slot="bottom-right">
-          <span class="row-count" t-out="this.summary"/>
-          <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
+            <span class="sub" t-out="this.summary"/>
+            <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+          </div>
         </t>
       </Panel>
       <div class="content todo-content">

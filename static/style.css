@@ -697,10 +697,13 @@ section.hidden {
 /* control panel: full-bleed light toolbar */
 .panel {
   flex: none;
-  height: 100px;
+  height: 58px;
   background: var(--l-panel);
   border-bottom: 1px solid oklch(0.82 0.006 264);
   padding: 11px 24px 13px;
+}
+.panel.panel-two-rows {
+  height: 100px;
 }
 .panel-top {
   display: flex;
@@ -755,8 +758,8 @@ section.hidden {
   color: var(--l-amber);
 }
 /* Panel title cluster: the <h1> plus a `title-extra` slot inline on one row —
-   the server's db/odoo info subs, the Tests status badge. No wrap so the panel
-   keeps its fixed height; overflowing text (server info) truncates. */
+   the server's db/odoo info subs, the Tests status badge. No wrap; overflowing
+   text (server info) truncates. */
 .panel-title {
   display: flex;
   align-items: baseline;
@@ -777,6 +780,11 @@ section.hidden {
 /* the Tests badge is a pill, not text — center it against the heading */
 .panel-title .test-badge {
   align-self: center;
+}
+.panel-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .panel-actions {
   display: flex;
@@ -4237,35 +4245,7 @@ a.commit-detail-hash svg {
   border-right: 1px solid var(--l-line);
   padding: 12px 10px;
 }
-/* the list column header: search + compact create buttons (no screen panel — the
-   list and detail fill the whole area, per the Workspaces design) */
-.wt-list-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-.wt-list-head .search-box {
-  flex: 1;
-  min-width: 0;
-}
-.wt-list-head input[type="text"] {
-  width: 100%;
-  padding: 6px 12px;
-  border: 1px solid var(--l-line);
-  border-radius: 8px;
-  background: var(--l-bg);
-  color: var(--l-text);
-  font-size: 12.5px;
-  min-width: 0;
-}
-.wt-list-head input::placeholder {
-  color: var(--l-text-faint);
-}
-.wt-list-head input:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
-}
+/* workspace panel create / refresh / ordering controls */
 .wt-order-wrap {
   position: relative;
   flex: none;
@@ -4344,14 +4324,6 @@ a.commit-detail-hash svg {
 }
 .wt-new:hover {
   border-color: var(--l-accent-line);
-}
-.wt-new.primary {
-  background: var(--l-accent);
-  border-color: var(--l-accent);
-  color: #fff;
-}
-.wt-new.primary:hover {
-  filter: brightness(1.1);
 }
 .wt-new svg {
   width: 14px;

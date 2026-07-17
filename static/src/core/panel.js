@@ -2,8 +2,9 @@ import { Component, useProps, t, xml } from "@odoo/owl";
 
 // ─────────────────────────── Panel (screen header) ───────────────────────────
 
-// The fixed-height header every screen opens with: the screen <h1> plus up to five
-// slotted regions —
+// The shared header every screen opens with: the screen <h1> plus up to five
+// slotted regions. It uses one of two fixed heights: title/top slots use one row,
+// while the presence of a bottom slot adds a second row.
 //   title-extra  → content inline with the <h1> (server's db/odoo info, the Tests
 //                  status badge); when set, the title + extra share a `.panel-title`
 //                  cluster, otherwise the <h1> is rendered bare
@@ -17,7 +18,7 @@ import { Component, useProps, t, xml } from "@odoo/owl";
 
 export class Panel extends Component {
   static template = xml`
-    <div class="panel">
+    <div class="panel" t-att-class="{'panel-two-rows': this.hasBottomRow}">
       <div class="panel-top" t-att-class="{'has-filters': this.hasSlot('top-middle')}">
         <div t-if="this.hasSlot('title-extra')" class="panel-title">
           <h1 t-out="this.props.title"/>
@@ -48,5 +49,9 @@ export class Panel extends Component {
 
   hasSlot(name) {
     return name in (this.props.slots || {});
+  }
+
+  get hasBottomRow() {
+    return this.hasSlot("bottom-left") || this.hasSlot("bottom-right");
   }
 }

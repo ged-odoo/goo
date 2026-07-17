@@ -9,14 +9,16 @@ export class MemoryScreen extends Component {
   static template = xml`
     <section class="mem-screen">
       <Panel title="'Memory'">
-        <t t-set-slot="bottom-left">
-          <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
-            <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
-          </button>
-          <label class="toggle" t-att-class="{on: this.memory.withMobile()}" t-on-click="() => this.toggleMobile()">
-            <span class="switch"/> With mobile
-          </label>
-          <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
+        <t t-set-slot="title-extra">
+          <div class="panel-inline-actions">
+            <button class="pbtn primary" t-att-disabled="this.memory.loading() || !this.hasUrls()" t-on-click="() => this.draw()">
+              <t t-out="this.memory.loading() ? 'Loading…' : 'Draw graph'"/>
+            </button>
+            <label class="toggle" t-att-class="{on: this.memory.withMobile()}" t-on-click="() => this.toggleMobile()">
+              <span class="switch"/> With mobile
+            </label>
+            <span t-if="this.memory.error()" class="form-error" t-out="this.memory.error()"/>
+          </div>
         </t>
       </Panel>
       <div class="content mem-content">
