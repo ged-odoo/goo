@@ -5022,7 +5022,7 @@ a.ws-fp-branch:hover {
 }
 .ws-repo-tag {
   font-size: 10.5px;
-  color: var(--l-text-dim);
+  color: var(--l-text);
   background: var(--l-panel);
   border: 1px solid var(--l-line);
   border-radius: 5px;
