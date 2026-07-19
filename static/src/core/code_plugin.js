@@ -510,7 +510,7 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  // the configured remotes for the repo at <path> (never blank — repoData normalizes)
+  // the configured remotes for the repo at <path> (never blank — REPO_FIELDS normalizes)
   _pullRemote(path) {
     return this.config.config.repos.find((r) => r.path === path)?.pull_remote || "origin";
   }

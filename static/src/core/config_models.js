@@ -410,43 +410,77 @@ export function toModels(orm, config = {}, state = {}) {
   orm.create(AppState, st);
 }
 
-function repoData(r) {
-  return {
-    id: r.id,
-    path: r.path ?? "",
-    github: r.github ?? "",
-    // normalizing blanks here migrates configs saved before the fields existed
-    pull_remote: r.pull_remote || "origin",
-    push_remote: r.push_remote || "dev",
-    favorite: !!r.favorite,
-    external: !!r.external,
-    autoreload: !!r.autoreload,
-  };
+// ── blob-facing field specs ───────────────────────────────────────────────────
+// One entry per scalar field a model round-trips through the config blob:
+//   in(value, blob)  blob value → record value (defaults / normalization)
+//   out(rec)         record value → blob value (default: rec[name]())
+//   reconcile        "set" (default) = a patch always overwrites the field;
+//                    "ifPresent" = only when the patch object carries the key
+// toModels, toConfig and the reconcilers all iterate these specs, so adding a field
+// is the fields.*() declaration on the model + one line here — nothing else to keep
+// in sync (relational fields — checkouts — stay hand-wired).
+const char = (name) => ({ name, in: (v) => v ?? "" });
+const bool = (name, dflt = false) => ({ name, in: dflt ? (v) => v ?? true : (v) => !!v });
+
+const REPO_FIELDS = [
+  char("path"),
+  char("github"),
+  // `||` normalization migrates configs saved before these fields existed (blank → default)
+  { name: "pull_remote", in: (v) => v || "origin", out: (r) => r.pullRemote() },
+  { name: "push_remote", in: (v) => v || "dev", out: (r) => r.pushRemote() },
+  bool("favorite"),
+  bool("external"),
+  bool("autoreload"),
+];
+
+const WORKSPACE_FIELDS = [
+  char("name"),
+  { ...char("created_at"), reconcile: "ifPresent" },
+  { ...char("last_activity"), reconcile: "ifPresent" },
+  bool("favorite"),
+  char("category"),
+  char("parent"),
+  char("notes"),
+  char("db"),
+  char("on_create_args"),
+  bool("demo_data", true),
+  { name: "location", in: (v, w) => v || (w.worktree ? "worktree" : "main") },
+  { name: "worktree", in: (v) => v ?? null },
+  // absent key in a patch = keep the stable port; null on the wire = none
+  { name: "port", in: (v) => v ?? 0, out: (w) => w.port() || null, reconcile: "ifPresent" },
+];
+
+const TEMPLATE_FIELDS = [
+  char("name"),
+  char("db"),
+  char("on_create_args"),
+  bool("demo_data", true),
+  { name: "checkouts", in: (v) => v || [], out: (t) => t.checkouts() || [] },
+];
+
+function dataFromBlob(fields, blob) {
+  const data = { id: blob.id };
+  for (const f of fields) data[f.name] = f.in(blob[f.name], blob);
+  return data;
 }
-function createRepo(orm, r) {
-  orm.create(Repository, repoData(r));
+function blobFromRecord(fields, rec) {
+  const out = { id: rec.id };
+  for (const f of fields) out[f.name] = f.out ? f.out(rec) : rec[f.name]();
+  return out;
+}
+function updateFromBlob(fields, rec, item) {
+  for (const f of fields) {
+    if (f.reconcile === "ifPresent" && !(f.name in item)) continue;
+    rec[f.name].set(f.in(item[f.name], item));
+  }
 }
 
-function workspaceData(w) {
-  return {
-    id: w.id,
-    name: w.name ?? "",
-    created_at: w.created_at ?? "",
-    last_activity: w.last_activity ?? "",
-    favorite: !!w.favorite,
-    category: w.category ?? "",
-    parent: w.parent ?? "",
-    notes: w.notes ?? "",
-    db: w.db ?? "",
-    on_create_args: w.on_create_args ?? "",
-    demo_data: w.demo_data ?? true,
-    location: w.location || (w.worktree ? "worktree" : "main"),
-    worktree: w.worktree ?? null,
-    port: w.port ?? 0,
-  };
+function createRepo(orm, r) {
+  orm.create(Repository, dataFromBlob(REPO_FIELDS, r));
 }
+
 function createWorkspace(orm, w) {
-  orm.create(Workspace, workspaceData(w));
+  orm.create(Workspace, dataFromBlob(WORKSPACE_FIELDS, w));
   for (const c of w.checkouts || []) {
     orm.create(Checkout, {
       id: checkoutId(w.id, c.repo),
@@ -457,18 +491,8 @@ function createWorkspace(orm, w) {
   }
 }
 
-function templateData(t) {
-  return {
-    id: t.id,
-    name: t.name ?? "",
-    db: t.db ?? "",
-    on_create_args: t.on_create_args ?? "",
-    demo_data: t.demo_data ?? true,
-    checkouts: t.checkouts || [],
-  };
-}
 function createTemplate(orm, t) {
-  orm.create(Template, templateData(t));
+  orm.create(Template, dataFromBlob(TEMPLATE_FIELDS, t));
 }
 
 // ── records → blob ──────────────────────────────────────────────────────────────
@@ -485,42 +509,12 @@ export function toConfig(orm) {
     out.test_presets = s.test_presets() ?? [];
     out.workspace_categories = s.workspace_categories() ?? [];
   }
-  out.repos = orm.records(Repository).map((r) => ({
-    id: r.id,
-    path: r.path(),
-    github: r.github(),
-    pull_remote: r.pullRemote(),
-    push_remote: r.pushRemote(),
-    favorite: r.favorite(),
-    external: r.external(),
-    autoreload: r.autoreload(),
-  }));
-  const workspaces = orm.records(Workspace);
-  out.workspaces = workspaces.map((w) => ({
-    id: w.id,
-    name: w.name(),
-    created_at: w.created_at(),
-    last_activity: w.last_activity(),
-    favorite: w.favorite(),
-    category: w.category(),
-    parent: w.parent(),
-    notes: w.notes(),
-    db: w.db(),
-    on_create_args: w.on_create_args(),
-    demo_data: w.demo_data(),
-    location: w.location(),
-    worktree: w.worktree(),
-    port: w.port() || null,
+  out.repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
+  out.workspaces = orm.records(Workspace).map((w) => ({
+    ...blobFromRecord(WORKSPACE_FIELDS, w),
     checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
   }));
-  out.templates = orm.records(Template).map((t) => ({
-    id: t.id,
-    name: t.name(),
-    db: t.db(),
-    on_create_args: t.on_create_args(),
-    demo_data: t.demo_data(),
-    checkouts: t.checkouts() || [],
-  }));
+  out.templates = orm.records(Template).map((t) => blobFromRecord(TEMPLATE_FIELDS, t));
   return out;
 }
 
@@ -568,19 +562,7 @@ function reconcileRepos(orm, repos) {
     Repository,
     repos,
     (r) => r.id,
-    (rec, r) => {
-      const d = repoData(r);
-      const keys = [
-        "path",
-        "github",
-        "pull_remote",
-        "push_remote",
-        "favorite",
-        "external",
-        "autoreload",
-      ];
-      for (const k of keys) rec[k].set(d[k]);
-    },
+    (rec, r) => updateFromBlob(REPO_FIELDS, rec, r),
     createRepo,
   );
 }
@@ -594,29 +576,12 @@ function reconcileWorkspaces(orm, desired) {
     desired,
     (w) => w.id,
     (rec, w) => {
-      const d = workspaceData(w);
-      const keys = [
-        "name",
-        "favorite",
-        "category",
-        "parent",
-        "notes",
-        "db",
-        "on_create_args",
-        "demo_data",
-        "worktree",
-      ];
-      for (const k of keys) {
-        rec[k].set(d[k]);
-      }
-      if ("created_at" in w) rec.created_at.set(d.created_at);
-      if ("last_activity" in w) rec.last_activity.set(d.last_activity);
-      rec.location.set(d.location);
-      if ("port" in w) rec.port.set(d.port); // absent key = keep the stable port
+      updateFromBlob(WORKSPACE_FIELDS, rec, w);
       reconcileCheckouts(orm, w);
     },
     (o, w) => {
-      const port = w.port ?? (workspaceData(w).location === "worktree" ? nextFreePort(o) : 0);
+      const location = w.location || (w.worktree ? "worktree" : "main");
+      const port = w.port ?? (location === "worktree" ? nextFreePort(o) : 0);
       const created_at = w.created_at || new Date().toISOString();
       createWorkspace(o, {
         ...w,
@@ -687,12 +652,7 @@ function reconcileTemplates(orm, templates) {
     Template,
     templates,
     (t) => t.id,
-    (rec, t) => {
-      const d = templateData(t);
-      for (const k of ["name", "db", "on_create_args", "demo_data", "checkouts"]) {
-        rec[k].set(d[k]);
-      }
-    },
+    (rec, t) => updateFromBlob(TEMPLATE_FIELDS, rec, t),
     createTemplate,
   );
 }

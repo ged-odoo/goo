@@ -2194,7 +2194,7 @@ var CodePlugin = class extends Plugin {
       return false;
     }
   }
-  // the configured remotes for the repo at <path> (never blank — repoData normalizes)
+  // the configured remotes for the repo at <path> (never blank — REPO_FIELDS normalizes)
   _pullRemote(path) {
     return this.config.config.repos.find((r) => r.path === path)?.pull_remote || "origin";
   }
@@ -3276,42 +3276,62 @@ function toModels(orm, config = {}, state = {}) {
   for (const k of STATE_JSON) st[k] = state[k] ?? [];
   orm.create(AppState, st);
 }
-function repoData(r) {
-  return {
-    id: r.id,
-    path: r.path ?? "",
-    github: r.github ?? "",
-    // normalizing blanks here migrates configs saved before the fields existed
-    pull_remote: r.pull_remote || "origin",
-    push_remote: r.push_remote || "dev",
-    favorite: !!r.favorite,
-    external: !!r.external,
-    autoreload: !!r.autoreload
-  };
+var char = (name) => ({ name, in: (v) => v ?? "" });
+var bool = (name, dflt = false) => ({ name, in: dflt ? (v) => v ?? true : (v) => !!v });
+var REPO_FIELDS = [
+  char("path"),
+  char("github"),
+  // `||` normalization migrates configs saved before these fields existed (blank → default)
+  { name: "pull_remote", in: (v) => v || "origin", out: (r) => r.pullRemote() },
+  { name: "push_remote", in: (v) => v || "dev", out: (r) => r.pushRemote() },
+  bool("favorite"),
+  bool("external"),
+  bool("autoreload")
+];
+var WORKSPACE_FIELDS = [
+  char("name"),
+  { ...char("created_at"), reconcile: "ifPresent" },
+  { ...char("last_activity"), reconcile: "ifPresent" },
+  bool("favorite"),
+  char("category"),
+  char("parent"),
+  char("notes"),
+  char("db"),
+  char("on_create_args"),
+  bool("demo_data", true),
+  { name: "location", in: (v, w) => v || (w.worktree ? "worktree" : "main") },
+  { name: "worktree", in: (v) => v ?? null },
+  // absent key in a patch = keep the stable port; null on the wire = none
+  { name: "port", in: (v) => v ?? 0, out: (w) => w.port() || null, reconcile: "ifPresent" }
+];
+var TEMPLATE_FIELDS = [
+  char("name"),
+  char("db"),
+  char("on_create_args"),
+  bool("demo_data", true),
+  { name: "checkouts", in: (v) => v || [], out: (t2) => t2.checkouts() || [] }
+];
+function dataFromBlob(fields2, blob) {
+  const data = { id: blob.id };
+  for (const f of fields2) data[f.name] = f.in(blob[f.name], blob);
+  return data;
+}
+function blobFromRecord(fields2, rec) {
+  const out = { id: rec.id };
+  for (const f of fields2) out[f.name] = f.out ? f.out(rec) : rec[f.name]();
+  return out;
+}
+function updateFromBlob(fields2, rec, item) {
+  for (const f of fields2) {
+    if (f.reconcile === "ifPresent" && !(f.name in item)) continue;
+    rec[f.name].set(f.in(item[f.name], item));
+  }
 }
 function createRepo(orm, r) {
-  orm.create(Repository, repoData(r));
-}
-function workspaceData(w) {
-  return {
-    id: w.id,
-    name: w.name ?? "",
-    created_at: w.created_at ?? "",
-    last_activity: w.last_activity ?? "",
-    favorite: !!w.favorite,
-    category: w.category ?? "",
-    parent: w.parent ?? "",
-    notes: w.notes ?? "",
-    db: w.db ?? "",
-    on_create_args: w.on_create_args ?? "",
-    demo_data: w.demo_data ?? true,
-    location: w.location || (w.worktree ? "worktree" : "main"),
-    worktree: w.worktree ?? null,
-    port: w.port ?? 0
-  };
+  orm.create(Repository, dataFromBlob(REPO_FIELDS, r));
 }
 function createWorkspace(orm, w) {
-  orm.create(Workspace, workspaceData(w));
+  orm.create(Workspace, dataFromBlob(WORKSPACE_FIELDS, w));
   for (const c of w.checkouts || []) {
     orm.create(Checkout, {
       id: checkoutId(w.id, c.repo),
@@ -3321,18 +3341,8 @@ function createWorkspace(orm, w) {
     });
   }
 }
-function templateData(t2) {
-  return {
-    id: t2.id,
-    name: t2.name ?? "",
-    db: t2.db ?? "",
-    on_create_args: t2.on_create_args ?? "",
-    demo_data: t2.demo_data ?? true,
-    checkouts: t2.checkouts || []
-  };
-}
 function createTemplate(orm, t2) {
-  orm.create(Template, templateData(t2));
+  orm.create(Template, dataFromBlob(TEMPLATE_FIELDS, t2));
 }
 function toConfig(orm) {
   const s = orm.getById(Settings, "settings");
@@ -3346,42 +3356,12 @@ function toConfig(orm) {
     out.test_presets = s.test_presets() ?? [];
     out.workspace_categories = s.workspace_categories() ?? [];
   }
-  out.repos = orm.records(Repository).map((r) => ({
-    id: r.id,
-    path: r.path(),
-    github: r.github(),
-    pull_remote: r.pullRemote(),
-    push_remote: r.pushRemote(),
-    favorite: r.favorite(),
-    external: r.external(),
-    autoreload: r.autoreload()
-  }));
-  const workspaces = orm.records(Workspace);
-  out.workspaces = workspaces.map((w) => ({
-    id: w.id,
-    name: w.name(),
-    created_at: w.created_at(),
-    last_activity: w.last_activity(),
-    favorite: w.favorite(),
-    category: w.category(),
-    parent: w.parent(),
-    notes: w.notes(),
-    db: w.db(),
-    on_create_args: w.on_create_args(),
-    demo_data: w.demo_data(),
-    location: w.location(),
-    worktree: w.worktree(),
-    port: w.port() || null,
+  out.repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
+  out.workspaces = orm.records(Workspace).map((w) => ({
+    ...blobFromRecord(WORKSPACE_FIELDS, w),
     checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }))
   }));
-  out.templates = orm.records(Template).map((t2) => ({
-    id: t2.id,
-    name: t2.name(),
-    db: t2.db(),
-    on_create_args: t2.on_create_args(),
-    demo_data: t2.demo_data(),
-    checkouts: t2.checkouts() || []
-  }));
+  out.templates = orm.records(Template).map((t2) => blobFromRecord(TEMPLATE_FIELDS, t2));
   return out;
 }
 function toState(orm) {
@@ -3421,19 +3401,7 @@ function reconcileRepos(orm, repos) {
     Repository,
     repos,
     (r) => r.id,
-    (rec, r) => {
-      const d = repoData(r);
-      const keys = [
-        "path",
-        "github",
-        "pull_remote",
-        "push_remote",
-        "favorite",
-        "external",
-        "autoreload"
-      ];
-      for (const k of keys) rec[k].set(d[k]);
-    },
+    (rec, r) => updateFromBlob(REPO_FIELDS, rec, r),
     createRepo
   );
 }
@@ -3444,29 +3412,12 @@ function reconcileWorkspaces(orm, desired) {
     desired,
     (w) => w.id,
     (rec, w) => {
-      const d = workspaceData(w);
-      const keys = [
-        "name",
-        "favorite",
-        "category",
-        "parent",
-        "notes",
-        "db",
-        "on_create_args",
-        "demo_data",
-        "worktree"
-      ];
-      for (const k of keys) {
-        rec[k].set(d[k]);
-      }
-      if ("created_at" in w) rec.created_at.set(d.created_at);
-      if ("last_activity" in w) rec.last_activity.set(d.last_activity);
-      rec.location.set(d.location);
-      if ("port" in w) rec.port.set(d.port);
+      updateFromBlob(WORKSPACE_FIELDS, rec, w);
       reconcileCheckouts(orm, w);
     },
     (o, w) => {
-      const port = w.port ?? (workspaceData(w).location === "worktree" ? nextFreePort(o) : 0);
+      const location2 = w.location || (w.worktree ? "worktree" : "main");
+      const port = w.port ?? (location2 === "worktree" ? nextFreePort(o) : 0);
       const created_at = w.created_at || (/* @__PURE__ */ new Date()).toISOString();
       createWorkspace(o, {
         ...w,
@@ -3521,12 +3472,7 @@ function reconcileTemplates(orm, templates) {
     Template,
     templates,
     (t2) => t2.id,
-    (rec, t2) => {
-      const d = templateData(t2);
-      for (const k of ["name", "db", "on_create_args", "demo_data", "checkouts"]) {
-        rec[k].set(d[k]);
-      }
-    },
+    (rec, t2) => updateFromBlob(TEMPLATE_FIELDS, rec, t2),
     createTemplate
   );
 }
