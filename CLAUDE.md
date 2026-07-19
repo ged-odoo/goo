@@ -36,7 +36,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     mergebot/databases have TTLs; git reads are volatile so they're uncached). Also
     `ConfigStore` — the server-owned config, persisted to `~/.config/goo/config.json`
     as `{rev, config, state}` (config = user settings/repos/targets, state =
-    active target/test history/reviews/claude model). The frontend owns the schema
+    active target/test history/claude model). The frontend owns the schema
     and mirrors it (`GET/POST /api/config`, rev-checked, SSE-broadcast for multi-tab);
     the CLI / auto-reloader / update-check read it directly. It lives outside `GOO_DIR`
     so the self-updater's `git pull` never touches it. Overridable with `goo --config`.
@@ -53,11 +53,13 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   entry). Organized **by feature**: a shared `core/` plus one folder per screen.
   - `core/` — the application basics everything builds on: the shared plugins (state/action
     layer — `config_plugin`, `store_plugin`, `server_plugin`, `code_plugin`, `dialog_plugin`,
-    `event_log_plugin`, `router_plugin`, `worktree_plugin`, `database_plugin`, `review_plugin`,
+    `event_log_plugin`, `router_plugin`, `worktree_plugin`, `database_plugin`,
     `terminal_plugin`, `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
     `observed_models`, `runtime_models`) + wire normalizers (`models.js`), the shared UI
     (`common.js` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.js`, `dialogs.js`,
-    `terminal.js`, `recordset.js`, `panel.js` (the shared screen-header `Panel`, title + five
+    `terminal.js`, `recordset.js` (the generic `RecordList` — flat or grouped-by-field with
+    group-header slot/actions, collapsible groups, rich `component` cells; the Branches & PRs
+    screen is its first consumer), `panel.js` (the shared screen-header `Panel`, title + five
     slots: title-extra/top-middle/top-right/bottom-left/bottom-right), the `event_log.js` panel,
     and `app.js` = `Topbar`/`Sidebar`/
     `App` + the `SCREENS` registry, which `main.js` imports), and the leaf libs `config.js`,
@@ -66,12 +68,16 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     reorderable list uses it, never HTML5 dnd). `appBus` is a single shared `EventBus` exported
     from `core/common.js` — import it, never re-instantiate.
   - One folder per screen, each suffixed `_screen/` (`dashboard_screen/`, `code_screen/`,
-    `workspaces_screen/`, `branches_screen/`, `prs_screen/`, `databases_screen/`,
+    `workspaces_screen/`, `branches_screen/`, `databases_screen/`,
     `nightly_screen/`, `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
     (`workspaces_screen/claude_plugin.js`, `nightly_screen/nightly_plugin.js`,
     `memory_screen/memory_plugin.js`). `workspaces_screen/` is the primary surface — the
     master-detail Workspaces screen with per-workspace Code/Logs/Tests/Addons/Assets/Claude/
     Terminal tabs (`panes.js`) + the shared create/delete dialogs (`dialogs.js`).
+    `branches_screen/` is the merged **Branches & PRs** screen (one RecordList grouped by
+    branch name: local branches + their PRs, plus PR-only rows for authored PRs with no
+    local branch; the old separate PRs screen and the PR-review feature are retired —
+    `#prs`/`#reviews` alias to `#branches`).
     `assets_screen/` and `addons_screen/` are plugin-only folders (their standalone screens
     retired into the Workspaces tabs; `assets_screen/analysis.js` is the bundle-analysis view
     those tabs render). Everything else is shared → `core/`. A screen folder may import from
