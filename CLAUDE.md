@@ -22,7 +22,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `goo.py` — thin launcher at the repo root (executable, shebang); just calls
   `backend.server.main()`. Keeps `python3 goo.py` / `alias goo=…/goo.py` working.
 - `backend/` — the Python package (import with `from backend import …`):
-  - `server.py` — the HTTP server: routing + thin request handlers, the `EventBus`
+  - `server.py` — the HTTP server: the declarative POST route table (`@post_route`
+    declares the path + required body fields; the dispatch does the shared
+    read-json/validate/send-json envelope), the `EventBus`
     (SSE), and the **process subsystem** (`OdooManager` + the PTY/CLI websocket
     handlers + the goo self-update), which owns its own inherent process
     side-effects. `GOO_DIR` is the repo root (parent of this package) — where
@@ -53,7 +55,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   entry). Organized **by feature**: a shared `core/` plus one folder per screen.
   - `core/` — the application basics everything builds on: the shared plugins (state/action
     layer — `config_plugin`, `store_plugin`, `server_plugin`, `code_plugin`, `dialog_plugin`,
-    `event_log_plugin`, `router_plugin`, `worktree_plugin`, `database_plugin`,
+    `event_log_plugin`, `router_plugin`, `workspace_plugin`, `database_plugin`,
     `terminal_plugin`, `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
     `observed_models`, `runtime_models`) + wire normalizers (`models.js`), the shared UI
     (`common.js` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.js`, `dialogs.js`,
@@ -67,13 +69,15 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     row drag-and-drop: cursor-following ghost + midline drop index — every
     reorderable list uses it, never HTML5 dnd). `appBus` is a single shared `EventBus` exported
     from `core/common.js` — import it, never re-instantiate.
-  - One folder per screen, each suffixed `_screen/` (`dashboard_screen/`, `code_screen/`,
-    `workspaces_screen/`, `branches_screen/`, `databases_screen/`,
-    `nightly_screen/`, `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
+  - One folder per screen, each suffixed `_screen/` (`workspaces_screen/`,
+    `branches_screen/`, `todo_screen/`, `databases_screen/`, `nightly_screen/`,
+    `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
     (`workspaces_screen/claude_plugin.js`, `nightly_screen/nightly_plugin.js`,
     `memory_screen/memory_plugin.js`). `workspaces_screen/` is the primary surface — the
-    master-detail Workspaces screen with per-workspace Code/Logs/Tests/Addons/Assets/Claude/
-    Terminal tabs (`panes.js`) + the shared create/delete dialogs (`dialogs.js`).
+    master-detail Workspaces screen, split one file per component: `workspaces.js`
+    (the screen/list), `code_pane.js` (the Code tab), `history.js` (`CommitHistory`,
+    the reorder/squash/drop commit editor), `claude_chat.js`, the other tab panes
+    (`panes.js`) + the shared create/delete dialogs (`dialogs.js`).
     `branches_screen/` is the merged **Branches & PRs** screen (one RecordList grouped by
     branch name: local branches + their PRs, plus PR-only rows for authored PRs with no
     local branch; the old separate PRs screen and the PR-review feature are retired —
