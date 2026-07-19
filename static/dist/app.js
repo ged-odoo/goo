@@ -8917,140 +8917,6 @@ var TodoScreen = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/claude_plugin.js
-var CLAUDE_MODELS = [
-  { value: "", label: "Default model" },
-  { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
-  { value: "opus", label: "Opus 4.8" },
-  { value: "sonnet", label: "Sonnet 5" },
-  { value: "haiku", label: "Haiku 4.5" }
-];
-var ClaudePlugin = class extends Plugin {
-  static sequence = 6;
-  // after WorkspacePlugin (5), whose wtRepos() it reuses
-  config = usePlugin(ConfigPlugin);
-  server = usePlugin(ServerPlugin);
-  worktree = usePlugin(WorkspacePlugin);
-  eventLog = usePlugin(EventLogPlugin);
-  dialogs = usePlugin(DialogPlugin);
-  convos = signal({});
-  // targetId -> { items: [...], state: "idle"|"running" }
-  models = CLAUDE_MODELS;
-  model = signal(this.config.getState("claude_model", ""));
-  // chosen model, persisted
-  _primed = /* @__PURE__ */ new Set();
-  // targets whose transcript we've fetched from the backend
-  setup() {
-    this.server.onClaude((d) => this.apply(d));
-  }
-  setModel(v) {
-    this.model.set(v || "");
-    this.config.setState("claude_model", v || "");
-  }
-  _get(id) {
-    return this.convos()[id] || { items: [], state: "idle" };
-  }
-  _set(id, next) {
-    this.convos.set({ ...this.convos(), [id]: next });
-  }
-  _append(id, item) {
-    const c = this._get(id);
-    this._set(id, { ...c, items: [...c.items, item] });
-  }
-  items(id) {
-    return this._get(id).items;
-  }
-  running(id) {
-    return this._get(id).state === "running";
-  }
-  // a live chat item pushed from the backend (assistant text, tool activity, result,
-  // or error). The final "result" ends the turn — flip back to idle.
-  apply(d) {
-    if (!d || !d.workspace) return;
-    const id = d.workspace;
-    if (d.role === "result") {
-      const c = this._get(id);
-      if (!d.ok && d.error) this._set(id, { ...c, items: [...c.items, d], state: "idle" });
-      else this._set(id, { ...c, state: "idle" });
-      return;
-    }
-    this._append(id, d);
-  }
-  // fetch the transcript once per target (after a reload the backend still holds it);
-  // skip if we already have live items so an in-flight turn isn't clobbered
-  async prime(id) {
-    if (!id || this._primed.has(id)) return;
-    this._primed.add(id);
-    if (this._get(id).items.length) return;
-    try {
-      const res = await postJSON("/api/workspace/claude/history", { workspace: id });
-      this._set(id, { items: res.items || [], state: res.state || "idle" });
-    } catch {
-    }
-  }
-  // where Claude works for <tgt>: a worktree workspace's own checkout copies, or —
-  // for a main-located workspace (the screen only offers it when loaded) — the REAL
-  // main checkout paths. Returns { cwd, addDirs } or null (error already shown).
-  // Note: removing a main-located workspace never CLAUDE.forgets its transcript
-  // (only /api/workspace/remove does) — a harmless stale in-memory convo.
-  _dirsFor(tgt) {
-    if (this.worktree.isWorktree(tgt)) {
-      const repos = this.worktree.wtRepos(tgt);
-      const community = repos.find((r) => r.repo === "community");
-      if (!community) {
-        this._error("Cannot run Claude", "this worktree has no community repo");
-        return null;
-      }
-      return {
-        cwd: community.worktreePath,
-        addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath)
-      };
-    }
-    const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    const cwd = pathById["community"];
-    if (!cwd) {
-      this._error("Cannot run Claude", "no community repo configured");
-      return null;
-    }
-    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== "community").map((c) => pathById[c.repo]).filter(Boolean);
-    return { cwd, addDirs };
-  }
-  // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
-  // the main checkout for a loaded main-located workspace) with the workspace's
-  // other repos added as extra allowed dirs
-  async send(tgt, prompt) {
-    const text = (prompt || "").trim();
-    if (!text || this.running(tgt.id)) return;
-    const dirs = this._dirsFor(tgt);
-    if (!dirs) return;
-    this.config.workspace(tgt.id)?.touchActivity();
-    this._append(tgt.id, { role: "user", text });
-    this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
-    try {
-      await postJSON("/api/workspace/claude", {
-        workspace: tgt.id,
-        prompt: text,
-        cwd: dirs.cwd,
-        addDirs: dirs.addDirs,
-        model: this.model() || void 0
-      });
-    } catch (e) {
-      this._append(tgt.id, { role: "error", text: e.message });
-      this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
-    }
-  }
-  async stop(tgt) {
-    try {
-      await postJSON("/api/workspace/claude/stop", { workspace: tgt.id });
-    } catch {
-    }
-    this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
-  }
-  _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
-  }
-};
-
 // static/src/workspaces_screen/dialogs.js
 var baseBranchOf = (branch) => (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 var ARCHIVED_CATEGORY = "archived";
@@ -9606,731 +9472,141 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
   }
 }
 
-// static/src/addons_screen/addons_plugin.js
-var AddonsPlugin = class _AddonsPlugin extends Plugin {
-  static sequence = 4;
-  static MAX_ROWS = 200;
+// static/src/workspaces_screen/claude_plugin.js
+var CLAUDE_MODELS = [
+  { value: "", label: "Default model" },
+  { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
+  { value: "opus", label: "Opus 4.8" },
+  { value: "sonnet", label: "Sonnet 5" },
+  { value: "haiku", label: "Haiku 4.5" }
+];
+var ClaudePlugin = class extends Plugin {
+  static sequence = 6;
+  // after WorkspacePlugin (5), whose wtRepos() it reuses
   config = usePlugin(ConfigPlugin);
-  store = usePlugin(StorePlugin);
-  // install/upgrade runs live in the shared store's runs map
   server = usePlugin(ServerPlugin);
+  worktree = usePlugin(WorkspacePlugin);
   eventLog = usePlugin(EventLogPlugin);
   dialogs = usePlugin(DialogPlugin);
-  worktree = usePlugin(WorkspacePlugin);
-  // a worktree slot's addons paths come from its checkout
-  // the text/state filters are global — shared between the standalone screen and
-  // the Workspaces pane (acceptable: one user, one focus at a time)
-  filter = signal("");
-  stateFilter = signal("");
-  // "" | "installed" | "uninstalled"
-  appOnly = signal(true);
-  // only modules flagged as an application (on by default)
-  _slots = /* @__PURE__ */ new Map();
-  // slotId -> per-slot module/run/console state
-  slot(id = "main") {
-    if (!this._slots.has(id)) {
-      const rec = {
-        output: new LogBuffer(),
-        modules: signal([]),
-        loadedDb: signal(""),
-        erroredDb: signal(""),
-        // db whose last auto-load failed — don't auto-retry (hot loop)
-        loading: signal(false),
-        error: signal(""),
-        status: signal(""),
-        pending: signal(false),
-        // optimistic "run starting", until the "run" event lands
-        announced: null,
-        // run id we've seen running this session
-        finishedRun: null,
-        // run id we've finalized (once per run)
-        lastWs: null
-        // the workspace last loaded into this slot (for the post-run refresh)
-      };
-      rec.filtered = computed(() => this._filtered(rec));
-      this._slots.set(id, rec);
-    }
-    return this._slots.get(id);
-  }
-  runningFor(slotId) {
-    return this.currentRun(slotId)?.state === "running";
-  }
+  convos = signal({});
+  // targetId -> { items: [...], state: "idle"|"running" }
+  models = CLAUDE_MODELS;
+  model = signal(this.config.getState("claude_model", ""));
+  // chosen model, persisted
+  _primed = /* @__PURE__ */ new Set();
+  // targets whose transcript we've fetched from the backend
   setup() {
-    useEffect(() => {
-      const slots = new Set(
-        this.store.runs().filter((d) => d.kind === "install" || d.kind === "upgrade").map((d) => d.server ?? "main")
-      );
-      for (const s of slots) this._onRun(s, this.currentRun(s));
-    });
-    this.server.onLog(({ server, line }) => {
-      if (server === "main" ? this.runActive("main") : this._slots.has(server) && this.runActive(server))
-        this.slot(server).output.append(line);
-    });
+    this.server.onClaude((d) => this.apply(d));
   }
-  // the current/last install-or-upgrade run on a slot
-  currentRun(slotId = "main") {
-    const i = this.store.latestRunOfKind("install", slotId);
-    const u = this.store.latestRunOfKind("upgrade", slotId);
-    return [i, u].filter(Boolean).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null;
+  setModel(v) {
+    this.model.set(v || "");
+    this.config.setState("claude_model", v || "");
   }
-  // a run is active on a slot — optimistic between clicking Install/Upgrade and the
-  // backend's first "run" event, then driven by the run's state
-  runActive(slotId = "main") {
-    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
+  _get(id) {
+    return this.convos()[id] || { items: [], state: "idle" };
   }
-  // a workspace's repos as {id, path}: a worktree workspace's own checkout copies,
-  // else the main checkout paths of its checkouts — the addons-path used to list +
-  // install, so only its modules are ever shown
-  _reposFor(ws) {
-    if (ws.location === "worktree") {
-      return this.worktree.wtRepos(ws).map((r) => ({ id: r.repo, path: r.worktreePath }));
+  _set(id, next) {
+    this.convos.set({ ...this.convos(), [id]: next });
+  }
+  _append(id, item) {
+    const c = this._get(id);
+    this._set(id, { ...c, items: [...c.items, item] });
+  }
+  items(id) {
+    return this._get(id).items;
+  }
+  running(id) {
+    return this._get(id).state === "running";
+  }
+  // a live chat item pushed from the backend (assistant text, tool activity, result,
+  // or error). The final "result" ends the turn — flip back to idle.
+  apply(d) {
+    if (!d || !d.workspace) return;
+    const id = d.workspace;
+    if (d.role === "result") {
+      const c = this._get(id);
+      if (!d.ok && d.error) this._set(id, { ...c, items: [...c.items, d], state: "idle" });
+      else this._set(id, { ...c, state: "idle" });
+      return;
+    }
+    this._append(id, d);
+  }
+  // fetch the transcript once per target (after a reload the backend still holds it);
+  // skip if we already have live items so an in-flight turn isn't clobbered
+  async prime(id) {
+    if (!id || this._primed.has(id)) return;
+    this._primed.add(id);
+    if (this._get(id).items.length) return;
+    try {
+      const res = await postJSON("/api/workspace/claude/history", { workspace: id });
+      this._set(id, { items: res.items || [], state: res.state || "idle" });
+    } catch {
+    }
+  }
+  // where Claude works for <tgt>: a worktree workspace's own checkout copies, or —
+  // for a main-located workspace (the screen only offers it when loaded) — the REAL
+  // main checkout paths. Returns { cwd, addDirs } or null (error already shown).
+  // Note: removing a main-located workspace never CLAUDE.forgets its transcript
+  // (only /api/workspace/remove does) — a harmless stale in-memory convo.
+  _dirsFor(tgt) {
+    if (this.worktree.isWorktree(tgt)) {
+      const repos = this.worktree.wtRepos(tgt);
+      const community = repos.find((r) => r.repo === "community");
+      if (!community) {
+        this._error("Cannot run Claude", "this worktree has no community repo");
+        return null;
+      }
+      return {
+        cwd: community.worktreePath,
+        addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath)
+      };
     }
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    return (ws.checkouts || []).map((c) => ({ id: c.repo, path: pathById[c.repo] })).filter((r) => r.path);
-  }
-  // load a workspace's module list (own db + repos) into its slot
-  async load(ws) {
-    if (!ws) return;
-    const slotId = slotFor(ws);
-    const s = this.slot(slotId);
-    const db = ws.db;
-    s.lastWs = ws;
-    if (!db) {
-      s.modules.set([]);
-      s.loadedDb.set("");
-      return;
+    const cwd = pathById["community"];
+    if (!cwd) {
+      this._error("Cannot run Claude", "no community repo configured");
+      return null;
     }
-    s.loading.set(true);
-    s.error.set("");
-    s.erroredDb.set("");
+    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== "community").map((c) => pathById[c.repo]).filter(Boolean);
+    return { cwd, addDirs };
+  }
+  // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
+  // the main checkout for a loaded main-located workspace) with the workspace's
+  // other repos added as extra allowed dirs
+  async send(tgt, prompt) {
+    const text = (prompt || "").trim();
+    if (!text || this.running(tgt.id)) return;
+    const dirs = this._dirsFor(tgt);
+    if (!dirs) return;
+    this.config.workspace(tgt.id)?.touchActivity();
+    this._append(tgt.id, { role: "user", text });
+    this._set(tgt.id, { ...this._get(tgt.id), state: "running" });
     try {
-      const data = await postJSON("/api/addons", { repos: this._reposFor(ws), db });
-      if (s.lastWs?.db !== db) return;
-      s.modules.set(data.modules);
-      s.loadedDb.set(db);
-    } catch (e) {
-      if (s.lastWs?.db !== db) return;
-      s.error.set(e.message);
-      s.erroredDb.set(db);
-    } finally {
-      s.loading.set(false);
-    }
-  }
-  _filtered(s) {
-    const q = this.filter().trim().toLowerCase();
-    const sf = this.stateFilter();
-    const appOnly = this.appOnly();
-    const matched = s.modules().filter((mod) => {
-      const installed = mod.state === "installed";
-      if (sf === "installed" && !installed) return false;
-      if (sf === "uninstalled" && installed) return false;
-      if (appOnly && !mod.application) return false;
-      return !q || mod.name.toLowerCase().includes(q) || mod.summary.toLowerCase().includes(q) || mod.category.toLowerCase().includes(q);
-    });
-    matched.sort(
-      (a, b) => (b.state === "installed") - (a.state === "installed") || a.name.localeCompare(b.name)
-    );
-    return { total: matched.length, shown: matched.slice(0, _AddonsPlugin.MAX_ROWS) };
-  }
-  // react to a slot's backend-minted install/upgrade Run moving running →
-  // done/failed. Resume-after is backend-owned; this drives the status + reloads
-  // module states when the run ends. Finalize once per run id per slot.
-  _onRun(slotId, run) {
-    if (!run) return;
-    const s = this.slot(slotId);
-    if (run.state === "running") {
-      s.pending.set(false);
-      s.announced = run.id;
-      s.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}\u2026`);
-    } else if (s.finishedRun !== run.id) {
-      s.finishedRun = run.id;
-      if (s.announced !== run.id) return;
-      const stopped = run.returncode === null;
-      s.status.set(
-        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "done"
-      );
-      this.load(s.lastWs);
-    }
-  }
-  // install/upgrade a module on a workspace's slot
-  async run(op, name, ws) {
-    if (!ws) return;
-    const slotId = slotFor(ws);
-    const target = ws;
-    const db = ws.db;
-    if (!db) return;
-    const s = this.slot(slotId);
-    const verb = op === "upgrade" ? "Upgrade" : "Install";
-    const ok = await this.dialogs.open({
-      title: `${verb} "${name}" on ${db}?`,
-      okLabel: verb
-    });
-    if (!ok) return;
-    this.config.workspace(ws.id)?.touchActivity();
-    s.output.clear();
-    s.pending.set(true);
-    s.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}\u2026`);
-    this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
-    try {
-      await postJSON("/api/addons/run", {
-        workspace: target.id,
-        slot: slotId,
-        overrides: { [op]: name }
+      await postJSON("/api/workspace/claude", {
+        workspace: tgt.id,
+        prompt: text,
+        cwd: dirs.cwd,
+        addDirs: dirs.addDirs,
+        model: this.model() || void 0
       });
     } catch (e) {
-      s.pending.set(false);
-      s.status.set(`failed to start: ${e.message}`);
+      this._append(tgt.id, { role: "error", text: e.message });
+      this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
     }
   }
-};
-
-// static/src/assets_screen/assets_plugin.js
-var AssetsPlugin = class extends Plugin {
-  static sequence = 6;
-  config = usePlugin(ConfigPlugin);
-  db = usePlugin(DatabasePlugin);
-  eventLog = usePlugin(EventLogPlugin);
-  dialogs = usePlugin(DialogPlugin);
-  bundles = signal([]);
-  selectedDb = signal("");
-  loadedDb = signal("");
-  at = signal(0);
-  loading = signal(false);
-  generating = signal(false);
-  error = signal("");
-  // analysis of one bundle: { name, js:[[path,bytes]], css, xml } | null
-  bundleData = signal(null);
-  analyzing = signal(false);
-  analyzeError = signal("");
-  // disable actions while a load or a generation is in flight
-  busy() {
-    return this.loading() || this.generating();
-  }
-  // pick a database and (re)load its bundles; "" clears the list
-  selectDb(db) {
-    this.selectedDb.set(db);
-    if (db) this.load(true);
-    else {
-      this.bundles.set([]);
-      this.loadedDb.set("");
-    }
-  }
-  async load(force = false) {
-    const db = this.selectedDb();
-    if (!db) {
-      this.bundles.set([]);
-      this.loadedDb.set("");
-      return;
-    }
-    this.loading.set(true);
-    this.error.set("");
+  async stop(tgt) {
     try {
-      const data = await postJSON("/api/assets", { db, refresh: force });
-      if (this.selectedDb() !== db) return;
-      this.bundles.set(data.bundles);
-      this.loadedDb.set(db);
-      this.at.set(Date.now());
-    } catch (e) {
-      if (this.selectedDb() === db) this.error.set(e.message);
-    } finally {
-      this.loading.set(false);
+      await postJSON("/api/workspace/claude/stop", { workspace: tgt.id });
+    } catch {
     }
+    this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
   }
-  // force a pregeneration of the bundles (odoo-bin shell), then reload the list.
-  // The server builds the addons-path + venv prefix from its own config — just the
-  // db, plus an optional workspace so a worktree workspace's bundles are generated
-  // with ITS checkout's code (the Workspaces pane passes it).
-  async generate(ws = null) {
-    const db = this.selectedDb();
-    if (!db) return;
-    this.generating.set(true);
-    this.error.set("");
-    const eid = this.eventLog.begin(`generating asset bundles in ${db}\u2026`);
-    try {
-      await postJSON("/api/assets/generate", { db, ...ws ? { workspace: ws.id } : {} });
-      this.eventLog.finish(eid, "done");
-      await this.load(true);
-    } catch (e) {
-      this.eventLog.finish(eid, "error");
-      this.error.set(e.message);
-      this.dialogs.open({
-        title: "Generate asset bundles failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
-    } finally {
-      this.generating.set(false);
-    }
-  }
-  // analyze a bundle's contents: ask the backend for the per-file minified-size
-  // breakdown (read from the stored bundle), and open the view. kind scopes it to the
-  // clicked asset — "js" → the .min.js (code + XML templates), "css" → the .min.css —
-  // so the total matches that attachment's row size instead of summing js+css.
-  async analyze(bundle, kind = "js") {
-    const db = this.selectedDb();
-    if (!db || !bundle) return;
-    this.analyzing.set(true);
-    this.analyzeError.set("");
-    this.bundleData.set({ name: bundle, kind, js: [], css: [], xml: [] });
-    try {
-      const filestore = this.config.config.filestore || "";
-      const data = await postJSON("/api/assets/breakdown", { db, bundle, filestore, kind });
-      this.bundleData.set({ name: bundle, kind, js: data.js, css: data.css, xml: data.xml });
-    } catch (e) {
-      this.analyzeError.set(e.message);
-    } finally {
-      this.analyzing.set(false);
-    }
-  }
-  closeAnalysis() {
-    this.bundleData.set(null);
-    this.analyzeError.set("");
+  _error(title, message) {
+    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
   }
 };
 
-// static/src/assets_screen/analysis.js
-var BundleNode = class extends Component {
-  static template = xml`
-    <div class="bnode">
-      <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
-        <span class="bnode-caret" t-out="this.props.node.children.length ? (this.open() ? '▾' : '▸') : ''"/>
-        <span class="bnode-name" t-out="this.props.node.name"/>
-        <span class="bnode-size" t-out="this.fmt(this.props.node.size)"/>
-      </div>
-      <t t-if="this.open()">
-        <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
-      </t>
-    </div>`;
-  props = useProps({ node: t.any(), depth: t.any() });
-  open = signal(false);
-  setup() {
-    if (this.props.depth === 0) this.open.set(true);
-  }
-  toggle() {
-    if (this.props.node.children.length) this.open.set(!this.open());
-  }
-  fmt(n) {
-    return formatBytes(n);
-  }
-};
-BundleNode.components = { BundleNode };
-function bundleBase(name) {
-  return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
-}
-var AssetsAnalysis = class extends Component {
-  static components = { BundleNode, SearchBox };
-  static template = xml`
-    <div class="assets-analysis">
-      <div class="assets-analysis-bar">
-        <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
-        <span class="assets-analysis-title" t-out="this.analysisTitle"/>
-        <span class="meta" t-out="this.analysisTotal"/>
-        <div class="assets-analysis-views">
-          <SearchBox value="this.treeSearch"/>
-          <button class="pbtn" t-att-class="{active: this.view() === 'tree'}" t-on-click="() => this.view.set('tree')">Aggregate</button>
-          <button class="pbtn" t-att-class="{active: this.view() === 'flat'}" t-on-click="() => this.view.set('flat')">Flat</button>
-        </div>
-      </div>
-      <div class="assets-tree">
-        <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing…</div>
-        <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
-        <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
-        <div t-else="" class="assets-tree-inner">
-          <t t-if="this.view() === 'tree'">
-            <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
-          </t>
-          <t t-else="">
-            <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
-              <span class="bnode-name" t-out="f.path"/>
-              <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
-            </div>
-          </t>
-        </div>
-      </div>
-    </div>`;
-  assets = usePlugin(AssetsPlugin);
-  view = signal("tree");
-  // "tree" (aggregate) | "flat"
-  treeSearch = signal("");
-  // filter files within the analysis
-  // the analyzed attachment's name, e.g. "web.assets_web.min.js" — the .min asset
-  // the breakdown was scoped to, so it reads as the row that was clicked
-  get analysisTitle() {
-    const d = this.assets.bundleData();
-    if (!d) return "";
-    return `${d.name}.min.${d.kind === "css" ? "css" : "js"}`;
-  }
-  // total minified size across the analyzed bundle's js + css + xml
-  get analysisTotal() {
-    const d = this.assets.bundleData();
-    if (!d) return "";
-    const all = [...d.js || [], ...d.css || [], ...d.xml || []];
-    return `${formatBytes(all.reduce((s, [, n]) => s + n, 0))} minified`;
-  }
-  // the analyzed bundle's files as a flat list ({path, bytes}), search-filtered,
-  // largest first. Same path can occur more than once (e.g. a template and its
-  // registerTemplateExtension share their base template's name) — merge those into
-  // one row (sizes summed), matching how the tree view aggregates by path already.
-  get flat() {
-    const d = this.assets.bundleData();
-    if (!d) return [];
-    const q = this.treeSearch().trim().toLowerCase();
-    const byPath = /* @__PURE__ */ new Map();
-    for (const [path, bytes] of [...d.js || [], ...d.css || [], ...d.xml || []]) {
-      byPath.set(path, (byPath.get(path) || 0) + bytes);
-    }
-    return [...byPath.entries()].map(([path, bytes]) => ({ path, bytes })).filter((f) => !q || f.path.toLowerCase().includes(q)).sort((a, b) => b.bytes - a.bytes);
-  }
-  // the analyzed bundle aggregated into a tree: top level is js/css/xml, then each
-  // path segment, sizes summed up the tree; children sorted largest first
-  get tree() {
-    const d = this.assets.bundleData();
-    if (!d) return [];
-    const q = this.treeSearch().trim().toLowerCase();
-    const top = [];
-    for (const [label, files] of [
-      ["js", d.js],
-      ["css", d.css],
-      ["xml", d.xml]
-    ]) {
-      const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
-      if (!matched.length) continue;
-      const root = { name: label, size: 0, children: {} };
-      for (const [path, bytes] of matched) {
-        root.size += bytes;
-        let node = root;
-        for (const part of path.split("/").filter(Boolean)) {
-          node.children[part] = node.children[part] || { name: part, size: 0, children: {} };
-          node = node.children[part];
-          node.size += bytes;
-        }
-      }
-      top.push(root);
-    }
-    const finalize = (n) => ({
-      name: n.name,
-      size: n.size,
-      children: Object.values(n.children).map(finalize).sort((a, b) => b.size - a.size)
-    });
-    return top.map(finalize).sort((a, b) => b.size - a.size);
-  }
-  fmtSize(n) {
-    return formatBytes(n || 0);
-  }
-};
-
-// static/src/workspaces_screen/panes.js
-var TestsPane = class extends Component {
-  static components = { LogConsole };
-  static template = xml`
-    <div class="ws-run-pane">
-      <form class="test-form" t-on-submit.prevent="() => this.run()">
-        <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
-          <option value="" selected="selected" hidden="hidden">Presets</option>
-          <optgroup t-if="this.presets.length" label="Presets">
-            <option t-foreach="this.presets" t-as="p" t-key="p_index" t-att-value="p.tags" t-out="p.tags"/>
-          </optgroup>
-          <optgroup t-if="this.tests.history().length" label="Recent">
-            <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
-          </optgroup>
-        </select>
-        <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
-               placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
-        <button t-if="this.slotId === 'main'" type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
-                title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
-                t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
-        <button type="submit" t-att-disabled="this.tests.runActive(this.slotId) or !this.tags().trim()"><span class="play"/>Run</button>
-        <button type="button" class="stop" t-att-disabled="!this.tests.runningFor(this.slotId)" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
-        <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
-        <div class="log-controls">
-          <label class="toggle" t-att-class="{on: this.slot.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
-          <button type="button" class="tool-btn" t-on-click="() => this.slot.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
-        </div>
-      </form>
-      <div t-if="!this.slot.output.count() and !this.tests.runActive(this.slotId)" class="ws-empty-note dim">
-        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run.
-        The run uses this workspace's database and checkout.
-      </div>
-      <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
-    </div>`;
-  props = useProps({ ws: t.any() });
-  tests = usePlugin(TestsPlugin);
-  server = usePlugin(ServerPlugin);
-  config = usePlugin(ConfigPlugin);
-  wt = usePlugin(WorkspacePlugin);
-  clearIcon = m(ICONS.clear);
-  copyIcon = m(ICONS.copy);
-  tags = signal("");
-  // copy a `goo --test-tags …` command for the current tags (single-quoted so the
-  // shell doesn't mangle globs). Main slot only — the CLI runs against the ACTIVE
-  // workspace, which is wrong for a worktree workspace's pane.
-  copyCommand() {
-    const tags = this.tags().trim();
-    if (!tags) return;
-    navigator.clipboard?.writeText(`goo --test-tags '${tags.replace(/'/g, "'\\''")}'`);
-  }
-  get slotId() {
-    return slotFor(this.props.ws);
-  }
-  get slot() {
-    return this.tests.slot(this.slotId);
-  }
-  get presets() {
-    return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
-  }
-  get badge() {
-    const s = this.slot.status();
-    if (s === "passed") return { label: "success", cls: "ok" };
-    if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
-    if (s === "running\u2026" || s === "starting\u2026") return { label: "running", cls: "run" };
-    return null;
-  }
-  run() {
-    this.tests.run(this.tags(), this.props.ws);
-  }
-  // stopping the slot's server kills the run; the backend finalizes it and
-  // resumes the server the run had interrupted
-  stop() {
-    if (this.slotId === "main") this.server.stop();
-    else this.wt.stopServer(this.props.ws);
-  }
-  onPreset(ev) {
-    const v = ev.target.value;
-    ev.target.value = "";
-    if (v) this.tags.set(v);
-  }
-  toggleAuto() {
-    const b = this.slot.output;
-    b.autoScroll.set(!b.autoScroll());
-    if (b.autoScroll()) b.toBottom();
-  }
-};
-var AddonsPane = class extends Component {
-  static components = { LogConsole, SearchBox };
-  static template = xml`
-    <div class="ws-run-pane">
-      <div class="ws-pane-toolbar">
-        <SearchBox value="this.addons.filter"/>
-        <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
-        <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
-        <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
-        <button class="pbtn" title="reload the module list" t-on-click="() => this.addons.load(this.props.ws)"><span class="restart"/></button>
-        <span t-if="this.slot.status()" class="dim ws-sec-meta" t-out="this.slot.status()"/>
-        <span class="dim ws-sec-meta ws-pane-count" t-out="this.count"/>
-      </div>
-      <div t-if="this.slot.loading()" class="dim ws-empty-note">Loading modules…</div>
-      <div t-elif="this.slot.error()" class="ws-empty-note form-error" t-out="this.slot.error()"/>
-      <div t-elif="!this.view.total" class="dim ws-empty-note">No modules match — check the filters, or the database may not exist yet.</div>
-      <div t-else="" class="ws-addons-scroll">
-        <table class="br-table brg-flat">
-          <thead>
-            <tr><th>Module</th><th>Summary</th><th>Repository</th><th>State</th><th/></tr>
-          </thead>
-          <tbody>
-            <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
-              <td class="addon-name" t-att-title="mod.summary" t-out="mod.name"/>
-              <td class="dim"><div class="br-ellip" t-att-title="mod.summary" t-out="mod.summary || '—'"/></td>
-              <td class="dim" t-out="mod.repo"/>
-              <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
-              <td>
-                <div class="br-act">
-                  <button class="addon-btn" t-att-disabled="this.addons.runActive(this.slotId) or mod.installable === false"
-                          t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.props.ws)"
-                          t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
-             t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
-      </div>
-      <LogConsole t-if="this.addons.runActive(this.slotId) or this.addons.runningFor(this.slotId)"
-                  t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
-    </div>`;
-  props = useProps({ ws: t.any() });
-  addons = usePlugin(AddonsPlugin);
-  setup() {
-    useEffect(() => {
-      const db = this.props.ws.db;
-      if (db && db !== this.slot.loadedDb() && db !== this.slot.erroredDb() && !this.slot.loading())
-        this.addons.load(this.props.ws);
-    });
-  }
-  get slotId() {
-    return slotFor(this.props.ws);
-  }
-  get slot() {
-    return this.addons.slot(this.slotId);
-  }
-  get view() {
-    return this.slot.filtered();
-  }
-  get count() {
-    const n = this.view.total;
-    return `${n} module${n === 1 ? "" : "s"}`;
-  }
-  toggleState(value) {
-    this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
-  }
-  stateClass(mod) {
-    return (mod.state || "none").replace(/\s+/g, "-");
-  }
-};
-var AssetsPane = class extends Component {
-  static components = { AssetsAnalysis, SearchBox };
-  static template = xml`
-    <div class="ws-run-pane">
-      <AssetsAnalysis t-if="this.assets.bundleData()"/>
-      <t t-else="">
-        <div class="ws-pane-toolbar">
-          <span class="dim ws-sec-meta">db <b t-out="this.props.ws.db"/></span>
-          <SearchBox value="this.search"/>
-          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
-          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
-          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
-          <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
-          <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
-                  t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
-          <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
-        </div>
-        <div t-if="this.assets.loading()" class="dim ws-empty-note">Loading bundles…</div>
-        <div t-elif="this.assets.error()" class="ws-empty-note form-error" t-out="this.assets.error()"/>
-        <div t-elif="this.mismatch" class="dim ws-empty-note">Loading this workspace's bundles…</div>
-        <div t-elif="!this.bundles.length" class="dim ws-empty-note">No bundle matches — check the filters, or Generate builds them all (the database may not exist yet).</div>
-        <div t-else="" class="ws-addons-scroll">
-          <table class="br-table brg-flat">
-            <thead>
-              <tr>
-                <th class="br-sort" t-on-click="() => this.sort('name')">Bundle<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
-                <th class="br-sort ws-num" t-on-click="() => this.sort('size')">Size<span class="br-arrow" t-out="this.sortArrow('size')"/></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr t-foreach="this.bundles" t-as="b" t-key="b.id">
-                <td class="addon-name">
-                  <button class="assets-name" t-att-title="'analyze ' + this.base(b.name) + '.min bundle'" t-on-click="() => this.analyze(b)" t-out="b.name"/>
-                  <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
-                </td>
-                <td class="ws-num" t-out="this.size(b)"/>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </t>
-    </div>`;
-  props = useProps({ ws: t.any() });
-  assets = usePlugin(AssetsPlugin);
-  config = usePlugin(ConfigPlugin);
-  search = signal("");
-  showJs = signal(true);
-  // include .js bundles
-  showCss = signal(true);
-  // include .css bundles
-  showOther = signal(true);
-  // include non-js/non-css assets (fonts, source maps, xml…)
-  sortKey = signal("size");
-  // "name" | "size"
-  sortDir = signal("desc");
-  // "asc" | "desc" — default: largest bundle first
-  copiedId = signal(null);
-  // id of the row whose url was just copied (transient label)
-  setup() {
-    useEffect(() => {
-      const db = this.props.ws.db;
-      if (db)
-        untrack(() => {
-          if (this.assets.selectedDb() === db) return;
-          this.assets.closeAnalysis();
-          this.assets.selectDb(db);
-        });
-    });
-  }
-  // only pass the workspace to generate() when its checkout differs from the main
-  // one (a worktree) — the backend then builds the shell cmd from its copies
-  get wsForGenerate() {
-    return this.props.ws.location === "worktree" ? this.props.ws : null;
-  }
-  generate() {
-    this.config.workspace(this.props.ws.id)?.touchActivity();
-    return this.assets.generate(this.wsForGenerate);
-  }
-  get mismatch() {
-    return this.assets.loadedDb() !== this.props.ws.db;
-  }
-  // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)
-  // and everything that isn't plain js/css (fonts, xml, …) count as "other".
-  kind(b) {
-    if (/\.map$/i.test(b.name)) return "other";
-    if (/\.css$/i.test(b.name)) return "css";
-    if (/\.js$/i.test(b.name)) return "js";
-    return "other";
-  }
-  // search- and kind-filtered bundles, sorted by the active column
-  get bundles() {
-    const q = this.search().trim().toLowerCase();
-    const showJs = this.showJs();
-    const showCss = this.showCss();
-    const showOther = this.showOther();
-    const dir = this.sortDir() === "asc" ? 1 : -1;
-    const bySize = this.sortKey() === "size";
-    return this.assets.bundles().filter((b) => {
-      const k = this.kind(b);
-      if (k === "js" && !showJs) return false;
-      if (k === "css" && !showCss) return false;
-      if (k === "other" && !showOther) return false;
-      return !q || b.name.toLowerCase().includes(q) || b.url.toLowerCase().includes(q);
-    }).sort(
-      (a, b) => bySize ? dir * ((a.size || 0) - (b.size || 0)) : dir * a.name.localeCompare(b.name)
-    );
-  }
-  // toggle direction when re-clicking the active column, else switch column with a
-  // sensible default (names ascending A→Z, sizes descending largest-first)
-  sort(key) {
-    if (this.sortKey() === key) {
-      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
-    } else {
-      this.sortKey.set(key);
-      this.sortDir.set(key === "size" ? "desc" : "asc");
-    }
-  }
-  // " ▲" / " ▼" for the active sort column, else ""
-  sortArrow(key) {
-    if (this.sortKey() !== key) return "";
-    return this.sortDir() === "asc" ? " \u25B2" : " \u25BC";
-  }
-  base(name) {
-    return bundleBase(name);
-  }
-  // analyze the bundle this row belongs to (its per-file size breakdown), scoped to
-  // the clicked attachment's kind so the total matches its row size: any .css/.css.map
-  // → css, everything else (.min.js, .js.map, …) → js.
-  analyze(b) {
-    this.config.workspace(this.props.ws.id)?.touchActivity();
-    const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
-    this.assets.analyze(bundleBase(b.name), kind);
-  }
-  // copy a bundle's /web/assets/… path to the clipboard, flipping its link to
-  // "copied" for a moment
-  copyUrl(b) {
-    navigator.clipboard?.writeText(b.url);
-    this.copiedId.set(b.id);
-    setTimeout(() => {
-      if (this.copiedId() === b.id) this.copiedId.set(null);
-    }, 1400);
-  }
-  get meta() {
-    const n = this.bundles.length;
-    return this.mismatch ? "" : `${n} bundle${n === 1 ? "" : "s"}`;
-  }
-  size(b) {
-    return formatBytes(b.size || 0);
-  }
-};
-
-// static/src/workspaces_screen/workspaces.js
+// static/src/workspaces_screen/claude_chat.js
 var ClaudeChat = class extends Component {
   static template = xml`
     <div class="cchat">
@@ -10408,6 +9684,8 @@ var ClaudeChat = class extends Component {
     this.claude.stop(this.props.target);
   }
 };
+
+// static/src/workspaces_screen/code_pane.js
 var CodePane = class extends Component {
   static components = { DirtyBadge };
   static template = xml`
@@ -11451,6 +10729,730 @@ ${edits[sha].body}` : edits[sha].subject.trim();
     return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 };
+
+// static/src/addons_screen/addons_plugin.js
+var AddonsPlugin = class _AddonsPlugin extends Plugin {
+  static sequence = 4;
+  static MAX_ROWS = 200;
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin);
+  // install/upgrade runs live in the shared store's runs map
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  worktree = usePlugin(WorkspacePlugin);
+  // a worktree slot's addons paths come from its checkout
+  // the text/state filters are global — shared between the standalone screen and
+  // the Workspaces pane (acceptable: one user, one focus at a time)
+  filter = signal("");
+  stateFilter = signal("");
+  // "" | "installed" | "uninstalled"
+  appOnly = signal(true);
+  // only modules flagged as an application (on by default)
+  _slots = /* @__PURE__ */ new Map();
+  // slotId -> per-slot module/run/console state
+  slot(id = "main") {
+    if (!this._slots.has(id)) {
+      const rec = {
+        output: new LogBuffer(),
+        modules: signal([]),
+        loadedDb: signal(""),
+        erroredDb: signal(""),
+        // db whose last auto-load failed — don't auto-retry (hot loop)
+        loading: signal(false),
+        error: signal(""),
+        status: signal(""),
+        pending: signal(false),
+        // optimistic "run starting", until the "run" event lands
+        announced: null,
+        // run id we've seen running this session
+        finishedRun: null,
+        // run id we've finalized (once per run)
+        lastWs: null
+        // the workspace last loaded into this slot (for the post-run refresh)
+      };
+      rec.filtered = computed(() => this._filtered(rec));
+      this._slots.set(id, rec);
+    }
+    return this._slots.get(id);
+  }
+  runningFor(slotId) {
+    return this.currentRun(slotId)?.state === "running";
+  }
+  setup() {
+    useEffect(() => {
+      const slots = new Set(
+        this.store.runs().filter((d) => d.kind === "install" || d.kind === "upgrade").map((d) => d.server ?? "main")
+      );
+      for (const s of slots) this._onRun(s, this.currentRun(s));
+    });
+    this.server.onLog(({ server, line }) => {
+      if (server === "main" ? this.runActive("main") : this._slots.has(server) && this.runActive(server))
+        this.slot(server).output.append(line);
+    });
+  }
+  // the current/last install-or-upgrade run on a slot
+  currentRun(slotId = "main") {
+    const i = this.store.latestRunOfKind("install", slotId);
+    const u = this.store.latestRunOfKind("upgrade", slotId);
+    return [i, u].filter(Boolean).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null;
+  }
+  // a run is active on a slot — optimistic between clicking Install/Upgrade and the
+  // backend's first "run" event, then driven by the run's state
+  runActive(slotId = "main") {
+    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
+  }
+  // a workspace's repos as {id, path}: a worktree workspace's own checkout copies,
+  // else the main checkout paths of its checkouts — the addons-path used to list +
+  // install, so only its modules are ever shown
+  _reposFor(ws) {
+    if (ws.location === "worktree") {
+      return this.worktree.wtRepos(ws).map((r) => ({ id: r.repo, path: r.worktreePath }));
+    }
+    const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
+    return (ws.checkouts || []).map((c) => ({ id: c.repo, path: pathById[c.repo] })).filter((r) => r.path);
+  }
+  // load a workspace's module list (own db + repos) into its slot
+  async load(ws) {
+    if (!ws) return;
+    const slotId = slotFor(ws);
+    const s = this.slot(slotId);
+    const db = ws.db;
+    s.lastWs = ws;
+    if (!db) {
+      s.modules.set([]);
+      s.loadedDb.set("");
+      return;
+    }
+    s.loading.set(true);
+    s.error.set("");
+    s.erroredDb.set("");
+    try {
+      const data = await postJSON("/api/addons", { repos: this._reposFor(ws), db });
+      if (s.lastWs?.db !== db) return;
+      s.modules.set(data.modules);
+      s.loadedDb.set(db);
+    } catch (e) {
+      if (s.lastWs?.db !== db) return;
+      s.error.set(e.message);
+      s.erroredDb.set(db);
+    } finally {
+      s.loading.set(false);
+    }
+  }
+  _filtered(s) {
+    const q = this.filter().trim().toLowerCase();
+    const sf = this.stateFilter();
+    const appOnly = this.appOnly();
+    const matched = s.modules().filter((mod) => {
+      const installed = mod.state === "installed";
+      if (sf === "installed" && !installed) return false;
+      if (sf === "uninstalled" && installed) return false;
+      if (appOnly && !mod.application) return false;
+      return !q || mod.name.toLowerCase().includes(q) || mod.summary.toLowerCase().includes(q) || mod.category.toLowerCase().includes(q);
+    });
+    matched.sort(
+      (a, b) => (b.state === "installed") - (a.state === "installed") || a.name.localeCompare(b.name)
+    );
+    return { total: matched.length, shown: matched.slice(0, _AddonsPlugin.MAX_ROWS) };
+  }
+  // react to a slot's backend-minted install/upgrade Run moving running →
+  // done/failed. Resume-after is backend-owned; this drives the status + reloads
+  // module states when the run ends. Finalize once per run id per slot.
+  _onRun(slotId, run) {
+    if (!run) return;
+    const s = this.slot(slotId);
+    if (run.state === "running") {
+      s.pending.set(false);
+      s.announced = run.id;
+      s.status.set(`${run.kind === "upgrade" ? "upgrading" : "installing"}\u2026`);
+    } else if (s.finishedRun !== run.id) {
+      s.finishedRun = run.id;
+      if (s.announced !== run.id) return;
+      const stopped = run.returncode === null;
+      s.status.set(
+        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "done"
+      );
+      this.load(s.lastWs);
+    }
+  }
+  // install/upgrade a module on a workspace's slot
+  async run(op, name, ws) {
+    if (!ws) return;
+    const slotId = slotFor(ws);
+    const target = ws;
+    const db = ws.db;
+    if (!db) return;
+    const s = this.slot(slotId);
+    const verb = op === "upgrade" ? "Upgrade" : "Install";
+    const ok = await this.dialogs.open({
+      title: `${verb} "${name}" on ${db}?`,
+      okLabel: verb
+    });
+    if (!ok) return;
+    this.config.workspace(ws.id)?.touchActivity();
+    s.output.clear();
+    s.pending.set(true);
+    s.status.set(`${op === "upgrade" ? "upgrading" : "installing"} ${name}\u2026`);
+    this.eventLog.add(`${op === "upgrade" ? "upgrading" : "installing"} ${name} in ${db}`);
+    try {
+      await postJSON("/api/addons/run", {
+        workspace: target.id,
+        slot: slotId,
+        overrides: { [op]: name }
+      });
+    } catch (e) {
+      s.pending.set(false);
+      s.status.set(`failed to start: ${e.message}`);
+    }
+  }
+};
+
+// static/src/assets_screen/assets_plugin.js
+var AssetsPlugin = class extends Plugin {
+  static sequence = 6;
+  config = usePlugin(ConfigPlugin);
+  db = usePlugin(DatabasePlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  dialogs = usePlugin(DialogPlugin);
+  bundles = signal([]);
+  selectedDb = signal("");
+  loadedDb = signal("");
+  at = signal(0);
+  loading = signal(false);
+  generating = signal(false);
+  error = signal("");
+  // analysis of one bundle: { name, js:[[path,bytes]], css, xml } | null
+  bundleData = signal(null);
+  analyzing = signal(false);
+  analyzeError = signal("");
+  // disable actions while a load or a generation is in flight
+  busy() {
+    return this.loading() || this.generating();
+  }
+  // pick a database and (re)load its bundles; "" clears the list
+  selectDb(db) {
+    this.selectedDb.set(db);
+    if (db) this.load(true);
+    else {
+      this.bundles.set([]);
+      this.loadedDb.set("");
+    }
+  }
+  async load(force = false) {
+    const db = this.selectedDb();
+    if (!db) {
+      this.bundles.set([]);
+      this.loadedDb.set("");
+      return;
+    }
+    this.loading.set(true);
+    this.error.set("");
+    try {
+      const data = await postJSON("/api/assets", { db, refresh: force });
+      if (this.selectedDb() !== db) return;
+      this.bundles.set(data.bundles);
+      this.loadedDb.set(db);
+      this.at.set(Date.now());
+    } catch (e) {
+      if (this.selectedDb() === db) this.error.set(e.message);
+    } finally {
+      this.loading.set(false);
+    }
+  }
+  // force a pregeneration of the bundles (odoo-bin shell), then reload the list.
+  // The server builds the addons-path + venv prefix from its own config — just the
+  // db, plus an optional workspace so a worktree workspace's bundles are generated
+  // with ITS checkout's code (the Workspaces pane passes it).
+  async generate(ws = null) {
+    const db = this.selectedDb();
+    if (!db) return;
+    this.generating.set(true);
+    this.error.set("");
+    const eid = this.eventLog.begin(`generating asset bundles in ${db}\u2026`);
+    try {
+      await postJSON("/api/assets/generate", { db, ...ws ? { workspace: ws.id } : {} });
+      this.eventLog.finish(eid, "done");
+      await this.load(true);
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      this.error.set(e.message);
+      this.dialogs.open({
+        title: "Generate asset bundles failed",
+        message: e.message,
+        cls: "dialog-error",
+        okLabel: "OK",
+        cancelLabel: null
+      });
+    } finally {
+      this.generating.set(false);
+    }
+  }
+  // analyze a bundle's contents: ask the backend for the per-file minified-size
+  // breakdown (read from the stored bundle), and open the view. kind scopes it to the
+  // clicked asset — "js" → the .min.js (code + XML templates), "css" → the .min.css —
+  // so the total matches that attachment's row size instead of summing js+css.
+  async analyze(bundle, kind = "js") {
+    const db = this.selectedDb();
+    if (!db || !bundle) return;
+    this.analyzing.set(true);
+    this.analyzeError.set("");
+    this.bundleData.set({ name: bundle, kind, js: [], css: [], xml: [] });
+    try {
+      const filestore = this.config.config.filestore || "";
+      const data = await postJSON("/api/assets/breakdown", { db, bundle, filestore, kind });
+      this.bundleData.set({ name: bundle, kind, js: data.js, css: data.css, xml: data.xml });
+    } catch (e) {
+      this.analyzeError.set(e.message);
+    } finally {
+      this.analyzing.set(false);
+    }
+  }
+  closeAnalysis() {
+    this.bundleData.set(null);
+    this.analyzeError.set("");
+  }
+};
+
+// static/src/assets_screen/analysis.js
+var BundleNode = class extends Component {
+  static template = xml`
+    <div class="bnode">
+      <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
+        <span class="bnode-caret" t-out="this.props.node.children.length ? (this.open() ? '▾' : '▸') : ''"/>
+        <span class="bnode-name" t-out="this.props.node.name"/>
+        <span class="bnode-size" t-out="this.fmt(this.props.node.size)"/>
+      </div>
+      <t t-if="this.open()">
+        <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
+      </t>
+    </div>`;
+  props = useProps({ node: t.any(), depth: t.any() });
+  open = signal(false);
+  setup() {
+    if (this.props.depth === 0) this.open.set(true);
+  }
+  toggle() {
+    if (this.props.node.children.length) this.open.set(!this.open());
+  }
+  fmt(n) {
+    return formatBytes(n);
+  }
+};
+BundleNode.components = { BundleNode };
+function bundleBase(name) {
+  return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
+}
+var AssetsAnalysis = class extends Component {
+  static components = { BundleNode, SearchBox };
+  static template = xml`
+    <div class="assets-analysis">
+      <div class="assets-analysis-bar">
+        <button class="pbtn" t-on-click="() => this.assets.closeAnalysis()">← Back</button>
+        <span class="assets-analysis-title" t-out="this.analysisTitle"/>
+        <span class="meta" t-out="this.analysisTotal"/>
+        <div class="assets-analysis-views">
+          <SearchBox value="this.treeSearch"/>
+          <button class="pbtn" t-att-class="{active: this.view() === 'tree'}" t-on-click="() => this.view.set('tree')">Aggregate</button>
+          <button class="pbtn" t-att-class="{active: this.view() === 'flat'}" t-on-click="() => this.view.set('flat')">Flat</button>
+        </div>
+      </div>
+      <div class="assets-tree">
+        <div t-if="this.assets.analyzing()" class="dim br-empty">Analyzing…</div>
+        <div t-elif="this.assets.analyzeError()" class="dim br-empty" t-out="'Analysis failed: ' + this.assets.analyzeError()"/>
+        <div t-elif="!this.flat.length" class="dim br-empty">No files in this bundle.</div>
+        <div t-else="" class="assets-tree-inner">
+          <t t-if="this.view() === 'tree'">
+            <BundleNode t-foreach="this.tree" t-as="n" t-key="n.name" node="n" depth="0"/>
+          </t>
+          <t t-else="">
+            <div t-foreach="this.flat" t-as="f" t-key="f.path" class="bflat-row">
+              <span class="bnode-name" t-out="f.path"/>
+              <span class="bnode-size" t-out="this.fmtSize(f.bytes)"/>
+            </div>
+          </t>
+        </div>
+      </div>
+    </div>`;
+  assets = usePlugin(AssetsPlugin);
+  view = signal("tree");
+  // "tree" (aggregate) | "flat"
+  treeSearch = signal("");
+  // filter files within the analysis
+  // the analyzed attachment's name, e.g. "web.assets_web.min.js" — the .min asset
+  // the breakdown was scoped to, so it reads as the row that was clicked
+  get analysisTitle() {
+    const d = this.assets.bundleData();
+    if (!d) return "";
+    return `${d.name}.min.${d.kind === "css" ? "css" : "js"}`;
+  }
+  // total minified size across the analyzed bundle's js + css + xml
+  get analysisTotal() {
+    const d = this.assets.bundleData();
+    if (!d) return "";
+    const all = [...d.js || [], ...d.css || [], ...d.xml || []];
+    return `${formatBytes(all.reduce((s, [, n]) => s + n, 0))} minified`;
+  }
+  // the analyzed bundle's files as a flat list ({path, bytes}), search-filtered,
+  // largest first. Same path can occur more than once (e.g. a template and its
+  // registerTemplateExtension share their base template's name) — merge those into
+  // one row (sizes summed), matching how the tree view aggregates by path already.
+  get flat() {
+    const d = this.assets.bundleData();
+    if (!d) return [];
+    const q = this.treeSearch().trim().toLowerCase();
+    const byPath = /* @__PURE__ */ new Map();
+    for (const [path, bytes] of [...d.js || [], ...d.css || [], ...d.xml || []]) {
+      byPath.set(path, (byPath.get(path) || 0) + bytes);
+    }
+    return [...byPath.entries()].map(([path, bytes]) => ({ path, bytes })).filter((f) => !q || f.path.toLowerCase().includes(q)).sort((a, b) => b.bytes - a.bytes);
+  }
+  // the analyzed bundle aggregated into a tree: top level is js/css/xml, then each
+  // path segment, sizes summed up the tree; children sorted largest first
+  get tree() {
+    const d = this.assets.bundleData();
+    if (!d) return [];
+    const q = this.treeSearch().trim().toLowerCase();
+    const top = [];
+    for (const [label, files] of [
+      ["js", d.js],
+      ["css", d.css],
+      ["xml", d.xml]
+    ]) {
+      const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
+      if (!matched.length) continue;
+      const root = { name: label, size: 0, children: {} };
+      for (const [path, bytes] of matched) {
+        root.size += bytes;
+        let node = root;
+        for (const part of path.split("/").filter(Boolean)) {
+          node.children[part] = node.children[part] || { name: part, size: 0, children: {} };
+          node = node.children[part];
+          node.size += bytes;
+        }
+      }
+      top.push(root);
+    }
+    const finalize = (n) => ({
+      name: n.name,
+      size: n.size,
+      children: Object.values(n.children).map(finalize).sort((a, b) => b.size - a.size)
+    });
+    return top.map(finalize).sort((a, b) => b.size - a.size);
+  }
+  fmtSize(n) {
+    return formatBytes(n || 0);
+  }
+};
+
+// static/src/workspaces_screen/panes.js
+var TestsPane = class extends Component {
+  static components = { LogConsole };
+  static template = xml`
+    <div class="ws-run-pane">
+      <form class="test-form" t-on-submit.prevent="() => this.run()">
+        <select class="preset-select" t-on-change="(ev) => this.onPreset(ev)" title="presets and recent test tags">
+          <option value="" selected="selected" hidden="hidden">Presets</option>
+          <optgroup t-if="this.presets.length" label="Presets">
+            <option t-foreach="this.presets" t-as="p" t-key="p_index" t-att-value="p.tags" t-out="p.tags"/>
+          </optgroup>
+          <optgroup t-if="this.tests.history().length" label="Recent">
+            <option t-foreach="this.tests.history()" t-as="h" t-key="h_index" t-att-value="h" t-out="h"/>
+          </optgroup>
+        </select>
+        <input type="text" t-att-value="this.tags()" t-on-input="ev => this.tags.set(ev.target.value)" autocomplete="off"
+               placeholder="--test-tags, e.g. my_module, :TestClass, /module_tour"/>
+        <button t-if="this.slotId === 'main'" type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
+                title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
+                t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
+        <button type="submit" t-att-disabled="this.tests.runActive(this.slotId) or !this.tags().trim()"><span class="play"/>Run</button>
+        <button type="button" class="stop" t-att-disabled="!this.tests.runningFor(this.slotId)" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
+        <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
+        <div class="log-controls">
+          <label class="toggle" t-att-class="{on: this.slot.output.autoScroll()}" t-on-click="() => this.toggleAuto()"><span class="switch"/>Autoscroll</label>
+          <button type="button" class="tool-btn" t-on-click="() => this.slot.output.clear()"><t t-out="this.clearIcon"/>Clear</button>
+        </div>
+      </form>
+      <div t-if="!this.slot.output.count() and !this.tests.runActive(this.slotId)" class="ws-empty-note dim">
+        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run.
+        The run uses this workspace's database and checkout.
+      </div>
+      <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
+    </div>`;
+  props = useProps({ ws: t.any() });
+  tests = usePlugin(TestsPlugin);
+  server = usePlugin(ServerPlugin);
+  config = usePlugin(ConfigPlugin);
+  wt = usePlugin(WorkspacePlugin);
+  clearIcon = m(ICONS.clear);
+  copyIcon = m(ICONS.copy);
+  tags = signal("");
+  // copy a `goo --test-tags …` command for the current tags (single-quoted so the
+  // shell doesn't mangle globs). Main slot only — the CLI runs against the ACTIVE
+  // workspace, which is wrong for a worktree workspace's pane.
+  copyCommand() {
+    const tags = this.tags().trim();
+    if (!tags) return;
+    navigator.clipboard?.writeText(`goo --test-tags '${tags.replace(/'/g, "'\\''")}'`);
+  }
+  get slotId() {
+    return slotFor(this.props.ws);
+  }
+  get slot() {
+    return this.tests.slot(this.slotId);
+  }
+  get presets() {
+    return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
+  }
+  get badge() {
+    const s = this.slot.status();
+    if (s === "passed") return { label: "success", cls: "ok" };
+    if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
+    if (s === "running\u2026" || s === "starting\u2026") return { label: "running", cls: "run" };
+    return null;
+  }
+  run() {
+    this.tests.run(this.tags(), this.props.ws);
+  }
+  // stopping the slot's server kills the run; the backend finalizes it and
+  // resumes the server the run had interrupted
+  stop() {
+    if (this.slotId === "main") this.server.stop();
+    else this.wt.stopServer(this.props.ws);
+  }
+  onPreset(ev) {
+    const v = ev.target.value;
+    ev.target.value = "";
+    if (v) this.tags.set(v);
+  }
+  toggleAuto() {
+    const b = this.slot.output;
+    b.autoScroll.set(!b.autoScroll());
+    if (b.autoScroll()) b.toBottom();
+  }
+};
+var AddonsPane = class extends Component {
+  static components = { LogConsole, SearchBox };
+  static template = xml`
+    <div class="ws-run-pane">
+      <div class="ws-pane-toolbar">
+        <SearchBox value="this.addons.filter"/>
+        <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'installed'}" t-on-click="() => this.toggleState('installed')">Installed</button>
+        <button class="pbtn" t-att-class="{active: this.addons.stateFilter() === 'uninstalled'}" t-on-click="() => this.toggleState('uninstalled')">Uninstalled</button>
+        <button class="pbtn" t-att-class="{active: this.addons.appOnly()}" t-on-click="() => this.addons.appOnly.set(!this.addons.appOnly())">Apps</button>
+        <button class="pbtn" title="reload the module list" t-on-click="() => this.addons.load(this.props.ws)"><span class="restart"/></button>
+        <span t-if="this.slot.status()" class="dim ws-sec-meta" t-out="this.slot.status()"/>
+        <span class="dim ws-sec-meta ws-pane-count" t-out="this.count"/>
+      </div>
+      <div t-if="this.slot.loading()" class="dim ws-empty-note">Loading modules…</div>
+      <div t-elif="this.slot.error()" class="ws-empty-note form-error" t-out="this.slot.error()"/>
+      <div t-elif="!this.view.total" class="dim ws-empty-note">No modules match — check the filters, or the database may not exist yet.</div>
+      <div t-else="" class="ws-addons-scroll">
+        <table class="br-table brg-flat">
+          <thead>
+            <tr><th>Module</th><th>Summary</th><th>Repository</th><th>State</th><th/></tr>
+          </thead>
+          <tbody>
+            <tr t-foreach="this.view.shown" t-as="mod" t-key="mod.name">
+              <td class="addon-name" t-att-title="mod.summary" t-out="mod.name"/>
+              <td class="dim"><div class="br-ellip" t-att-title="mod.summary" t-out="mod.summary || '—'"/></td>
+              <td class="dim" t-out="mod.repo"/>
+              <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
+              <td>
+                <div class="br-act">
+                  <button class="addon-btn" t-att-disabled="this.addons.runActive(this.slotId) or mod.installable === false"
+                          t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.props.ws)"
+                          t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div t-if="this.view.total > this.view.shown.length" class="dim addons-more"
+             t-out="'Showing ' + this.view.shown.length + ' of ' + this.view.total + ' — refine the filter to see more.'"/>
+      </div>
+      <LogConsole t-if="this.addons.runActive(this.slotId) or this.addons.runningFor(this.slotId)"
+                  t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
+    </div>`;
+  props = useProps({ ws: t.any() });
+  addons = usePlugin(AddonsPlugin);
+  setup() {
+    useEffect(() => {
+      const db = this.props.ws.db;
+      if (db && db !== this.slot.loadedDb() && db !== this.slot.erroredDb() && !this.slot.loading())
+        this.addons.load(this.props.ws);
+    });
+  }
+  get slotId() {
+    return slotFor(this.props.ws);
+  }
+  get slot() {
+    return this.addons.slot(this.slotId);
+  }
+  get view() {
+    return this.slot.filtered();
+  }
+  get count() {
+    const n = this.view.total;
+    return `${n} module${n === 1 ? "" : "s"}`;
+  }
+  toggleState(value) {
+    this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
+  }
+  stateClass(mod) {
+    return (mod.state || "none").replace(/\s+/g, "-");
+  }
+};
+var AssetsPane = class extends Component {
+  static components = { AssetsAnalysis, SearchBox };
+  static template = xml`
+    <div class="ws-run-pane">
+      <AssetsAnalysis t-if="this.assets.bundleData()"/>
+      <t t-else="">
+        <div class="ws-pane-toolbar">
+          <span class="dim ws-sec-meta">db <b t-out="this.props.ws.db"/></span>
+          <SearchBox value="this.search"/>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showJs()" t-on-change="() => this.showJs.set(!this.showJs())"/>js</label>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
+          <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
+          <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
+          <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
+                  t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
+          <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
+        </div>
+        <div t-if="this.assets.loading()" class="dim ws-empty-note">Loading bundles…</div>
+        <div t-elif="this.assets.error()" class="ws-empty-note form-error" t-out="this.assets.error()"/>
+        <div t-elif="this.mismatch" class="dim ws-empty-note">Loading this workspace's bundles…</div>
+        <div t-elif="!this.bundles.length" class="dim ws-empty-note">No bundle matches — check the filters, or Generate builds them all (the database may not exist yet).</div>
+        <div t-else="" class="ws-addons-scroll">
+          <table class="br-table brg-flat">
+            <thead>
+              <tr>
+                <th class="br-sort" t-on-click="() => this.sort('name')">Bundle<span class="br-arrow" t-out="this.sortArrow('name')"/></th>
+                <th class="br-sort ws-num" t-on-click="() => this.sort('size')">Size<span class="br-arrow" t-out="this.sortArrow('size')"/></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr t-foreach="this.bundles" t-as="b" t-key="b.id">
+                <td class="addon-name">
+                  <button class="assets-name" t-att-title="'analyze ' + this.base(b.name) + '.min bundle'" t-on-click="() => this.analyze(b)" t-out="b.name"/>
+                  <button class="assets-copy" t-att-title="'copy ' + b.url" t-on-click="() => this.copyUrl(b)" t-out="this.copiedId() === b.id ? 'copied' : 'copy url'"/>
+                </td>
+                <td class="ws-num" t-out="this.size(b)"/>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </t>
+    </div>`;
+  props = useProps({ ws: t.any() });
+  assets = usePlugin(AssetsPlugin);
+  config = usePlugin(ConfigPlugin);
+  search = signal("");
+  showJs = signal(true);
+  // include .js bundles
+  showCss = signal(true);
+  // include .css bundles
+  showOther = signal(true);
+  // include non-js/non-css assets (fonts, source maps, xml…)
+  sortKey = signal("size");
+  // "name" | "size"
+  sortDir = signal("desc");
+  // "asc" | "desc" — default: largest bundle first
+  copiedId = signal(null);
+  // id of the row whose url was just copied (transient label)
+  setup() {
+    useEffect(() => {
+      const db = this.props.ws.db;
+      if (db)
+        untrack(() => {
+          if (this.assets.selectedDb() === db) return;
+          this.assets.closeAnalysis();
+          this.assets.selectDb(db);
+        });
+    });
+  }
+  // only pass the workspace to generate() when its checkout differs from the main
+  // one (a worktree) — the backend then builds the shell cmd from its copies
+  get wsForGenerate() {
+    return this.props.ws.location === "worktree" ? this.props.ws : null;
+  }
+  generate() {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
+    return this.assets.generate(this.wsForGenerate);
+  }
+  get mismatch() {
+    return this.assets.loadedDb() !== this.props.ws.db;
+  }
+  // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)
+  // and everything that isn't plain js/css (fonts, xml, …) count as "other".
+  kind(b) {
+    if (/\.map$/i.test(b.name)) return "other";
+    if (/\.css$/i.test(b.name)) return "css";
+    if (/\.js$/i.test(b.name)) return "js";
+    return "other";
+  }
+  // search- and kind-filtered bundles, sorted by the active column
+  get bundles() {
+    const q = this.search().trim().toLowerCase();
+    const showJs = this.showJs();
+    const showCss = this.showCss();
+    const showOther = this.showOther();
+    const dir = this.sortDir() === "asc" ? 1 : -1;
+    const bySize = this.sortKey() === "size";
+    return this.assets.bundles().filter((b) => {
+      const k = this.kind(b);
+      if (k === "js" && !showJs) return false;
+      if (k === "css" && !showCss) return false;
+      if (k === "other" && !showOther) return false;
+      return !q || b.name.toLowerCase().includes(q) || b.url.toLowerCase().includes(q);
+    }).sort(
+      (a, b) => bySize ? dir * ((a.size || 0) - (b.size || 0)) : dir * a.name.localeCompare(b.name)
+    );
+  }
+  // toggle direction when re-clicking the active column, else switch column with a
+  // sensible default (names ascending A→Z, sizes descending largest-first)
+  sort(key) {
+    if (this.sortKey() === key) {
+      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
+    } else {
+      this.sortKey.set(key);
+      this.sortDir.set(key === "size" ? "desc" : "asc");
+    }
+  }
+  // " ▲" / " ▼" for the active sort column, else ""
+  sortArrow(key) {
+    if (this.sortKey() !== key) return "";
+    return this.sortDir() === "asc" ? " \u25B2" : " \u25BC";
+  }
+  base(name) {
+    return bundleBase(name);
+  }
+  // analyze the bundle this row belongs to (its per-file size breakdown), scoped to
+  // the clicked attachment's kind so the total matches its row size: any .css/.css.map
+  // → css, everything else (.min.js, .js.map, …) → js.
+  analyze(b) {
+    this.config.workspace(this.props.ws.id)?.touchActivity();
+    const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
+    this.assets.analyze(bundleBase(b.name), kind);
+  }
+  // copy a bundle's /web/assets/… path to the clipboard, flipping its link to
+  // "copied" for a moment
+  copyUrl(b) {
+    navigator.clipboard?.writeText(b.url);
+    this.copiedId.set(b.id);
+    setTimeout(() => {
+      if (this.copiedId() === b.id) this.copiedId.set(null);
+    }, 1400);
+  }
+  get meta() {
+    const n = this.bundles.length;
+    return this.mismatch ? "" : `${n} bundle${n === 1 ? "" : "s"}`;
+  }
+  size(b) {
+    return formatBytes(b.size || 0);
+  }
+};
 var TerminalPane = class extends Component {
   static template = xml`<div class="ws-term" t-ref="this.host"/>`;
   props = useProps({ url: t.string() });
@@ -11475,6 +11477,8 @@ var TerminalPane = class extends Component {
     );
   }
 };
+
+// static/src/workspaces_screen/workspaces.js
 var WORKSPACE_ORDER_KEY = "goo-workspace-order";
 var WORKSPACE_ORDER_OPTIONS = [
   { value: "config", label: "Configured order", short: "Configured" },

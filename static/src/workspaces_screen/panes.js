@@ -13,6 +13,7 @@ import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { AssetsAnalysis, bundleBase } from "../assets_screen/analysis.js";
 import { ICONS, LogConsole, SearchBox, m } from "../core/common.js";
 import { formatBytes } from "../core/utils.js";
+import { attachXterm } from "../core/terminal.js";
 
 // ─────────────────────────── Tests pane ───────────────────────────
 
@@ -369,5 +370,37 @@ export class AssetsPane extends Component {
 
   size(b) {
     return formatBytes(b.size || 0);
+  }
+}
+// ─────────────────────────── Terminal pane ───────────────────────────
+
+// An xterm attached to a workspace server's PTY (Phase-2 backend:
+// /api/terminal?workspace=<id>). The parent gates the URL — it only renders this
+// component when the target PTY actually belongs to the selected workspace.
+
+export class TerminalPane extends Component {
+  static template = xml`<div class="ws-term" t-ref="this.host"/>`;
+
+  props = useProps({ url: t.string() });
+  host = signal.ref(HTMLElement);
+  _dispose = null;
+
+  setup() {
+    useEffect(
+      () => {
+        const el = this.host();
+        if (!el) return;
+        let live = true;
+        attachXterm(el, this.props.url, true).then((dispose) =>
+          live ? (this._dispose = dispose) : dispose(),
+        );
+        return () => {
+          live = false;
+          this._dispose?.();
+          this._dispose = null;
+        };
+      },
+      () => [this.props.url],
+    );
   }
 }
