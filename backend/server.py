@@ -437,16 +437,11 @@ def _filestore(body):
     return fs if isinstance(fs, str) and fs.strip() else None
 
 
-def build_odoo_cmd(config):
-    """Build the odoo-bin shell command from a client config.
-
-    Returns (cmd, db, is_new_db). Raises ValueError on invalid config.
-    """
-    start = config.get("start") or {}
-    db = start.get("db")
-    if not db:
-        raise ValueError("no database configured (start.db)")
-
+def _odoo_cmd_base(config, addons_repo_ids=None):
+    """The invocation prefix build_odoo_cmd and build_shell_cmd share: resolve the
+    repo map + community checkout, assemble the addons path (over `addons_repo_ids`,
+    or every configured repo when None) and the venv/rust/odoo-bin launch prefix.
+    Returns (cmd_prefix, addons_path). Raises ValueError on invalid config."""
     repo_map = {
         r["id"]: {**r, "path": os.path.expanduser(r["path"])}
         for r in config.get("repos", [])
@@ -457,8 +452,10 @@ def build_odoo_cmd(config):
         raise ValueError("no 'community' repo defined in repos")
     community_path = community["path"]
 
+    if addons_repo_ids is None:
+        addons_repo_ids = list(repo_map)
     addons_parts = []
-    for repo_id in start.get("repos", []):
+    for repo_id in addons_repo_ids:
         repo = repo_map.get(repo_id)
         if not repo:
             raise ValueError(f"unknown repo '{repo_id}' in start.repos")
@@ -471,21 +468,32 @@ def build_odoo_cmd(config):
     addons_parts.append(ADDONS_DIR)  # goo's own addons (autologin, auto-installed)
     addons_path = ",".join(addons_parts)
 
-    db_user = config.get("db_user", "odoo")
-    db_password = config.get("db_password", "odoo")
-    venv_activate = config.get("venv_activate", "")
     # the odoo-bin executable; goo cd's into the community checkout and appends the
     # dynamic args. Defaults to that checkout's own odoo-bin, so a worktree start
     # config — which passes the worktree's community path — automatically runs the
     # worktree's odoo-bin without any extra wiring.
     server_path = config.get("server_path") or os.path.join(community_path, "odoo-bin")
-
     parts = []
-    if venv_activate:
-        parts.append(venv_activate)
+    if config.get("venv_activate"):
+        parts.append(config["venv_activate"])
     rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
     parts.append(f"cd {community_path} && {rust}{server_path}")
-    cmd = " && ".join(parts)
+    return " && ".join(parts), addons_path
+
+
+def build_odoo_cmd(config):
+    """Build the odoo-bin shell command from a client config.
+
+    Returns (cmd, db, is_new_db). Raises ValueError on invalid config.
+    """
+    start = config.get("start") or {}
+    db = start.get("db")
+    if not db:
+        raise ValueError("no database configured (start.db)")
+
+    cmd, addons_path = _odoo_cmd_base(config, start.get("repos", []))
+    db_user = config.get("db_user", "odoo")
+    db_password = config.get("db_password", "odoo")
     without_demo = "false" if start.get("demo_data", True) else "all"
     cmd += (
         f" -r {db_user} -w {db_password} -d {db} "
@@ -576,33 +584,9 @@ def build_shell_cmd(config, db):
     is installed in <db> can load. Raises ValueError on invalid config/db name."""
     if not services._valid_db_name(db):
         raise ValueError("invalid database name")
-    repo_map = {
-        r["id"]: {**r, "path": os.path.expanduser(r["path"])}
-        for r in config.get("repos", [])
-        if isinstance(r, dict) and "id" in r and "path" in r
-    }
-    community = repo_map.get("community")
-    if not community:
-        raise ValueError("no 'community' repo defined in repos")
-    community_path = community["path"]
-    addons_parts = [
-        "addons" if rid == "community" else os.path.relpath(repo["path"], community_path)
-        for rid, repo in repo_map.items()
-    ]
-    addons_parts.append(ADDONS_DIR)  # goo's own addons
-    addons_path = ",".join(addons_parts)
-
+    cmd, addons_path = _odoo_cmd_base(config)  # ALL repos
     db_user = config.get("db_user", "odoo")
     db_password = config.get("db_password", "odoo")
-    venv_activate = config.get("venv_activate", "")
-    server_path = config.get("server_path") or os.path.join(community_path, "odoo-bin")
-
-    parts = []
-    if venv_activate:
-        parts.append(venv_activate)
-    rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
-    parts.append(f"cd {community_path} && {rust}{server_path}")
-    cmd = " && ".join(parts)
     cmd += (
         f" shell -d {db} --no-http --no-database-list"
         f" -r {db_user} -w {db_password} --addons-path {addons_path} --log-level=warn"
