@@ -24,7 +24,7 @@ export class CodePlugin extends Plugin {
   dialogs = usePlugin(DialogPlugin);
   // observed state lives in the store, normalized by identity; these expose it in the
   // shapes the components already read — array views over the keyed maps, and the
-  // shared runbot/mergebot signals (the same maps the Reviews screen reads).
+  // shared runbot/mergebot signals.
   branchRepos = computed(() => this.store.repoStatusList());
   prRepos = computed(() => this.store.prReposList());
   mergebot = this.store.mergebot; // "github#number" -> mergebot state (one shared copy)
@@ -456,7 +456,7 @@ export class CodePlugin extends Plugin {
 
   // GitHub / mergebot URL helpers. The logic lives on the Repository model (via the
   // shared repoUrls builders); these resolve the repo by slug and delegate, falling
-  // back to the bare-slug builder for a reviewed PR from a repo that isn't in config.
+  // back to the bare-slug builder for a PR from a repo that isn't in config.
   // `repoId` resolves the push remote's actual fork (see pushGithubByRepo) — without
   // it (or before that repo's first branches() read completes) these fall back to
   // repoUrls' own hardcoded-org guess.

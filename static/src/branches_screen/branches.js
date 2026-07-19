@@ -456,11 +456,3 @@ export class BranchesScreen extends Component {
     return p.draft && p.state === "open" ? "draft" : p.state;
   }
 }
-
-// ─────────────────────────── PRs screen ───────────────────────────
-
-// One PR tracker with a role toggle: "Mine" (gh pr list --author @me, via
-// CodePlugin) and "Reviewing" (PRs I commented on but didn't author, via
-// ReviewPlugin). Both fold into one normalized row shape and render the same
-// grouped-by-branch table (mergebot column, star favorites). Mine adds the
-// Close-PR kebab + batch close; Reviewing is read-only.

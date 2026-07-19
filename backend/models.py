@@ -39,9 +39,8 @@ class CiRollup:
 @dataclass
 class PullRequest:
     """A pull request in one unified shape, whether authored by the user
-    (`relation="authored"`, from `gh pr list`), reviewed by them
-    (`relation="reviewed"`, from the global GitHub search), or resolved by head
-    ref (`relation="head"`, a `gh pr list --head` lookup that surfaces PRs the user
+    (`relation="authored"`, from `gh pr list`) or resolved by head ref
+    (`relation="head"`, a `gh pr list --head` lookup that surfaces PRs the user
     didn't author, e.g. forward ports). Identity is `(github, number)`; `branch`
     is the head ref (the join to a local branch)."""
 
@@ -51,9 +50,9 @@ class PullRequest:
     url: str
     state: str  # open | closed | merged (lowercased at the source)
     branch: str  # head ref name — the join to a local Branch
-    relation: str  # authored | reviewed
+    relation: str  # authored | head
     draft: bool = False
-    created_at: str = ""  # iso; authored PRs only (reviewed carry no created date)
+    created_at: str = ""  # iso; authored PRs only
     updated_at: str = ""  # iso
     ci: CiRollup | None = None  # authored PRs only (from the status rollup)
 

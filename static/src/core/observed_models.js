@@ -2,8 +2,8 @@
 // (git branches, GitHub PRs, runbot, mergebot) the backend fetches + caches. Second
 // state conversion of the ORM rewrite: StorePlugin holds these as records instead of
 // plain Maps, but keeps its accessors (repoStatusList / prReposList / mergebot /
-// mbDetails / runbot) and the step-4 merge semantics, so CodePlugin and ReviewPlugin
-// are unchanged. Nested collections (a repo's branches, a repo's PRs) are json fields
+// mbDetails / runbot) and the step-4 merge semantics, so CodePlugin is unchanged.
+// Nested collections (a repo's branches, a repo's PRs) are json fields
 // here for exact-shape fidelity + zero regression risk; promoting Branch / PullRequest
 // to their own models (so branchGroups becomes a computed over records) rides the
 // later generic-components pass.

@@ -294,9 +294,6 @@ export const SCREENS = {
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   prs: PrsScreen,
-  // back-compat: old #reviews bookmarks render the merged PRs screen, which opens
-  // on its Reviewing segment (PrsScreen seeds its mode from the route)
-  reviews: PrsScreen,
   todo: TodoScreen,
   databases: DatabasesScreen,
   nightly: NightlyScreen,

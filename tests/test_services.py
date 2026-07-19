@@ -4,7 +4,6 @@ exercised against a FakeIO, so there's no real subprocess, network, or sleep.
 Run from the repo root: `python3 -m unittest discover`
 """
 
-import json
 import os
 import pathlib
 import re
@@ -790,67 +789,6 @@ class GitHubServiceTest(unittest.TestCase):
         svc.prs_for_branches(pairs)
         svc.prs_for_branches(pairs)  # served from cache — still one gh call
         self.assertEqual(len(io.run_calls), 1)
-
-    def test_reviewed_maps_search_items(self):
-        payload = json.dumps(
-            {
-                "data": {
-                    "search": {
-                        "issueCount": 2,
-                        "nodes": [
-                            {
-                                "number": 5,
-                                "title": "merged one",
-                                "url": "https://github.com/odoo/odoo/pull/5",
-                                "state": "MERGED",
-                                "isDraft": False,
-                                "updatedAt": "2026-06-24T00:00:00Z",
-                                "headRefName": "master-fix-abc",
-                                "repository": {"nameWithOwner": "odoo/odoo"},
-                            },
-                            {
-                                "number": 7,
-                                "title": "open draft",
-                                "url": "https://github.com/odoo/enterprise/pull/7",
-                                "state": "OPEN",
-                                "isDraft": True,
-                                "updatedAt": "2026-06-23T00:00:00Z",
-                                "headRefName": "saas-1.0-feat",
-                                "repository": {"nameWithOwner": "odoo/enterprise"},
-                            },
-                        ],
-                        "pageInfo": {"hasNextPage": False, "endCursor": "c1"},
-                    }
-                }
-            }
-        )
-        io = FakeIO(run_result=completed(stdout=payload))
-        svc = services.GitHubService(io, TTLCache(ttl=0))
-        result = svc.reviewed(days=14)
-        prs = result["prs"]
-        self.assertEqual(len(prs), 2)
-        self.assertEqual(prs[0]["github"], "odoo/odoo")  # nameWithOwner → github (identity)
-        self.assertEqual(prs[0]["relation"], "reviewed")
-        self.assertEqual(prs[0]["state"], "merged")  # MERGED → "merged"
-        self.assertEqual(prs[0]["url"], "https://github.com/odoo/odoo/pull/5")
-        self.assertEqual(prs[0]["branch"], "master-fix-abc")
-        self.assertEqual(prs[1]["github"], "odoo/enterprise")
-        self.assertEqual(prs[1]["state"], "open")
-        self.assertTrue(prs[1]["draft"])
-        self.assertEqual(prs[1]["branch"], "saas-1.0-feat")
-        self.assertFalse(result["capped"])  # issueCount == fetched
-        # one global GraphQL search: commented on but not authored by me
-        joined = " ".join(str(c) for c in io.run_calls[0])
-        self.assertIn("graphql", joined)
-        self.assertIn("commenter:@me", joined)
-        self.assertIn("-author:@me", joined)
-
-    def test_reviewed_reports_gh_error(self):
-        io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))
-        svc = services.GitHubService(io, TTLCache(ttl=0))
-        result = svc.reviewed()
-        self.assertEqual(result["error"], "gh: not logged in")
-        self.assertEqual(result["prs"], [])
 
     def test_close_pr_invalidates_cache(self):
         cache = TTLCache(ttl=600)

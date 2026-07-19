@@ -5,8 +5,8 @@
 //   observed — read-only snapshots of external systems (git branches, GitHub PRs,
 //     runbot, mergebot) the backend fetches + caches. Writers preserve the step-4
 //     rule: latest fetchedAt wins per id; a full/authoritative fetch drops ids that
-//     vanished from its scope. Accessors rebuild the Map-shaped views CodePlugin/
-//     ReviewPlugin read (one mergebot map both screens share).
+//     vanished from its scope. Accessors rebuild the Map-shaped views CodePlugin
+//     reads (one shared mergebot map).
 //   runtime — live odoo processes/runs the backend owns and mirrors over SSE:
 //     OdooServer ("main" | target id) + Run records, each a `data` json snapshot.
 //     ServerPlugin/WorkspacePlugin/Tests/Addons are action layers; `workspaceView` is the
@@ -25,7 +25,7 @@ export class StorePlugin extends Plugin {
   // MergebotStatus / RunbotStatus) and runtime (OdooServer / Run)
   orm = new ORM();
 
-  // in-flight keys, shared across the Code + Reviews screens so they never double-fetch
+  // in-flight keys, shared across screens so they never double-fetch
   mbPending = new Set();
   rbPending = new Set();
 
@@ -52,7 +52,7 @@ export class StorePlugin extends Plugin {
     })),
   );
 
-  // one shared mergebot map both the Code and Reviews screens read (aliased there)
+  // one shared mergebot map every screen reads (aliased on CodePlugin)
   mergebot = computed(() =>
     Object.fromEntries(this.orm.records(MergebotStatus).map((m) => [m.id, m.state()])),
   );

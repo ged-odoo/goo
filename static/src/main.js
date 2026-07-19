@@ -13,7 +13,6 @@ import { CodePlugin } from "./core/code_plugin.js";
 import { TestsPlugin } from "./core/tests_plugin.js";
 import { AddonsPlugin } from "./addons_screen/addons_plugin.js";
 import { AssetsPlugin } from "./assets_screen/assets_plugin.js";
-import { ReviewPlugin } from "./core/review_plugin.js";
 import { DialogPlugin } from "./core/dialog_plugin.js";
 import { UpdatePlugin } from "./core/update_plugin.js";
 import { WorkspacePlugin } from "./core/workspace_plugin.js";
@@ -32,7 +31,6 @@ const PLUGINS = [
   TestsPlugin,
   AddonsPlugin,
   AssetsPlugin,
-  ReviewPlugin,
   TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,

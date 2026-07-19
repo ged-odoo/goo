@@ -67,7 +67,7 @@ const SETTINGS_BOOLS = [
 const SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories"];
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
 const STATE_CHARS = ["active_workspace", "claude_model"];
-const STATE_JSON = ["test_history", "reviews_favorites", "reviews_merged", "reviews_no_mergebot"];
+const STATE_JSON = ["test_history"];
 
 export class Settings extends Model {
   static id = "settings"; // singleton
@@ -142,8 +142,8 @@ export class Repository extends Model {
 
 // The pure GitHub/mergebot URL builders (keyed by slug). The Repository methods above
 // are the model-facing API; these back them and are exported so CodePlugin can build a
-// URL for a PR whose repo isn't in config (a reviewed PR from an unfavorited repo has no
-// Repository record). One source of truth, callable with a record or a bare slug.
+// URL for a PR whose repo isn't in config (e.g. a forward port in an unfavorited repo
+// has no Repository record). One source of truth, callable with a record or a bare slug.
 //
 // `pushSlug` ("owner/repo") is the push remote's actual resolved fork, from live git
 // state (a repo's fork can live under a different owner — and even a differently-named
@@ -344,9 +344,6 @@ export class AppState extends Model {
   active_workspace = fields.char();
   claude_model = fields.char();
   test_history = fields.json();
-  reviews_favorites = fields.json();
-  reviews_merged = fields.json();
-  reviews_no_mergebot = fields.json();
 }
 
 export const CONFIG_MODELS = [Settings, Repository, Workspace, Template, Checkout, AppState];

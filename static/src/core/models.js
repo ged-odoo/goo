@@ -8,9 +8,9 @@ export const prKey = (github, number) => `${github}#${number}`;
 export const branchKey = (repo, name) => `${repo}:${name}`;
 
 // A pull request, normalized from either source (`/api/prs` authored,
-// `/api/reviews` reviewed) into one shape. Both wire shapes are already unified
-// server-side (see GitHubService); this maps snake_case → the camelCase props the
-// UI reads and attaches the canonical `key`.
+// `/api/prs/for-branches` head lookups) into one shape. Both wire shapes are
+// already unified server-side (see GitHubService); this maps snake_case → the
+// camelCase props the UI reads and attaches the canonical `key`.
 export const PullRequest = {
   from(raw) {
     return {
@@ -21,7 +21,7 @@ export const PullRequest = {
       state: (raw.state || "").toLowerCase(), // open | closed | merged
       draft: !!raw.draft,
       branch: raw.branch || "",
-      relation: raw.relation || "", // authored | reviewed | head
+      relation: raw.relation || "", // authored | head
       createdAt: raw.created_at || "",
       updatedAt: raw.updated_at || "",
       ci: raw.ci || null,

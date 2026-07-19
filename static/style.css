@@ -1058,7 +1058,7 @@ body.drag-grabbing {
   color: var(--l-text-faint);
   text-decoration: line-through;
 }
-/* per-todo favorite star, same look as the branch-favorite .rev-star */
+/* per-todo favorite star */
 .todo-star {
   flex: none;
   font-size: 16px;
@@ -2327,7 +2327,7 @@ a.dash-ci:hover {
 .br-table tbody.br-tight td.br-name {
   padding-top: 10px;
 }
-/* Reviews tab: PRs grouped by branch (one tbody per branch). The branch name
+/* PRs tab: PRs grouped by branch (one tbody per branch). The branch name
    spans its PRs; PRs of the same branch read as one block — no rule between them
    — with a single soft rule separating one branch group from the next. */
 .rev-table td.br-name {
@@ -2339,25 +2339,6 @@ a.dash-ci:hover {
 }
 .rev-group tr:not(:first-child) td {
   border-top: none;
-}
-/* per-branch favorite star, sitting just after the branch name in the group's
-   branch cell (starred groups sort first) */
-.rev-star {
-  font-size: 18px;
-  line-height: 1;
-  color: var(--l-line);
-  background: none;
-  border: none;
-  padding: 0;
-  margin-left: 8px;
-  cursor: pointer;
-  transition: 0.13s;
-}
-.rev-star:hover {
-  color: var(--l-text-faint);
-}
-.rev-star.on {
-  color: var(--l-amber);
 }
 /* inline row editing: inputs sit flush inside the table cells */
 .br-table tr.br-editing td {

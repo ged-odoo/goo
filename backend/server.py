@@ -1565,17 +1565,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "databases": DATABASE.databases(refresh=refresh)})
             except RuntimeError as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
-        elif path == "/api/reviews":
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            refresh = "refresh" in qs
-            days = int((qs.get("days") or ["14"])[0])
-            result = GITHUB.reviewed(days=days, refresh=refresh)
-            if result.get("error"):
-                return self._send_json(500, {"ok": False, "error": result["error"]})
-            self._send_json(
-                200,
-                {"ok": True, "prs": result["prs"], "days": days, "capped": result.get("capped")},
-            )
         elif path == "/api/events":
             self._handle_events()
         elif path == "/api/terminal":

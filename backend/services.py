@@ -21,7 +21,6 @@ import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
 
 from .models import CiCheck, CiRollup, PullRequest
 
@@ -233,86 +232,6 @@ class GitHubService:
                 created_at=pr.get("createdAt", ""),
                 updated_at=pr.get("updatedAt", ""),
                 ci=_ci_rollup(pr.get("statusCheckRollup")),
-            )
-        )
-
-    # GraphQL search: one call gives us the PR head branch and a real MERGED state
-    # (the REST search/issues endpoint exposes neither). `$after` drives pagination.
-    _REVIEWED_QUERY = """
-    query($q: String!, $after: String) {
-      search(query: $q, type: ISSUE, first: 100, after: $after) {
-        issueCount
-        nodes {
-          ... on PullRequest {
-            number title url state isDraft updatedAt headRefName
-            repository { nameWithOwner }
-          }
-        }
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-    """
-
-    def reviewed(self, days=14, refresh=False):
-        """PRs the current user commented on (but didn't author) in the last `days`
-        days, across all of GitHub (search: type:pr commenter:@me -author:@me
-        updated:>=<cutoff>), newest first. Cached by `days`; refresh=True bypasses."""
-        key = ("reviewed", days)
-        if refresh:
-            self.cache.invalidate(key)
-        return self.cache.get(key, lambda: self._fetch_reviewed(days))
-
-    def _fetch_reviewed(self, days):
-        # one global GitHub search via GraphQL (this gh has no `gh search`
-        # subcommand). Paginated by cursor, capped at 300 results to bound it.
-        # -author:@me drops PRs the user opened (commenting on your own PR ≠ review).
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
-        query = f"type:pr commenter:@me -author:@me updated:>={cutoff} sort:updated-desc"
-        self.io.log_request(f"gh api graphql search '{query}'")
-        prs, total, after = [], 0, None
-        try:
-            for _ in range(3):  # cap at 3 × 100 = 300 results
-                cmd = [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={self._REVIEWED_QUERY}",
-                    "-f",
-                    f"q={query}",
-                ]
-                if after:
-                    cmd += ["-f", f"after={after}"]
-                r = self.io.run(cmd, timeout=30)
-                if r.returncode != 0:
-                    return {"prs": [], "error": r.stderr.strip().split("\n")[0] or "gh failed"}
-                search = (json.loads(r.stdout).get("data") or {}).get("search") or {}
-                total = search.get("issueCount", 0)
-                prs.extend(self._review_row(n) for n in search.get("nodes", []) if n.get("number"))
-                page = search.get("pageInfo") or {}
-                after = page.get("endCursor")
-                if not page.get("hasNextPage"):
-                    break
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return {"prs": [], "error": str(e)}
-        except json.JSONDecodeError:
-            return {"prs": [], "error": "unexpected gh output"}
-        # surface truncation rather than silently dropping results
-        return {"prs": prs, "error": None, "capped": total > len(prs)}
-
-    @staticmethod
-    def _review_row(node):
-        return asdict(
-            PullRequest(
-                github=(node.get("repository") or {}).get("nameWithOwner", ""),
-                number=node.get("number"),
-                title=node.get("title", ""),
-                url=node.get("url", ""),
-                state=(node.get("state") or "").lower(),  # open / closed / merged
-                branch=node.get("headRefName", ""),
-                relation="reviewed",
-                draft=node.get("isDraft", False),
-                updated_at=node.get("updatedAt", ""),
             )
         )
 
@@ -2764,7 +2683,7 @@ class ConfigStore:
     """The server-owned config file: {rev, config, state}, persisted atomically.
 
     `config` (the user's settings/repos/targets) and `state` (app-recorded: active
-    target, test history, reviews, claude model) are opaque JSON blobs — the schema
+    target, test history, claude model) are opaque JSON blobs — the schema
     lives in the frontend (static/src/config.js); the server only versions them under
     one shared `rev`, guards concurrent writes, and reads a few well-known fields for
     the CLI / auto-reloader. A missing file reads as rev 0 with null blobs (the client

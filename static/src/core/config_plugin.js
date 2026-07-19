@@ -10,7 +10,7 @@
 //
 //   config = the user's settings/repos/targets/… (schema in config.js; the models
 //            mirror it, and DEFAULT_CONFIG is merged in at read for new keys)
-//   state  = app-recorded: active_workspace, test_history, reviews_*, claude_model
+//   state  = app-recorded: active_workspace, test_history, claude_model
 
 import { BASE_BRANCH_RE, DEFAULT_CONFIG, SECTIONS } from "./config.js";
 import { PRESETS } from "./presets.js";
@@ -36,9 +36,6 @@ import { Plugin, signal, computed } from "@odoo/owl";
 const STATE_KEYS = {
   "oo-last-target": "active_workspace",
   "oo-test-history": "test_history",
-  "oo-reviews-merged": "reviews_merged",
-  "oo-reviews-no-mergebot": "reviews_no_mergebot",
-  "oo-reviews-favorites": "reviews_favorites",
   "oo-claude-model": "claude_model",
 };
 

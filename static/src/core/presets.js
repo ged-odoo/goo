@@ -4,15 +4,14 @@
 // (see ConfigPlugin.applyPreset). An empty `data` means "pure DEFAULT_CONFIG".
 //
 //   - Normal — the built-in defaults (generic Odoo dev setup, no venv).
-//   - Simple — the defaults with the PRs/Reviews/Tests tabs hidden, no venv.
+//   - Simple — the defaults with the PRs/Tests tabs hidden, no venv.
 //   - GED    — Géry's personal config (repos incl. owl, his targets/links, venv).
 
-// Simple: the default config plus a tabs override hiding prs/reviews.
+// Simple: the default config plus a tabs override hiding prs.
 // Only the override is stored; everything else falls back to DEFAULT_CONFIG.
 const SIMPLE_TABS = [
   { id: "branches", visible: true },
   { id: "prs", visible: false },
-  { id: "reviews", visible: false },
   { id: "databases", visible: true },
   { id: "config", visible: true },
 ];
@@ -121,7 +120,6 @@ const GED_CONFIG = {
     { id: "workspaces", visible: true },
     { id: "branches", visible: true },
     { id: "prs", visible: true },
-    { id: "reviews", visible: true },
     { id: "databases", visible: true },
     { id: "config", visible: true },
   ],
@@ -136,7 +134,7 @@ export const PRESETS = [
   },
   {
     id: "simple",
-    label: "Simple — no PRs/Reviews/Tests tabs, no venv",
+    label: "Simple — no PRs/Tests tabs, no venv",
     data: { "oo-config": JSON.stringify({ tabs: SIMPLE_TABS }) },
     clearDataFile: true, // back to browser storage (unset the Storage file field)
   },
@@ -145,7 +143,6 @@ export const PRESETS = [
     label: "GED — Géry's full config",
     data: {
       "oo-config": JSON.stringify(GED_CONFIG),
-      "oo-prs-favorites": JSON.stringify(["master-owl-update"]),
       "oo-last-target": "6d97bcd9-87c5-4bef-a397-ada7b6a16d5e",
       "oo-test-history": JSON.stringify([
         "/web:WebSuite[@web/core/checkbox]",

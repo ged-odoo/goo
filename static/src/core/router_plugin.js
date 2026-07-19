@@ -16,6 +16,7 @@ const ALIASES = {
   tests: "workspaces",
   assets: "workspaces",
   addons: "workspaces",
+  reviews: "prs", // the PR review feature retired; the PRs list is the closest home
 };
 
 export class RouterPlugin extends Plugin {
