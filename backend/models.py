@@ -6,10 +6,10 @@ the wire are snake_case; the backend normalizes GitHub's camelCase at the source
 (see `GitHubService`), and the frontend mirrors these shapes in
 `static/src/models.js`.
 
-This module is introduced by Step 1 of the state-model restructuring, which wires
-only the PullRequest family (`PullRequest`, `CiCheck`, `CiRollup`). The request
-DTOs below (`RepoRef`, `Checkout`, `LaunchSpec`) are declared as the shared
-contract but are wired into the endpoints in later steps.
+Only shapes that actually cross the wire live here — the PullRequest family
+(built by `GitHubService`) and the server/run snapshots (published over SSE).
+The launch path deliberately stays plain dicts (`build_start_config` →
+`build_odoo_cmd`).
 """
 
 from dataclasses import dataclass, field
@@ -55,42 +55,6 @@ class PullRequest:
     created_at: str = ""  # iso; authored PRs only
     updated_at: str = ""  # iso
     ci: CiRollup | None = None  # authored PRs only (from the status rollup)
-
-
-# ─────────────────────────── Request DTOs (declared; wired later) ─────────────
-# The shared request schemas the launch endpoints validate at the API boundary.
-# Declared here as the contract; the endpoints are moved onto them in a later step.
-
-
-@dataclass
-class RepoRef:
-    """A repository as referenced in a request body."""
-
-    id: str
-    path: str
-    github: str = ""
-    external: bool = False
-
-
-@dataclass
-class Checkout:
-    """A (repo, branch) pair in a target's checkout list."""
-
-    repo: str
-    branch: str
-
-
-@dataclass
-class LaunchSpec:
-    """The launch profile the odoo-command builder consumes."""
-
-    repos: list[str]  # repo ids, in addons-path order
-    db: str
-    on_create_args: str = ""  # applied only when the db is uninitialized
-    other_args: str = ""  # server mode only
-    test_tags: str | None = None  # → test mode, one-shot
-    install: str | None = None  # → install mode, one-shot
-    upgrade: str | None = None  # → upgrade mode, one-shot
 
 
 # ─────────────────────────── Runtime snapshots ───────────────────────────────

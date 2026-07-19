@@ -64,11 +64,20 @@ class EventBus:
         self._buffer = collections.deque(maxlen=maxlen)
         self._subscribers = []
 
+    def _broadcast(self, event, payload):
+        """Fan one (event, payload) out to every subscribed client queue."""
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for q in subscribers:
+            q.put((event, payload))
+
     def publish_log(self, line, server="main"):
         """Stream one server's log line to the browser (SSE 'log', {server, line}).
         Only the MAIN server's lines feed the shared backlog ring buffer (replayed on
         SSE connect); other servers keep per-entry scrollback in WorkspaceManager,
         primed on selection via /api/workspace/logs."""
+        # buffer append + subscriber snapshot under ONE lock: a client subscribing
+        # in between would otherwise see the line twice (backlog + live)
         with self._lock:
             if server == "main":
                 self._buffer.append(line)
@@ -81,10 +90,7 @@ class EventBus:
         snapshot["id"] ("main" | target id). Both the main OdooManager and the
         per-target WorktreeManager publish through here — one event, one shape — so
         the frontend folds them into a single `servers` map."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("server", snapshot))
+        self._broadcast("server", snapshot)
 
     def publish_event(self, text, level="", event_id="", status=""):
         """A business event: logged to the goo server stdout and pushed to the
@@ -100,38 +106,26 @@ class EventBus:
         if event_id:
             payload["id"] = event_id
             payload["status"] = status
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("event", payload))
+        self._broadcast("event", payload)
 
     def publish_goo_update(self, status):
         """Push the recomputed goo-update status to the browser (SSE 'goo_update')
         so the navbar update badge appears live when the hourly check finds new
         commits — not only on reload / the next 30-min poll / a manual check."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("goo_update", status))
+        self._broadcast("goo_update", status)
 
     def publish_config(self, payload):
         """Broadcast the new {rev, config, state} to every tab (SSE 'config') after a
         config/state write, so all open tabs stay in lockstep — the multi-tab
         consistency the server-owned config buys over per-browser localStorage."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("config", payload))
+        self._broadcast("config", payload)
 
     def publish_run(self, snapshot):
         """Push one-shot run state to the browser (SSE 'run'): a RunSnapshot as it
         goes running → done/failed. The Tests/Addons screens watch these instead of
         keeping their own runActive/sawRun flags; the backend also owns resume-after,
         so the run survives a mid-run reload."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("run", snapshot))
+        self._broadcast("run", snapshot)
 
     def publish_claude(self, payload):
         """Stream one Claude chat item for a worktree to the browser (SSE 'claude').
@@ -139,10 +133,7 @@ class EventBus:
         headless `claude -p` run produces text, tool activity and its final result.
         Per-target history lives in ClaudeManager and is primed via /api/workspace/
         claude/history — this only pushes the live increments."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("claude", payload))
+        self._broadcast("claude", payload)
 
     def subscribe(self):
         """Register a client queue. Returns (queue, log backlog) atomically so
