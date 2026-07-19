@@ -24,5 +24,3 @@ export class Run extends Model {
   static id = "run"; // id = backend-minted run id
   data = fields.json(); // the RunSnapshot object
 }
-
-export const RUNTIME_MODELS = [OdooServer, Run];

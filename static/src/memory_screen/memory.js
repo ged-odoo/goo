@@ -175,5 +175,3 @@ export class MemoryScreen extends Component {
     this._chart?.resetZoom();
   }
 }
-
-// ─────────────────────────── Root ───────────────────────────

@@ -266,11 +266,3 @@ export class DatabasesScreen extends Component {
       });
   }
 }
-
-// ─────────────────────────── Targets screen ───────────────────────────
-
-// First-class targets: name, favorite flag, config (repo:branch pairs), db and
-// start args. Rows are edited inline; "New target" opens a dialog form.
-
-// After remote branches have been fetched locally, open a prefilled
-// target-creation dialog (no "Create branches" step — they already exist).

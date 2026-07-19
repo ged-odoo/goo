@@ -47,10 +47,6 @@ export const CHART_COLORS = [
   "#bab0ac",
 ];
 
-// attach an xterm terminal to `el`, backed by the WebSocket at `wsUrl` (bytes
-// both ways, JSON resize messages). Returns a dispose() that tears it all down.
-// Shared by the floating TerminalPanel (/api/terminal) and TerminalDialog (/api/shell).
-
 export const GRAPH_METRICS = [
   { id: "ok", label: "Passing builds", fmt: (v) => String(Math.round(v)) },
   { id: "warning", label: "Warning builds", fmt: (v) => String(Math.round(v)) },
@@ -677,5 +673,3 @@ export class NightlyScreen extends Component {
     };
   }
 }
-
-// ─────────────────────────── Memory ───────────────────────────

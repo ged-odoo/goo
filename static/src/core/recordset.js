@@ -1,11 +1,10 @@
 // Generic components over the model layer — the capstone of the ORM rewrite (design
 // doc §"Later: generic components over the models"). The insight: a generic view
 // (list, form) shouldn't bind to a Model or an ORM Table, but to a *recordset* — a
-// reactive list of rows + per-field column metadata. A real owl-orm Model is the
-// canonical recordset (auto-adapter below), but a computed view-model (BranchGroup,
-// TargetView) satisfies the same interface by hand — so the same component renders
-// both. Binding to the interface, not the Table, is what lets a derived aggregate
-// render without being materialized into a synced table.
+// reactive list of rows + per-field column metadata. A computed view-model
+// (BranchGroup) satisfies that interface by hand via `recordset()` below; binding
+// to the interface, not the Table, is what lets a derived aggregate render
+// without being materialized into a synced table.
 //
 //   Recordset  = { records(): Row[] (reactive), fields: FieldSpec[] }
 //   FieldSpec  = { name, type?, label?, get?(row), set?(row, v), comodel?,
@@ -27,30 +26,6 @@
 import { Component, signal, xml, useProps, t } from "@odoo/owl";
 
 // ── adapters ──────────────────────────────────────────────────────────────────
-
-// Auto-adapter over a real owl-orm model: rows are the model's records, and each
-// FieldSpec's get/set default to the field accessor (`row.name()` / `row.name.set`).
-// A spec can override get/set, mark itself readonly, or set a type/label/comodel.
-// `specs` items: { name, type?, label?, get?, set?, readonly?, comodel?, ... }.
-export function modelRecordset(orm, Model, specs) {
-  return {
-    records: () => orm.records(Model),
-    fields: specs.map((s) => {
-      const name = s.name;
-      const field = {
-        ...s,
-        type: s.type || "char",
-        label: s.label ?? name,
-        get: s.get || ((row) => row[name]()),
-      };
-      // editable unless explicitly readonly or a custom getter (a derived column):
-      // an explicit `set` always wins.
-      if (s.set) field.set = s.set;
-      else if (!s.readonly && !s.get) field.set = (row, v) => row[name].set(v);
-      return field;
-    }),
-  };
-}
 
 // Hand-built recordset over a computed list of view-models (rows are plain objects
 // with a stable `.id` + getters). The author supplies each FieldSpec fully — a `get`

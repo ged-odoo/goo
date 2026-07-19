@@ -41,5 +41,3 @@ export class RunbotStatus extends Model {
   static id = "runbot"; // id = branch name
   status = fields.json(); // runbot status value
 }
-
-export const OBSERVED_MODELS = [RepoStatus, PrRepo, MergebotStatus, RunbotStatus];
