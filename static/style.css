@@ -2615,6 +2615,67 @@ a.dash-ci:hover {
   display: flex;
   justify-content: flex-end;
 }
+/* ── Generic RecordList (core/recordset.js) ─────────────────────────────────
+   A .br-table that can render grouped-by-field: one tbody per group, a full-width
+   group-header row (label / count / group actions via the scoped slot, optional
+   collapse caret), the record rows slightly indented beneath. */
+.rl-group-head td {
+  background: var(--l-card);
+  border-top: 1px solid var(--l-line);
+  padding: 9px 16px;
+}
+.rl-table tbody:first-of-type .rl-group-head td {
+  border-top: none;
+}
+/* the group line is a label bar, not a record — no row hover tint */
+.rl-table tbody tr.rl-group-head:hover td {
+  background: var(--l-card);
+}
+.rl-group-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rl-group-label {
+  font-weight: 600;
+}
+.rl-group-count {
+  font-size: 12px;
+  color: var(--l-text-faint);
+}
+/* collapse caret — same chevron as the Workspaces category headers */
+.rl-caret {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--l-text-dim);
+  cursor: pointer;
+}
+.rl-caret::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.12s ease;
+}
+.rl-caret.collapsed::before {
+  transform: rotate(-45deg);
+}
+/* records sit indented under their group line */
+.rl-grouped .rl-row td:first-child {
+  padding-left: 32px;
+}
+
 .pr-link {
   font-family: var(--mono);
   font-size: 12.5px;
