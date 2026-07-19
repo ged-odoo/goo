@@ -67,14 +67,7 @@ export class UpdatePlugin extends Plugin {
     });
     if (!ok) return;
     const res = await this.applyAndRestart();
-    if (!res.ok)
-      this.dialogs.open({
-        title: "Update failed",
-        message: res.error,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+    if (!res.ok) this.dialogs.error("Update failed", res.error);
   }
 
   async _load(retried = false) {

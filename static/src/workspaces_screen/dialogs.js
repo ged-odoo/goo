@@ -4,18 +4,13 @@
 // canonical `workspaces` key (full records spread — the legacy `targets` view
 // drops the stable ports).
 
-import { BASE_BRANCH_RE } from "../core/config.js";
+import { BASE_BRANCH_RE, baseBranchOf } from "../core/config.js";
 import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 import { postJSON, repoBranchList, descendantWorkspaces } from "../core/utils.js";
 import { cascadeRemoveDescendants } from "../core/workspace_plugin.js";
 
 import { Component, onMounted, onWillUnmount, signal, t, useProps, xml } from "@odoo/owl";
-
-// the canonical base branch a work branch's name derives from: 16.0-owl-fix →
-// 16.0, saas-19.4-x → saas-19.4, anything else → master
-const baseBranchOf = (branch) =>
-  (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 
 // the reserved category: archived workspaces group here, always rendered as the
 // LAST list group (even when categories are disabled). Not part of the
@@ -205,13 +200,10 @@ export async function startNewWorkspaceWizard(plugins) {
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
-    dialogs.open({
-      title: "Fetching bundle branches failed",
-      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null,
-    });
+    dialogs.error(
+      "Fetching bundle branches failed",
+      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+    );
     if (failed.length === results.length) return;
   }
   const got = results.filter((r) => r.ok);
@@ -528,13 +520,10 @@ export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) 
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
-    dialogs.open({
-      title: "Fetching forward-port branch failed",
-      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null,
-    });
+    dialogs.error(
+      "Fetching forward-port branch failed",
+      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+    );
     if (failed.length === results.length) return;
   }
   const got = results.filter((r) => r.ok).map((r) => r.repo.id);
@@ -580,7 +569,7 @@ export async function adoptCurrentCheckout(plugins) {
   const makeLoaded = async (ws) => {
     const s = server.status();
     const busy = s.state === "running" || s.state === "starting";
-    const activeId = busy ? s.workspace : server.lastWorkspace();
+    const activeId = server.loadedWorkspaceId();
     if (ws.id === activeId) return;
     if (busy) {
       const running = (config.config.workspaces || []).find((w) => w.id === activeId);

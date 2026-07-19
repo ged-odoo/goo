@@ -86,9 +86,7 @@ export class EventLog extends Component {
   // become laid out before revealing it.
   jump(anchor) {
     // anchors are main-slot rows — land on the LOADED workspace's Tests pane
-    const s = this.server.status();
-    const loaded =
-      s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
+    const loaded = this.server.loadedWorkspaceId();
     if (loaded) this.worktree.selectOnOpen(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");

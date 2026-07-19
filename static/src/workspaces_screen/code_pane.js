@@ -15,7 +15,7 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { EventLogPlugin } from "../core/event_log_plugin.js";
 import { StorePlugin } from "../core/store_plugin.js";
 import { WorkspacePlugin } from "../core/workspace_plugin.js";
-import { BASE_BRANCH_RE } from "../core/config.js";
+import { BASE_BRANCH_RE, baseBranchOf } from "../core/config.js";
 import { DirtyBadge, ICONS, editCommitMessage, m } from "../core/common.js";
 import { pushBranchesDialog } from "../core/dialogs.js";
 import { TerminalDialog } from "../core/terminal.js";
@@ -206,7 +206,7 @@ export class CodePane extends Component {
           date: b.head_date || "",
           ahead: b.ahead || 0, // commits ahead of the base (target) branch
           behind: b.behind || 0, // commits behind the base (target) branch
-          base: this._baseBranch(current),
+          base: baseBranchOf(current),
           error: b.error || "",
           github,
           path: groups.pathByRepo[r.id] || "",
@@ -217,12 +217,6 @@ export class CodePane extends Component {
           canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
         };
       });
-  }
-
-  // the canonical base branch a branch derives from: master-owl-update -> master,
-  // 19.0-some-fix -> 19.0 (defaults to master)
-  _baseBranch(branch) {
-    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
   }
 
   // per-checkout sync health text/tooltip (only shown when the checkout is actually
@@ -248,14 +242,14 @@ export class CodePane extends Component {
     if (r.error) return r.error;
     if (r.dirty) return "commit or stash changes first — the working tree is dirty";
     if (!r.path) return "no local path configured for this repository";
-    return `fetch and rebase ${r.current} onto ${r.pull_remote}/${this._baseBranch(r.current)}`;
+    return `fetch and rebase ${r.current} onto ${r.pull_remote}/${baseBranchOf(r.current)}`;
   }
 
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
     this.touchActivity();
     await this.code.rebase([
-      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path },
+      { repo: r.id, base: baseBranchOf(r.current), github: r.github, path: r.path },
     ]);
   }
 
@@ -329,7 +323,7 @@ export class CodePane extends Component {
       return "nothing to rebase — repositories are dirty, missing, or have no local path";
     // spell out each repo's pull remote — checkouts may fetch from different remotes
     return `fetch and rebase ${repos
-      .map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${this._baseBranch(r.current)}`)
+      .map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${baseBranchOf(r.current)}`)
       .join(", ")}`;
   }
 
@@ -339,7 +333,7 @@ export class CodePane extends Component {
     if (!this.wsCheckedOut) return;
     const repos = this.rebasableRepos.map((r) => ({
       repo: r.id,
-      base: this._baseBranch(r.current),
+      base: baseBranchOf(r.current),
       github: r.github,
       path: r.path,
     }));
@@ -493,13 +487,7 @@ export class CodePane extends Component {
       });
     } catch (e) {
       if (sequence !== this._historySequence) return;
-      this.dialogs.open({
-        title: "Could not load commit history",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Could not load commit history", e.message);
     } finally {
       if (sequence === this._historySequence) this._historyPendingKey = "";
     }
@@ -556,7 +544,7 @@ export class CodePane extends Component {
         github: entry?.github || "",
         path: entry?.path || "",
         push_remote: entry?.push_remote || "dev",
-        base: entry?.base || this._baseBranch(c.branch),
+        base: entry?.base || baseBranchOf(c.branch),
         behind: checkedOut ? entry?.behind || 0 : 0,
         ahead: checkedOut ? entry?.ahead || 0 : 0,
         canRebase: checkedOut && !!entry && this.canRebaseRepo(entry),

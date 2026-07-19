@@ -505,7 +505,7 @@ export class CodePlugin extends Plugin {
       return true;
     } catch (e) {
       this.eventLog.add(`posting r+ failed: ${github}#${number} — ${e.message}`, "", "error");
-      this._errorDialog("Post r+ failed", e.message);
+      this.dialogs.error("Post r+ failed", e.message);
       return false;
     }
   }
@@ -561,25 +561,13 @@ export class CodePlugin extends Plugin {
     return head.body ? `${head.subject}\n\n${head.body}` : head.subject;
   }
 
-  // surface a failure in the app's error dialog (scrollable, styled) rather than a
-  // native alert() — git errors like "already checked out at <worktree>" can be long
-  _errorDialog(title, message) {
-    this.dialogs.open({
-      title,
-      message,
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null,
-    });
-  }
-
   async _mutate(label, fn, reload = true) {
     this.busy.set(true);
     try {
       await fn();
       if (reload) await this.load(true);
     } catch (e) {
-      this._errorDialog(`${label} failed`, e.message);
+      this.dialogs.error(`${label} failed`, e.message);
     } finally {
       this.busy.set(false);
     }
@@ -598,13 +586,13 @@ export class CodePlugin extends Plugin {
       const res = await postJSON("/api/code/checkout", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
-        this._errorDialog(
+        this.dialogs.error(
           "Checkout failed",
           failed.map((r) => `${r.branch}: ${r.error}`).join("\n"),
         );
       await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(false));
     } catch (e) {
-      this._errorDialog("Checkout failed", e.message);
+      this.dialogs.error("Checkout failed", e.message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -630,7 +618,7 @@ export class CodePlugin extends Plugin {
       if (failed.length) {
         for (const f of failed)
           this.eventLog.add(`fetch & rebase failed: ${f.repo} — ${f.error}`, "", "error");
-        this._errorDialog(
+        this.dialogs.error(
           "Fetch & rebase failed",
           failed.map((r) => `${r.repo}: ${r.error}`).join("\n"),
         );
@@ -638,7 +626,7 @@ export class CodePlugin extends Plugin {
       await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(true));
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
-      this._errorDialog("Fetch & rebase failed", e.message);
+      this.dialogs.error("Fetch & rebase failed", e.message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -681,13 +669,10 @@ export class CodePlugin extends Plugin {
           push_remote: this._pushRemote(path),
         });
         if (res.remote_error)
-          this.dialogs.open({
-            title: "Remote branch not deleted",
-            message: `The local branch was deleted, but the remote branch could not be removed:\n\n${res.remote_error}`,
-            cls: "dialog-error",
-            okLabel: "OK",
-            cancelLabel: null,
-          });
+          this.dialogs.error(
+            "Remote branch not deleted",
+            `The local branch was deleted, but the remote branch could not be removed:\n\n${res.remote_error}`,
+          );
         this._dropBranch(repo, branch);
       },
       false,
@@ -749,13 +734,13 @@ export class CodePlugin extends Plugin {
       const res = await postJSON("/api/code/branches/create", { branches });
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
-        this._errorDialog(
+        this.dialogs.error(
           "Create branch failed",
           failed.map((r) => `${r.name}: ${r.error}`).join("\n"),
         );
       await this.refreshBranches(new Set(ids));
     } catch (e) {
-      this._errorDialog("Create branch failed", e.message);
+      this.dialogs.error("Create branch failed", e.message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -813,13 +798,7 @@ export class CodePlugin extends Plugin {
       await postJSON("/api/open-editor", { editor, paths });
     } catch (e) {
       this.eventLog.add(`open with editor failed (${label}): ${e.message}`, "", "error");
-      this.dialogs.open({
-        title: "Could not open the editor",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Could not open the editor", e.message);
     }
   }
 
@@ -833,13 +812,7 @@ export class CodePlugin extends Plugin {
       await this.refreshBranches(new Set([repo]));
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
-      this.dialogs.open({
-        title: "WIP commit failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("WIP commit failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -855,13 +828,7 @@ export class CodePlugin extends Plugin {
       await this.refreshBranches(new Set([repo]));
     } catch (e) {
       this.eventLog.add(`commit failed (${repo})`);
-      this.dialogs.open({
-        title: "Commit failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Commit failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -878,13 +845,7 @@ export class CodePlugin extends Plugin {
       await this.refreshBranches(new Set([repo]));
     } catch (e) {
       this.eventLog.add(`amend commit failed (${repo})`);
-      this.dialogs.open({
-        title: "Amend commit failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Amend commit failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -962,13 +923,7 @@ export class CodePlugin extends Plugin {
       await this.refreshBranches(new Set([repo]));
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
-      this.dialogs.open({
-        title: "Discard changes failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Discard changes failed", e.message);
     } finally {
       this.busy.set(false);
     }

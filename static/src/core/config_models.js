@@ -24,7 +24,7 @@
 // only for the one-time migration of stored pre-workspace configs.
 
 import { Model, ORM, fields } from "../../../vendor/owl-orm/index.ts";
-import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT } from "./config.js";
+import { DEFAULT_CONFIG, BASE_BRANCH_RE, MERGEBOT, baseBranchOf } from "./config.js";
 import { worktreeDirFor } from "./utils.js";
 // Plugin classes are imported for the models' action methods to resolve via usePlugin().
 // This makes config_models ↔ config_plugin / code_plugin a cycle, but every use is
@@ -154,7 +154,7 @@ export class Repository extends Model {
 export const repoUrls = {
   // GitHub "create PR" compare page for a work branch (base inferred from the name)
   compare(github, branch, pushSlug) {
-    const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+    const base = baseBranchOf(branch);
     const name = github.split("/")[1];
     const [forkOwner, forkRepo] = pushSlug ? pushSlug.split("/") : ["odoo-dev", name];
     return `https://github.com/${github}/compare/${base}...${forkOwner}:${forkRepo}:${branch}?expand=1`;
@@ -294,10 +294,7 @@ export class Workspace extends Model {
     }
     const cos = this.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }));
     // guard (mirrors canActivate): not already active, all branches present, none dirty
-    const s = server.status();
-    const activeId =
-      s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
-    if (this.id === activeId && !restore) return;
+    if (this.id === server.loadedWorkspaceId() && !restore) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
     this.touchActivity();
@@ -310,6 +307,7 @@ export class Workspace extends Model {
     // event ("checking out …" with a live "..." resolving to ok/failed) — a
     // plain line here would just duplicate it
     // stop the server and switch branches concurrently (independent ops)
+    const s = server.status();
     const stopping =
       s.state === "running" || s.state === "starting"
         ? server.stop({ trackActivity: false })

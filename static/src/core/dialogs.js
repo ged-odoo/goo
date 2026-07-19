@@ -221,13 +221,7 @@ export class CommitsDialog extends Component {
       });
       await this.load();
     } catch (e) {
-      this.dialogs.open({
-        title: "Edit commit message failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Edit commit message failed", e.message);
     }
   }
 

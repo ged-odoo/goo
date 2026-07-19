@@ -766,10 +766,7 @@ export class WorkspacesScreen extends Component {
   // the workspace occupying the main checkout: the running main server's, else the
   // last activated one (a browser-side fact — see targets_screen isActive)
   get activeId() {
-    const s = this.server.status();
-    return s.state === "running" || s.state === "starting"
-      ? s.workspace
-      : this.server.lastWorkspace();
+    return this.server.loadedWorkspaceId();
   }
 
   isLoaded(ws) {

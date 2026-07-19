@@ -107,7 +107,7 @@ export class ClaudePlugin extends Plugin {
       const repos = this.worktree.wtRepos(tgt);
       const community = repos.find((r) => r.repo === "community");
       if (!community) {
-        this._error("Cannot run Claude", "this worktree has no community repo");
+        this.dialogs.error("Cannot run Claude", "this worktree has no community repo");
         return null;
       }
       return {
@@ -118,7 +118,7 @@ export class ClaudePlugin extends Plugin {
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
     const cwd = pathById["community"];
     if (!cwd) {
-      this._error("Cannot run Claude", "no community repo configured");
+      this.dialogs.error("Cannot run Claude", "no community repo configured");
       return null;
     }
     const addDirs = (tgt.checkouts || [])
@@ -160,9 +160,5 @@ export class ClaudePlugin extends Plugin {
       /* the SSE result will reconcile the state */
     }
     this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
-  }
-
-  _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
   }
 }

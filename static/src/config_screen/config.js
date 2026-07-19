@@ -674,13 +674,7 @@ export class ConfigScreen extends Component {
       this.rustStatus.set(result);
     } catch (error) {
       this.rustStatus.set({ ...this.rustStatus(), building: false, error: error.message });
-      this.dialogs.open({
-        title: "Rust bundler build failed",
-        message: error.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Rust bundler build failed", error.message);
     } finally {
       this.rustBuilding.set(false);
     }
@@ -708,14 +702,10 @@ export class ConfigScreen extends Component {
       return;
     }
     this.eventLog.add("checked for updates — could not reach origin", "", "error");
-    this.dialogs.open({
-      title: "Couldn't check for updates",
-      message:
-        "Make sure goo runs from a git checkout with an 'origin' remote and that you're online.",
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null,
-    });
+    this.dialogs.error(
+      "Couldn't check for updates",
+      "Make sure goo runs from a git checkout with an 'origin' remote and that you're online.",
+    );
   }
 
   _loadSettings() {

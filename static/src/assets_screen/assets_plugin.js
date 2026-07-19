@@ -86,13 +86,7 @@ export class AssetsPlugin extends Plugin {
     } catch (e) {
       this.eventLog.finish(eid, "error");
       this.error.set(e.message);
-      this.dialogs.open({
-        title: "Generate asset bundles failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Generate asset bundles failed", e.message);
     } finally {
       this.generating.set(false);
     }

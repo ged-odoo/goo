@@ -119,10 +119,7 @@ export class Topbar extends Component {
 
   // the loaded workspace id: the running one while up, else the last-used one
   get activeId() {
-    const s = this.server.status();
-    return s.state === "running" || s.state === "starting"
-      ? s.workspace
-      : this.server.lastWorkspace();
+    return this.server.loadedWorkspaceId();
   }
 
   // the loaded workspace's display name (dimmed when the server is stopped)

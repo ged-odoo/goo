@@ -72,6 +72,12 @@ export class DialogPlugin extends Plugin {
   open(spec) {
     return this.openComponent(Dialog, { spec });
   }
+
+  // the standard error modal (red header, OK only) — the one shape every
+  // "X failed" path shows
+  error(title, message) {
+    return this.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+  }
 }
 
 // ─────────────────────────── Container ───────────────────────────

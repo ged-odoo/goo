@@ -154,6 +154,9 @@ var SECTIONS = [
 ];
 var MERGEBOT = "https://mergebot.odoo.com";
 var BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
+function baseBranchOf(branch) {
+  return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+}
 
 // static/src/core/presets.js
 var GED_CONFIG = {
@@ -1611,6 +1614,11 @@ var DialogPlugin = class extends Plugin {
   open(spec) {
     return this.openComponent(Dialog, { spec });
   }
+  // the standard error modal (red header, OK only) — the one shape every
+  // "X failed" path shows
+  error(title, message) {
+    return this.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+  }
 };
 var DialogContainer = class extends Component {
   static template = xml`
@@ -2190,7 +2198,7 @@ var CodePlugin = class extends Plugin {
       return true;
     } catch (e) {
       this.eventLog.add(`posting r+ failed: ${github}#${number} \u2014 ${e.message}`, "", "error");
-      this._errorDialog("Post r+ failed", e.message);
+      this.dialogs.error("Post r+ failed", e.message);
       return false;
     }
   }
@@ -2241,24 +2249,13 @@ var CodePlugin = class extends Plugin {
 
 ${head.body}` : head.subject;
   }
-  // surface a failure in the app's error dialog (scrollable, styled) rather than a
-  // native alert() — git errors like "already checked out at <worktree>" can be long
-  _errorDialog(title, message) {
-    this.dialogs.open({
-      title,
-      message,
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null
-    });
-  }
   async _mutate(label, fn, reload = true) {
     this.busy.set(true);
     try {
       await fn();
       if (reload) await this.load(true);
     } catch (e) {
-      this._errorDialog(`${label} failed`, e.message);
+      this.dialogs.error(`${label} failed`, e.message);
     } finally {
       this.busy.set(false);
     }
@@ -2276,13 +2273,13 @@ ${head.body}` : head.subject;
       const res = await postJSON("/api/code/checkout", { repos });
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
-        this._errorDialog(
+        this.dialogs.error(
           "Checkout failed",
           failed.map((r) => `${r.branch}: ${r.error}`).join("\n")
         );
       await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(false));
     } catch (e) {
-      this._errorDialog("Checkout failed", e.message);
+      this.dialogs.error("Checkout failed", e.message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -2305,7 +2302,7 @@ ${head.body}` : head.subject;
       if (failed.length) {
         for (const f of failed)
           this.eventLog.add(`fetch & rebase failed: ${f.repo} \u2014 ${f.error}`, "", "error");
-        this._errorDialog(
+        this.dialogs.error(
           "Fetch & rebase failed",
           failed.map((r) => `${r.repo}: ${r.error}`).join("\n")
         );
@@ -2313,7 +2310,7 @@ ${head.body}` : head.subject;
       await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(true));
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
-      this._errorDialog("Fetch & rebase failed", e.message);
+      this.dialogs.error("Fetch & rebase failed", e.message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -2353,15 +2350,12 @@ ${head.body}` : head.subject;
           push_remote: this._pushRemote(path)
         });
         if (res.remote_error)
-          this.dialogs.open({
-            title: "Remote branch not deleted",
-            message: `The local branch was deleted, but the remote branch could not be removed:
+          this.dialogs.error(
+            "Remote branch not deleted",
+            `The local branch was deleted, but the remote branch could not be removed:
 
-${res.remote_error}`,
-            cls: "dialog-error",
-            okLabel: "OK",
-            cancelLabel: null
-          });
+${res.remote_error}`
+          );
         this._dropBranch(repo, branch);
       },
       false
@@ -2417,13 +2411,13 @@ ${res.remote_error}`,
       const res = await postJSON("/api/code/branches/create", { branches });
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
-        this._errorDialog(
+        this.dialogs.error(
           "Create branch failed",
           failed.map((r) => `${r.name}: ${r.error}`).join("\n")
         );
       await this.refreshBranches(new Set(ids));
     } catch (e) {
-      this._errorDialog("Create branch failed", e.message);
+      this.dialogs.error("Create branch failed", e.message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -2475,13 +2469,7 @@ ${res.remote_error}`,
       await postJSON("/api/open-editor", { editor, paths });
     } catch (e) {
       this.eventLog.add(`open with editor failed (${label}): ${e.message}`, "", "error");
-      this.dialogs.open({
-        title: "Could not open the editor",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Could not open the editor", e.message);
     }
   }
   async wipCommit(path, repo) {
@@ -2492,13 +2480,7 @@ ${res.remote_error}`,
       await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
-      this.dialogs.open({
-        title: "WIP commit failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("WIP commit failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -2513,13 +2495,7 @@ ${res.remote_error}`,
       await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
     } catch (e) {
       this.eventLog.add(`commit failed (${repo})`);
-      this.dialogs.open({
-        title: "Commit failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Commit failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -2535,13 +2511,7 @@ ${res.remote_error}`,
       await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
     } catch (e) {
       this.eventLog.add(`amend commit failed (${repo})`);
-      this.dialogs.open({
-        title: "Amend commit failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Amend commit failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -2611,13 +2581,7 @@ ${res.remote_error}`,
       await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
-      this.dialogs.open({
-        title: "Discard changes failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Discard changes failed", e.message);
     } finally {
       this.busy.set(false);
     }
@@ -2832,6 +2796,14 @@ var ServerPlugin = class extends Plugin {
   lastWorkspace() {
     return this.activeWorkspace();
   }
+  // THE definition of "which workspace occupies the main checkout": the running
+  // (or starting) server's workspace while one is up, else the last activated
+  // one. Every "is this workspace loaded/active?" check must go through here —
+  // it used to be re-derived in six places that had to agree.
+  loadedWorkspaceId() {
+    const s = this.status();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.lastWorkspace();
+  }
   // the state the UI should reflect: an optimistic "start" click reads as
   // "starting" before the backend confirms, so the navbar dot and the favicon
   // flip the instant the button is pressed (and stay in lockstep with each other)
@@ -2852,13 +2824,7 @@ var ServerPlugin = class extends Plugin {
       this._failStart();
       this.log(`[goo] ${label} failed: ${e.message}`);
       this.eventLog.add(`${label} failed: ${e.message}`, "", "error");
-      this.dialogs.open({
-        title: `Could not ${label} the server`,
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error(`Could not ${label} the server`, e.message);
     }
   }
   // The "starting server" line is a timed event: it shows an animated "..." right
@@ -3063,7 +3029,7 @@ var Repository = class extends Model {
 var repoUrls = {
   // GitHub "create PR" compare page for a work branch (base inferred from the name)
   compare(github, branch, pushSlug) {
-    const base = (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+    const base = baseBranchOf(branch);
     const name = github.split("/")[1];
     const [forkOwner, forkRepo] = pushSlug ? pushSlug.split("/") : ["odoo-dev", name];
     return `https://github.com/${github}/compare/${base}...${forkOwner}:${forkRepo}:${branch}?expand=1`;
@@ -3196,15 +3162,14 @@ var Workspace = class extends Model {
       };
     }
     const cos = this.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }));
-    const s = server.status();
-    const activeId = s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
-    if (this.id === activeId && !restore) return;
+    if (this.id === server.loadedWorkspaceId() && !restore) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
     if (cos.some(({ repo }) => repoMap[repo]?.dirty)) return;
     this.touchActivity();
     const pathByRepo = code.groups().pathByRepo;
     const repos = cos.map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch })).filter((r) => r.path);
     eventLog.add(`activating workspace ${this.name()}`);
+    const s = server.status();
     const stopping = s.state === "running" || s.state === "starting" ? server.stop({ trackActivity: false }) : null;
     await Promise.all([stopping, code.checkout(repos)]);
     server.setLastWorkspace(this.id);
@@ -4260,8 +4225,10 @@ var WorkspacePlugin = class extends Plugin {
       "/web/tests?debug=assets&timeout=500000&manual=true"
     )}` : "";
   }
+  // thin wrapper: `return this._error(…)` deliberately returns false (callers
+  // use it to bail out of a flow with a failure result)
   _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+    this.dialogs.error(title, message);
     return false;
   }
 };
@@ -4298,9 +4265,7 @@ function directChildren(list, id) {
 }
 function isLoadedMainWorkspace(server, ws) {
   if (ws.location === "worktree") return false;
-  const s = server.status();
-  const activeId = s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
-  return ws.id === activeId;
+  return ws.id === server.loadedWorkspaceId();
 }
 
 // static/src/core/update_plugin.js
@@ -4354,14 +4319,7 @@ var UpdatePlugin = class extends Plugin {
     });
     if (!ok) return;
     const res = await this.applyAndRestart();
-    if (!res.ok)
-      this.dialogs.open({
-        title: "Update failed",
-        message: res.error,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+    if (!res.ok) this.dialogs.error("Update failed", res.error);
   }
   async _load(retried = false) {
     try {
@@ -5115,13 +5073,7 @@ var CommitsDialog = class extends Component {
       });
       await this.load();
     } catch (e) {
-      this.dialogs.open({
-        title: "Edit commit message failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Edit commit message failed", e.message);
     }
   }
   when(date) {
@@ -6423,13 +6375,7 @@ var ConfigScreen = class extends Component {
       this.rustStatus.set(result);
     } catch (error) {
       this.rustStatus.set({ ...this.rustStatus(), building: false, error: error.message });
-      this.dialogs.open({
-        title: "Rust bundler build failed",
-        message: error.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Rust bundler build failed", error.message);
     } finally {
       this.rustBuilding.set(false);
     }
@@ -6455,13 +6401,10 @@ var ConfigScreen = class extends Component {
       return;
     }
     this.eventLog.add("checked for updates \u2014 could not reach origin", "", "error");
-    this.dialogs.open({
-      title: "Couldn't check for updates",
-      message: "Make sure goo runs from a git checkout with an 'origin' remote and that you're online.",
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null
-    });
+    this.dialogs.error(
+      "Couldn't check for updates",
+      "Make sure goo runs from a git checkout with an 'origin' remote and that you're online."
+    );
   }
   _loadSettings() {
     const c = this.config.config;
@@ -7299,8 +7242,7 @@ var EventLog = class extends Component {
   // element is re-hosted on return, so we wait (a few frames) for the row to
   // become laid out before revealing it.
   jump(anchor) {
-    const s = this.server.status();
-    const loaded = s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
+    const loaded = this.server.loadedWorkspaceId();
     if (loaded) this.worktree.selectOnOpen(loaded);
     this.worktree.requestedPane.set("tests");
     this.router.go("workspaces");
@@ -8918,7 +8860,6 @@ var TodoScreen = class extends Component {
 };
 
 // static/src/workspaces_screen/dialogs.js
-var baseBranchOf = (branch) => (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 var ARCHIVED_CATEGORY = "archived";
 function categoryOptions(config) {
   const opts = (config.config.workspace_categories || []).map((c) => ({
@@ -9066,13 +9007,10 @@ async function startNewWorkspaceWizard(plugins) {
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
-    dialogs.open({
-      title: "Fetching bundle branches failed",
-      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null
-    });
+    dialogs.error(
+      "Fetching bundle branches failed",
+      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n")
+    );
     if (failed.length === results.length) return;
   }
   const got = results.filter((r) => r.ok);
@@ -9309,13 +9247,10 @@ async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) {
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
-    dialogs.open({
-      title: "Fetching forward-port branch failed",
-      message: failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
-      cls: "dialog-error",
-      okLabel: "OK",
-      cancelLabel: null
-    });
+    dialogs.error(
+      "Fetching forward-port branch failed",
+      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n")
+    );
     if (failed.length === results.length) return;
   }
   const got = results.filter((r) => r.ok).map((r) => r.repo.id);
@@ -9348,7 +9283,7 @@ async function adoptCurrentCheckout(plugins) {
   const makeLoaded = async (ws2) => {
     const s = server.status();
     const busy = s.state === "running" || s.state === "starting";
-    const activeId = busy ? s.workspace : server.lastWorkspace();
+    const activeId = server.loadedWorkspaceId();
     if (ws2.id === activeId) return;
     if (busy) {
       const running = (config.config.workspaces || []).find((w) => w.id === activeId);
@@ -9553,7 +9488,7 @@ var ClaudePlugin = class extends Plugin {
       const repos = this.worktree.wtRepos(tgt);
       const community = repos.find((r) => r.repo === "community");
       if (!community) {
-        this._error("Cannot run Claude", "this worktree has no community repo");
+        this.dialogs.error("Cannot run Claude", "this worktree has no community repo");
         return null;
       }
       return {
@@ -9564,7 +9499,7 @@ var ClaudePlugin = class extends Plugin {
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
     const cwd = pathById["community"];
     if (!cwd) {
-      this._error("Cannot run Claude", "no community repo configured");
+      this.dialogs.error("Cannot run Claude", "no community repo configured");
       return null;
     }
     const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== "community").map((c) => pathById[c.repo]).filter(Boolean);
@@ -9600,9 +9535,6 @@ var ClaudePlugin = class extends Plugin {
     } catch {
     }
     this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
-  }
-  _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
   }
 };
 
@@ -10074,13 +10006,7 @@ ${edits[sha].body}` : edits[sha].subject.trim();
       if (e.inProgress) {
         this.historyConflict.set(e.message);
       } else {
-        this.dialogs.open({
-          title: "Edit history failed",
-          message: e.message,
-          cls: "dialog-error",
-          okLabel: "OK",
-          cancelLabel: null
-        });
+        this.dialogs.error("Edit history failed", e.message);
       }
     } finally {
       this.historyApplying.set(false);
@@ -10094,13 +10020,7 @@ ${edits[sha].body}` : edits[sha].subject.trim();
       this.historyConflict.set("");
       await this.props.reload();
     } catch (e) {
-      this.dialogs.open({
-        title: "Abort failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Abort failed", e.message);
     } finally {
       this.historyApplying.set(false);
     }
@@ -10298,7 +10218,7 @@ var CodePane = class extends Component {
         // commits ahead of the base (target) branch
         behind: b.behind || 0,
         // commits behind the base (target) branch
-        base: this._baseBranch(current),
+        base: baseBranchOf(current),
         error: b.error || "",
         github,
         path: groups.pathByRepo[r.id] || "",
@@ -10309,11 +10229,6 @@ var CodePane = class extends Component {
         canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
       };
     });
-  }
-  // the canonical base branch a branch derives from: master-owl-update -> master,
-  // 19.0-some-fix -> 19.0 (defaults to master)
-  _baseBranch(branch) {
-    return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
   }
   // per-checkout sync health text/tooltip (only shown when the checkout is actually
   // the repo's current branch, so the behind/ahead counts describe THIS branch)
@@ -10335,13 +10250,13 @@ var CodePane = class extends Component {
     if (r.error) return r.error;
     if (r.dirty) return "commit or stash changes first \u2014 the working tree is dirty";
     if (!r.path) return "no local path configured for this repository";
-    return `fetch and rebase ${r.current} onto ${r.pull_remote}/${this._baseBranch(r.current)}`;
+    return `fetch and rebase ${r.current} onto ${r.pull_remote}/${baseBranchOf(r.current)}`;
   }
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
     this.touchActivity();
     await this.code.rebase([
-      { repo: r.id, base: this._baseBranch(r.current), github: r.github, path: r.path }
+      { repo: r.id, base: baseBranchOf(r.current), github: r.github, path: r.path }
     ]);
   }
   // push a checkout's branch to the repo's push remote. Git pushes an explicit
@@ -10406,7 +10321,7 @@ var CodePane = class extends Component {
     const repos = this.rebasableRepos;
     if (!repos.length)
       return "nothing to rebase \u2014 repositories are dirty, missing, or have no local path";
-    return `fetch and rebase ${repos.map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${this._baseBranch(r.current)}`).join(", ")}`;
+    return `fetch and rebase ${repos.map((r) => `${r.current} (${r.id}) onto ${r.pull_remote}/${baseBranchOf(r.current)}`).join(", ")}`;
   }
   // fetch + rebase every shown repo's current branch onto its base, in one call
   // (guarded on wsCheckedOut: current branches == this workspace's branches)
@@ -10414,7 +10329,7 @@ var CodePane = class extends Component {
     if (!this.wsCheckedOut) return;
     const repos = this.rebasableRepos.map((r) => ({
       repo: r.id,
-      base: this._baseBranch(r.current),
+      base: baseBranchOf(r.current),
       github: r.github,
       path: r.path
     }));
@@ -10548,13 +10463,7 @@ var CodePane = class extends Component {
       });
     } catch (e) {
       if (sequence !== this._historySequence) return;
-      this.dialogs.open({
-        title: "Could not load commit history",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Could not load commit history", e.message);
     } finally {
       if (sequence === this._historySequence) this._historyPendingKey = "";
     }
@@ -10609,7 +10518,7 @@ var CodePane = class extends Component {
         github: entry?.github || "",
         path: entry?.path || "",
         push_remote: entry?.push_remote || "dev",
-        base: entry?.base || this._baseBranch(c.branch),
+        base: entry?.base || baseBranchOf(c.branch),
         behind: checkedOut ? entry?.behind || 0 : 0,
         ahead: checkedOut ? entry?.ahead || 0 : 0,
         canRebase: checkedOut && !!entry && this.canRebaseRepo(entry),
@@ -11000,13 +10909,7 @@ var AssetsPlugin = class extends Plugin {
     } catch (e) {
       this.eventLog.finish(eid, "error");
       this.error.set(e.message);
-      this.dialogs.open({
-        title: "Generate asset bundles failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null
-      });
+      this.dialogs.error("Generate asset bundles failed", e.message);
     } finally {
       this.generating.set(false);
     }
@@ -12140,8 +12043,7 @@ var WorkspacesScreen = class extends Component {
   // the workspace occupying the main checkout: the running main server's, else the
   // last activated one (a browser-side fact — see targets_screen isActive)
   get activeId() {
-    const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
+    return this.server.loadedWorkspaceId();
   }
   isLoaded(ws) {
     return !this.isWt(ws) && ws.id === this.activeId;
@@ -12582,8 +12484,7 @@ var Topbar = class extends Component {
   }
   // the loaded workspace id: the running one while up, else the last-used one
   get activeId() {
-    const s = this.server.status();
-    return s.state === "running" || s.state === "starting" ? s.workspace : this.server.lastWorkspace();
+    return this.server.loadedWorkspaceId();
   }
   // the loaded workspace's display name (dimmed when the server is stopped)
   get target() {

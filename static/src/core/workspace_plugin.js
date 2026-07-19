@@ -459,8 +459,10 @@ export class WorkspacePlugin extends Plugin {
       : "";
   }
 
+  // thin wrapper: `return this._error(…)` deliberately returns false (callers
+  // use it to bail out of a flow with a failure result)
   _error(title, message) {
-    this.dialogs.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
+    this.dialogs.error(title, message);
     return false;
   }
 }
@@ -510,8 +512,5 @@ function directChildren(list, id) {
 
 function isLoadedMainWorkspace(server, ws) {
   if (ws.location === "worktree") return false;
-  const s = server.status();
-  const activeId =
-    s.state === "running" || s.state === "starting" ? s.workspace : server.lastWorkspace();
-  return ws.id === activeId;
+  return ws.id === server.loadedWorkspaceId();
 }

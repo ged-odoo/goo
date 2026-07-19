@@ -134,3 +134,9 @@ export const SECTIONS = [
 export const RUNBOT = "https://runbot.odoo.com";
 export const MERGEBOT = "https://mergebot.odoo.com";
 export const BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
+
+// the canonical base branch a work branch's name derives from: 16.0-owl-fix →
+// 16.0, saas-19.4-x → saas-19.4, anything else → master
+export function baseBranchOf(branch) {
+  return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+}

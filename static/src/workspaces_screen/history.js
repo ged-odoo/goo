@@ -477,13 +477,7 @@ export class CommitHistory extends Component {
       if (e.inProgress) {
         this.historyConflict.set(e.message);
       } else {
-        this.dialogs.open({
-          title: "Edit history failed",
-          message: e.message,
-          cls: "dialog-error",
-          okLabel: "OK",
-          cancelLabel: null,
-        });
+        this.dialogs.error("Edit history failed", e.message);
       }
     } finally {
       this.historyApplying.set(false);
@@ -498,13 +492,7 @@ export class CommitHistory extends Component {
       this.historyConflict.set("");
       await this.props.reload();
     } catch (e) {
-      this.dialogs.open({
-        title: "Abort failed",
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error("Abort failed", e.message);
     } finally {
       this.historyApplying.set(false);
     }

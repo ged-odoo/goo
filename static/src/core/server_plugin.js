@@ -160,6 +160,15 @@ export class ServerPlugin extends Plugin {
     return this.activeWorkspace();
   }
 
+  // THE definition of "which workspace occupies the main checkout": the running
+  // (or starting) server's workspace while one is up, else the last activated
+  // one. Every "is this workspace loaded/active?" check must go through here —
+  // it used to be re-derived in six places that had to agree.
+  loadedWorkspaceId() {
+    const s = this.status();
+    return s.state === "running" || s.state === "starting" ? s.workspace : this.lastWorkspace();
+  }
+
   // the state the UI should reflect: an optimistic "start" click reads as
   // "starting" before the backend confirms, so the navbar dot and the favicon
   // flip the instant the button is pressed (and stay in lockstep with each other)
@@ -187,13 +196,7 @@ export class ServerPlugin extends Plugin {
       // history) and a modal — so it can't go unnoticed from another screen
       this.log(`[goo] ${label} failed: ${e.message}`);
       this.eventLog.add(`${label} failed: ${e.message}`, "", "error");
-      this.dialogs.open({
-        title: `Could not ${label} the server`,
-        message: e.message,
-        cls: "dialog-error",
-        okLabel: "OK",
-        cancelLabel: null,
-      });
+      this.dialogs.error(`Could not ${label} the server`, e.message);
     }
   }
 
