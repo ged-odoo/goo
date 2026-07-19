@@ -1522,6 +1522,606 @@ BOOT_ID = time.time()
 
 
 # =============================================================================
+# POST routes
+# =============================================================================
+# Each route is a plain function fn(body) -> payload dict (sent as 200) or a
+# (status, payload) tuple. The shared read-json / validate-required / send-json
+# envelope lives once in Handler.do_POST; routes that need the raw request
+# (config save, the CLI test relay) stay Handler methods.
+
+POST_ROUTES = {}
+
+
+def _field_ok(body, spec):
+    """One `required` entry: "name" = truthy, "name:str" = non-empty string,
+    "name:strip" = a string with non-blank content, "name:list" = a list,
+    "name:list+" = a non-empty list."""
+    name, _, kind = spec.partition(":")
+    v = body.get(name)
+    if kind == "list":
+        return isinstance(v, list)
+    if kind == "list+":
+        return isinstance(v, list) and bool(v)
+    if kind == "str":
+        return isinstance(v, str) and bool(v)
+    if kind == "strip":
+        return isinstance(v, str) and bool(v.strip())
+    return bool(v)
+
+
+def post_route(path, *required, missing=""):
+    """Register a POST handler, validating `required` body fields (see _field_ok)
+    into a standard 400 before the handler runs. `missing` overrides the
+    generated "missing <name>" message."""
+    if not missing:
+        names = " or ".join(s.partition(":")[0] for s in required)
+        suffix = " list" if len(required) == 1 and "list" in required[0] else ""
+        missing = f"missing {names}{suffix}"
+
+    def deco(fn):
+        POST_ROUTES[path] = (fn, required, missing)
+        return fn
+
+    return deco
+
+
+# ── server lifecycle (main + worktree workspaces, one-shot runs) ─────────────
+
+
+def _build_launch(body):
+    """Resolve a thin {workspace, overrides} launch request against the server's
+    own config into the dict build_odoo_cmd consumes (handles main + worktree
+    workspaces). Returns None if the workspace is missing/unknown."""
+    target = body.get("workspace")
+    if not target:
+        return None
+    return services.build_start_config(CONFIG.get()["config"], target, body.get("overrides") or {})
+
+
+def _launch(body, action, reply):
+    """The shared launch envelope: resolve the config, run the action, and map
+    the failure detail onto 400 (invalid config) / 409 (slot busy)."""
+    cfg = _build_launch(body)
+    if cfg is None:
+        return 400, {"ok": False, "error": "unknown workspace"}
+    ok, detail = action(cfg)
+    if ok:
+        return reply(detail)
+    return (400 if str(detail).startswith("invalid_config") else 409), {
+        "ok": False,
+        "error": detail,
+    }
+
+
+def _starting(detail):
+    return {"ok": True, "state": "starting", "cmd": detail["cmd"]}
+
+
+@post_route("/api/start")
+def _api_start(body):
+    return _launch(body, lambda cfg: WORKSPACES.start("main", cfg), _starting)
+
+
+@post_route("/api/restart")
+def _api_restart(body):
+    return _launch(body, lambda cfg: WORKSPACES.restart("main", cfg), _starting)
+
+
+def _api_oneshot(body):
+    """Start a one-shot run (tests / install / upgrade) on a workspace's server
+    slot — body["slot"] (default "main"). The slot's own server is stopped
+    first; if a real server was interrupted, its config is handed to the run so
+    the backend restarts it when the run ends (resume-after, owned server-side)."""
+    slot = body.get("slot") or "main"
+    return _launch(body, lambda cfg: WORKSPACES.oneshot(slot, cfg), _starting)
+
+
+POST_ROUTES["/api/tests/run"] = POST_ROUTES["/api/addons/run"] = (_api_oneshot, (), "")
+
+
+@post_route("/api/stop")
+def _api_stop(body):
+    ok, detail = WORKSPACES.stop_and_finalize("main")
+    if ok:
+        return {"ok": True, "state": "stopped"}
+    return 409, {"ok": False, "error": detail}
+
+
+@post_route("/api/workspace/start", "workspace")
+def _api_workspace_start(body):
+    return _launch(
+        body,
+        lambda cfg: WORKSPACES.start(body["workspace"], cfg),
+        lambda detail: {"ok": True, "port": detail["port"]},
+    )
+
+
+@post_route("/api/workspace/stop", "workspace")
+def _api_workspace_stop(body):
+    # stop_and_finalize: a stop mid-run finalizes the run + resumes the
+    # server it interrupted, exactly like /api/stop does for main
+    ok, detail = WORKSPACES.stop_and_finalize(body["workspace"])
+    return (200 if ok else 409), {"ok": ok, "error": None if ok else detail}
+
+
+@post_route("/api/workspace/create", "repos:list+")
+def _api_workspace_create(body):
+    # add a git worktree per repo (the frontend computes every path); git
+    # creates the parent <worktree_dir>/<target>/ folder on the first add
+    results = []
+    for r in body["repos"]:
+        ok, error = GIT.worktree_add(
+            r.get("mainPath"),
+            r.get("worktreePath"),
+            r.get("newBranch") or r.get("branch"),
+            r.get("repo", ""),
+            new_branch=bool(r.get("newBranch")),
+            start_point=r.get("startPoint"),
+            fresh_start=True,
+            pull_remote=r.get("pull_remote"),
+        )
+        results.append({"repo": r.get("repo"), "ok": ok, "error": error})
+    return {"ok": all(x["ok"] for x in results), "results": results}
+
+
+@post_route("/api/workspace/remove", "repos:list")
+def _api_workspace_remove(body):
+    results = []
+    for r in body["repos"]:
+        ok, error = GIT.worktree_remove(r.get("mainPath"), r.get("worktreePath"), r.get("repo", ""))
+        results.append({"repo": r.get("repo"), "ok": ok, "error": error})
+    if body.get("dirPath"):
+        effects.remove_tree(body["dirPath"])  # sweep the now-empty parent folder
+    if body.get("workspace"):
+        CLAUDE.forget(body["workspace"])  # its checkout is gone; drop the chat + any run
+    return {"ok": all(x["ok"] for x in results), "results": results}
+
+
+@post_route("/api/workspace/list", "workspaces:list")
+def _api_workspace_list(body):
+    return {"ok": True, "servers": WORKSPACES.status_for(body["workspaces"])}
+
+
+@post_route("/api/workspace/logs", "workspace")
+def _api_workspace_logs(body):
+    return {"ok": True, "lines": WORKSPACES.logs_for(body["workspace"])}
+
+
+@post_route(
+    "/api/workspace/claude",
+    "workspace",
+    "prompt",
+    "cwd",
+    missing="missing workspace, prompt or cwd",
+)
+def _api_workspace_claude(body):
+    ok, detail = CLAUDE.send(
+        body["workspace"],
+        body["prompt"],
+        body["cwd"],
+        body.get("addDirs") or [],
+        model=body.get("model"),
+    )
+    if ok:
+        return {"ok": True, "state": detail["state"]}
+    return (409 if detail == "already_running" else 400), {"ok": False, "error": detail}
+
+
+@post_route("/api/workspace/claude/stop", "workspace")
+def _api_workspace_claude_stop(body):
+    ok, detail = CLAUDE.stop(body["workspace"])
+    return {"ok": ok, "error": None if ok else detail}
+
+
+@post_route("/api/workspace/claude/history", "workspace")
+def _api_workspace_claude_history(body):
+    return {"ok": True, **CLAUDE.history_for(body["workspace"])}
+
+
+# ── git: branches, checkouts, commits, history ───────────────────────────────
+
+
+@post_route("/api/code/branches", "repos:list")
+def _api_code_branches(body):
+    return {"ok": True, "repos": GIT.branches(body["repos"])}
+
+
+@post_route("/api/code/checkout", "repos:list")
+def _api_code_checkout(body):
+    # check out each repo in parallel — independent working trees, so a
+    # multi-repo target switches in one checkout's time, not the sum
+    def co(r):
+        ok, error = GIT.checkout(r.get("path"), r.get("branch"), r.get("repo", ""))
+        return {"branch": r.get("branch"), "ok": ok, "error": error}
+
+    repos = body["repos"]
+    if repos:
+        with ThreadPoolExecutor(max_workers=min(8, len(repos))) as pool:
+            results = list(pool.map(co, repos))
+    else:
+        results = []
+    return {"ok": True, "results": results}
+
+
+@post_route("/api/code/rebase", "repos:list")
+def _api_code_rebase(body):
+    # fetch + rebase each repo in parallel — independent working trees, so the
+    # slow network fetches overlap instead of running back-to-back (each phase
+    # reports under its own event id, so the progress log stays unambiguous)
+    def fr(r):
+        ok, error = GIT.fetch_rebase(
+            r.get("path"), r.get("base"), r.get("pull_remote"), r.get("repo")
+        )
+        return {"repo": r.get("repo"), "ok": ok, "error": error}
+
+    repos = body["repos"]
+    if repos:
+        with ThreadPoolExecutor(max_workers=min(8, len(repos))) as pool:
+            results = list(pool.map(fr, repos))
+    else:
+        results = []
+    return {"ok": True, "results": results}
+
+
+@post_route("/api/code/branches/create", "branches:list")
+def _api_code_branches_create(body):
+    # create each branch in parallel — independent working trees, so a
+    # multi-repo target's branches are created in one create's time, not the sum
+    def mk(b):
+        ok, error = GIT.create_branch(
+            b.get("path"),
+            b.get("name"),
+            b.get("start_point"),
+            fresh_start=bool(b.get("fresh_start")),
+            pull_remote=b.get("pull_remote"),
+            repo=b.get("repo", ""),
+        )
+        return {"name": b.get("name"), "ok": ok, "error": error}
+
+    branches = body["branches"]
+    if branches:
+        with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
+            results = list(pool.map(mk, branches))
+    else:
+        results = []
+    return {"ok": True, "results": results}
+
+
+@post_route("/api/code/branches/delete", "path", "branch")
+def _api_code_branches_delete(body):
+    ok, error, remote_error = GIT.delete_branch(
+        body["path"], body["branch"], bool(body.get("delete_remote")), body.get("push_remote")
+    )
+    if ok:
+        return {"ok": True, "remote_error": remote_error}
+    return 400, {"ok": False, "error": error}
+
+
+@post_route("/api/code/branch/remote", "path", "branch")
+def _api_code_branch_remote(body):
+    exists, error = GIT.remote_branch_exists(
+        body["path"], body["branch"], push_remote=body.get("push_remote")
+    )
+    if error:
+        return 400, {"ok": False, "error": error}
+    return {"ok": True, "exists": exists}
+
+
+@post_route("/api/code/branch/push", "path", "branch")
+def _api_code_branch_push(body):
+    ok, error = GIT.push_branch(
+        body["path"], body["branch"], bool(body.get("force")), push_remote=body.get("push_remote")
+    )
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/code/remote-branches/search", "query", missing="missing query or repos")
+def _api_code_remote_branches_search(body):
+    repos = body.get("repos", [])
+    if not isinstance(repos, list):
+        return 400, {"ok": False, "error": "missing query or repos"}
+    return {"ok": True, "results": GITHUB.search_branches(repos, body["query"])}
+
+
+@post_route("/api/code/remote-branch/fetch", "path", "branch")
+def _api_code_remote_branch_fetch(body):
+    ok, error = GIT.fetch_remote_branch(
+        body["path"], body["branch"], pull_remote=body.get("pull_remote")
+    )
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/code/wip-commit", "path")
+def _api_code_wip_commit(body):
+    ok, error = GIT.wip_commit(body["path"])
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/code/commit", "path", "message:strip")
+def _api_code_commit(body):
+    ok, error = GIT.commit(body["path"], body["message"])
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/code/amend", "path", "message:strip")
+def _api_code_amend(body):
+    ok, error = GIT.amend_commit(body["path"], body["message"])
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route(
+    "/api/code/reword", "path", "sha", "message:strip", missing="missing path, sha, or message"
+)
+def _api_code_reword(body):
+    ok, error = GIT.reword_commit(
+        body["path"],
+        body["sha"],
+        body["message"],
+        base=body.get("base") or "",
+        pull_remote=body.get("pull_remote") or "origin",
+    )
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route(
+    "/api/code/rebase-plan", "path", "base", "plan:list", missing="missing path, base, or plan"
+)
+def _api_code_rebase_plan(body):
+    ok, error, in_progress = GIT.rewrite_history(
+        body["path"], body["base"], body["plan"], pull_remote=body.get("pull_remote") or "origin"
+    )
+    return (200 if ok else 400), {"ok": ok, "error": error, "in_progress": in_progress}
+
+
+@post_route("/api/code/rebase-abort", "path")
+def _api_code_rebase_abort(body):
+    ok, error = GIT.abort_rebase(body["path"])
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/code/rebase-status", "path")
+def _api_code_rebase_status(body):
+    in_progress, error = GIT.rebase_status(body["path"])
+    ok = error is None
+    return (200 if ok else 400), {"ok": ok, "in_progress": in_progress, "error": error}
+
+
+@post_route("/api/code/discard", "path")
+def _api_code_discard(body):
+    ok, error = GIT.discard(body["path"])
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/code/log", "path")
+def _api_code_log(body):
+    commits, error = GIT.log(
+        body["path"],
+        int(body.get("count") or 20),
+        body.get("ref") or "",
+        body.get("base") or "",
+        body.get("pull_remote") or "origin",
+    )
+    ok = error is None
+    return (200 if ok else 400), {"ok": ok, "commits": commits or [], "error": error}
+
+
+@post_route("/api/code/commit/diff", "path", "sha")
+def _api_code_commit_diff(body):
+    diff, error = GIT.commit_diff(body["path"], body["sha"])
+    ok = error is None
+    return (200 if ok else 400), {"ok": ok, "diff": diff or "", "error": error}
+
+
+# ── GitHub / runbot / mergebot / nightly ─────────────────────────────────────
+
+
+@post_route("/api/prs", "repos:list")
+def _api_prs(body):
+    return {"ok": True, "repos": GITHUB.prs(body["repos"], refresh=bool(body.get("refresh")))}
+
+
+@post_route("/api/prs/for-branches", "branches:list")
+def _api_prs_for_branches(body):
+    prs = GITHUB.prs_for_branches(body["branches"], refresh=bool(body.get("refresh")))
+    return {"ok": True, "prs": prs}
+
+
+@post_route("/api/prs/close", "repo", "number")
+def _api_prs_close(body):
+    ok, error = GITHUB.close_pr(body["repo"], body["number"])
+    if ok:
+        return {"ok": True}
+    return 400, {"ok": False, "error": error}
+
+
+@post_route("/api/prs/r-plus")
+def _api_prs_r_plus(body):
+    repo, number = body.get("repo"), body.get("number")
+    valid_repo = isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+    if not valid_repo or type(number) is not int or number <= 0:
+        return 400, {"ok": False, "error": "invalid repo or number"}
+    ok, error = GITHUB.post_r_plus(repo, number)
+    return (200 if ok else 400), {"ok": ok, **({} if ok else {"error": error})}
+
+
+@post_route("/api/mergebot", "prs:list")
+def _api_mergebot(body):
+    states, details, forward_ports, unsupported = MERGEBOT.statuses(
+        body["prs"], refresh=bool(body.get("refresh"))
+    )
+    return {
+        "ok": True,
+        "states": states,
+        "details": details,
+        "forward_ports": forward_ports,
+        "unsupported": unsupported,
+    }
+
+
+@post_route("/api/runbot", "branches:list")
+def _api_runbot(body):
+    return {
+        "ok": True,
+        "states": RUNBOT.statuses(body["branches"], refresh=bool(body.get("refresh"))),
+    }
+
+
+@post_route("/api/runbot/bundle-info", "url")
+def _api_runbot_bundle_info(body):
+    # resolve a pasted bundle URL to its branch name + repos + PRs (the
+    # "workspace from a runbot bundle" wizard step)
+    info, error = RUNBOT.bundle_info(body["url"])
+    if error:
+        return 400, {"ok": False, "error": error}
+    return {"ok": True, **info}
+
+
+@post_route("/api/nightly")
+def _api_nightly(body):
+    max_nights = min(max(int(body.get("max_nights", 14)), 7), 84)
+    return {"ok": True, **NIGHTLY.builds(refresh=bool(body.get("refresh")), max_nights=max_nights)}
+
+
+@post_route("/api/nightly/errors")
+def _api_nightly_errors(body):
+    url = body.get("url", "")
+    if not re.match(r"^/runbot/batch/\d+/build/\d+$", url):
+        return 400, {"ok": False, "error": "invalid url"}
+    return {"ok": True, **NIGHTLY.build_errors(url)}
+
+
+@post_route("/api/memory/batch", "url")
+def _api_memory_batch(body):
+    return {"ok": True, "builds": NIGHTLY.batch_builds(body["url"])}
+
+
+@post_route("/api/memory/fetch", "builds:list")
+def _api_memory_fetch(body):
+    data = MEMORY.fetch(body["builds"], with_mobile=bool(body.get("with_mobile", False)))
+    return {"ok": True, "data": data}
+
+
+# ── addons / assets / databases ──────────────────────────────────────────────
+
+
+@post_route("/api/addons", "repos:list")
+def _api_addons(body):
+    db = body.get("db")
+    mods = ADDONS.modules(body["repos"])
+    state = DATABASE.installed_modules(db) if db else {}
+    for m in mods:
+        m["state"] = state.get(m["name"])
+    return {"ok": True, "modules": mods, "db": db}
+
+
+@post_route("/api/assets", "db:str")
+def _api_assets(body):
+    db = body["db"]
+    return {"ok": True, "db": db, "bundles": ASSETS.bundles(db, refresh=bool(body.get("refresh")))}
+
+
+@post_route("/api/assets/generate", "db:str")
+def _api_assets_generate(body):
+    db = body["db"]
+    try:
+        # the shell cmd is built from the server's own config; an optional
+        # `workspace` resolves through the launch builder so a worktree
+        # workspace's bundles are generated with ITS checkout's code
+        cfg = CONFIG.get()["config"]
+        wsid = body.get("workspace")
+        if wsid:
+            cfg = services.build_start_config(cfg, wsid) or cfg
+        cmd = build_shell_cmd(cfg, db)
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)}
+    ok, error = ASSETS.generate(cmd, db)
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/assets/breakdown", "db:str", "bundle:str", missing="missing db or bundle")
+def _api_assets_breakdown(body):
+    # read straight from the stored bundle attachment — no odoo process; the
+    # configured filestore root locates <filestore>/<db>/<store_fname>. kind
+    # scopes to the clicked asset ("js"/"css"); anything else reads both.
+    kind = body.get("kind")
+    if kind not in ("js", "css"):
+        kind = None
+    data, error = ASSETS.breakdown(body["db"], body["bundle"], _filestore(body), kind)
+    if data is None:
+        return 400, {"ok": False, "error": error}
+    return {"ok": True, "bundle": body["bundle"], **data}
+
+
+@post_route("/api/rust-bundler/install")
+def _api_rust_bundler_install(body):
+    ok, result = RUST_BUNDLER.install(CONFIG.get().get("config") or {})
+    status = 200 if ok else 409 if "already in progress" in result.get("error", "") else 500
+    return status, {"ok": ok, **result}
+
+
+@post_route("/api/databases/drop", "name:str", missing="missing database name")
+def _api_databases_drop(body):
+    ok, error = DATABASE.drop(body["name"], _filestore(body))
+    if ok:
+        return {"ok": True}
+    return 400, {"ok": False, "error": error}
+
+
+@post_route("/api/databases/clone", "source:str", "dest:str")
+def _api_databases_clone(body):
+    ok, error = DATABASE.clone(body["source"], body["dest"], _filestore(body))
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/databases/rename", "name:str", "new_name:str")
+def _api_databases_rename(body):
+    ok, error = DATABASE.rename(body["name"], body["new_name"], _filestore(body))
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+# ── goo itself ───────────────────────────────────────────────────────────────
+
+
+@post_route("/api/open-editor", missing="missing path")
+def _api_open_editor(body):
+    paths = body.get("paths") or body.get("path")
+    if not paths:
+        return 400, {"ok": False, "error": "missing path"}
+    ok, error = open_in_editor(body.get("editor"), paths)
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/goo/update")
+def _api_goo_update(body):
+    global GOO_UPDATE
+    ok, error = goo_fast_forward()
+    if ok:
+        GOO_UPDATE = goo_update_status()
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/goo/check")
+def _api_goo_check(body):
+    # on-demand re-check (the "Check for update" button) — fetches + recomputes
+    return {"ok": check_goo_update(), **GOO_UPDATE, "boot": BOOT_ID}
+
+
+@post_route("/api/goo/restart")
+def _api_goo_restart(body):
+    # the reply goes out first: restart_goo re-execs only after a short delay,
+    # so the response reaches the client before the process is replaced
+    threading.Thread(target=lambda: (time.sleep(0.5), restart_goo()), daemon=True).start()
+    return {"ok": True}
+
+
+@post_route("/api/event", "text")
+def _api_event(body):
+    # mirror the frontend event log on the goo terminal
+    print(f"{TAG} {time.strftime('%H:%M:%S')} • {body['text']}", flush=True)
+    return {"ok": True}
+
+
+# =============================================================================
 # HTTP server
 # =============================================================================
 
@@ -1580,641 +2180,25 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_ok():
             return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         path = self.path.split("?", 1)[0]
-        if path == "/api/start":
-            self._action_start(lambda cfg: WORKSPACES.start("main", cfg))
-        elif path == "/api/restart":
-            self._action_start(lambda cfg: WORKSPACES.restart("main", cfg))
-        elif path in ("/api/tests/run", "/api/addons/run"):
-            self._action_oneshot()
-        elif path == "/api/config":
-            self._save_config()
-        elif path == "/api/rust-bundler/install":
-            config = CONFIG.get().get("config") or {}
-            ok, result = RUST_BUNDLER.install(config)
-            status = 200 if ok else 409 if "already in progress" in result.get("error", "") else 500
-            self._send_json(status, {"ok": ok, **result})
-        elif path == "/api/cli/test":
-            self._handle_cli_test()
-        elif path == "/api/stop":
-            ok, detail = WORKSPACES.stop_and_finalize("main")
-            if ok:
-                self._send_json(200, {"ok": True, "state": "stopped"})
-            else:
-                self._send_json(409, {"ok": False, "error": detail})
-        elif path == "/api/code/branches":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            self._send_json(200, {"ok": True, "repos": GIT.branches(repos)})
-        elif path == "/api/prs":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            prs = GITHUB.prs(repos, refresh=bool((body or {}).get("refresh")))
-            self._send_json(200, {"ok": True, "repos": prs})
-        elif path == "/api/prs/for-branches":
-            body, err = self._read_json()
-            branches = (body or {}).get("branches")
-            if err or not isinstance(branches, list):
-                return self._send_json(400, {"ok": False, "error": "missing branches list"})
-            prs = GITHUB.prs_for_branches(branches, refresh=bool((body or {}).get("refresh")))
-            self._send_json(200, {"ok": True, "prs": prs})
-        elif path == "/api/mergebot":
-            body, err = self._read_json()
-            prs = (body or {}).get("prs")
-            if err or not isinstance(prs, list):
-                return self._send_json(400, {"ok": False, "error": "missing prs list"})
-            states, details, forward_ports, unsupported = MERGEBOT.statuses(
-                prs, refresh=bool((body or {}).get("refresh"))
-            )
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "states": states,
-                    "details": details,
-                    "forward_ports": forward_ports,
-                    "unsupported": unsupported,
-                },
-            )
-        elif path == "/api/runbot":
-            body, err = self._read_json()
-            branches = (body or {}).get("branches")
-            if err or not isinstance(branches, list):
-                return self._send_json(400, {"ok": False, "error": "missing branches list"})
-            states = RUNBOT.statuses(branches, refresh=bool((body or {}).get("refresh")))
-            self._send_json(200, {"ok": True, "states": states})
-        elif path == "/api/runbot/bundle-info":
-            # resolve a pasted bundle URL to its branch name + repos + PRs (the
-            # "workspace from a runbot bundle" wizard step)
-            body, err = self._read_json()
-            url = (body or {}).get("url")
-            if err or not url:
-                return self._send_json(400, {"ok": False, "error": "missing url"})
-            info, error = RUNBOT.bundle_info(url)
-            if error:
-                return self._send_json(400, {"ok": False, "error": error})
-            self._send_json(200, {"ok": True, **info})
-        elif path == "/api/nightly":
-            body, _ = self._read_json()
-            data = body or {}
-            refresh = bool(data.get("refresh", False))
-            max_nights = min(max(int(data.get("max_nights", 14)), 7), 84)
-            self._send_json(
-                200, {"ok": True, **NIGHTLY.builds(refresh=refresh, max_nights=max_nights)}
-            )
-        elif path == "/api/nightly/errors":
-            body, err = self._read_json()
-            url = (body or {}).get("url", "")
-            if err or not re.match(r"^/runbot/batch/\d+/build/\d+$", url):
-                return self._send_json(400, {"ok": False, "error": "invalid url"})
-            self._send_json(200, {"ok": True, **NIGHTLY.build_errors(url)})
-        elif path == "/api/memory/batch":
-            body, err = self._read_json()
-            url = (body or {}).get("url", "")
-            if err or not url:
-                return self._send_json(400, {"ok": False, "error": "missing url"})
-            self._send_json(200, {"ok": True, "builds": NIGHTLY.batch_builds(url)})
-        elif path == "/api/memory/fetch":
-            body, err = self._read_json()
-            builds = (body or {}).get("builds")
-            if err or not isinstance(builds, list):
-                return self._send_json(400, {"ok": False, "error": "missing builds list"})
-            with_mobile = bool((body or {}).get("with_mobile", False))
-            self._send_json(
-                200, {"ok": True, "data": MEMORY.fetch(builds, with_mobile=with_mobile)}
-            )
-        elif path == "/api/addons":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            db = (body or {}).get("db")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            mods = ADDONS.modules(repos)
-            state = DATABASE.installed_modules(db) if db else {}
-            for m in mods:
-                m["state"] = state.get(m["name"])
-            self._send_json(200, {"ok": True, "modules": mods, "db": db})
-        elif path == "/api/assets":
-            body, err = self._read_json()
-            db = (body or {}).get("db")
-            if err or not isinstance(db, str) or not db:
-                return self._send_json(400, {"ok": False, "error": "missing db"})
-            bundles = ASSETS.bundles(db, refresh=bool((body or {}).get("refresh")))
-            self._send_json(200, {"ok": True, "db": db, "bundles": bundles})
-        elif path == "/api/assets/generate":
-            body, err = self._read_json()
-            db = (body or {}).get("db")
-            if err or not isinstance(db, str) or not db:
-                return self._send_json(400, {"ok": False, "error": "missing db"})
-            try:
-                # the shell cmd is built from the server's own config; an optional
-                # `workspace` resolves through the launch builder so a worktree
-                # workspace's bundles are generated with ITS checkout's code
-                cfg = CONFIG.get()["config"]
-                wsid = (body or {}).get("workspace")
-                if wsid:
-                    cfg = services.build_start_config(cfg, wsid) or cfg
-                cmd = build_shell_cmd(cfg, db)
-            except ValueError as e:
-                return self._send_json(400, {"ok": False, "error": str(e)})
-            ok, error = ASSETS.generate(cmd, db)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/assets/breakdown":
-            body, err = self._read_json()
-            db = (body or {}).get("db")
-            bundle = (body or {}).get("bundle")
-            if (
-                err
-                or not isinstance(db, str)
-                or not db
-                or not isinstance(bundle, str)
-                or not bundle
-            ):
-                return self._send_json(400, {"ok": False, "error": "missing db or bundle"})
-            # read straight from the stored bundle attachment — no odoo process; the
-            # configured filestore root locates <filestore>/<db>/<store_fname>. kind
-            # scopes to the clicked asset ("js"/"css"); anything else reads both.
-            kind = (body or {}).get("kind")
-            if kind not in ("js", "css"):
-                kind = None
-            data, error = ASSETS.breakdown(db, bundle, _filestore(body), kind)
-            if data is None:
-                return self._send_json(400, {"ok": False, "error": error})
-            self._send_json(200, {"ok": True, "bundle": bundle, **data})
-        elif path == "/api/code/branches/delete":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            branch = (body or {}).get("branch")
-            if err or not repo_path or not branch:
-                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error, remote_error = GIT.delete_branch(
-                repo_path,
-                branch,
-                bool((body or {}).get("delete_remote")),
-                push_remote=(body or {}).get("push_remote"),
-            )
-            if ok:
-                self._send_json(200, {"ok": True, "remote_error": remote_error})
-            else:
-                self._send_json(400, {"ok": False, "error": error})
-        elif path == "/api/code/branches/create":
-            body, err = self._read_json()
-            branches = (body or {}).get("branches")
-            if err or not isinstance(branches, list):
-                return self._send_json(400, {"ok": False, "error": "missing branches list"})
-
-            # create each branch in parallel — independent working trees, so a
-            # multi-repo target's branches are created in one create's time, not the sum
-            def mk(b):
-                ok, error = GIT.create_branch(
-                    b.get("path"),
-                    b.get("name"),
-                    b.get("start_point"),
-                    fresh_start=bool(b.get("fresh_start")),
-                    pull_remote=b.get("pull_remote"),
-                    repo=b.get("repo", ""),
-                )
-                return {"name": b.get("name"), "ok": ok, "error": error}
-
-            if branches:
-                with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
-                    results = list(pool.map(mk, branches))
-            else:
-                results = []
-            self._send_json(200, {"ok": True, "results": results})
-        elif path == "/api/open-editor":
-            body, err = self._read_json()
-            paths = (body or {}).get("paths") or (body or {}).get("path")
-            if err or not paths:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = open_in_editor((body or {}).get("editor"), paths)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/goo/update":
-            global GOO_UPDATE
-            ok, error = goo_fast_forward()
-            if ok:
-                GOO_UPDATE = goo_update_status()
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/goo/check":
-            # on-demand re-check (the "Check for update" button) — fetches + recomputes
-            ok = check_goo_update()
-            self._send_json(200, {"ok": ok, **GOO_UPDATE, "boot": BOOT_ID})
-        elif path == "/api/goo/restart":
-            # reply first, then re-exec from a short-delayed thread so the response
-            # reaches the client before the process is replaced
-            self._send_json(200, {"ok": True})
-            threading.Thread(target=lambda: (time.sleep(0.5), restart_goo()), daemon=True).start()
-        elif path == "/api/code/checkout":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-
-            # check out each repo in parallel — independent working trees, so a
-            # multi-repo target switches in one checkout's time, not the sum
-            def co(r):
-                ok, error = GIT.checkout(r.get("path"), r.get("branch"), r.get("repo", ""))
-                return {"branch": r.get("branch"), "ok": ok, "error": error}
-
-            if repos:
-                with ThreadPoolExecutor(max_workers=min(8, len(repos))) as pool:
-                    results = list(pool.map(co, repos))
-            else:
-                results = []
-            self._send_json(200, {"ok": True, "results": results})
-        elif path == "/api/code/rebase":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-
-            # fetch + rebase each repo in parallel — independent working trees, so the
-            # slow network fetches overlap instead of running back-to-back (each phase
-            # reports under its own event id, so the progress log stays unambiguous)
-            def fr(r):
-                ok, error = GIT.fetch_rebase(
-                    r.get("path"), r.get("base"), r.get("pull_remote"), r.get("repo")
-                )
-                return {"repo": r.get("repo"), "ok": ok, "error": error}
-
-            if repos:
-                with ThreadPoolExecutor(max_workers=min(8, len(repos))) as pool:
-                    results = list(pool.map(fr, repos))
-            else:
-                results = []
-            self._send_json(200, {"ok": True, "results": results})
-        elif path == "/api/workspace/create":
-            # add a git worktree per repo (the frontend computes every path); git
-            # creates the parent <worktree_dir>/<target>/ folder on the first add
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            if err or not isinstance(repos, list) or not repos:
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            results = []
-            for r in repos:
-                ok, error = GIT.worktree_add(
-                    r.get("mainPath"),
-                    r.get("worktreePath"),
-                    r.get("newBranch") or r.get("branch"),
-                    r.get("repo", ""),
-                    new_branch=bool(r.get("newBranch")),
-                    start_point=r.get("startPoint"),
-                    fresh_start=True,
-                    pull_remote=r.get("pull_remote"),
-                )
-                results.append({"repo": r.get("repo"), "ok": ok, "error": error})
-            self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
-        elif path == "/api/workspace/start":
-            body, err = self._read_json()
-            target = (body or {}).get("workspace")
-            if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing workspace"})
-            cfg = self._build_launch(body)  # server builds the worktree launch config
-            if cfg is None:
-                return self._send_json(400, {"ok": False, "error": "unknown workspace"})
-            ok, detail = WORKSPACES.start(target, cfg)
-            if ok:
-                self._send_json(200, {"ok": True, "port": detail["port"]})
-            else:
-                code = 400 if str(detail).startswith("invalid_config") else 409
-                self._send_json(code, {"ok": False, "error": detail})
-        elif path == "/api/workspace/stop":
-            body, err = self._read_json()
-            target = (body or {}).get("workspace")
-            if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing workspace"})
-            # stop_and_finalize: a stop mid-run finalizes the run + resumes the
-            # server it interrupted, exactly like /api/stop does for main
-            ok, detail = WORKSPACES.stop_and_finalize(target)
-            self._send_json(200 if ok else 409, {"ok": ok, "error": None if ok else detail})
-        elif path == "/api/workspace/remove":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos")
-            dir_path = (body or {}).get("dirPath")
-            if err or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing repos list"})
-            results = []
-            for r in repos:
-                ok, error = GIT.worktree_remove(
-                    r.get("mainPath"), r.get("worktreePath"), r.get("repo", "")
-                )
-                results.append({"repo": r.get("repo"), "ok": ok, "error": error})
-            if dir_path:
-                effects.remove_tree(dir_path)  # sweep the now-empty parent folder
-            target = (body or {}).get("workspace")
-            if target:
-                CLAUDE.forget(target)  # its checkout is gone; drop the chat + any run
-            self._send_json(200, {"ok": all(x["ok"] for x in results), "results": results})
-        elif path == "/api/workspace/list":
-            body, err = self._read_json()
-            workspaces = (body or {}).get("workspaces")
-            if err or not isinstance(workspaces, list):
-                return self._send_json(400, {"ok": False, "error": "missing workspaces list"})
-            self._send_json(200, {"ok": True, "servers": WORKSPACES.status_for(workspaces)})
-        elif path == "/api/workspace/logs":
-            body, err = self._read_json()
-            target = (body or {}).get("workspace")
-            if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing workspace"})
-            self._send_json(200, {"ok": True, "lines": WORKSPACES.logs_for(target)})
-        elif path == "/api/workspace/claude":
-            body, err = self._read_json()
-            target = (body or {}).get("workspace")
-            prompt = (body or {}).get("prompt")
-            cwd = (body or {}).get("cwd")
-            add_dirs = (body or {}).get("addDirs") or []
-            model = (body or {}).get("model")
-            if err or not target or not prompt or not cwd:
-                return self._send_json(
-                    400, {"ok": False, "error": "missing workspace, prompt or cwd"}
-                )
-            ok, detail = CLAUDE.send(target, prompt, cwd, add_dirs, model=model)
-            if ok:
-                self._send_json(200, {"ok": True, "state": detail["state"]})
-            else:
-                code = 409 if detail == "already_running" else 400
-                self._send_json(code, {"ok": False, "error": detail})
-        elif path == "/api/workspace/claude/stop":
-            body, err = self._read_json()
-            target = (body or {}).get("workspace")
-            if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing workspace"})
-            ok, detail = CLAUDE.stop(target)
-            self._send_json(200, {"ok": ok, "error": None if ok else detail})
-        elif path == "/api/workspace/claude/history":
-            body, err = self._read_json()
-            target = (body or {}).get("workspace")
-            if err or not target:
-                return self._send_json(400, {"ok": False, "error": "missing workspace"})
-            self._send_json(200, {"ok": True, **CLAUDE.history_for(target)})
-        elif path == "/api/databases/drop":
-            body, err = self._read_json()
-            name = (body or {}).get("name")
-            if err or not name or not isinstance(name, str):
-                return self._send_json(400, {"ok": False, "error": "missing database name"})
-            ok, error = DATABASE.drop(name, _filestore(body))
-            if ok:
-                self._send_json(200, {"ok": True})
-            else:
-                self._send_json(400, {"ok": False, "error": error})
-        elif path == "/api/databases/clone":
-            body, err = self._read_json()
-            source = (body or {}).get("source")
-            target = (body or {}).get("dest")
-            if (
-                err
-                or not isinstance(source, str)
-                or not isinstance(target, str)
-                or not source
-                or not target
-            ):
-                return self._send_json(400, {"ok": False, "error": "missing source or dest"})
-            ok, error = DATABASE.clone(source, target, _filestore(body))
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/databases/rename":
-            body, err = self._read_json()
-            name = (body or {}).get("name")
-            new_name = (body or {}).get("new_name")
-            if (
-                err
-                or not isinstance(name, str)
-                or not isinstance(new_name, str)
-                or not name
-                or not new_name
-            ):
-                return self._send_json(400, {"ok": False, "error": "missing name or new_name"})
-            ok, error = DATABASE.rename(name, new_name, _filestore(body))
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/prs/close":
-            body, err = self._read_json()
-            repo = (body or {}).get("repo")
-            number = (body or {}).get("number")
-            if err or not repo or not number:
-                return self._send_json(400, {"ok": False, "error": "missing repo or number"})
-            ok, error = GITHUB.close_pr(repo, number)
-            if ok:
-                self._send_json(200, {"ok": True})
-            else:
-                self._send_json(400, {"ok": False, "error": error})
-        elif path == "/api/prs/r-plus":
-            body, err = self._read_json()
-            repo = (body or {}).get("repo")
-            number = (body or {}).get("number")
-            valid_repo = isinstance(repo, str) and re.fullmatch(
-                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo
-            )
-            if err or not valid_repo or type(number) is not int or number <= 0:
-                return self._send_json(400, {"ok": False, "error": "invalid repo or number"})
-            ok, error = GITHUB.post_r_plus(repo, number)
-            self._send_json(
-                200 if ok else 400,
-                {"ok": ok, **({} if ok else {"error": error})},
-            )
-        elif path == "/api/code/branch/remote":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            branch = (body or {}).get("branch")
-            if err or not repo_path or not branch:
-                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            exists, error = GIT.remote_branch_exists(
-                repo_path, branch, push_remote=(body or {}).get("push_remote")
-            )
-            if error:
-                self._send_json(400, {"ok": False, "error": error})
-            else:
-                self._send_json(200, {"ok": True, "exists": exists})
-        elif path == "/api/code/branch/push":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            branch = (body or {}).get("branch")
-            if err or not repo_path or not branch:
-                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = GIT.push_branch(
-                repo_path,
-                branch,
-                bool((body or {}).get("force")),
-                push_remote=(body or {}).get("push_remote"),
-            )
-            if ok:
-                self._send_json(200, {"ok": True})
-            else:
-                self._send_json(400, {"ok": False, "error": error})
-        elif path == "/api/code/remote-branches/search":
-            body, err = self._read_json()
-            repos = (body or {}).get("repos", [])
-            query = (body or {}).get("query", "")
-            if err or not query or not isinstance(repos, list):
-                return self._send_json(400, {"ok": False, "error": "missing query or repos"})
-            results = GITHUB.search_branches(repos, query)
-            self._send_json(200, {"ok": True, "results": results})
-        elif path == "/api/code/remote-branch/fetch":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            branch = (body or {}).get("branch")
-            if err or not repo_path or not branch:
-                return self._send_json(400, {"ok": False, "error": "missing path or branch"})
-            ok, error = GIT.fetch_remote_branch(
-                repo_path, branch, pull_remote=(body or {}).get("pull_remote")
-            )
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/wip-commit":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            if err or not repo_path:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = GIT.wip_commit(repo_path)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/commit":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            message = (body or {}).get("message")
-            if err or not repo_path or not (message or "").strip():
-                return self._send_json(400, {"ok": False, "error": "missing path or message"})
-            ok, error = GIT.commit(repo_path, message)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/amend":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            message = (body or {}).get("message")
-            if err or not repo_path or not (message or "").strip():
-                return self._send_json(400, {"ok": False, "error": "missing path or message"})
-            ok, error = GIT.amend_commit(repo_path, message)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/reword":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            sha = (body or {}).get("sha")
-            message = (body or {}).get("message")
-            if err or not repo_path or not sha or not (message or "").strip():
-                return self._send_json(400, {"ok": False, "error": "missing path, sha, or message"})
-            ok, error = GIT.reword_commit(
-                repo_path,
-                sha,
-                message,
-                base=(body or {}).get("base") or "",
-                pull_remote=(body or {}).get("pull_remote") or "origin",
-            )
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/rebase-plan":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            base = (body or {}).get("base")
-            plan = (body or {}).get("plan")
-            if err or not repo_path or not base or not isinstance(plan, list):
-                return self._send_json(400, {"ok": False, "error": "missing path, base, or plan"})
-            ok, error, in_progress = GIT.rewrite_history(
-                repo_path, base, plan, pull_remote=(body or {}).get("pull_remote") or "origin"
-            )
-            self._send_json(
-                200 if ok else 400, {"ok": ok, "error": error, "in_progress": in_progress}
-            )
-        elif path == "/api/code/rebase-abort":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            if err or not repo_path:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = GIT.abort_rebase(repo_path)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/rebase-status":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            if err or not repo_path:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            in_progress, error = GIT.rebase_status(repo_path)
-            self._send_json(
-                200 if error is None else 400,
-                {"ok": error is None, "in_progress": in_progress, "error": error},
-            )
-        elif path == "/api/code/discard":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            if err or not repo_path:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            ok, error = GIT.discard(repo_path)
-            self._send_json(200 if ok else 400, {"ok": ok, "error": error})
-        elif path == "/api/code/log":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            if err or not repo_path:
-                return self._send_json(400, {"ok": False, "error": "missing path"})
-            count = int((body or {}).get("count") or 20)
-            ref = (body or {}).get("ref") or ""
-            base = (body or {}).get("base") or ""
-            pull_remote = (body or {}).get("pull_remote") or "origin"
-            commits, error = GIT.log(repo_path, count, ref, base, pull_remote)
-            self._send_json(
-                200 if error is None else 400,
-                {"ok": error is None, "commits": commits or [], "error": error},
-            )
-        elif path == "/api/code/commit/diff":
-            body, err = self._read_json()
-            repo_path = (body or {}).get("path")
-            sha = (body or {}).get("sha")
-            if err or not repo_path or not sha:
-                return self._send_json(400, {"ok": False, "error": "missing path or sha"})
-            diff, error = GIT.commit_diff(repo_path, sha)
-            self._send_json(
-                200 if error is None else 400,
-                {"ok": error is None, "diff": diff or "", "error": error},
-            )
-        elif path == "/api/event":
-            body, err = self._read_json()
-            text = (body or {}).get("text")
-            if err or not text:
-                return self._send_json(400, {"ok": False, "error": "missing text"})
-            # mirror the frontend event log on the goo terminal
-            print(f"{TAG} {time.strftime('%H:%M:%S')} • {text}", flush=True)
-            self._send_json(200, {"ok": True})
-        else:
-            self._send_json(404, {"ok": False, "error": "not_found"})
+        # the two POSTs that need the raw request stay hand-dispatched
+        if path == "/api/config":
+            return self._save_config()
+        if path == "/api/cli/test":
+            return self._handle_cli_test()
+        entry = POST_ROUTES.get(path)
+        if not entry:
+            return self._send_json(404, {"ok": False, "error": "not_found"})
+        fn, required, missing = entry
+        body, _ = self._read_json()
+        body = body or {}  # a bad/absent JSON body just fails the required checks below
+        for spec in required:
+            if not _field_ok(body, spec):
+                return self._send_json(400, {"ok": False, "error": missing})
+        result = fn(body)
+        status, payload = result if isinstance(result, tuple) else (200, result)
+        self._send_json(status, payload)
 
     # --- API helpers ---
-
-    def _build_launch(self, body):
-        """Resolve a thin {workspace, overrides} launch request against the server's
-        own config into the dict build_odoo_cmd consumes (handles main + worktree
-        workspaces). Returns None if the workspace is missing/unknown."""
-        target = (body or {}).get("workspace")
-        if not target:
-            return None
-        overrides = (body or {}).get("overrides") or {}
-        return services.build_start_config(CONFIG.get()["config"], target, overrides)
-
-    def _action_start(self, action):
-        body, err = self._read_json()
-        if err:
-            return self._send_json(400, {"ok": False, "error": err})
-        cfg = self._build_launch(body)
-        if cfg is None:
-            return self._send_json(400, {"ok": False, "error": "unknown workspace"})
-        ok, detail = action(cfg)
-        if ok:
-            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail["cmd"]})
-        else:
-            code = 400 if detail.startswith("invalid_config") else 409
-            self._send_json(code, {"ok": False, "error": detail})
-
-    def _action_oneshot(self):
-        """Start a one-shot run (tests / install / upgrade) on a workspace's server
-        slot — `body["slot"]` (default "main"). The slot's own server is stopped
-        first; if a real server was interrupted, its config is handed to the run so
-        the backend restarts it when the run ends (resume-after, owned server-side)."""
-        body, err = self._read_json()
-        if err:
-            return self._send_json(400, {"ok": False, "error": err})
-        cfg = self._build_launch(body)
-        if cfg is None:
-            return self._send_json(400, {"ok": False, "error": "unknown workspace"})
-        wsid = (body or {}).get("slot") or "main"
-        ok, detail = WORKSPACES.oneshot(wsid, cfg)
-        if ok:
-            self._send_json(200, {"ok": True, "state": "starting", "cmd": detail["cmd"]})
-        else:
-            code = 400 if detail.startswith("invalid_config") else 409
-            self._send_json(code, {"ok": False, "error": detail})
 
     def _read_json(self):
         try:
