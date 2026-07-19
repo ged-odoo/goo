@@ -1473,6 +1473,25 @@ class GitService:
         self.io = io
         self.notify = notify or (lambda *a, **k: None)
 
+    def _git(self, path, *args, timeout=30, err="git failed", quiet=False, tail=False):
+        """Run one git command in <path> (expanduser'd). Returns (result, error):
+        error is None on success, else the first stderr line (or <err> when git
+        was silent), or the FileNotFoundError/TimeoutExpired message — the shared
+        failure envelope every simple mutation used to hand-roll. `tail` reports
+        the LAST stderr line instead (push errors put the useful hint there).
+        On a nonzero exit the result is still returned so callers can inspect
+        the raw stderr (e.g. delete_branch's "remote ref does not exist")."""
+        try:
+            r = self.io.run(
+                ["git", "-C", os.path.expanduser(path), *args], timeout=timeout, quiet=quiet
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return None, str(e)
+        if r.returncode != 0:
+            lines = r.stderr.strip().split("\n")
+            return r, (lines[-1] if tail else lines[0]) or err
+        return r, None
+
     def branches(self, repos):
         """For each repo {id, path}: the checked-out branch and all local branches
         with their last-commit date, plus dirty / pushed / ahead-behind state and
@@ -1620,21 +1639,13 @@ class GitService:
         "ok"/"failed"."""
         if not path or not branch:
             return False, "missing path or branch"
-        p = os.path.expanduser(path)
-        label = repo or os.path.basename(p)
+        label = repo or os.path.basename(os.path.expanduser(path))
         eid = uuid.uuid4().hex
         checking = f"checking out {branch} ({label})"
         self.notify(checking, event_id=eid, status="start")
-        try:
-            r = self.io.run(["git", "-C", p, "checkout", branch], timeout=60)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            self.notify(checking, event_id=eid, status="error")
-            return False, str(e)
-        if r.returncode != 0:
-            self.notify(checking, event_id=eid, status="error")
-            return False, r.stderr.strip().split("\n")[0] or "git checkout failed"
-        self.notify(checking, event_id=eid, status="done")
-        return True, None
+        _, error = self._git(path, "checkout", branch, timeout=60, err="git checkout failed")
+        self.notify(checking, event_id=eid, status="error" if error else "done")
+        return error is None, error
 
     def fresh_start_point(self, path, branch, pull_remote="origin", repo=""):
         """Resolve a workspace branch's start point. If the configured pull remote
@@ -1666,17 +1677,9 @@ class GitService:
         eid = uuid.uuid4().hex
         fetching = f"fetching {branch} ({label})"
         self.notify(fetching, event_id=eid, status="start")
-        try:
-            fetched = self.io.run(["git", "-C", p, "fetch", remote, branch], timeout=180)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            self.notify(fetching, event_id=eid, status="error")
-            return None, str(e)
-        if fetched.returncode != 0:
-            self.notify(fetching, event_id=eid, status="error")
-            error = (fetched.stderr.strip() or "git fetch failed").split("\n")[0]
-            return None, error
-        self.notify(fetching, event_id=eid, status="done")
-        return "FETCH_HEAD", None
+        _, error = self._git(p, "fetch", remote, branch, timeout=180, err="git fetch failed")
+        self.notify(fetching, event_id=eid, status="error" if error else "done")
+        return (None, error) if error else ("FETCH_HEAD", None)
 
     def worktree_add(
         self,
@@ -1710,19 +1713,12 @@ class GitService:
         creating = f"creating worktree {branch} ({label})"
         self.notify(creating, event_id=eid, status="start")
         if new_branch:
-            cmd = ["git", "-C", p, "worktree", "add", "-b", branch, wp, start_point]
+            args = ["worktree", "add", "-b", branch, wp, start_point]
         else:
-            cmd = ["git", "-C", p, "worktree", "add", wp, branch]
-        try:
-            r = self.io.run(cmd, timeout=120)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            self.notify(creating, event_id=eid, status="error")
-            return False, str(e)
-        if r.returncode != 0:
-            self.notify(creating, event_id=eid, status="error")
-            return False, (r.stderr.strip() or "git worktree add failed").split("\n")[0]
-        self.notify(creating, event_id=eid, status="done")
-        return True, None
+            args = ["worktree", "add", wp, branch]
+        _, error = self._git(p, *args, timeout=120, err="git worktree add failed")
+        self.notify(creating, event_id=eid, status="error" if error else "done")
+        return error is None, error
 
     def worktree_remove(self, main_path, worktree_path, repo=""):
         """Remove the git worktree at <worktree_path> (--force, so it goes even with
@@ -1735,16 +1731,11 @@ class GitService:
         eid = uuid.uuid4().hex
         removing = f"removing worktree ({label})"
         self.notify(removing, event_id=eid, status="start")
-        try:
-            r = self.io.run(["git", "-C", p, "worktree", "remove", "--force", wp], timeout=60)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            self.notify(removing, event_id=eid, status="error")
-            return False, str(e)
-        if r.returncode != 0:
-            self.notify(removing, event_id=eid, status="error")
-            return False, (r.stderr.strip() or "git worktree remove failed").split("\n")[0]
-        self.notify(removing, event_id=eid, status="done")
-        return True, None
+        _, error = self._git(
+            p, "worktree", "remove", "--force", wp, timeout=60, err="git worktree remove failed"
+        )
+        self.notify(removing, event_id=eid, status="error" if error else "done")
+        return error is None, error
 
     def create_branch(
         self, path, name, start_point, fresh_start=False, pull_remote="origin", repo=""
@@ -1757,28 +1748,17 @@ class GitService:
             start_point, error = self.fresh_start_point(path, start_point, pull_remote, repo)
             if error:
                 return False, error
-        try:
-            r = self.io.run(
-                ["git", "-C", os.path.expanduser(path), "branch", name, start_point], timeout=10
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
-        if r.returncode != 0:
-            return False, r.stderr.strip().split("\n")[0] or "git branch failed"
-        return True, None
+        _, error = self._git(path, "branch", name, start_point, timeout=10, err="git branch failed")
+        return error is None, error
 
     def delete_branch(self, path, branch, delete_remote=False, push_remote="dev"):
         """Force-delete a local branch, and optionally its branch on the configured
         push remote too. Returns (ok, error, remote_error): the first two are for the
         local delete; remote_error is set when the local delete succeeded but the
         remote branch could not be removed (None otherwise)."""
-        path = os.path.expanduser(path)
-        try:
-            r = self.io.run(["git", "-C", path, "branch", "-D", branch], timeout=10)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e), None
-        if r.returncode != 0:
-            return False, r.stderr.strip().split("\n")[0] or "git branch -D failed", None
+        _, error = self._git(path, "branch", "-D", branch, timeout=10, err="git branch -D failed")
+        if error:
+            return False, error, None
         remote_error = None
         if delete_remote:
             if is_base_branch(branch):
@@ -1788,30 +1768,28 @@ class GitService:
             # exist", which we treat as success: there was nothing to remove.
             remote = push_remote or "dev"
             self.io.log_request(f"git push {remote} --delete {branch}")
-            try:
-                r = self.io.run(
-                    ["git", "-C", path, "push", remote, "--delete", branch], timeout=120
-                )
-                if r.returncode != 0 and "remote ref does not exist" not in r.stderr:
-                    remote_error = r.stderr.strip().split("\n")[-1] or "git push --delete failed"
-            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                remote_error = str(e)
+            r, remote_error = self._git(
+                path,
+                "push",
+                remote,
+                "--delete",
+                branch,
+                timeout=120,
+                err="git push --delete failed",
+                tail=True,
+            )
+            if remote_error and r is not None and "remote ref does not exist" in r.stderr:
+                remote_error = None
         return True, None, remote_error
 
     def commit(self, path, message):
         """Stage all changes and create a commit with the given message. Returns
         (ok, error)."""
-        path = os.path.expanduser(path)
-        try:
-            r = self.io.run(["git", "-C", path, "add", "-A"], timeout=30)
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git add failed"
-            r = self.io.run(["git", "-C", path, "commit", "--no-verify", "-m", message], timeout=30)
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git commit failed"
-            return True, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
+        _, error = self._git(path, "add", "-A", err="git add failed")
+        if error:
+            return False, error
+        _, error = self._git(path, "commit", "--no-verify", "-m", message, err="git commit failed")
+        return error is None, error
 
     def wip_commit(self, path):
         """Stage all changes and create a WIP commit. Returns (ok, error)."""
@@ -1820,20 +1798,13 @@ class GitService:
     def amend_commit(self, path, message):
         """Stage all changes and fold them into the HEAD commit with the given
         message (git commit --amend). Returns (ok, error)."""
-        path = os.path.expanduser(path)
-        try:
-            r = self.io.run(["git", "-C", path, "add", "-A"], timeout=30)
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git add failed"
-            r = self.io.run(
-                ["git", "-C", path, "commit", "--no-verify", "--amend", "-m", message],
-                timeout=30,
-            )
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git commit --amend failed"
-            return True, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
+        _, error = self._git(path, "add", "-A", err="git add failed")
+        if error:
+            return False, error
+        _, error = self._git(
+            path, "commit", "--no-verify", "--amend", "-m", message, err="git commit --amend failed"
+        )
+        return error is None, error
 
     def _ahead_shas(self, path, ref, base, pull_remote):
         """The set of commit shas reachable from <ref> (default HEAD) but not from
@@ -1872,14 +1843,8 @@ class GitService:
     def abort_rebase(self, path):
         """Abort an in-progress rebase (git rebase --abort), restoring the
         branch to its pre-rebase state. Returns (ok, error)."""
-        path = os.path.expanduser(path)
-        try:
-            r = self.io.run(["git", "-C", path, "rebase", "--abort"], timeout=30)
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git rebase --abort failed"
-            return True, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
+        _, error = self._git(path, "rebase", "--abort", err="git rebase --abort failed")
+        return error is None, error
 
     def rebase_status(self, path):
         """Whether <path> already has a rebase left mid-flight — from a
@@ -2094,17 +2059,11 @@ class GitService:
     def discard(self, path):
         """Make the working tree pristine: reset tracked files to HEAD, then remove
         untracked files/dirs (git clean -fd, leaving ignored files). (ok, error)."""
-        path = os.path.expanduser(path)
-        try:
-            r = self.io.run(["git", "-C", path, "reset", "--hard", "HEAD"], timeout=30)
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git reset failed"
-            r = self.io.run(["git", "-C", path, "clean", "-fd"], timeout=30)
-            if r.returncode != 0:
-                return False, r.stderr.strip() or "git clean failed"
-            return True, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
+        _, error = self._git(path, "reset", "--hard", "HEAD", err="git reset failed")
+        if error:
+            return False, error
+        _, error = self._git(path, "clean", "-fd", err="git clean failed")
+        return error is None, error
 
     def log(self, path, n=20, ref="", base="", pull_remote="origin"):
         """The last n commits on <ref> (default HEAD). Returns (commits, error);
@@ -2117,76 +2076,59 @@ class GitService:
         the base can't be resolved, every commit conservatively comes back
         not-ahead rather than guessing."""
         path = os.path.expanduser(path)
-        cmd = ["git", "-C", path, "log", "-n", str(n), "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"]
+        args = ["log", "-n", str(n), "--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1e"]
         if ref:
-            cmd += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
-        try:
-            r = self.io.run(cmd, timeout=30)
-            if r.returncode != 0:
-                return None, r.stderr.strip() or "git log failed"
-            ahead = self._ahead_shas(path, ref, base, pull_remote) if base else None
-            commits = []
-            for rec in r.stdout.split("\x1e"):
-                rec = rec.strip("\n")
-                if not rec:
-                    continue
-                parts = rec.split("\x1f")
-                if len(parts) < 4:
-                    continue
-                sha = parts[0]
-                commits.append(
-                    {
-                        "sha": sha,
-                        "author": parts[1],
-                        "date": parts[2],
-                        "subject": parts[3],
-                        "body": parts[4].strip() if len(parts) > 4 else "",
-                        "ahead": bool(ahead and sha in ahead),
-                    }
-                )
-            return commits, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return None, str(e)
+            args += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
+        r, error = self._git(path, *args, err="git log failed")
+        if error:
+            return None, error
+        ahead = self._ahead_shas(path, ref, base, pull_remote) if base else None
+        commits = []
+        for rec in r.stdout.split("\x1e"):
+            rec = rec.strip("\n")
+            if not rec:
+                continue
+            parts = rec.split("\x1f")
+            if len(parts) < 4:
+                continue
+            sha = parts[0]
+            commits.append(
+                {
+                    "sha": sha,
+                    "author": parts[1],
+                    "date": parts[2],
+                    "subject": parts[3],
+                    "body": parts[4].strip() if len(parts) > 4 else "",
+                    "ahead": bool(ahead and sha in ahead),
+                }
+            )
+        return commits, None
 
     def commit_diff(self, path, sha):
         """Return the patch introduced by one commit as (diff, error)."""
         if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
             return None, "invalid commit hash"
-        path = os.path.expanduser(path)
-        try:
-            r = self.io.run(
-                [
-                    "git",
-                    "-C",
-                    path,
-                    "show",
-                    "--format=",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--find-renames",
-                    sha,
-                    "--",
-                ],
-                timeout=30,
-            )
-            if r.returncode != 0:
-                return None, r.stderr.strip() or "git show failed"
-            return r.stdout, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return None, str(e)
+        r, error = self._git(
+            path,
+            "show",
+            "--format=",
+            "--no-ext-diff",
+            "--no-color",
+            "--find-renames",
+            sha,
+            "--",
+            err="git show failed",
+        )
+        return (None, error) if error else (r.stdout, None)
 
     def fetch_remote_branch(self, path, branch, pull_remote="origin"):
         """Fetch a remote branch and create/reset the local branch to track it
         (git fetch <pull_remote> {branch}:{branch}). Returns (ok, error)."""
-        path = os.path.expanduser(path)
         remote = pull_remote or "origin"
-        try:
-            r = self.io.run(["git", "-C", path, "fetch", remote, f"{branch}:{branch}"], timeout=60)
-            if r.returncode != 0:
-                return False, r.stderr.strip().split("\n")[0] or "git fetch failed"
-            return True, None
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
+        _, error = self._git(
+            path, "fetch", remote, f"{branch}:{branch}", timeout=60, err="git fetch failed"
+        )
+        return error is None, error
 
     def fetch_rebase(self, path, base, pull_remote="origin", repo=""):
         """Fetch the base branch from the configured pull remote and rebase the
@@ -2202,44 +2144,28 @@ class GitService:
         fid = uuid.uuid4().hex
         fetching = f"fetching {base} ({label})"
         self.notify(fetching, event_id=fid, status="start")
-        try:
-            f = self.io.run(["git", "-C", p, "fetch", remote, base], timeout=180)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            self.notify(fetching, event_id=fid, status="error")
-            return False, str(e)
-        if f.returncode != 0:
-            self.notify(fetching, event_id=fid, status="error")
-            return False, (f.stderr.strip() or "git fetch failed").split("\n")[0]
-        self.notify(fetching, event_id=fid, status="done")
+        _, error = self._git(p, "fetch", remote, base, timeout=180, err="git fetch failed")
+        self.notify(fetching, event_id=fid, status="error" if error else "done")
+        if error:
+            return False, error
         eid = uuid.uuid4().hex
         rebasing = f"rebasing {label} onto {base}"
         self.notify(rebasing, event_id=eid, status="start")
-        try:
-            r = self.io.run(["git", "-C", p, "rebase", "FETCH_HEAD"], timeout=120)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            self.notify(rebasing, event_id=eid, status="error")
-            return False, str(e)
-        if r.returncode != 0:
-            self.notify(rebasing, event_id=eid, status="error")
-            msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[0]
-            return False, msg or "git rebase failed"
-        self.notify(rebasing, event_id=eid, status="done")
-        return True, None
+        r, error = self._git(p, "rebase", "FETCH_HEAD", timeout=120, err="git rebase failed")
+        self.notify(rebasing, event_id=eid, status="error" if error else "done")
+        if error and r is not None and not r.stderr.strip():
+            # a conflicted rebase reports on stdout — surface its first line instead
+            error = r.stdout.strip().split("\n")[0] or "git rebase failed"
+        return error is None, error
 
     def remote_branch_exists(self, path, branch, push_remote="dev"):
         """Whether <branch> exists on the configured push remote. (exists, error)."""
         remote = push_remote or "dev"
         self.io.log_request(f"git ls-remote {remote} {branch}")
-        try:
-            r = self.io.run(
-                ["git", "-C", os.path.expanduser(path), "ls-remote", "--heads", remote, branch],
-                timeout=20,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return None, str(e)
-        if r.returncode != 0:
-            return None, r.stderr.strip().split("\n")[0] or "git ls-remote failed"
-        return bool(r.stdout.strip()), None
+        r, error = self._git(
+            path, "ls-remote", "--heads", remote, branch, timeout=20, err="git ls-remote failed"
+        )
+        return (None, error) if error else (bool(r.stdout.strip()), None)
 
     def push_branch(self, path, branch, force=False, push_remote="dev"):
         """Push <branch> to the configured push remote, setting upstream. With force,
@@ -2253,13 +2179,8 @@ class GitService:
             args.append("--force-with-lease")
         args += [remote, branch]
         self.io.log_request("git " + " ".join(args))
-        try:
-            r = self.io.run(["git", "-C", os.path.expanduser(path), *args], timeout=120)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return False, str(e)
-        if r.returncode != 0:
-            return False, r.stderr.strip().split("\n")[-1] or "git push failed"
-        return True, None
+        _, error = self._git(path, *args, timeout=120, err="git push failed", tail=True)
+        return error is None, error
 
     def fetch_master(self, repo):
         """Fetch master objects for one repo (no merge, no working-tree change).
