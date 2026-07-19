@@ -2561,9 +2561,9 @@ tr.active td.brg-commit {
 .rl-caret.collapsed::before {
   transform: rotate(-45deg);
 }
-/* records sit indented under their group line */
+/* records sit clearly indented under their group line */
 .rl-grouped .rl-row td:first-child {
-  padding-left: 32px;
+  padding-left: 52px;
 }
 
 .pr-link {
