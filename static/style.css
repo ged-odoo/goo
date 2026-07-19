@@ -2301,44 +2301,14 @@ a.dash-ci:hover {
 .br-table tbody tr:hover td {
   background: var(--l-hover);
 }
-/* highlight only the checked-out (active) repo rows — a clearly visible tint;
-   never the (rowspanned) name column, which is the group's shared label */
-.br-table tbody tr.active td:not(.br-name) {
+/* highlight the checked-out (active) repo rows — a clearly visible tint */
+.br-table tbody tr.active td {
   background: oklch(0.55 0.18 300 / 0.12);
 }
-/* batch selection tints every row of the group (incl. the name cell) so it is
-   clear the whole branch group is selected */
+/* batch selection tints every row of the group so it is clear the whole branch
+   group is selected */
 .br-table tbody tr.row-sel td {
   background: oklch(0.55 0.16 250 / 0.14);
-}
-/* name cell (rowspanned) aligns with the first repo row's content, not centered
-   across the whole group. The repo rows are taller than a text line (action
-   buttons), so the name needs extra top padding to line up with the first row. */
-.br-table td.br-name {
-  vertical-align: top;
-  padding: 14px 18px;
-}
-/* groups with several repos on the same branch: tighten the rows so the group
-   reads as one block (the name cell keeps its top offset to stay aligned) */
-.br-table tbody.br-tight td:not(.br-name) {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-.br-table tbody.br-tight td.br-name {
-  padding-top: 10px;
-}
-/* PRs tab: PRs grouped by branch (one tbody per branch). The branch name
-   spans its PRs; PRs of the same branch read as one block — no rule between them
-   — with a single soft rule separating one branch group from the next. */
-.rev-table td.br-name {
-  border-right: 1px solid var(--l-line);
-  white-space: normal;
-  word-break: break-all;
-  min-width: 240px;
-  max-width: 360px;
-}
-.rev-group tr:not(:first-child) td {
-  border-top: none;
 }
 /* inline row editing: inputs sit flush inside the table cells */
 .br-table tr.br-editing td {
@@ -2425,12 +2395,6 @@ a.dash-ci:hover {
   font-size: 12.5px;
   color: var(--l-text-dim);
 }
-/* PR title — truncate long titles so rows stay uniform (full text on hover) */
-.br-title {
-  max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .br-pr .pr-state {
   margin-left: 8px;
 }
@@ -2471,14 +2435,7 @@ a.dash-ci:hover {
   box-shadow: inset 0 2px 0 var(--l-accent);
 }
 
-/* ── Branches: grouped grid ──────────────────────────────────────────────────
-   The branch name shows once in a recessed left column; its repo rows sit on the
-   right. The header and every repo row share the same 5-column sub-grid so the
-   columns line up. (PRs tab keeps the .br-table layout — these classes are new.) */
-.brg {
-  --brg-name-col: 280px;
-  font-size: 13px;
-}
+/* ── Grouped/flat list shells (Branches & PRs, Databases, Workspaces tabs) ──── */
 /* the card stays full-width so it's the scroll container (vertical scrollbar on
    the right of the content area); this inner wrapper sizes to the table's
    natural width and stays left-aligned inside it */
@@ -2489,14 +2446,9 @@ a.dash-ci:hover {
   border-right: 1px solid var(--l-line);
   border-bottom: 1px solid var(--l-line);
 }
-.brg-head,
-.brg-group {
-  display: grid;
-  grid-template-columns: var(--brg-name-col) auto;
-}
-/* Flat lists (Targets, PRs, Databases): a real <table> wrapped in .brg-table for
-   natural width + right border, sized to its content (no greedy spacer) with a
-   lighter sticky header — so every list shares the Branches list's overall look. */
+/* Flat lists (Databases, Workspaces tabs): a real <table> wrapped in .brg-table
+   for natural width + right border, sized to its content (no greedy spacer) with
+   a lighter sticky header — so every list shares the same overall look. */
 .br-table.brg-flat {
   width: auto;
 }
@@ -2506,97 +2458,26 @@ a.dash-ci:hover {
   z-index: 1;
   background: var(--l-bg);
 }
-.brg-head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--l-bg);
-  border-bottom: 1px solid var(--l-line);
-}
-.brg-group {
-  border-top: 1px solid var(--l-line);
-}
-.brg-group:first-of-type {
-  border-top: none;
-}
-/* name column — header label + the per-group cell (right-bordered) */
-.brg-name-head,
-.brg-name {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 12px 20px;
-  border-right: 1px solid var(--l-line);
-}
-.brg-name-head {
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--l-text-faint);
-  cursor: pointer;
-  user-select: none;
-}
-.brg-group.row-sel .brg-name {
-  background: var(--l-accent-soft);
-}
-/* long branch names wrap inside the fixed-width name column instead of overflowing */
-.brg-name .br-branch {
-  min-width: 0;
-  word-break: break-all;
-  line-height: 1.35;
-}
-/* the 5 sub-columns, shared by the header and every repo row → aligned columns.
-   Fixed widths (Last commit truncates) so the whole table has a natural width. */
-.brg-cols {
-  display: grid;
-  grid-template-columns: 110px 96px 340px 200px 44px;
-  gap: 22px;
-  align-items: center;
-  padding: 11px 20px;
-}
-.brg-colhead {
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--l-text-faint);
-}
-.brg-colhead .br-sort {
-  cursor: pointer;
-  user-select: none;
-}
-.brg-row {
-  border-top: 1px solid var(--l-line-soft);
-}
-.brg-row:first-child {
-  border-top: none;
-}
-.brg-row:hover {
-  background: var(--l-hover);
-}
-.brg-row.active {
-  background: var(--l-accent-soft);
-  box-shadow: inset 3px 0 0 var(--l-accent);
-}
+/* the per-column cell looks shared by the Branches & PRs list */
 .brg-repo {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
 }
-.brg-when {
+td.brg-when {
   font-size: 12.5px;
   color: var(--l-text-dim);
 }
-.brg-commit {
+td.brg-commit {
   font-size: 12.5px;
   color: var(--l-text-mid);
+  max-width: 360px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.brg-row.active .brg-commit {
+tr.active td.brg-commit {
   color: var(--l-text);
   font-weight: 600;
 }
@@ -2619,6 +2500,15 @@ a.dash-ci:hover {
    A .br-table that can render grouped-by-field: one tbody per group, a full-width
    group-header row (label / count / group actions via the scoped slot, optional
    collapse caret), the record rows slightly indented beneath. */
+.rl-table {
+  width: auto; /* natural width inside the .brg-table fit-content wrapper */
+}
+.rl-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--l-bg);
+}
 .rl-group-head td {
   background: var(--l-card);
   border-top: 1px solid var(--l-line);

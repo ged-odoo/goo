@@ -125,7 +125,6 @@ export const DEFAULT_CONFIG = {
 export const SECTIONS = [
   "workspaces",
   "branches",
-  "prs",
   "todo",
   "databases",
   "nightly",

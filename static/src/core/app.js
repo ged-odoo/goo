@@ -26,7 +26,6 @@ import { EventLog } from "./event_log.js";
 import { MemoryScreen } from "../memory_screen/memory.js";
 import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
 import { NightlyScreen } from "../nightly_screen/nightly.js";
-import { PrsScreen } from "../prs_screen/prs.js";
 import { TerminalPanel } from "./terminal.js";
 import { TodoScreen } from "../todo_screen/todo.js";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
@@ -293,7 +292,6 @@ export class Sidebar extends Component {
 export const SCREENS = {
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
-  prs: PrsScreen,
   todo: TodoScreen,
   databases: DatabasesScreen,
   nightly: NightlyScreen,
@@ -307,7 +305,6 @@ export class App extends Component {
     Sidebar,
     WorkspacesScreen,
     BranchesScreen,
-    PrsScreen,
     TodoScreen,
     DatabasesScreen,
     NightlyScreen,

@@ -68,8 +68,7 @@ export const ICONS = {
 
 export const NAV = [
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
-  { id: "branches", label: "Branches", icon: ICONS.branches },
-  { id: "prs", label: "PRs", icon: ICONS.pr },
+  { id: "branches", label: "Branches & PRs", icon: ICONS.branches },
   { id: "todo", label: "Todo", icon: ICONS.todo, optIn: true },
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },

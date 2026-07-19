@@ -1,4 +1,13 @@
-import { Component, computed, usePlugin, signal, xml } from "@odoo/owl";
+// The merged "Branches & PRs" screen — one grouped list (the generic RecordList)
+// with one group per branch name. Rows are the union of both old screens:
+//   kind "local" — a per-repo local branch (from CodePlugin's branch scan),
+//                  enriched with its PR when one exists (prIndex join)
+//   kind "pr"    — an authored PR whose branch has no local checkout anywhere
+//                  (deleted locally, or opened from another machine)
+// The group line hosts the group actions (selection for batch delete / close);
+// per-row kebabs keep the full branch menu (commits/push/PR/checkout/delete).
+
+import { Component, computed, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { BASE_BRANCH_RE } from "../core/config.js";
 import { timeAgo } from "../core/utils.js";
 import { CodePlugin } from "../core/code_plugin.js";
@@ -7,23 +16,25 @@ import { DialogPlugin } from "../core/dialog_plugin.js";
 import { ServerPlugin } from "../core/server_plugin.js";
 
 import { WorkspacePlugin, cascadeRemoveDescendants } from "../core/workspace_plugin.js";
-import { DirtyBadge, ICONS, SearchBox, appBus, m } from "../core/common.js";
+import { ICONS, SearchBox, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
-import { CommitsDialog } from "../core/dialogs.js";
-
-import { pushBranchesDialog } from "../core/dialogs.js";
+import { RecordList, recordset } from "../core/recordset.js";
+import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.js";
+import { ActionsCell, MergebotCell, PrCell, RepoCell } from "./cells.js";
 
 export class BranchesScreen extends Component {
-  static components = { SearchBox, DirtyBadge, Panel };
+  static components = { SearchBox, Panel, RecordList };
   worktree = usePlugin(WorkspacePlugin); // "wt" badge on branches owned by a worktree
   server = usePlugin(ServerPlugin);
   static template = xml`
     <section>
-      <Panel title="'Branches'">
+      <Panel title="'Branches &amp; PRs'">
         <t t-set-slot="title-extra">
           <div class="panel-inline-actions">
+            <input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all branches"/>
             <span class="sub" t-out="this.count"/>
-            <button t-if="this.selectedCount" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedCount"/></button>
+            <button t-if="this.selectedLocalRows.length" class="pbtn danger" t-on-click="() => this.deleteSelected()">Delete <t t-out="this.selectedLocalRows.length"/></button>
+            <button t-if="this.selectedOpenPrs.length" class="pbtn pr-close-batch" t-on-click="() => this.closeSelected()">Close <t t-out="this.selectedOpenPrs.length"/> PR<t t-if="this.selectedOpenPrs.length !== 1">s</t></button>
           </div>
         </t>
         <t t-set-slot="top-middle">
@@ -32,64 +43,37 @@ export class BranchesScreen extends Component {
             <option value="">All repositories</option>
             <option t-foreach="this.repos" t-as="r" t-key="r" t-att-value="r" t-out="r"/>
           </select>
+          <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by merge status">
+            <option value="">All</option>
+            <option value="unmerged">All (except merged)</option>
+            <option value="merged">Merged</option>
+            <option value="error">Error</option>
+            <option value="blocked">Blocked</option>
+          </select>
         </t>
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
-          <button class="pbtn" t-on-click="() => this.code.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
+          <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
       </Panel>
       <div class="content br-fill">
         <div t-att-class="{busy: this.code.busy()}">
+          <div t-foreach="this.errors" t-as="e" t-key="e.id" class="dim br-empty" t-out="e.id + ': ' + e.error"/>
           <div t-if="this.code.error()" class="dim br-empty" t-out="'Failed to load: ' + this.code.error()"/>
-          <div t-elif="!this.groups().length" class="dim br-empty">No branches.</div>
-          <div t-else="" class="br-card brg">
+          <div t-elif="!this.groups().length" class="dim br-empty">No branches or pull requests.</div>
+          <div t-else="" class="br-card">
             <!-- full-width card = scroll container (scrollbar stays on the right);
                  this wrapper sizes to the table's natural width, left-aligned -->
             <div class="brg-table">
-            <!-- column header: "Branch" over the name column, the rest over the repo rows -->
-            <div class="brg-head">
-              <div class="brg-name-head br-sort" t-on-click="() => this.sort('name')">
-                <span t-on-click.stop=""><input type="checkbox" class="br-select" t-att-checked="this.allSelected" t-on-change="() => this.toggleSelectAll()" title="select all branches"/></span>
-                Branch<span class="br-arrow" t-out="this.sortArrow('name')"/>
-              </div>
-              <div class="brg-cols brg-colhead">
-                <span>Repository</span>
-                <span class="br-sort" t-on-click="() => this.sort('update')">Last update<span class="br-arrow" t-out="this.sortArrow('update')"/></span>
-                <span>Last commit</span>
-                <span>PR</span>
-                <span/>
-              </div>
-            </div>
-            <!-- one group per branch name: the name shown once on the left, repo rows on the right -->
-            <div t-foreach="this.groups()" t-as="g" t-key="g.name" class="brg-group" t-att-class="{'row-sel': this.selected().has(g.name)}">
-              <div class="brg-name">
-                <input type="checkbox" class="br-select" t-att-checked="this.selected().has(g.name)" t-on-change="() => this.toggleSelect(g.name)" title="select this branch for batch actions"/>
-                <span class="br-branch select-toggle" t-on-click="() => this.toggleSelect(g.name)" t-out="g.name"/>
-                <span t-if="this.worktree.isWorktreeBranch(g.name)" class="wt-badge" title="has a worktree">wt</span>
-              </div>
-              <div class="brg-rows">
-                <div t-foreach="g.repos" t-as="r" t-key="r.repo" class="brg-cols brg-row" t-att-class="{active: r.active}">
-                  <span class="brg-repo">
-                    <a t-if="r.remote and r.github" class="br-repo-link" target="_blank" t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open the ' + r.repo + ' branch on GitHub'"><t t-out="r.repo"/><t t-out="this.externalIcon"/></a>
-                    <span t-else="" t-out="r.repo"/>
-                    <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
-                  </span>
-                  <span class="brg-when" t-att-title="r.date" t-out="r.date ? this.cell(r.date) : '—'"/>
-                  <span class="brg-commit" t-att-title="r.subject" t-out="r.subject || '—'"/>
-                  <span class="brg-pr">
-                    <t t-if="r.pr">
-                      <a class="pr-link" target="_blank" t-att-href="r.pr.url" t-out="'#' + r.pr.number"/>
-                      <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
-                    </t>
-                    <span t-else="" class="brg-dash">—</span>
-                  </span>
-                  <span class="brg-act">
-                    <button class="dash-kebab" title="branch actions"
-                            t-on-click.stop="(ev) => this.openRowMenu(ev, r)"><t t-out="this.kebabIcon"/></button>
-                  </span>
-                </div>
-              </div>
-            </div>
+              <RecordList recordset="this.rs" groupBy="this.groupByBranch" rowClass="this.rowClassFn"
+                          collapsible="true" stateKey="'goo-branches-collapsed'" sort="this.sortApi">
+                <t t-set-slot="group-header" t-slot-scope="scope">
+                  <input type="checkbox" class="br-select" t-att-checked="this.selected().has(scope.g.key)" t-on-change="() => this.toggleSelect(scope.g.key)" title="select this branch for batch actions"/>
+                  <span class="br-branch select-toggle" t-on-click="() => this.toggleSelect(scope.g.key)" t-out="scope.g.key"/>
+                  <span t-if="this.worktree.isWorktreeBranch(scope.g.key)" class="wt-badge" title="has a worktree">wt</span>
+                  <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
+                </t>
+              </RecordList>
             </div>
           </div>
         </div>
@@ -100,28 +84,41 @@ export class BranchesScreen extends Component {
   config = usePlugin(ConfigPlugin);
   dialogs = usePlugin(DialogPlugin);
   refreshIcon = m(ICONS.refresh);
-  externalIcon = m(ICONS.external);
-  kebabIcon = m(ICONS.kebab);
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
+  statusFilter = signal("unmerged"); // merge status; "" = all, "unmerged" = still in flight
   selected = signal(new Set()); // branch names ticked for batch actions
-  sortKey = signal("update"); // "name" | "update" — default: most recently updated first
-  sortDir = signal("desc"); // "asc" | "desc"
-  // branches grouped by name (one group per branch name). Each group carries its
-  // repo rows and is "active" when the branch is checked out in any of its repos.
-  // Sorted by the chosen column (branch name, or summed last-update time).
+  sortDir = signal("desc"); // groups by combined last-update time; "asc" | "desc"
+  sortKey = signal("update"); // the one sortable column (kept as state for the header API)
+
+  // ── the union rows, grouped by branch name ──
+  // One group per branch name; each carries its rows and is "active" when the
+  // branch is checked out in any repo. A branch's PR rides its local row (prIndex
+  // join); authored PRs with no local branch anywhere become PR-only rows.
   groups = computed(() => {
     const { prIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
     const byBranch = new Map();
+    const push = (name, row) => {
+      if (!byBranch.has(name)) byBranch.set(name, []);
+      byBranch.get(name).push(row);
+    };
+    // local-branch keys (unfiltered), so a filtered-out local row never
+    // resurfaces as a duplicate PR-only row
+    const local = new Set();
+    for (const repo of this.code.branchRepos())
+      for (const b of repo.branches || []) local.add(`${repo.id}:${b.name}`);
     for (const repo of this.code.branchRepos()) {
       if (repo.error) continue;
       if (repoFilter && repo.id !== repoFilter) continue;
       for (const b of repo.branches) {
-        if (q && !b.name.toLowerCase().includes(q) && !repo.id.toLowerCase().includes(q)) continue;
-        if (!byBranch.has(b.name)) byBranch.set(b.name, []);
-        byBranch.get(b.name).push({
+        const pr = prIndex[`${repo.id}:${b.name}`];
+        const hay = `${b.name} ${repo.id}` + (pr ? ` ${pr.title} #${pr.number}` : "");
+        if (q && !hay.toLowerCase().includes(q)) continue;
+        push(b.name, {
+          kind: "local",
+          id: `l:${repo.id}:${b.name}`,
           branch: b.name,
           repo: repo.id,
           path: pathByRepo[repo.id] || "",
@@ -134,30 +131,139 @@ export class BranchesScreen extends Component {
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
           repoDirty: repo.dirty, // the repo's working tree (its current branch)
-          pr: prIndex[`${repo.id}:${b.name}`],
+          pr,
         });
       }
     }
+    for (const repo of this.code.prRepos()) {
+      if (repo.error) continue;
+      if (repoFilter && repo.id !== repoFilter) continue;
+      for (const pr of repo.prs) {
+        if (local.has(`${repo.id}:${pr.branch}`)) continue;
+        if (q && !`${pr.branch} ${repo.id} ${pr.title} #${pr.number}`.toLowerCase().includes(q))
+          continue;
+        push(pr.branch || "—", {
+          kind: "pr",
+          id: `p:${pr.github}#${pr.number}`,
+          branch: pr.branch || "—",
+          repo: repo.id,
+          github: pr.github,
+          // the PR stands in for the missing local branch: its title is the
+          // "commit" column, createdAt the date (updatedAt is noisy)
+          date: pr.createdAt || pr.updatedAt,
+          subject: pr.title || "",
+          pr,
+        });
+      }
+    }
+    // within a group: config repo order (odoo before enterprise), local rows first
+    const repoOrder = (this.config.config.repos || []).map((r) => r.id);
+    const rank = (r) => {
+      const i = repoOrder.indexOf(r.repo);
+      return i === -1 ? repoOrder.length : i; // unknown repos sort last
+    };
     const dir = this.sortDir() === "asc" ? 1 : -1;
-    const key = this.sortKey();
+    const status = this.statusFilter();
     return [...byBranch.entries()]
-      .map(([name, repos]) => ({
+      .map(([name, rows]) => ({
         name,
-        base: BASE_BRANCH_RE.test(name),
-        // combined last-update time for the branch (sum across its repos)
-        updateSum: repos.reduce((s, r) => s + (Date.parse(r.date) || 0), 0),
-        repos,
+        rows: rows
+          .slice()
+          .sort((a, b) => (a.kind === "pr") - (b.kind === "pr") || rank(a) - rank(b)),
+        // combined last-update time for the branch (sum across its rows)
+        updateSum: rows.reduce((s, r) => s + (Date.parse(r.date) || 0), 0),
       }))
-      .sort((a, b) =>
-        key === "update" ? (a.updateSum - b.updateSum) * dir : a.name.localeCompare(b.name) * dir,
-      );
+      .filter((g) => this._matchesStatus(g, status))
+      .sort((a, b) => (a.updateSum - b.updateSum) * dir);
   });
+
+  // The merge-status filter is group-level: a group is kept whole when ANY of its
+  // rows matches. "merged" reads GitHub's terminal state (or mergebot's); a local
+  // branch without a PR counts as unmerged (in-flight work). "error"/"blocked"
+  // are mergebot states that only exist on still-open PRs, which we do scrape.
+  _matchesStatus(g, status) {
+    if (!status) return true;
+    if (status === "unmerged") return g.rows.some((r) => !r.pr || !this._isMerged(r.pr));
+    if (status === "merged") return g.rows.some((r) => r.pr && this._isMerged(r.pr));
+    return g.rows.some((r) => r.pr && this.mbState(r.pr) === status);
+  }
+
+  _isMerged(pr) {
+    return this.mbState(pr) === "merged" || pr.state === "merged" || pr.state === "closed";
+  }
+
+  mbState(pr) {
+    return this.code.mergebot()[`${pr.github}#${pr.number}`] || "";
+  }
+
+  // ── RecordList wiring ──
+  rows = () => this.groups().flatMap((g) => g.rows);
+  groupByBranch = (r) => r.branch;
+  rowClassFn = (r) => ({
+    active: r.kind === "local" && r.active,
+    "row-sel": this.selected().has(r.branch),
+  });
+
+  sortApi = {
+    key: () => this.sortKey(),
+    dir: () => this.sortDir(),
+    toggle: () => this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc"),
+  };
+
+  _cell = (row) => ({ row, screen: this });
+  rs = recordset(this.rows, [
+    { name: "repo", label: "Repository", component: RepoCell, cellProps: this._cell },
+    {
+      name: "update",
+      label: "Last update",
+      sortable: true,
+      class: "brg-when",
+      get: (r) => (r.date ? timeAgo(r.date) : "—"),
+      title: (r) => r.date || "",
+    },
+    {
+      name: "commit",
+      label: "Last commit",
+      class: "brg-commit",
+      get: (r) => r.subject || "—",
+      title: (r) => r.subject || "",
+    },
+    { name: "pr", label: "PR", component: PrCell, cellProps: this._cell },
+    { name: "mergebot", label: "Mergebot", component: MergebotCell, cellProps: this._cell },
+    { name: "act", label: "", component: ActionsCell, cellProps: this._cell },
+  ]);
 
   setup() {
     this.code.load();
+    // mergebot for the listed PRs, via CodePlugin (session-deduped; a forced
+    // load() arms the refresh scope so the next pass re-scrapes)
+    useEffect(() => {
+      const prs = this._mbPrs();
+      if (prs.length) this.code.loadMergebot(prs);
+    });
   }
 
-  // tick/untick a branch (by name) for batch actions
+  // the open PRs across all rows in mergebot's {github, number} shape. Terminal
+  // PRs (merged/closed) never need a scrape; external repos aren't on mergebot.
+  _mbPrs() {
+    const out = [];
+    const seen = new Set();
+    for (const r of this.rows()) {
+      const pr = r.pr;
+      if (!pr || pr.state !== "open" || !pr.github || this.code.isExternalRepo(pr.github)) continue;
+      const key = `${pr.github}#${pr.number}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ github: pr.github, number: pr.number });
+    }
+    return out;
+  }
+
+  async refresh() {
+    await this.code.load(true);
+  }
+
+  // ── selection (group-level: a Set of branch names) ──
   toggleSelect(name) {
     const sel = new Set(this.selected());
     sel.has(name) ? sel.delete(name) : sel.add(name);
@@ -180,20 +286,36 @@ export class BranchesScreen extends Component {
     return this.groups().filter((g) => sel.has(g.name));
   }
 
-  // total branches (one per repo) across the selected groups, not group count
-  get selectedCount() {
-    return this.selectedGroups.reduce((n, g) => n + g.repos.length, 0);
+  // the selected groups' local branches (what batch Delete operates on)
+  get selectedLocalRows() {
+    return this.selectedGroups.flatMap((g) => g.rows.filter((r) => r.kind === "local"));
+  }
+
+  // the selected groups' open PRs, deduped (what batch Close operates on)
+  get selectedOpenPrs() {
+    const out = [];
+    const seen = new Set();
+    for (const g of this.selectedGroups)
+      for (const r of g.rows) {
+        const pr = r.pr;
+        if (!pr || pr.state !== "open" || !pr.github) continue;
+        const key = `${pr.github}#${pr.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(pr);
+      }
+    return out;
   }
 
   // batch-delete every selected branch in each repo where it can be removed
   // (only the checked-out branch is skipped). Open PRs on the selected branches
   // can be closed first via a checkbox.
   async deleteSelected() {
-    const groups = this.selectedGroups;
+    const groups = this.selectedGroups.filter((g) => g.rows.some((r) => r.kind === "local"));
     if (!groups.length) return;
-    const rows = groups.flatMap((g) => g.repos).filter((r) => !this.deleteBlocked(r));
-    const total = groups.reduce((n, g) => n + g.repos.length, 0);
-    const skipped = total - rows.length;
+    const all = this.selectedLocalRows;
+    const rows = all.filter((r) => !this.deleteBlocked(r));
+    const skipped = all.length - rows.length;
     const prs = rows.filter((r) => r.pr && r.pr.state === "open" && r.github);
     const remoteRows = rows.filter((r) => r.remote && !r.base);
     const what = groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
@@ -230,6 +352,23 @@ export class BranchesScreen extends Component {
         r.path,
         !!res.delRemote && r.remote && !r.base,
       );
+    this.selected.set(new Set());
+  }
+
+  // confirm, then close every selected open PR
+  async closeSelected() {
+    const prs = this.selectedOpenPrs;
+    if (!prs.length) return;
+    const res = await this.dialogs.open({
+      title: "Close pull requests",
+      message: `Close ${prs.length} pull request${prs.length === 1 ? "" : "s"}? This cannot be undone here (reopen on GitHub).`,
+      okLabel: "Close",
+      fields: [],
+    });
+    if (!res) return;
+    // independent network ops — fire them concurrently rather than one slow await
+    // after another (closePrNoConfirm handles its own errors, so this never rejects)
+    await Promise.all(prs.map((pr) => this.code.closePrNoConfirm(pr.github, pr.number)));
     this.selected.set(new Set());
   }
 
@@ -311,30 +450,29 @@ export class BranchesScreen extends Component {
     }
   }
 
-  // sort by a column; clicking the active column flips the direction
-  sort(key) {
-    if (this.sortKey() === key) {
-      this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
-    } else {
-      this.sortKey.set(key);
-      this.sortDir.set(key === "update" ? "desc" : "asc");
-    }
-  }
-
-  // " ▲" / " ▼" for the active sort column, else ""
-  sortArrow(key) {
-    if (this.sortKey() !== key) return "";
-    return this.sortDir() === "asc" ? " ▲" : " ▼";
-  }
-
   // repositories present in the loaded data (for the filter dropdown)
   get repos() {
-    return this.code.branchRepos().map((r) => r.id);
+    return [
+      ...new Set([
+        ...this.code.branchRepos().map((r) => r.id),
+        ...this.code.prRepos().map((r) => r.id),
+      ]),
+    ];
   }
 
   get count() {
-    const n = this.groups().reduce((t, g) => t + g.repos.length, 0);
-    return `${n} branch${n === 1 ? "" : "es"}`;
+    let branches = 0;
+    const prs = new Set();
+    for (const r of this.rows()) {
+      if (r.kind === "local") branches++;
+      if (r.pr) prs.add(`${r.pr.github}#${r.pr.number}`);
+    }
+    return `${branches} branch${branches === 1 ? "" : "es"} · ${prs.size} PR${prs.size === 1 ? "" : "s"}`;
+  }
+
+  // per-repo PR load errors (branch-scan errors surface via code.error())
+  get errors() {
+    return this.code.prRepos().filter((r) => r.error);
   }
 
   openPr(row) {
@@ -342,10 +480,27 @@ export class BranchesScreen extends Component {
     window.open(this.code.prCreateUrl(row.repo, row.github, row.branch), "_blank");
   }
 
-  // build the per-branch action list for this row and open the floating kebab
-  // menu anchored to the clicked button (see ActionMenu)
+  hasRowMenu(row) {
+    if (row.kind === "local") return true;
+    return !!(row.pr && row.pr.state === "open" && row.pr.github);
+  }
+
+  // build the per-row action list and open the floating kebab menu anchored to
+  // the clicked button (see ActionMenu). Local rows get the full branch menu;
+  // PR-only rows (no local branch) just Close PR.
   openRowMenu(ev, r) {
     const rect = ev.currentTarget.getBoundingClientRect();
+    if (r.kind === "pr") {
+      const actions = [
+        {
+          label: "Close PR",
+          danger: true,
+          onClick: () => this.code.closePr(r.pr.github, r.pr.number),
+        },
+      ];
+      appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+      return;
+    }
     const actions = [{ label: "Commits", onClick: () => this.openCommits(r) }];
     if (!r.remote && !r.base)
       actions.push({
@@ -405,7 +560,6 @@ export class BranchesScreen extends Component {
     });
   }
 
-  // create a new branch based on this one (git branch <new> <branch> — no checkout)
   // show the last commits on this branch (in a floating dialog)
   openCommits(row) {
     if (!row.path) return;
@@ -417,6 +571,7 @@ export class BranchesScreen extends Component {
     });
   }
 
+  // create a new branch based on this one (git branch <new> <branch> — no checkout)
   async duplicateBranch(row) {
     const res = await this.dialogs.open({
       title: `Duplicate "${row.branch}" (${row.repo})`,
@@ -446,13 +601,5 @@ export class BranchesScreen extends Component {
   get stamp() {
     if (this.code.loading()) return "refreshing…";
     return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
-  }
-
-  cell(date) {
-    return timeAgo(date);
-  }
-
-  prState(p) {
-    return p.draft && p.state === "open" ? "draft" : p.state;
   }
 }

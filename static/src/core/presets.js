@@ -4,17 +4,7 @@
 // (see ConfigPlugin.applyPreset). An empty `data` means "pure DEFAULT_CONFIG".
 //
 //   - Normal — the built-in defaults (generic Odoo dev setup, no venv).
-//   - Simple — the defaults with the PRs/Tests tabs hidden, no venv.
 //   - GED    — Géry's personal config (repos incl. owl, his targets/links, venv).
-
-// Simple: the default config plus a tabs override hiding prs.
-// Only the override is stored; everything else falls back to DEFAULT_CONFIG.
-const SIMPLE_TABS = [
-  { id: "branches", visible: true },
-  { id: "prs", visible: false },
-  { id: "databases", visible: true },
-  { id: "config", visible: true },
-];
 
 // GED: a full config override. venv_activate is included (his setup needs it) even
 // though it wasn't in the raw export, where it relied on the old hardcoded default.
@@ -119,7 +109,6 @@ const GED_CONFIG = {
   tabs: [
     { id: "workspaces", visible: true },
     { id: "branches", visible: true },
-    { id: "prs", visible: true },
     { id: "databases", visible: true },
     { id: "config", visible: true },
   ],
@@ -130,12 +119,6 @@ export const PRESETS = [
     id: "normal",
     label: "Normal — standard Odoo dev setup",
     data: {}, // empty → pure DEFAULT_CONFIG
-    clearDataFile: true, // back to browser storage (unset the Storage file field)
-  },
-  {
-    id: "simple",
-    label: "Simple — no PRs/Tests tabs, no venv",
-    data: { "oo-config": JSON.stringify({ tabs: SIMPLE_TABS }) },
     clearDataFile: true, // back to browser storage (unset the Storage file field)
   },
   {
