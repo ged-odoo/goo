@@ -4723,11 +4723,29 @@ a.commit-detail-hash svg {
   padding: 3px 8px;
 }
 /* Code-tab toolbar buttons (refresh / Editor / Fetch & rebase all) */
-.ws-tool {
-  padding: 4px 9px;
+/* the Checkouts toolbar (Editor / Fetch & rebase all / Push all …) reads as accent
+   text-links trailing the heading rather than buttons, so it doesn't compete with
+   the cards below; the icons follow the colour via currentColor */
+.ws-tool.pbtn {
+  gap: 5px;
+  padding: 2px 4px;
   font-size: 12px;
+  font-weight: 500;
+  color: var(--l-accent);
+  border-color: transparent;
+  background: transparent;
   text-transform: none;
   letter-spacing: 0;
+}
+.ws-tool.pbtn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--l-accent);
+  text-decoration: underline;
+}
+/* .pbtn:disabled sits earlier in the file at equal specificity, so the accent
+   above would win and a disabled action would still look live */
+.ws-tool.pbtn:disabled {
+  color: var(--l-text-faint);
 }
 .ws-tool-start {
   margin-left: auto;
