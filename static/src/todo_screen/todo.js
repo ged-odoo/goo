@@ -166,8 +166,12 @@ export class TodoScreen extends Component {
                       t-on-input="ev => this.updateDescription(this.detailTodo.id, ev.target.value)"
                       placeholder="Add a description…"/>
             <div class="todo-details-foot">
-              <span t-out="this.createdTitle(this.detailTodo)"/>
-              <span>Saved automatically</span>
+              <div class="todo-details-meta">
+                <span t-out="this.createdTitle(this.detailTodo)"/>
+                <span>Saved automatically</span>
+              </div>
+              <button class="pbtn danger todo-details-delete" title="Delete this todo"
+                      t-on-click="() => this.remove(this.detailTodo.id)">Delete</button>
             </div>
           </aside>
         </div>

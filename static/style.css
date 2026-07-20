@@ -1196,11 +1196,24 @@ body.drag-grabbing {
 .todo-details-foot {
   flex: none;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 10px 16px 12px;
   font-size: 11px;
   color: var(--l-text-faint);
+}
+/* the timestamps stack so the delete action can sit beside them */
+.todo-details-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.todo-details-delete {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 .todo-empty {
   min-height: 150px;
