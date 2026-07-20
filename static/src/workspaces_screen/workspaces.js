@@ -171,9 +171,9 @@ export class WorkspacesScreen extends Component {
                 <!-- one primary slot: a main-located workspace that isn't loaded offers
                      Activate (check out its branches first); once loaded — and always
                      for worktrees — the slot is the Start/Stop toggle -->
-                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel)" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)">Activate</button>
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
                 <t t-else="">
-                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
                   <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
                 </t>
                 <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
@@ -266,6 +266,13 @@ export class WorkspacesScreen extends Component {
             </div>
           </t>
           <div t-else="" class="wt-detail-empty dim">Select a workspace on the left, or create one.</div>
+          <div t-if="this.activating" class="ws-activating">
+            <div class="ws-activating-box">
+              <span class="ws-activating-spin"/>
+              <span class="ws-activating-title" t-out="this.activatingLabel"/>
+              <span class="ws-activating-hint dim">checking out branches — this can take a moment</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>`;
@@ -742,6 +749,19 @@ export class WorkspacesScreen extends Component {
 
   isWt(ws) {
     return ws.location === "worktree";
+  }
+
+  // An activation rewrites the shared checkout, so the whole detail view is stale
+  // while it runs — it blocks regardless of which workspace is selected, which also
+  // stops a second activation being started underneath the first.
+  get activating() {
+    return !!this.server.activatingId();
+  }
+
+  get activatingLabel() {
+    const id = this.server.activatingId();
+    const ws = (this.config.config.workspaces || []).find((w) => w.id === id);
+    return ws ? `Activating ${ws.name}…` : "Activating…";
   }
 
   branchOf(ws) {

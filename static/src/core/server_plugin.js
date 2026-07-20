@@ -31,6 +31,10 @@ export class ServerPlugin extends Plugin {
   // the active workspace (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
   activeWorkspace = signal(this.config.getState("active_workspace", ""));
+  // id of the workspace currently being activated ("" = none). Checking out several
+  // repos takes seconds with no intermediate state of its own, so the UI blocks on
+  // this rather than looking idle. Set by Workspace.activate() in config_models.
+  activatingId = signal("");
 
   setup() {
     setInterval(() => this.now.set(Date.now()), 1000);

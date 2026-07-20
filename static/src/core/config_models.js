@@ -303,17 +303,25 @@ export class Workspace extends Model {
       .map(({ repo, branch }) => ({ repo, path: pathByRepo[repo], branch }))
       .filter((r) => r.path);
     eventLog.add(`activating workspace ${this.name()}`);
-    // no per-repo pre-log: the backend announces each checkout as a timed SSE
-    // event ("checking out …" with a live "..." resolving to ok/failed) — a
-    // plain line here would just duplicate it
-    // stop the server and switch branches concurrently (independent ops)
-    const s = server.status();
-    const stopping =
-      s.state === "running" || s.state === "starting"
-        ? server.stop({ trackActivity: false })
-        : null;
-    await Promise.all([stopping, code.checkout(repos)]);
-    server.setLastWorkspace(this.id);
+    // checking out several repos takes seconds; the flag drives the Workspaces
+    // screen's blocking overlay so the wait doesn't look like nothing happening
+    server.activatingId.set(this.id);
+    try {
+      // no per-repo pre-log: the backend announces each checkout as a timed SSE
+      // event ("checking out …" with a live "..." resolving to ok/failed) — a
+      // plain line here would just duplicate it
+      // stop the server and switch branches concurrently (independent ops)
+      const s = server.status();
+      const stopping =
+        s.state === "running" || s.state === "starting"
+          ? server.stop({ trackActivity: false })
+          : null;
+      await Promise.all([stopping, code.checkout(repos)]);
+      server.setLastWorkspace(this.id);
+    } finally {
+      // must clear even if a checkout throws, or the UI stays blocked for good
+      server.activatingId.set("");
+    }
   }
 }
 
