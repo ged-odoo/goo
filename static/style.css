@@ -698,8 +698,8 @@ section.hidden {
 .panel {
   flex: none;
   height: 58px;
-  background: var(--l-panel);
-  border-bottom: 1px solid oklch(0.82 0.006 264);
+  background: var(--l-card);
+  border-bottom: 1px solid var(--l-panel-line);
   padding: 11px 24px 13px;
 }
 .panel.panel-two-rows {
@@ -864,7 +864,7 @@ section.hidden {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  background: var(--l-card);
+  background: var(--l-bg);
 }
 /* full-bleed content (running server logs): no padding, no console chrome */
 .content.flush {
