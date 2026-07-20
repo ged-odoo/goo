@@ -974,7 +974,7 @@ section.hidden {
   overflow: visible; /* the list-actions kebab menu must escape the card */
   background: var(--l-card);
   border: 1px solid var(--l-line);
-  border-radius: 14px;
+  border-radius: 8px;
 }
 .todo-card-head {
   flex: none;
@@ -989,7 +989,7 @@ section.hidden {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  border-radius: 0 0 13px 13px;
+  border-radius: 0 0 7px 7px;
 }
 .todo-card-title {
   flex: 1;
@@ -1014,7 +1014,7 @@ section.hidden {
 }
 /* the card no longer clips (kebab menu), so round the last row's hover bg */
 .todo-row:last-child {
-  border-radius: 0 0 13px 13px;
+  border-radius: 0 0 7px 7px;
 }
 .todo-row:hover {
   background: var(--l-hover);
@@ -1163,7 +1163,7 @@ body.col-resizing {
   flex-direction: column;
   background: var(--l-card);
   border: 1px solid var(--l-line);
-  border-radius: 14px;
+  border-radius: 8px;
   overflow: hidden;
 }
 .todo-details-head {
@@ -1239,7 +1239,7 @@ body.col-resizing {
   line-height: 1.55;
   color: var(--l-text);
   border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 .todo-details-description:focus {
   outline: none;
@@ -1293,7 +1293,7 @@ body.col-resizing {
   padding: 2px;
   gap: 2px;
   border: 1px solid var(--l-line);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--l-panel);
 }
 .todo-mode-btn {
@@ -1302,7 +1302,7 @@ body.col-resizing {
   gap: 6px;
   padding: 4px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: var(--l-text-mid);
   font: inherit;
@@ -1343,7 +1343,7 @@ body.col-resizing {
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--l-line-soft);
-  border-radius: 10px;
+  border-radius: 6px;
   background: var(--l-bg);
 }
 .kanban-col.drag-target {
@@ -1388,7 +1388,7 @@ body.col-resizing {
   justify-content: center;
   min-height: 48px;
   border: 1px dashed var(--l-line);
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 12px;
 }
 .kanban-card {
@@ -1398,7 +1398,7 @@ body.col-resizing {
   gap: 7px;
   padding: 9px 11px;
   border: 1px solid var(--l-line);
-  border-radius: 9px;
+  border-radius: 6px;
   background: var(--l-card);
   cursor: grab;
   box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.06);
