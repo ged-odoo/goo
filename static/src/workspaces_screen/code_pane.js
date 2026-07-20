@@ -146,6 +146,18 @@ export class CodePane extends Component {
           </div>
         </div>
       </t>
+
+      <div class="ws-sec"><span>Details</span></div>
+      <div class="ws-details-grid">
+        <span class="dim">Created</span>
+        <span t-out="this.fmtWhen(this.props.ws.created_at)"/>
+        <span class="dim">Last activity</span>
+        <span t-out="this.fmtWhen(this.props.ws.last_activity)"/>
+      </div>
+      <label class="ws-notes-label dim" for="ws-notes">Notes</label>
+      <textarea id="ws-notes" class="ws-notes" placeholder="Anything worth remembering about this workspace — context, findings, next steps…"
+                t-att-value="this.props.ws.notes || ''"
+                t-on-change="ev => this.config.workspace(this.props.ws.id)?.setNotes(ev.target.value)"/>
       </t>
     </div>`;
 
@@ -184,6 +196,17 @@ export class CodePane extends Component {
 
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
+  }
+
+  // Details timestamps: absolute local date-time + relative ("2 days ago")
+  fmtWhen(ts) {
+    const t = Date.parse(ts || "");
+    if (!t) return "—";
+    const abs = new Date(t).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    return `${abs} · ${timeAgo(ts)}`;
   }
 
   // repositories shown in the sync strip: this workspace's repos, in config order,

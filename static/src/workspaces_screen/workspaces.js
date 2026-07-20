@@ -196,14 +196,13 @@ export class WorkspacesScreen extends Component {
               </div>
             </div>
             <div class="wt-tabs">
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Code</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Main</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
             <div class="wt-panes">
@@ -248,18 +247,6 @@ export class WorkspacesScreen extends Component {
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
-              <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
-                <div class="ws-details-grid">
-                  <span class="dim">Created</span>
-                  <span t-out="this.fmtWhen(this.sel.created_at)"/>
-                  <span class="dim">Last activity</span>
-                  <span t-out="this.fmtWhen(this.sel.last_activity)"/>
-                </div>
-                <label class="ws-notes-label dim" for="ws-notes">Notes</label>
-                <textarea id="ws-notes" class="ws-notes" placeholder="Anything worth remembering about this workspace — context, findings, next steps…"
-                          t-att-value="this.sel.notes || ''"
-                          t-on-change="ev => this.config.workspace(this.sel.id)?.setNotes(ev.target.value)"/>
-              </div>
             </div>
           </t>
           <div t-else="" class="wt-detail-empty dim">Select a workspace on the left, or create one.</div>
@@ -291,7 +278,6 @@ export class WorkspacesScreen extends Component {
     assets: m(ICONS.assets),
     claude: m(ICONS.claude),
     terminal: m(ICONS.terminal),
-    info: m(ICONS.info),
   };
 
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
@@ -743,17 +729,6 @@ export class WorkspacesScreen extends Component {
 
   branchOf(ws) {
     return (ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch) || "";
-  }
-
-  // Details tab timestamps: absolute local date-time + relative ("2 days ago")
-  fmtWhen(ts) {
-    const t = Date.parse(ts || "");
-    if (!t) return "—";
-    const abs = new Date(t).toLocaleString(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    });
-    return `${abs} · ${timeAgo(ts)}`;
   }
 
   // ── per-location server state ────────────────────────────────────────────────
