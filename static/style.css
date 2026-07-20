@@ -902,7 +902,7 @@ section.hidden {
 }
 .todo-content {
   align-items: stretch;
-  padding-left: 24px;
+  padding-left: 12px;
   overflow: hidden;
 }
 /* rail of lists on the left, the selected list's card on the right */
@@ -1175,7 +1175,6 @@ body.drag-grabbing {
   font: inherit;
   line-height: 1.55;
   color: var(--l-text);
-  background: var(--l-bg);
   border: 1px solid var(--l-panel-line);
   border-radius: 8px;
 }
