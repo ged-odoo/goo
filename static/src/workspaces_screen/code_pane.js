@@ -58,9 +58,12 @@ export class CodePane extends Component {
         <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
           <span class="ws-repo-tag" t-out="r.repo"/>
           <div class="ws-co-main">
-            <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
-               t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
-            <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
+            <div class="ws-co-branch-row">
+              <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
+                 t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
+              <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
+              <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
+            </div>
             <div t-if="r.subject" class="ws-commit dim" t-att-class="{viewable: r.sha and r.path}"
                  t-att-title="r.sha and r.path ? 'view the commit history for this branch' : ''"
                  t-on-click="() => this.openHistory(r)">
@@ -81,7 +84,6 @@ export class CodePane extends Component {
             <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
               <span class="ws-sync-dot"/>working…
             </span>
-            <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
             <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
             <span t-if="r.missing and !this.code.repoWorking(r.repo)" class="ws-missing dim">not found locally</span>
             <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">

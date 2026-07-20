@@ -4761,6 +4761,14 @@ a.commit-detail-hash svg {
 .ws-co-main {
   min-width: 0;
 }
+/* the branch name with its "checked out" badge alongside; only the name shrinks
+   (.ws-co-branch already carries min-width: 0, the badge is flex: 0 0 auto) */
+.ws-co-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .ws-co-branch {
   display: block;
   font-size: 13px;
