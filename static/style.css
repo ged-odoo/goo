@@ -4214,7 +4214,12 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 8px;
   flex: none;
-  padding: 14px 12px 10px;
+  padding: 10px 12px 8px;
+}
+/* match the neighbouring 30px icon button rather than the default pbtn height */
+.wt-list-title .pbtn {
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 .wt-list-title h1 {
   font-size: 17px;
@@ -4247,7 +4252,7 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 6px;
   flex: none;
-  padding: 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--l-line-soft);
 }
 .wt-list-head .search-box {
