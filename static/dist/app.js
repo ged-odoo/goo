@@ -10157,18 +10157,6 @@ var CodePane = class extends Component {
           </div>
         </div>
       </t>
-
-      <div class="ws-sec"><span>Details</span></div>
-      <div class="ws-details-grid">
-        <span class="dim">Created</span>
-        <span t-out="this.fmtWhen(this.props.ws.created_at)"/>
-        <span class="dim">Last activity</span>
-        <span t-out="this.fmtWhen(this.props.ws.last_activity)"/>
-      </div>
-      <label class="ws-notes-label dim" for="ws-notes">Notes</label>
-      <textarea id="ws-notes" class="ws-notes" placeholder="Anything worth remembering about this workspace — context, findings, next steps…"
-                t-att-value="this.props.ws.notes || ''"
-                t-on-change="ev => this.config.workspace(this.props.ws.id)?.setNotes(ev.target.value)"/>
       </t>
     </div>`;
   props = useProps({ ws: t.any() });
@@ -10208,16 +10196,6 @@ var CodePane = class extends Component {
   }
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
-  }
-  // Details timestamps: absolute local date-time + relative ("2 days ago")
-  fmtWhen(ts) {
-    const t2 = Date.parse(ts || "");
-    if (!t2) return "\u2014";
-    const abs = new Date(t2).toLocaleString(void 0, {
-      dateStyle: "medium",
-      timeStyle: "short"
-    });
-    return `${abs} \xB7 ${timeAgo(ts)}`;
   }
   // repositories shown in the sync strip: this workspace's repos, in config order,
   // joined with live git state (current branch, sync counts) and their PRs
@@ -11586,6 +11564,7 @@ var WorkspacesScreen = class extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
             <div class="wt-panes">
@@ -11630,6 +11609,18 @@ var WorkspacesScreen = class extends Component {
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
+              <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
+                <div class="ws-details-grid">
+                  <span class="dim">Created</span>
+                  <span t-out="this.fmtWhen(this.sel.created_at)"/>
+                  <span class="dim">Last activity</span>
+                  <span t-out="this.fmtWhen(this.sel.last_activity)"/>
+                </div>
+                <label class="ws-notes-label dim" for="ws-notes">Notes</label>
+                <textarea id="ws-notes" class="ws-notes" placeholder="Anything worth remembering about this workspace — context, findings, next steps…"
+                          t-att-value="this.sel.notes || ''"
+                          t-on-change="ev => this.config.workspace(this.sel.id)?.setNotes(ev.target.value)"/>
+              </div>
             </div>
           </t>
           <div t-else="" class="wt-detail-empty dim">Select a workspace on the left, or create one.</div>
@@ -11660,7 +11651,8 @@ var WorkspacesScreen = class extends Component {
     addons: m(ICONS.addons),
     assets: m(ICONS.assets),
     claude: m(ICONS.claude),
-    terminal: m(ICONS.terminal)
+    terminal: m(ICONS.terminal),
+    info: m(ICONS.info)
   };
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
   pane = signal("code");
@@ -12033,6 +12025,16 @@ var WorkspacesScreen = class extends Component {
   }
   branchOf(ws) {
     return ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch || "";
+  }
+  // Details tab timestamps: absolute local date-time + relative ("2 days ago")
+  fmtWhen(ts) {
+    const t2 = Date.parse(ts || "");
+    if (!t2) return "\u2014";
+    const abs = new Date(t2).toLocaleString(void 0, {
+      dateStyle: "medium",
+      timeStyle: "short"
+    });
+    return `${abs} \xB7 ${timeAgo(ts)}`;
   }
   // ── per-location server state ────────────────────────────────────────────────
   // the workspace occupying the main checkout: the running main server's, else the

@@ -3276,6 +3276,13 @@ tr.active td.brg-commit {
   cursor: pointer;
 }
 /* workspace Details tab: creation/activity dates + free-form notes */
+.ws-details-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  max-width: 720px;
+}
 .ws-details-grid {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -3287,11 +3294,7 @@ tr.active td.brg-commit {
   font-size: 13px;
 }
 .ws-notes {
-  align-self: flex-start;
-  width: 100%;
-  max-width: 720px;
   min-height: 180px;
-  flex: none;
   padding: 10px 12px;
   border: 1px solid var(--l-panel-line);
   border-radius: 8px;
