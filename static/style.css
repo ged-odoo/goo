@@ -4748,11 +4748,15 @@ a.commit-detail-hash svg {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  min-height: 60px;
-  padding: 10px 12px;
+  min-height: 48px;
+  padding: 3px 12px;
   background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 10px;
+}
+/* the repo tag hugs its text (a grid child would otherwise stretch to the column) */
+.ws-co-card > .ws-repo-tag {
+  justify-self: start;
 }
 .ws-co-main {
   min-width: 0;
@@ -5325,12 +5329,13 @@ a.ws-fp-branch:hover {
   text-overflow: ellipsis;
 }
 .ws-repo-tag {
-  font-size: 10.5px;
-  color: var(--l-text);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--l-text-mid);
   background: var(--l-panel);
   border: 1px solid var(--l-line);
   border-radius: 5px;
-  padding: 1px 7px;
+  padding: 3px 9px;
   flex: 0 0 auto;
 }
 .ws-co-badge {
