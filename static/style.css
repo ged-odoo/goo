@@ -878,6 +878,8 @@ section.hidden {
 
 /* Todo screen */
 /* the form + card column next to the rail */
+/* the column itself doesn't scroll — the new-todo form and the card header stay
+   put and only the rows (or the board's columns) scroll inside the card */
 .todo-main {
   flex: 0 1 760px;
   min-width: 0;
@@ -885,7 +887,7 @@ section.hidden {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow-y: auto;
+  overflow: hidden;
 }
 /* the new-todo form sits on its own, just above the card */
 .todo-form {
@@ -965,17 +967,29 @@ section.hidden {
   padding: 2px 6px;
 }
 .todo-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: visible; /* the list-actions kebab menu must escape the card */
   background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 14px;
 }
 .todo-card-head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 9px 10px 9px 16px;
   border-bottom: 1px solid var(--l-line-soft);
+}
+/* the scroll region: the rows only, clipped to the card's bottom corners */
+.todo-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-radius: 0 0 13px 13px;
 }
 .todo-card-title {
   flex: 1;
@@ -1228,6 +1242,7 @@ body.drag-grabbing {
   font-size: 12px;
 }
 .todo-empty {
+  flex: 1;
   min-height: 150px;
   display: flex;
   flex-direction: column;
@@ -1287,6 +1302,8 @@ body.drag-grabbing {
 /* ── Kanban board: three stage columns filling the card body ── */
 /* the three columns share a height so short ones stay full-size drop targets */
 .kanban-board {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
@@ -1297,6 +1314,7 @@ body.drag-grabbing {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   border: 1px solid var(--l-line-soft);
   border-radius: 10px;
   background: var(--l-bg);
@@ -1335,6 +1353,7 @@ body.drag-grabbing {
   gap: 8px;
   min-height: 90px;
   padding: 4px 8px 10px;
+  overflow-y: auto; /* each column scrolls on its own, like the list's rows */
 }
 .kanban-col-empty {
   display: flex;
