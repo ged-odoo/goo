@@ -8510,6 +8510,17 @@ var TerminalDialog = class extends Component {
 var STORAGE_KEY3 = "oo-todos";
 var uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 var KANBAN_STAGES = ["backlog", "ongoing", "done"];
+var MAIN_WIDTH_KEY = "oo-todo-main-width";
+var MIN_MAIN_WIDTH = 320;
+var MIN_DETAILS_WIDTH = 300;
+function storedMainWidth() {
+  try {
+    const n = Number(localStorage.getItem(MAIN_WIDTH_KEY));
+    return Number.isFinite(n) && n >= MIN_MAIN_WIDTH ? n : 0;
+  } catch {
+    return 0;
+  }
+}
 function storedState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY3) || "null");
@@ -8558,7 +8569,7 @@ var TodoScreen = class extends Component {
         </t>
       </Panel>
       <div class="content todo-content">
-        <div class="todo-layout">
+        <div class="todo-layout" t-ref="this.layoutEl">
           <div class="todo-rail" t-ref="this.railEl">
             <button t-foreach="this.lists()" t-as="l" t-key="l.id" class="todo-rail-item"
                     t-att-data-list-id="l.id"
@@ -8571,7 +8582,7 @@ var TodoScreen = class extends Component {
               <span t-if="this.openCount(l)" class="todo-rail-count" t-out="this.openCount(l)"/>
             </button>
           </div>
-          <div class="todo-main">
+          <div class="todo-main" t-att-style="this.mainStyle">
             <form class="todo-form" t-on-submit.prevent="() => this.add()">
               <input t-ref="this.newTodo" type="text" t-att-value="this.draft()"
                      t-on-input="ev => this.draft.set(ev.target.value)"
@@ -8637,6 +8648,10 @@ var TodoScreen = class extends Component {
               </t>
             </div>
           </div>
+          <div t-if="this.detailTodo" class="todo-resizer" t-att-class="{dragging: this.resizing()}"
+               title="Drag to resize · double-click to reset"
+               t-on-pointerdown="ev => this.onResizeStart(ev)"
+               t-on-dblclick="() => this.resetMainWidth()"/>
           <aside t-if="this.detailTodo" class="todo-details">
             <div class="todo-details-head">
               <div class="todo-details-heading">
@@ -8684,6 +8699,11 @@ var TodoScreen = class extends Component {
   listEl = signal.ref(HTMLElement);
   boardEl = signal.ref(HTMLElement);
   // the kanban board (column hit-testing on drag)
+  layoutEl = signal.ref(HTMLElement);
+  // measured to clamp the splitter
+  mainWidth = signal(storedMainWidth());
+  // 0 = the stylesheet default
+  resizing = signal(false);
   todoIcon = m(ICONS.todo);
   kebabIcon = m(ICONS.kebab);
   listIcon = m(ICONS.list);
@@ -8693,6 +8713,7 @@ var TodoScreen = class extends Component {
     onMounted(() => document.addEventListener("click", closeMenu));
     onWillUnmount(() => document.removeEventListener("click", closeMenu));
     onWillUnmount(() => this._dragStop?.(true));
+    onWillUnmount(() => this._resizeStop?.(false));
     useEffect(() => {
       this.newTodo()?.focus();
     });
@@ -8703,6 +8724,63 @@ var TodoScreen = class extends Component {
   }
   get detailTodo() {
     return this.list.todos.find((todo) => todo.id === this.detailTodoId());
+  }
+  // ── the main | details splitter ──────────────────────────────────────────────
+  // Only applied once dragged: unset, the stylesheet's flex basis + max-width win.
+  get mainStyle() {
+    const w = this.mainWidth();
+    return w ? `flex: 0 0 ${w}px; max-width: none;` : "";
+  }
+  onResizeStart(ev) {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    const layout = this.layoutEl();
+    const mainEl = layout?.querySelector(".todo-main");
+    if (!mainEl) return;
+    const startX = ev.clientX;
+    const startWidth = mainEl.getBoundingClientRect().width;
+    const original = this.mainWidth();
+    const railWidth = layout.querySelector(".todo-rail")?.getBoundingClientRect().width || 0;
+    const maxWidth = Math.max(
+      MIN_MAIN_WIDTH,
+      layout.getBoundingClientRect().width - railWidth - MIN_DETAILS_WIDTH - 48
+    );
+    const move = (e) => {
+      const next = startWidth + (e.clientX - startX);
+      this.mainWidth.set(Math.round(Math.min(maxWidth, Math.max(MIN_MAIN_WIDTH, next))));
+    };
+    const stop = (commit) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("keydown", key);
+      document.body.classList.remove("col-resizing");
+      this.resizing.set(false);
+      this._resizeStop = null;
+      if (commit) this._saveMainWidth();
+      else this.mainWidth.set(original);
+    };
+    const up = () => stop(true);
+    const key = (e) => e.key === "Escape" && stop(false);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("keydown", key);
+    document.body.classList.add("col-resizing");
+    this.resizing.set(true);
+    this._resizeStop = stop;
+  }
+  _saveMainWidth() {
+    try {
+      localStorage.setItem(MAIN_WIDTH_KEY, String(this.mainWidth()));
+    } catch {
+    }
+  }
+  // double-click the splitter: back to the stylesheet's default width
+  resetMainWidth() {
+    this.mainWidth.set(0);
+    try {
+      localStorage.removeItem(MAIN_WIDTH_KEY);
+    } catch {
+    }
   }
   // ── view mode (per project) ──────────────────────────────────────────────────
   get mode() {
