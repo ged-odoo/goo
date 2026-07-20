@@ -147,8 +147,22 @@ export class WorkspacesScreen extends Component {
         <div class="wt-detail">
           <t t-if="this.sel">
             <div class="wt-detail-top">
-            <div class="wt-detail-name" t-att-title="this.sel.name + ' — double-click to edit'"
-                 t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
+            <div class="wt-detail-name-row">
+              <div class="wt-detail-name" t-att-title="this.sel.name + ' — double-click to edit'"
+                   t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
+              <span class="wt-sp"/>
+              <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
+              <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
+              <div class="dash-kebab-wrap">
+                <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
+                <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
+                  <button class="dash-menu-item" title="edit name / branches / database / args" t-on-click="() => this.headMenu(() => this.edit(this.sel))">Edit workspace…</button>
+                  <button class="dash-menu-item" t-att-title="this.isArchived(this.sel) ? 'move it back to uncategorized' : 'move it to the archived group (keeps branches, db and settings)'" t-on-click="() => this.headMenu(() => this.toggleArchived(this.sel))" t-out="this.isArchived(this.sel) ? 'Unarchive workspace' : 'Archive workspace'"/>
+                  <button class="dash-menu-item danger" t-att-disabled="!this.canDropDb(this.sel)" t-att-title="this.dropDbTitle(this.sel)" t-on-click="() => this.headMenu(() => this.dropDb(this.sel))">Drop database</button>
+                  <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
+                </div>
+              </div>
+            </div>
             <div class="wt-detail-head">
               <div class="wt-head-row">
                 <!-- one primary slot: a main-located workspace that isn't loaded offers
@@ -182,17 +196,6 @@ export class WorkspacesScreen extends Component {
                 <span class="wt-sp"/>
                 <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
                 <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-                <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
-                <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
-                <div class="dash-kebab-wrap">
-                  <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
-                  <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
-                    <button class="dash-menu-item" title="edit name / branches / database / args" t-on-click="() => this.headMenu(() => this.edit(this.sel))">Edit workspace…</button>
-                    <button class="dash-menu-item" t-att-title="this.isArchived(this.sel) ? 'move it back to uncategorized' : 'move it to the archived group (keeps branches, db and settings)'" t-on-click="() => this.headMenu(() => this.toggleArchived(this.sel))" t-out="this.isArchived(this.sel) ? 'Unarchive workspace' : 'Archive workspace'"/>
-                    <button class="dash-menu-item danger" t-att-disabled="!this.canDropDb(this.sel)" t-att-title="this.dropDbTitle(this.sel)" t-on-click="() => this.headMenu(() => this.dropDb(this.sel))">Drop database</button>
-                    <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
-                  </div>
-                </div>
               </div>
             </div>
             <div class="wt-tabs">

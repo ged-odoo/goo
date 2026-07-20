@@ -4222,8 +4222,17 @@ a.commit-detail-hash svg {
   letter-spacing: -0.01em;
   color: var(--l-text);
 }
+/* the detail column's heading: workspace name on the left, its database / port and
+   the overflow menu trailing on the right */
+.wt-detail-name-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
 /* the selected workspace's name, heading the detail column (double-click to edit) */
 .wt-detail-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
