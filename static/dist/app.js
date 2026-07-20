@@ -4399,6 +4399,8 @@ var ICONS = {
   branches: `<svg viewBox="0 0 24 24"><line x1="6" y1="4" x2="6" y2="15"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="6" r="2.6"/><path d="M18 8.6c0 5.4-4 5.4-9 7.4"/></svg>`,
   pr: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="6" y1="9" x2="6" y2="15"/><circle cx="18" cy="18" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/></svg>`,
   todo: `<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><polyline points="8 9 10 11 14 7"/><line x1="8" y1="16" x2="16" y2="16"/></svg>`,
+  list: `<svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><line x1="4" y1="6" x2="4" y2="6"/><line x1="4" y1="12" x2="4" y2="12"/><line x1="4" y1="18" x2="4" y2="18"/></svg>`,
+  kanban: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="9.5" y="4" width="5" height="11" rx="1"/><rect x="16" y="4" width="5" height="14" rx="1"/></svg>`,
   tests: `<svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.8 3h10.8a2 2 0 0 0 1.8-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>`,
   databases: `<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>`,
   addons: `<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>`,
@@ -8507,18 +8509,25 @@ var TerminalDialog = class extends Component {
 // static/src/todo_screen/todo.js
 var STORAGE_KEY3 = "oo-todos";
 var uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+var KANBAN_STAGES = ["backlog", "ongoing", "done"];
 function storedState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY3) || "null");
     const cleanTodos = (todos) => (Array.isArray(todos) ? todos : []).filter(
       (item) => item && typeof item.id === "string" && typeof item.title === "string"
     );
+    const cleanList = (l) => ({
+      id: l.id,
+      name: l.name,
+      mode: l.mode === "kanban" ? "kanban" : "list",
+      todos: cleanTodos(l.todos)
+    });
     if (Array.isArray(raw)) {
-      const list2 = { id: uid(), name: "Todo", todos: cleanTodos(raw) };
+      const list2 = { ...cleanList({ id: uid(), name: "Todo" }), todos: cleanTodos(raw) };
       return { lists: [list2], selected: list2.id };
     }
     if (raw && Array.isArray(raw.lists)) {
-      const lists = raw.lists.filter((l) => l && typeof l.id === "string" && typeof l.name === "string").map((l) => ({ id: l.id, name: l.name, todos: cleanTodos(l.todos) }));
+      const lists = raw.lists.filter((l) => l && typeof l.id === "string" && typeof l.name === "string").map(cleanList);
       if (lists.length) {
         const selected = lists.some((l) => l.id === raw.selected) ? raw.selected : lists[0].id;
         return { lists, selected };
@@ -8526,7 +8535,7 @@ function storedState() {
     }
   } catch {
   }
-  const list = { id: uid(), name: "Todo", todos: [] };
+  const list = { id: uid(), name: "Todo", mode: "list", todos: [] };
   return { lists: [list], selected: list.id };
 }
 var TodoScreen = class extends Component {
@@ -8539,6 +8548,12 @@ var TodoScreen = class extends Component {
             <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
             <span class="sub" t-out="this.summary"/>
             <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+          </div>
+        </t>
+        <t t-set-slot="top-right">
+          <div class="todo-mode" role="group" aria-label="View mode">
+            <button class="todo-mode-btn" t-att-class="{on: this.mode === 'list'}" title="List view" t-on-click="() => this.setMode('list')"><t t-out="this.listIcon"/>List</button>
+            <button class="todo-mode-btn" t-att-class="{on: this.mode === 'kanban'}" title="Kanban board" t-on-click="() => this.setMode('kanban')"><t t-out="this.kanbanIcon"/>Kanban</button>
           </div>
         </t>
       </Panel>
@@ -8576,25 +8591,51 @@ var TodoScreen = class extends Component {
                   </div>
                 </div>
               </div>
-              <div t-if="!this.list.todos.length" class="todo-empty">
-                <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
-                <span>No todos yet.</span>
-              </div>
-              <div t-else="" class="todo-list" t-ref="this.listEl">
-                <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                     t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
-                     t-att-title="this.createdTitle(todo)">
-                  <span class="row-handle" title="drag to reorder"
-                        t-on-pointerdown="ev => this.onDragStart(ev, todo)">⠿</span>
-                  <div class="todo-check">
-                    <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
-                    <button type="button" class="todo-title" t-on-click="() => this.openTodo(todo.id)" t-out="todo.title"/>
+              <t t-if="this.mode === 'kanban'">
+                <div class="kanban-board" t-ref="this.boardEl">
+                  <div t-foreach="this.kanbanColumns" t-as="col" t-key="col.stage" class="kanban-col"
+                       t-att-data-stage="col.stage" t-att-class="{'drag-target': this.dragOverStage() === col.stage}">
+                    <div class="kanban-col-head">
+                      <span class="kanban-col-title" t-out="col.label"/>
+                      <span class="kanban-col-count" t-out="col.todos.length"/>
+                    </div>
+                    <div class="kanban-col-body">
+                      <div t-foreach="col.todos" t-as="todo" t-key="todo.id" class="kanban-card"
+                           t-att-data-todo-id="todo.id"
+                           t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
+                           t-att-title="this.createdTitle(todo)"
+                           t-on-pointerdown="ev => this.onCardDragStart(ev, todo)">
+                        <span class="kanban-card-title" t-out="todo.title"/>
+                        <button class="todo-star" t-att-class="{on: todo.starred}"
+                                t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
+                        <button class="todo-delete" t-on-click.stop="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+                      </div>
+                      <div t-if="!col.todos.length" class="kanban-col-empty dim">Drop here</div>
+                    </div>
                   </div>
-                  <button class="todo-star" t-att-class="{on: todo.starred}"
-                          t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
-                  <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
                 </div>
-              </div>
+              </t>
+              <t t-else="">
+                <div t-if="!this.list.todos.length" class="todo-empty">
+                  <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
+                  <span>No todos yet.</span>
+                </div>
+                <div t-else="" class="todo-list" t-ref="this.listEl">
+                  <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
+                       t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
+                       t-att-title="this.createdTitle(todo)">
+                    <span class="row-handle" title="drag to reorder"
+                          t-on-pointerdown="ev => this.onDragStart(ev, todo)">⠿</span>
+                    <div class="todo-check">
+                      <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
+                      <button type="button" class="todo-title" t-on-click="() => this.openTodo(todo.id)" t-out="todo.title"/>
+                    </div>
+                    <button class="todo-star" t-att-class="{on: todo.starred}"
+                            t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
+                    <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+                  </div>
+                </div>
+              </t>
             </div>
           </div>
           <aside t-if="this.detailTodo" class="todo-details">
@@ -8633,11 +8674,17 @@ var TodoScreen = class extends Component {
   listDragId = signal("");
   dragId = signal("");
   // id of the todo being dragged ("" = none)
+  dragOverStage = signal("");
+  // kanban column the dragged card is currently over
   newTodo = signal.ref(HTMLInputElement);
   railEl = signal.ref(HTMLElement);
   listEl = signal.ref(HTMLElement);
+  boardEl = signal.ref(HTMLElement);
+  // the kanban board (column hit-testing on drag)
   todoIcon = m(ICONS.todo);
   kebabIcon = m(ICONS.kebab);
+  listIcon = m(ICONS.list);
+  kanbanIcon = m(ICONS.kanban);
   setup() {
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
@@ -8653,6 +8700,36 @@ var TodoScreen = class extends Component {
   }
   get detailTodo() {
     return this.list.todos.find((todo) => todo.id === this.detailTodoId());
+  }
+  // ── view mode (per project) ──────────────────────────────────────────────────
+  get mode() {
+    return this.list.mode === "kanban" ? "kanban" : "list";
+  }
+  setMode(mode) {
+    if (this.mode === mode) return;
+    this._updateList(this.list.id, (l) => ({ ...l, mode }));
+  }
+  // a todo's kanban column: done drives "done"; the rest split on `status`, which
+  // defaults to backlog (so pre-status todos and new ones land there)
+  stageOf(todo) {
+    if (todo.done) return "done";
+    return todo.status === "ongoing" ? "ongoing" : "backlog";
+  }
+  // the three columns, each with the selected list's todos for that stage in array
+  // order (so kanban and list share one ordering)
+  get kanbanColumns() {
+    const labels = { backlog: "Backlog", ongoing: "Ongoing", done: "Done" };
+    return KANBAN_STAGES.map((stage) => ({
+      stage,
+      label: labels[stage],
+      todos: this.list.todos.filter((todo) => this.stageOf(todo) === stage)
+    }));
+  }
+  // the field patch that moves a todo to a stage. "done" only flips the flag,
+  // leaving `status` so unchecking in list mode restores the prior stage.
+  _stageFields(stage) {
+    if (stage === "done") return { done: true };
+    return { done: false, status: stage };
   }
   openCount(l) {
     return l.todos.filter((todo) => !todo.done).length;
@@ -8719,6 +8796,7 @@ var TodoScreen = class extends Component {
       id: uid(),
       title,
       done: false,
+      status: "backlog",
       created: Date.now(),
       starred: false,
       description: ""
@@ -8851,6 +8929,78 @@ var TodoScreen = class extends Component {
     const next = [...todos];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
+    this.lists.set(this.lists().map((l) => l.id === this.list.id ? { ...l, todos: next } : l));
+  }
+  // ── kanban drag-and-drop (move a card between columns) ───────────────────────
+  // Same ghost/live-preview mechanism as the list drag, but the target is a
+  // column (chosen by pointer X) rather than a row index: crossing into another
+  // column live-restages the card there, and the vertical position within the
+  // column reorders the shared todos array. Committed on drop, restored on Escape.
+  // The whole card is the drag surface (a handle would leave most of the card
+  // inert), so the card's own click can't open the details: startRowDrag calls
+  // preventDefault on pointerdown, which suppresses the compatibility click.
+  // Instead a press that never travels past a few pixels is treated as a click.
+  onCardDragStart(ev, todo) {
+    if (ev.target.closest(".todo-star, .todo-delete")) return;
+    const original = this.list.todos;
+    this._dragOrigin = original.find((t2) => t2.id === todo.id);
+    const from = { x: ev.clientX, y: ev.clientY };
+    let moved = false;
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".kanban-card"),
+      onMove: (e) => {
+        if (!moved && (Math.abs(e.clientX - from.x) > 4 || Math.abs(e.clientY - from.y) > 4))
+          moved = true;
+        if (moved) this._cardDragMove(e, todo.id);
+      },
+      onEnd: (commit) => {
+        this._dragStop = null;
+        this._dragOrigin = null;
+        this.dragId.set("");
+        this.dragOverStage.set("");
+        if (!moved) return this.openTodo(todo.id);
+        if (commit) this._save();
+        else this._updateTodos(() => original);
+      }
+    });
+    if (!stop) return;
+    this._dragStop = stop;
+    this.dragId.set(todo.id);
+  }
+  _cardDragMove(ev, id) {
+    const cols = [...this.boardEl()?.querySelectorAll(".kanban-col") || []];
+    let col = cols.find((c) => {
+      const r = c.getBoundingClientRect();
+      return ev.clientX >= r.left && ev.clientX <= r.right;
+    });
+    if (!col && cols.length) {
+      col = cols.reduce((best, c) => {
+        const cx = (r) => r.left + r.width / 2;
+        return Math.abs(cx(c.getBoundingClientRect()) - ev.clientX) < Math.abs(cx(best.getBoundingClientRect()) - ev.clientX) ? c : best;
+      });
+    }
+    if (!col) return;
+    const stage = col.dataset.stage;
+    this.dragOverStage.set(stage);
+    const cards = [...col.querySelectorAll(".kanban-card")].filter((c) => c.dataset.todoId !== id);
+    const to = dropIndex(ev, cards);
+    const todos = this.list.todos;
+    const from = todos.findIndex((t2) => t2.id === id);
+    if (from < 0) return;
+    const moved = { ...this._dragOrigin || todos[from], ...this._stageFields(stage) };
+    const without = todos.filter((t2) => t2.id !== id);
+    const members = without.filter((t2) => this.stageOf(t2) === stage);
+    let at;
+    if (to >= members.length) {
+      const last = members[members.length - 1];
+      at = last ? without.findIndex((t2) => t2.id === last.id) + 1 : without.length;
+    } else {
+      at = without.findIndex((t2) => t2.id === members[to].id);
+    }
+    const next = [...without];
+    next.splice(at, 0, moved);
+    const sig = (arr) => arr.map((t2) => `${t2.id}:${t2.done ? 1 : 0}:${t2.status || ""}`).join(",");
+    if (sig(next) === sig(todos)) return;
     this.lists.set(this.lists().map((l) => l.id === this.list.id ? { ...l, todos: next } : l));
   }
   _updateTodos(fn) {

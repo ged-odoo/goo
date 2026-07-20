@@ -1219,6 +1219,147 @@ body.drag-grabbing {
   stroke: currentColor;
   stroke-width: 1.5;
 }
+
+/* ── Todo view-mode selector (Panel top-right): a two-button segmented toggle ── */
+.todo-mode {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  background: var(--l-panel);
+}
+.todo-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--l-text-mid);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.todo-mode-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+.todo-mode-btn:hover {
+  color: var(--l-text);
+}
+.todo-mode-btn.on {
+  background: var(--l-card);
+  color: var(--l-accent);
+  font-weight: 600;
+  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.1);
+}
+
+/* ── Kanban board: three stage columns filling the card body ── */
+/* the three columns share a height so short ones stay full-size drop targets */
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px;
+  align-items: stretch;
+}
+.kanban-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--l-line-soft);
+  border-radius: 10px;
+  background: var(--l-bg);
+}
+.kanban-col.drag-target {
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
+.kanban-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--l-text-dim);
+}
+.kanban-col-count {
+  margin-left: auto;
+  min-width: 20px;
+  padding: 0 6px;
+  text-align: center;
+  border-radius: 10px;
+  background: var(--l-line-soft);
+  color: var(--l-text-mid);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.kanban-col-body {
+  flex: 1; /* the whole column below the header accepts a drop, not just the cards */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 90px;
+  padding: 4px 8px 10px;
+}
+.kanban-col-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  border: 1px dashed var(--l-line);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.kanban-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--l-line);
+  border-radius: 9px;
+  background: var(--l-card);
+  cursor: grab;
+  box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.06);
+}
+.kanban-card:hover {
+  border-color: var(--l-line);
+  box-shadow: 0 2px 6px oklch(0.27 0.012 264 / 0.1);
+}
+.kanban-card.selected {
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
+.kanban-card.dragging {
+  opacity: 0.35;
+}
+.kanban-card.done .kanban-card-title {
+  color: var(--l-text-faint);
+  text-decoration: line-through;
+}
+.kanban-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--l-text);
+  overflow-wrap: anywhere;
+  user-select: none; /* the card is a drag surface */
+}
+.kanban-card .todo-star,
+.kanban-card .todo-delete {
+  flex: none;
+}
+
 /* tests tab empty state: centered guidance over the (empty) console */
 .tests-content {
   position: relative;

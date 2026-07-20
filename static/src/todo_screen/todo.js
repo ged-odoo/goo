@@ -8,11 +8,14 @@ const STORAGE_KEY = "oo-todos";
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-// stored shape: { lists: [{ id, name, todos: [{ id, title, done, starred, description }] }], selected }.
+// stored shape:
+//   { lists: [{ id, name, mode, todos: [{ id, title, done, status, starred, description }] }], selected }.
 // The original flat todos array (one implicit list) migrates into a single
 // "Todo" list on first read; anything unreadable falls back to one empty list.
-// `starred`/`description` are absent on todos created before those fields
-// existed — treat missing as falsy/empty rather than backfilling on read.
+// `starred`/`description`/`status` and a list's `mode` are absent on records
+// created before those fields existed — treat missing as the default (falsy /
+// empty / "backlog" / "list") rather than backfilling on read.
+const KANBAN_STAGES = ["backlog", "ongoing", "done"];
 function storedState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
@@ -20,14 +23,20 @@ function storedState() {
       (Array.isArray(todos) ? todos : []).filter(
         (item) => item && typeof item.id === "string" && typeof item.title === "string",
       );
+    const cleanList = (l) => ({
+      id: l.id,
+      name: l.name,
+      mode: l.mode === "kanban" ? "kanban" : "list",
+      todos: cleanTodos(l.todos),
+    });
     if (Array.isArray(raw)) {
-      const list = { id: uid(), name: "Todo", todos: cleanTodos(raw) };
+      const list = { ...cleanList({ id: uid(), name: "Todo" }), todos: cleanTodos(raw) };
       return { lists: [list], selected: list.id };
     }
     if (raw && Array.isArray(raw.lists)) {
       const lists = raw.lists
         .filter((l) => l && typeof l.id === "string" && typeof l.name === "string")
-        .map((l) => ({ id: l.id, name: l.name, todos: cleanTodos(l.todos) }));
+        .map(cleanList);
       if (lists.length) {
         const selected = lists.some((l) => l.id === raw.selected) ? raw.selected : lists[0].id;
         return { lists, selected };
@@ -36,7 +45,7 @@ function storedState() {
   } catch {
     // corrupted storage — start fresh below
   }
-  const list = { id: uid(), name: "Todo", todos: [] };
+  const list = { id: uid(), name: "Todo", mode: "list", todos: [] };
   return { lists: [list], selected: list.id };
 }
 
@@ -50,6 +59,12 @@ export class TodoScreen extends Component {
             <button class="pbtn" t-on-click="() => this.addList()">New Project</button>
             <span class="sub" t-out="this.summary"/>
             <button t-if="this.completedCount" class="pbtn" t-on-click="() => this.clearCompleted()">Clear completed</button>
+          </div>
+        </t>
+        <t t-set-slot="top-right">
+          <div class="todo-mode" role="group" aria-label="View mode">
+            <button class="todo-mode-btn" t-att-class="{on: this.mode === 'list'}" title="List view" t-on-click="() => this.setMode('list')"><t t-out="this.listIcon"/>List</button>
+            <button class="todo-mode-btn" t-att-class="{on: this.mode === 'kanban'}" title="Kanban board" t-on-click="() => this.setMode('kanban')"><t t-out="this.kanbanIcon"/>Kanban</button>
           </div>
         </t>
       </Panel>
@@ -87,25 +102,51 @@ export class TodoScreen extends Component {
                   </div>
                 </div>
               </div>
-              <div t-if="!this.list.todos.length" class="todo-empty">
-                <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
-                <span>No todos yet.</span>
-              </div>
-              <div t-else="" class="todo-list" t-ref="this.listEl">
-                <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
-                     t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
-                     t-att-title="this.createdTitle(todo)">
-                  <span class="row-handle" title="drag to reorder"
-                        t-on-pointerdown="ev => this.onDragStart(ev, todo)">⠿</span>
-                  <div class="todo-check">
-                    <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
-                    <button type="button" class="todo-title" t-on-click="() => this.openTodo(todo.id)" t-out="todo.title"/>
+              <t t-if="this.mode === 'kanban'">
+                <div class="kanban-board" t-ref="this.boardEl">
+                  <div t-foreach="this.kanbanColumns" t-as="col" t-key="col.stage" class="kanban-col"
+                       t-att-data-stage="col.stage" t-att-class="{'drag-target': this.dragOverStage() === col.stage}">
+                    <div class="kanban-col-head">
+                      <span class="kanban-col-title" t-out="col.label"/>
+                      <span class="kanban-col-count" t-out="col.todos.length"/>
+                    </div>
+                    <div class="kanban-col-body">
+                      <div t-foreach="col.todos" t-as="todo" t-key="todo.id" class="kanban-card"
+                           t-att-data-todo-id="todo.id"
+                           t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
+                           t-att-title="this.createdTitle(todo)"
+                           t-on-pointerdown="ev => this.onCardDragStart(ev, todo)">
+                        <span class="kanban-card-title" t-out="todo.title"/>
+                        <button class="todo-star" t-att-class="{on: todo.starred}"
+                                t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
+                        <button class="todo-delete" t-on-click.stop="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+                      </div>
+                      <div t-if="!col.todos.length" class="kanban-col-empty dim">Drop here</div>
+                    </div>
                   </div>
-                  <button class="todo-star" t-att-class="{on: todo.starred}"
-                          t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
-                  <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
                 </div>
-              </div>
+              </t>
+              <t t-else="">
+                <div t-if="!this.list.todos.length" class="todo-empty">
+                  <span class="todo-empty-icon"><t t-out="this.todoIcon"/></span>
+                  <span>No todos yet.</span>
+                </div>
+                <div t-else="" class="todo-list" t-ref="this.listEl">
+                  <div t-foreach="this.list.todos" t-as="todo" t-key="todo.id" class="todo-row"
+                       t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
+                       t-att-title="this.createdTitle(todo)">
+                    <span class="row-handle" title="drag to reorder"
+                          t-on-pointerdown="ev => this.onDragStart(ev, todo)">⠿</span>
+                    <div class="todo-check">
+                      <input type="checkbox" class="todo-checkbox" t-att-checked="todo.done" t-on-change="() => this.toggle(todo.id)"/>
+                      <button type="button" class="todo-title" t-on-click="() => this.openTodo(todo.id)" t-out="todo.title"/>
+                    </div>
+                    <button class="todo-star" t-att-class="{on: todo.starred}"
+                            t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
+                    <button class="todo-delete" t-on-click="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+                  </div>
+                </div>
+              </t>
             </div>
           </div>
           <aside t-if="this.detailTodo" class="todo-details">
@@ -143,11 +184,15 @@ export class TodoScreen extends Component {
   detailTodoId = signal("");
   listDragId = signal("");
   dragId = signal(""); // id of the todo being dragged ("" = none)
+  dragOverStage = signal(""); // kanban column the dragged card is currently over
   newTodo = signal.ref(HTMLInputElement);
   railEl = signal.ref(HTMLElement);
   listEl = signal.ref(HTMLElement);
+  boardEl = signal.ref(HTMLElement); // the kanban board (column hit-testing on drag)
   todoIcon = m(ICONS.todo);
   kebabIcon = m(ICONS.kebab);
+  listIcon = m(ICONS.list);
+  kanbanIcon = m(ICONS.kanban);
 
   setup() {
     // close the list-actions menu on any outside click
@@ -170,6 +215,41 @@ export class TodoScreen extends Component {
 
   get detailTodo() {
     return this.list.todos.find((todo) => todo.id === this.detailTodoId());
+  }
+
+  // ── view mode (per project) ──────────────────────────────────────────────────
+  get mode() {
+    return this.list.mode === "kanban" ? "kanban" : "list";
+  }
+
+  setMode(mode) {
+    if (this.mode === mode) return;
+    this._updateList(this.list.id, (l) => ({ ...l, mode }));
+  }
+
+  // a todo's kanban column: done drives "done"; the rest split on `status`, which
+  // defaults to backlog (so pre-status todos and new ones land there)
+  stageOf(todo) {
+    if (todo.done) return "done";
+    return todo.status === "ongoing" ? "ongoing" : "backlog";
+  }
+
+  // the three columns, each with the selected list's todos for that stage in array
+  // order (so kanban and list share one ordering)
+  get kanbanColumns() {
+    const labels = { backlog: "Backlog", ongoing: "Ongoing", done: "Done" };
+    return KANBAN_STAGES.map((stage) => ({
+      stage,
+      label: labels[stage],
+      todos: this.list.todos.filter((todo) => this.stageOf(todo) === stage),
+    }));
+  }
+
+  // the field patch that moves a todo to a stage. "done" only flips the flag,
+  // leaving `status` so unchecking in list mode restores the prior stage.
+  _stageFields(stage) {
+    if (stage === "done") return { done: true };
+    return { done: false, status: stage };
   }
 
   openCount(l) {
@@ -248,6 +328,7 @@ export class TodoScreen extends Component {
       id: uid(),
       title,
       done: false,
+      status: "backlog",
       created: Date.now(),
       starred: false,
       description: "",
@@ -395,6 +476,95 @@ export class TodoScreen extends Component {
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     // reorder in memory only — persisted once, on drop
+    this.lists.set(this.lists().map((l) => (l.id === this.list.id ? { ...l, todos: next } : l)));
+  }
+
+  // ── kanban drag-and-drop (move a card between columns) ───────────────────────
+  // Same ghost/live-preview mechanism as the list drag, but the target is a
+  // column (chosen by pointer X) rather than a row index: crossing into another
+  // column live-restages the card there, and the vertical position within the
+  // column reorders the shared todos array. Committed on drop, restored on Escape.
+  // The whole card is the drag surface (a handle would leave most of the card
+  // inert), so the card's own click can't open the details: startRowDrag calls
+  // preventDefault on pointerdown, which suppresses the compatibility click.
+  // Instead a press that never travels past a few pixels is treated as a click.
+  onCardDragStart(ev, todo) {
+    if (ev.target.closest(".todo-star, .todo-delete")) return; // their own clicks
+    const original = this.list.todos; // grab-time order + stages, restored on Escape
+    // the grab-time todo: every move re-derives the dragged card from THIS, so the
+    // result depends only on where it lands. Deriving from the live todo instead
+    // would let columns swept over on the way leave their stage behind (dragging
+    // backlog → done across ongoing would strand status: "ongoing").
+    this._dragOrigin = original.find((t) => t.id === todo.id);
+    const from = { x: ev.clientX, y: ev.clientY };
+    let moved = false;
+    const stop = startRowDrag(ev, {
+      row: ev.target.closest(".kanban-card"),
+      onMove: (e) => {
+        if (!moved && (Math.abs(e.clientX - from.x) > 4 || Math.abs(e.clientY - from.y) > 4))
+          moved = true;
+        if (moved) this._cardDragMove(e, todo.id);
+      },
+      onEnd: (commit) => {
+        this._dragStop = null;
+        this._dragOrigin = null;
+        this.dragId.set("");
+        this.dragOverStage.set("");
+        if (!moved) return this.openTodo(todo.id); // a click, not a drag
+        if (commit) this._save();
+        else this._updateTodos(() => original);
+      },
+    });
+    if (!stop) return;
+    this._dragStop = stop;
+    this.dragId.set(todo.id);
+  }
+
+  _cardDragMove(ev, id) {
+    const cols = [...(this.boardEl()?.querySelectorAll(".kanban-col") || [])];
+    // the column under the pointer (by X), else the nearest one so a drag that
+    // strays past the board's edge still resolves to the closest column
+    let col = cols.find((c) => {
+      const r = c.getBoundingClientRect();
+      return ev.clientX >= r.left && ev.clientX <= r.right;
+    });
+    if (!col && cols.length) {
+      col = cols.reduce((best, c) => {
+        const cx = (r) => r.left + r.width / 2;
+        return Math.abs(cx(c.getBoundingClientRect()) - ev.clientX) <
+          Math.abs(cx(best.getBoundingClientRect()) - ev.clientX)
+          ? c
+          : best;
+      });
+    }
+    if (!col) return;
+    const stage = col.dataset.stage;
+    this.dragOverStage.set(stage);
+    // insert index among the target column's OTHER cards (the dimmed dragged card
+    // is excluded, as dropIndex expects)
+    const cards = [...col.querySelectorAll(".kanban-card")].filter((c) => c.dataset.todoId !== id);
+    const to = dropIndex(ev, cards);
+    const todos = this.list.todos;
+    const from = todos.findIndex((t) => t.id === id);
+    if (from < 0) return;
+    const moved = { ...(this._dragOrigin || todos[from]), ...this._stageFields(stage) };
+    const without = todos.filter((t) => t.id !== id);
+    // map the column-relative insert index to a global array index via the anchor
+    // card it lands before (or the end of the column's run)
+    const members = without.filter((t) => this.stageOf(t) === stage);
+    let at;
+    if (to >= members.length) {
+      const last = members[members.length - 1];
+      at = last ? without.findIndex((t) => t.id === last.id) + 1 : without.length;
+    } else {
+      at = without.findIndex((t) => t.id === members[to].id);
+    }
+    const next = [...without];
+    next.splice(at, 0, moved);
+    // skip the write when nothing actually changed (order + stage identical) — the
+    // move fires on every pointermove, and a no-op set would churn the render
+    const sig = (arr) => arr.map((t) => `${t.id}:${t.done ? 1 : 0}:${t.status || ""}`).join(",");
+    if (sig(next) === sig(todos)) return;
     this.lists.set(this.lists().map((l) => (l.id === this.list.id ? { ...l, todos: next } : l)));
   }
 
