@@ -1008,6 +1008,9 @@ section.hidden {
 .todo-row.selected {
   background: var(--l-accent-soft);
 }
+.todo-row.selected .todo-title {
+  font-weight: 600;
+}
 /* the in-list copy of the row being dragged: dimmed placeholder that
    live-reorders under the ghost */
 .todo-row.dragging {
