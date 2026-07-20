@@ -11440,28 +11440,21 @@ var WorkspacesScreen = class extends Component {
     TestsPane,
     AddonsPane,
     AssetsPane,
-    SearchBox,
-    Panel
+    SearchBox
   };
   static template = xml`
     <section>
-      <Panel title="'Workspaces'">
-        <t t-set-slot="title-extra">
-          <button class="pbtn primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">Add</button>
-        </t>
-        <t t-set-slot="top-middle">
-          <span t-if="this.sel" class="wt-panel-name" t-att-title="this.sel.name + ' — double-click to edit'"
-                t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
-        </t>
-        <t t-set-slot="top-right">
-          <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
-            <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
-            <t t-else="" t-out="this.refreshIcon"/>
-          </button>
-        </t>
-      </Panel>
       <div class="content wt-content">
         <div class="wt-list">
+          <div class="wt-list-title">
+            <h1>Workspaces</h1>
+            <span class="wt-sp"/>
+            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
+              <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
+              <t t-else="" t-out="this.refreshIcon"/>
+            </button>
+            <button class="pbtn primary" title="New workspace — a bundle of branches, a database and a server" t-on-click="() => this.create()">Add</button>
+          </div>
           <div class="wt-list-head">
             <SearchBox value="this.query"/>
           <div class="wt-order-wrap">
@@ -11513,6 +11506,8 @@ var WorkspacesScreen = class extends Component {
         <div class="wt-detail">
           <t t-if="this.sel">
             <div class="wt-detail-top">
+            <div class="wt-detail-name" t-att-title="this.sel.name + ' — double-click to edit'"
+                 t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
             <div class="wt-detail-head">
               <div class="wt-head-row">
                 <!-- one primary slot: a main-located workspace that isn't loaded offers

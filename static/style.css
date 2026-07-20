@@ -4212,17 +4212,31 @@ a.commit-detail-hash svg {
   flex-direction: column;
   gap: 0;
   min-height: 0;
-  background: var(--l-bg);
+  background: var(--l-card);
   border-right: 1px solid var(--l-line);
   padding: 0;
 }
-.wt-panel-name {
-  display: block;
-  max-width: min(42vw, 560px);
+/* the list column's own header: screen title + the list-wide refresh / Add actions
+   (this screen has no Panel — the two columns run the full height of the main area) */
+.wt-list-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 14px 12px 10px;
+}
+.wt-list-title h1 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--l-text);
+}
+/* the selected workspace's name, heading the detail column (double-click to edit) */
+.wt-detail-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 650;
   color: var(--l-text);
   user-select: all;
@@ -4498,7 +4512,7 @@ a.commit-detail-hash svg {
   flex-direction: column;
   gap: 6px;
   padding: 16px 30px 0;
-  background: var(--l-bg);
+  background: var(--l-card);
   border-bottom: 1px solid var(--l-panel-line);
 }
 .wt-detail-empty {
@@ -4618,13 +4632,15 @@ a.commit-detail-hash svg {
   flex: 1;
 }
 
-/* the pane content fills the rest of the detail column, below the header band */
+/* the pane content fills the rest of the detail column, below the header band —
+   a grey field the panes' own white cards (checkouts, consoles, notes) sit on */
 .wt-panes {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 14px 30px 22px;
+  background: var(--l-bg);
 }
 .wt-panes:has(.ws-code.history-open) {
   padding: 0;
@@ -4678,7 +4694,7 @@ a.commit-detail-hash svg {
   max-width: 1000px;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 2px;
+  padding: 8px 2px;
 }
 .ws-code.history-open {
   max-width: none;
@@ -4722,7 +4738,9 @@ a.commit-detail-hash svg {
 /* checkouts as compact table-like rows: repository | branch + commit | state |
    primary push action | overflow actions */
 .ws-co-grid {
-  border-top: 1px solid var(--l-line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .ws-co-card {
   display: grid;
@@ -4731,8 +4749,10 @@ a.commit-detail-hash svg {
   gap: 12px;
   min-width: 0;
   min-height: 60px;
-  padding: 9px 8px;
-  border-bottom: 1px solid var(--l-line-soft);
+  padding: 10px 12px;
+  background: var(--l-card);
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
 }
 .ws-co-main {
   min-width: 0;
