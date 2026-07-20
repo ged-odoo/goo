@@ -2228,7 +2228,6 @@ a.dash-ci:hover {
    that branch's repo rows on the right. Columns size to their content — no fixed
    widths — and the card shrinks to the table (scrolls if it ever overflows). */
 .br-card {
-  background: var(--l-card);
   border: 1px solid var(--l-line);
   border-radius: 14px;
   width: fit-content;
@@ -2442,6 +2441,9 @@ a.dash-ci:hover {
 .brg-table {
   width: fit-content;
   max-width: 100%;
+  /* the white sits on the table itself, not the scroll container, so the grey
+     content area shows beside a natural-width table */
+  background: var(--l-card);
   /* clean right + bottom edges on the natural-width table, matching the header rule */
   border-right: 1px solid var(--l-line);
   border-bottom: 1px solid var(--l-line);
