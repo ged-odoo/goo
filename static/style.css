@@ -897,6 +897,7 @@ section.hidden {
   min-width: 0;
   padding: 9px 12px;
   color: var(--l-text);
+  border-width: 1px;
   background: var(--l-card);
 }
 .todo-content {
