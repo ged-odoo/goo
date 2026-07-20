@@ -1038,16 +1038,23 @@ body.drag-grabbing {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  align-self: stretch;
   gap: 12px;
 }
 .todo-checkbox {
   flex: none;
+  align-self: center;
   cursor: pointer;
 }
+/* the whole row height is the hit area: the negative margin bleeds the button
+   over .todo-row's vertical padding, and stretch then sizes it to 52px */
 .todo-title {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  margin: -8px 0;
   text-align: left;
   background: none;
   border: none;
