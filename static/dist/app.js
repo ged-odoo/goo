@@ -10067,18 +10067,18 @@ var CodePane = class extends Component {
 
       <div class="ws-co-grid">
         <div class="ws-co-card" t-foreach="this.checkoutRows" t-as="r" t-key="r.key">
-          <span class="ws-repo-tag" t-out="r.repo"/>
-          <div class="ws-co-main">
-            <div class="ws-co-branch-row">
-              <a t-if="r.remote and r.github" class="ws-branch ws-co-branch branch-link" target="_blank"
-                 t-att-href="this.code.remoteBranchUrl(r.repo, r.github, r.branch)" t-att-title="'open ' + r.branch + ' on GitHub'" t-out="r.branch"/>
-              <span t-else="" class="ws-branch ws-co-branch" t-att-title="r.branch" t-out="r.branch"/>
-              <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
-            </div>
-            <div t-if="r.subject" class="ws-commit dim" t-att-class="{viewable: r.sha and r.path}"
-                 t-att-title="r.sha and r.path ? 'view the commit history for this branch' : ''"
-                 t-on-click="() => this.openHistory(r)">
-              <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
+          <div class="ws-co-id" t-att-class="{viewable: r.sha and r.path}"
+               t-att-title="r.sha and r.path ? 'view the commit history for ' + r.branch : r.branch"
+               t-on-click="() => this.openHistory(r)">
+            <span class="ws-repo-tag" t-out="r.repo"/>
+            <div class="ws-co-main">
+              <div class="ws-co-branch-row">
+                <span class="ws-branch ws-co-branch" t-out="r.branch"/>
+                <span t-if="r.checkedOut" class="ws-co-badge">checked out</span>
+              </div>
+              <div t-if="r.subject" class="ws-commit dim">
+                <t t-out="r.subject"/><t t-if="r.when"> · <t t-out="r.when"/></t>
+              </div>
             </div>
           </div>
           <div class="ws-co-badges">

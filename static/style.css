@@ -2574,15 +2574,6 @@ tr.active td.brg-commit {
 .pr-link:hover {
   text-decoration: underline;
 }
-/* branch name as a link (dashboard) — readable, reveals link on hover */
-.branch-link {
-  color: var(--l-text);
-  text-decoration: none;
-}
-.branch-link:hover {
-  color: var(--l-accent);
-  text-decoration: underline;
-}
 .pr-state {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -4762,7 +4753,7 @@ a.commit-detail-hash svg {
 }
 .ws-co-card {
   display: grid;
-  grid-template-columns: minmax(88px, 110px) minmax(220px, 1fr) minmax(160px, 240px) 64px 28px;
+  grid-template-columns: minmax(320px, 1fr) minmax(160px, 240px) 64px 28px;
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -4772,8 +4763,30 @@ a.commit-detail-hash svg {
   border: 1px solid var(--l-line);
   border-radius: 10px;
 }
+/* repo tag + branch + commit form one click target opening the commit history.
+   It keeps the tag/branch columns of the old card grid so branch names still
+   line up across rows; the negative inline margin lets the hover surface bleed
+   past the text without moving it. */
+.ws-co-id {
+  display: grid;
+  grid-template-columns: minmax(88px, 110px) minmax(0, 1fr);
+  align-items: center;
+  align-self: stretch;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 6px;
+  margin: 0 -6px;
+  border-radius: 8px;
+  transition: background 0.13s;
+}
+.ws-co-id.viewable {
+  cursor: pointer;
+}
+.ws-co-id.viewable:hover {
+  background: var(--l-panel);
+}
 /* the repo tag hugs its text (a grid child would otherwise stretch to the column) */
-.ws-co-card > .ws-repo-tag {
+.ws-co-id > .ws-repo-tag {
   justify-self: start;
 }
 .ws-co-main {
@@ -4858,13 +4871,6 @@ a.commit-detail-hash svg {
 .ws-co-main .ws-commit {
   margin-top: 2px;
   white-space: nowrap;
-}
-.ws-co-main .ws-commit.viewable {
-  cursor: pointer;
-}
-.ws-co-main .ws-commit.viewable:hover {
-  color: var(--l-text-mid);
-  text-decoration: underline;
 }
 .ws-co-push {
   grid-column: 4;
