@@ -32,8 +32,13 @@ export function startRowDrag(ev, { row, onMove, onEnd }) {
     el.checked = src[i].checked;
   });
   document.body.appendChild(ghost);
+  // positioned via the `translate` property, not `transform`: the individual
+  // transform properties compose as translate → rotate → scale → transform, so a
+  // ghost that also carries a CSS rotate/scale (the kanban card's lift) would
+  // rotate and scale the offset itself if it were written to `transform`, and
+  // the card would slide away from the cursor as the drag got longer.
   const place = (e) => {
-    ghost.style.transform = `translate(${e.clientX - offsetX}px, ${e.clientY - offsetY}px)`;
+    ghost.style.translate = `${e.clientX - offsetX}px ${e.clientY - offsetY}px`;
   };
   const move = (e) => {
     place(e);

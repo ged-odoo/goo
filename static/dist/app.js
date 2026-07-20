@@ -5752,7 +5752,7 @@ function startRowDrag(ev, { row, onMove, onEnd }) {
   });
   document.body.appendChild(ghost);
   const place = (e) => {
-    ghost.style.transform = `translate(${e.clientX - offsetX}px, ${e.clientY - offsetY}px)`;
+    ghost.style.translate = `${e.clientX - offsetX}px ${e.clientY - offsetY}px`;
   };
   const move = (e) => {
     place(e);

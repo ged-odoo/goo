@@ -1018,8 +1018,12 @@ section.hidden {
 }
 /* the floating row that follows the cursor during any pointer drag (see
    core/drag.js — a clone appended to <body>, positioned via transform; it
-   keeps its original row class, so layout/padding come from that) */
-.drag-ghost {
+   keeps its original row class, so layout/padding come from that).
+   The class is doubled to out-specify that row class: at equal specificity a
+   row defined later in this file wins, and one that sets `position` (like
+   .kanban-card) would pin the ghost back into the flow, leaving nothing
+   following the cursor. */
+.drag-ghost.drag-ghost {
   position: fixed;
   top: 0;
   left: 0;
@@ -1028,7 +1032,15 @@ section.hidden {
   background: var(--l-card);
   border: 1px solid var(--l-accent-line);
   border-radius: 10px;
-  box-shadow: 0 10px 28px oklch(0.27 0.012 264 / 0.22);
+  box-shadow: 0 14px 32px oklch(0.27 0.012 264 / 0.28);
+}
+/* a board card is picked up rather than merely outlined: a slight lift + tilt.
+   `rotate`/`scale` are their own properties so they compose with the inline
+   translate() drag.js writes to `transform` instead of clobbering it. */
+.drag-ghost.kanban-card {
+  rotate: -2.5deg;
+  scale: 1.03;
+  cursor: grabbing;
 }
 body.drag-grabbing {
   cursor: grabbing;
