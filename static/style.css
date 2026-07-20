@@ -4753,7 +4753,7 @@ a.commit-detail-hash svg {
 }
 .ws-co-card {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(160px, 240px) 28px;
+  grid-template-columns: minmax(320px, 580px) minmax(160px, 1fr) 28px;
   align-items: center;
   gap: 12px;
   min-width: 0;
