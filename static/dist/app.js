@@ -11510,6 +11510,9 @@ var WorkspacesScreen = class extends Component {
             <div class="wt-detail-name-row">
               <div class="wt-detail-name" t-att-title="this.sel.name + ' — double-click to edit'"
                    t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
+              <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
+                <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
+              </button>
               <span class="wt-sp"/>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
@@ -11533,9 +11536,6 @@ var WorkspacesScreen = class extends Component {
                   <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel)" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
                   <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
                 </t>
-                <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
-                  <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
-                </button>
                 <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
                 <t t-if="ci">
                   <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>

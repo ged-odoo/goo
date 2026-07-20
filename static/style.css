@@ -4725,6 +4725,7 @@ a.commit-detail-hash svg {
   letter-spacing: 0;
 }
 .ws-refresh {
+  flex: none;
   padding: 3px 8px;
 }
 /* Code-tab toolbar buttons (refresh / Editor / Fetch & rebase all) */
