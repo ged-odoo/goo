@@ -4753,7 +4753,7 @@ a.commit-detail-hash svg {
 }
 .ws-co-card {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(160px, 240px) 64px 28px;
+  grid-template-columns: minmax(320px, 1fr) minmax(160px, 240px) 28px;
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -4783,7 +4783,7 @@ a.commit-detail-hash svg {
   cursor: pointer;
 }
 .ws-co-id.viewable:hover {
-  background: var(--l-panel);
+  background: var(--l-bg);
 }
 /* the repo tag hugs its text (a grid child would otherwise stretch to the column) */
 .ws-co-id > .ws-repo-tag {
@@ -4872,18 +4872,8 @@ a.commit-detail-hash svg {
   margin-top: 2px;
   white-space: nowrap;
 }
-.ws-co-push {
-  grid-column: 4;
-  justify-self: end;
-  padding: 4px 6px;
-  color: var(--l-accent);
-}
-.ws-co-push:hover:not(:disabled) {
-  color: var(--l-accent);
-  background: var(--l-accent-soft);
-}
 .ws-co-menu {
-  grid-column: 5;
+  grid-column: 3;
   justify-self: end;
 }
 

@@ -10102,7 +10102,6 @@ var CodePane = class extends Component {
             </span>
             <button t-if="r.behind and r.canRebase" class="ws-rebase-inline" t-att-title="this.rebaseRepoTitle(r.entry)" t-on-click.stop="() => this.rebaseCheckout(r)">Rebase</button>
           </div>
-          <button t-if="r.canPush" class="pbtn ghost ws-co-push" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.pushRow(r)"><t t-out="this.pushIcon"/>Push</button>
           <div class="dash-kebab-wrap ws-co-menu" t-if="r.entry">
             <button class="dash-kebab" t-att-class="{open: this.menuId() === r.key}" title="more actions" t-on-click.stop="() => this.toggleMenu(r.key)"><t t-out="this.kebabIcon"/></button>
             <div t-if="this.menuId() === r.key" class="dash-menu" t-on-click.stop="">
