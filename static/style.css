@@ -1324,8 +1324,8 @@ body.drag-grabbing {
   position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  padding: 10px 10px 10px 12px;
+  gap: 7px;
+  padding: 9px 11px;
   border: 1px solid var(--l-line);
   border-radius: 9px;
   background: var(--l-card);
@@ -1351,13 +1351,17 @@ body.drag-grabbing {
   flex: 1;
   min-width: 0;
   font-size: 13px;
+  line-height: 18px;
   color: var(--l-text);
   overflow-wrap: anywhere;
   user-select: none; /* the card is a drag surface */
 }
-.kanban-card .todo-star,
-.kanban-card .todo-delete {
+/* the star leads the title inline: smaller than the list's, and nudged onto the
+   text's first line so a wrapping title still reads as one block */
+.kanban-card-star {
   flex: none;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* tests tab empty state: centered guidance over the (empty) console */

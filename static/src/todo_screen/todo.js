@@ -116,10 +116,9 @@ export class TodoScreen extends Component {
                            t-att-class="{done: todo.done, dragging: this.dragId() === todo.id, selected: this.detailTodoId() === todo.id}"
                            t-att-title="this.createdTitle(todo)"
                            t-on-pointerdown="ev => this.onCardDragStart(ev, todo)">
-                        <span class="kanban-card-title" t-out="todo.title"/>
-                        <button class="todo-star" t-att-class="{on: todo.starred}"
+                        <button class="todo-star kanban-card-star" t-att-class="{on: todo.starred}"
                                 t-att-title="todo.starred ? 'unstar' : 'star'" t-on-click.stop="() => this.toggleStar(todo.id)">★</button>
-                        <button class="todo-delete" t-on-click.stop="() => this.remove(todo.id)" title="Delete todo" aria-label="Delete todo">×</button>
+                        <span class="kanban-card-title" t-out="todo.title"/>
                       </div>
                       <div t-if="!col.todos.length" class="kanban-col-empty dim">Drop here</div>
                     </div>
@@ -489,7 +488,7 @@ export class TodoScreen extends Component {
   // preventDefault on pointerdown, which suppresses the compatibility click.
   // Instead a press that never travels past a few pixels is treated as a click.
   onCardDragStart(ev, todo) {
-    if (ev.target.closest(".todo-star, .todo-delete")) return; // their own clicks
+    if (ev.target.closest(".todo-star")) return; // the star keeps its own click
     const original = this.list.todos; // grab-time order + stages, restored on Escape
     // the grab-time todo: every move re-derives the dragged card from THIS, so the
     // result depends only on where it lands. Deriving from the live todo instead
