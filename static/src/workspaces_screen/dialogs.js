@@ -53,6 +53,7 @@ export function templatePrefill(tpl) {
     db: tpl.db || "",
     args: tpl.on_create_args || "",
     demoData: tpl.demo_data ?? true,
+    category: tpl.category || "",
   };
 }
 

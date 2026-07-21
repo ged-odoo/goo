@@ -342,6 +342,7 @@ export class Template extends Model {
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
+  category = fields.char(); // default workspace_categories id new workspaces inherit ("" = none)
   checkouts = fields.json(); // [{repo, branch}]
 }
 
@@ -461,6 +462,7 @@ const TEMPLATE_FIELDS = [
   char("db"),
   char("on_create_args"),
   bool("demo_data", true),
+  char("category"),
   { name: "checkouts", in: (v) => v || [], out: (t) => t.checkouts() || [] },
 ];
 

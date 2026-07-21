@@ -3197,6 +3197,8 @@ var Template = class extends Model {
   db = fields.char();
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
+  category = fields.char();
+  // default workspace_categories id new workspaces inherit ("" = none)
   checkouts = fields.json();
   // [{repo, branch}]
 };
@@ -3283,6 +3285,7 @@ var TEMPLATE_FIELDS = [
   char("db"),
   char("on_create_args"),
   bool("demo_data", true),
+  char("category"),
   { name: "checkouts", in: (v) => v || [], out: (t2) => t2.checkouts() || [] }
 ];
 function dataFromBlob(fields2, blob) {
@@ -6609,6 +6612,14 @@ var SPECS = {
         optional: true,
         default: true,
         title: "load demo data when a workspace created from this template makes its database"
+      },
+      {
+        key: "category",
+        name: "category",
+        placeholder: "category (e.g. dev)",
+        className: "w-name",
+        optional: true,
+        title: "default category new workspaces from this template inherit (when categories are enabled)"
       }
     ],
     validate() {
@@ -9120,7 +9131,8 @@ function templatePrefill(tpl) {
     config: repoBranchList.format(tpl.checkouts),
     db: tpl.db || "",
     args: tpl.on_create_args || "",
-    demoData: tpl.demo_data ?? true
+    demoData: tpl.demo_data ?? true,
+    category: tpl.category || ""
   };
 }
 var WorkspaceSourceDialog = class extends Component {

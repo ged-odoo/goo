@@ -916,6 +916,15 @@ export const SPECS = {
         default: true,
         title: "load demo data when a workspace created from this template makes its database",
       },
+      {
+        key: "category",
+        name: "category",
+        placeholder: "category (e.g. dev)",
+        className: "w-name",
+        optional: true,
+        title:
+          "default category new workspaces from this template inherit (when categories are enabled)",
+      },
     ],
     validate() {
       return null;
