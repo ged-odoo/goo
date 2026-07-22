@@ -1364,6 +1364,13 @@ var StorePlugin = class extends Plugin {
       );
     }
   }
+  // mark a PR ready for review (draft off) in the view, without a refetch
+  readyPr(github, number) {
+    for (const rec of this.orm.records(PrRepo)) {
+      if (rec.github() !== github) continue;
+      rec.prs.set((rec.prs() || []).map((p) => p.number === number ? { ...p, draft: false } : p));
+    }
+  }
   // ── runtime: OdooServer / Run records + the derived TargetView join ───────────────
   // fold one server snapshot into its OdooServer record, keyed by id. Spread-merge into
   // the `data` json so a partial SSE update (a worktree carrying only state/port)
@@ -2440,6 +2447,19 @@ ${res.remote_error}`
     });
     if (!ok) return;
     return this.closePrNoConfirm(github, number);
+  }
+  // mark a draft PR ready for review (`gh pr ready`). Optimistically flips the
+  // local record's draft flag on success — no full reload for one field.
+  readyPr(github, number) {
+    return this._mutate(
+      "Set PR to ready",
+      async () => {
+        this.eventLog.add(`marking PR #${number} ready for review (${github})`);
+        await postJSON("/api/prs/ready", { repo: github, number });
+        this.store.readyPr(github, number);
+      },
+      false
+    );
   }
   // close a PR without prompting — caller has already confirmed
   closePrNoConfirm(github, number) {
@@ -10361,6 +10381,7 @@ var CodePane = class extends Component {
               <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushRow(r))">Push</button>
               <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushForceRow(r))">Push (force)</button>
               <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
+              <button t-if="r.pr and this.prState(r.pr) === 'draft'" class="dash-menu-item" title="mark this draft PR ready for review (gh pr ready)" t-on-click="() => this.menuAct(() => this.readyPr(r))">Set PR to ready</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openHistory(r))">See commits</button>
@@ -10738,6 +10759,12 @@ var CodePane = class extends Component {
     this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
     window.open(this.code.prCreateUrl(r.id, r.github, r.current), "_blank");
+  }
+  // mark this checkout's draft PR ready for review (gh pr ready)
+  readyPr(r) {
+    if (!r.pr || !r.github) return;
+    this.touchActivity();
+    return this.code.readyPr(r.github, r.pr.number);
   }
   // one row per checkout, joined with live git state, sync counts, its PR, and the
   // rich repo entry (for the actions menu). Sync + rebase/push are only meaningful

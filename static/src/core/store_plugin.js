@@ -223,6 +223,14 @@ export class StorePlugin extends Plugin {
     }
   }
 
+  // mark a PR ready for review (draft off) in the view, without a refetch
+  readyPr(github, number) {
+    for (const rec of this.orm.records(PrRepo)) {
+      if (rec.github() !== github) continue;
+      rec.prs.set((rec.prs() || []).map((p) => (p.number === number ? { ...p, draft: false } : p)));
+    }
+  }
+
   // ── runtime: OdooServer / Run records + the derived TargetView join ───────────────
 
   // fold one server snapshot into its OdooServer record, keyed by id. Spread-merge into

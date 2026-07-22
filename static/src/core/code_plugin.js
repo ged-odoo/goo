@@ -768,6 +768,20 @@ export class CodePlugin extends Plugin {
     return this.closePrNoConfirm(github, number);
   }
 
+  // mark a draft PR ready for review (`gh pr ready`). Optimistically flips the
+  // local record's draft flag on success — no full reload for one field.
+  readyPr(github, number) {
+    return this._mutate(
+      "Set PR to ready",
+      async () => {
+        this.eventLog.add(`marking PR #${number} ready for review (${github})`);
+        await postJSON("/api/prs/ready", { repo: github, number });
+        this.store.readyPr(github, number);
+      },
+      false,
+    );
+  }
+
   // close a PR without prompting — caller has already confirmed
   closePrNoConfirm(github, number) {
     return this._mutate(

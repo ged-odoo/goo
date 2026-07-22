@@ -248,6 +248,19 @@ class GitHubService:
         self.cache.invalidate()
         return True, None
 
+    def ready_pr(self, github, number):
+        """Mark a draft GitHub PR ready for review. Returns (ok, error);
+        invalidates the PR cache on success so the next fetch reflects it."""
+        self.io.log_request(f"gh pr ready {number} --repo {github}")
+        try:
+            r = self.io.run(["gh", "pr", "ready", str(number), "--repo", github], timeout=30)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip().split("\n")[0] or "gh pr ready failed"
+        self.cache.invalidate()
+        return True, None
+
     def post_r_plus(self, github, number):
         """Post the mergebot approval command on a GitHub PR via ``gh``."""
         self.io.log_request(f"gh pr comment {number} --repo {github} --body 'robodoo r+'")

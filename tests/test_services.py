@@ -829,6 +829,31 @@ class GitHubServiceTest(unittest.TestCase):
         svc = services.GitHubService(io, TTLCache(ttl=600))
         self.assertEqual(svc.post_r_plus("odoo/odoo", 275826), (False, "not allowed"))
 
+    def test_ready_pr_marks_ready_through_gh(self):
+        io = FakeIO(run_result=completed())
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        ok, error = svc.ready_pr("odoo/odoo", 275826)
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertEqual(io.run_calls, [["gh", "pr", "ready", "275826", "--repo", "odoo/odoo"]])
+
+    def test_ready_pr_invalidates_cache(self):
+        cache = TTLCache(ttl=600)
+        io = FakeIO(run_result=completed(stdout="[]"))
+        svc = services.GitHubService(io, cache)
+        svc.prs([{"id": "c", "github": "o/o"}])  # populates the cache
+        svc.prs([{"id": "c", "github": "o/o"}])  # served from cache → no 2nd gh call
+        self.assertEqual(len(io.run_calls), 1)
+        ok, _ = svc.ready_pr("o/o", 3)
+        self.assertTrue(ok)
+        svc.prs([{"id": "c", "github": "o/o"}])  # cache was invalidated → fetches again
+        self.assertEqual(len(io.run_calls), 3)  # 1 prs + 1 ready + 1 prs
+
+    def test_ready_pr_surfaces_gh_failure(self):
+        io = FakeIO(run_result=completed(returncode=1, stderr="not a draft"))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        self.assertEqual(svc.ready_pr("odoo/odoo", 275826), (False, "not a draft"))
+
 
 class TTLCacheTest(unittest.TestCase):
     def test_single_flight(self):

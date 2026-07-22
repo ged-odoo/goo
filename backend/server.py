@@ -1909,6 +1909,16 @@ def _api_prs_close(body):
     return 400, {"ok": False, "error": error}
 
 
+@post_route("/api/prs/ready")
+def _api_prs_ready(body):
+    repo, number = body.get("repo"), body.get("number")
+    valid_repo = isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+    if not valid_repo or type(number) is not int or number <= 0:
+        return 400, {"ok": False, "error": "invalid repo or number"}
+    ok, error = GITHUB.ready_pr(repo, number)
+    return (200 if ok else 400), {"ok": ok, **({} if ok else {"error": error})}
+
+
 @post_route("/api/prs/r-plus")
 def _api_prs_r_plus(body):
     repo, number = body.get("repo"), body.get("number")

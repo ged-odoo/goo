@@ -98,6 +98,7 @@ export class CodePane extends Component {
               <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushRow(r))">Push</button>
               <button class="dash-menu-item" t-att-disabled="!r.canPush" t-att-title="this.pushRowTitle(r)" t-on-click="() => this.menuAct(() => this.pushForceRow(r))">Push (force)</button>
               <button t-if="r.entry.canPr" class="dash-menu-item" t-on-click="() => this.menuAct(() => this.openPr(r.entry))">Open PR</button>
+              <button t-if="r.pr and this.prState(r.pr) === 'draft'" class="dash-menu-item" title="mark this draft PR ready for review (gh pr ready)" t-on-click="() => this.menuAct(() => this.readyPr(r))">Set PR to ready</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openRepoEditor(r))">Open with editor</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openTerminal(r.entry))">Open in terminal</button>
               <button class="dash-menu-item" t-att-disabled="!r.path" t-on-click="() => this.menuAct(() => this.openHistory(r))">See commits</button>
@@ -513,6 +514,13 @@ export class CodePane extends Component {
     this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
     window.open(this.code.prCreateUrl(r.id, r.github, r.current), "_blank");
+  }
+
+  // mark this checkout's draft PR ready for review (gh pr ready)
+  readyPr(r) {
+    if (!r.pr || !r.github) return;
+    this.touchActivity();
+    return this.code.readyPr(r.github, r.pr.number);
   }
 
   // one row per checkout, joined with live git state, sync counts, its PR, and the
