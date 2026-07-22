@@ -129,6 +129,7 @@ export const SECTIONS = [
   "databases",
   "nightly",
   "memory",
+  "ci",
   "config",
 ];
 export const MERGEBOT = "https://mergebot.odoo.com";

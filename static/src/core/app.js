@@ -26,6 +26,7 @@ import { EventLog } from "./event_log.js";
 import { MemoryScreen } from "../memory_screen/memory.js";
 import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
 import { NightlyScreen } from "../nightly_screen/nightly.js";
+import { CiScreen } from "../ci_screen/ci.js";
 import { TerminalPanel } from "./terminal.js";
 import { TodoScreen } from "../todo_screen/todo.js";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.js";
@@ -293,6 +294,7 @@ export const SCREENS = {
   databases: DatabasesScreen,
   nightly: NightlyScreen,
   memory: MemoryScreen,
+  ci: CiScreen,
   config: ConfigScreen,
 };
 
@@ -306,6 +308,7 @@ export class App extends Component {
     DatabasesScreen,
     NightlyScreen,
     MemoryScreen,
+    CiScreen,
     ConfigScreen,
     ActionMenu,
     CiMenu,

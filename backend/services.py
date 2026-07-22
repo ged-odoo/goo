@@ -21,6 +21,7 @@ import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 
 from .models import CiCheck, CiRollup, PullRequest
 
@@ -672,6 +673,169 @@ class MergebotService:
                 continue
             reasons.append(label)
         return ", ".join(reasons)[:200]
+
+
+# ─────────────────────────── CI dashboard (mergebot stagings) ───────────────
+
+# staging row colour → outcome. bg-info is in-progress (not a terminal state).
+_STAGING_STATE = {
+    "bg-success": "merged",
+    "bg-danger": "failed",
+    "bg-gray-lighter": "killed",
+    "bg-info": "pending",
+}
+_STAGING_ROW_RE = re.compile(r'<tr\b[^>]*class="\s*(bg-[a-z-]+)\s*"[^>]*>(.*?)</tr>', re.S)
+_STAGED_AT_RE = re.compile(r"Staged at (\d{4}-\d{2}-\d{2}) [\d:]+Z")
+_PR_RE = re.compile(r"github\.com/([^/\s\"']+/[^/\s\"']+)/pull/(\d+)")
+# the "Next >" link back in time: /runbot_merge/1?until=<datetime>&state=
+_NEXT_UNTIL_RE = re.compile(r'href="/runbot_merge/\d+\?until=([^&"]*)&(?:amp;)?state=')
+
+
+class CiService:
+    """Per-day merge-queue stats scraped from the mergebot stagings page
+    (mergebot.odoo.com/runbot_merge/<branch>, master = 1).
+
+    Each colour-coded staging row is one "batch": bg-success = merged,
+    bg-danger = failed, bg-gray-lighter = killed, bg-info = in-progress. Days are
+    the UTC staged date. A completed day (before today UTC) is immutable, so once
+    fully scanned its stats are persisted to disk and never re-fetched; only today
+    (and any gap not yet cached) is fetched live."""
+
+    MAX_PAGES = 40  # ~1 day/page — a hard stop so a parse miss can't loop forever
+
+    def __init__(self, io, cache_path, branch=1):
+        self.io = io
+        self.cache_path = cache_path
+        self.branch = branch
+
+    # ── on-disk cache of immutable completed days ─────────────────────────────
+    # {"oldest_complete": "YYYY-MM-DD" | None, "days": {"YYYY-MM-DD": {...}}}
+    def _load_cache(self):
+        data, _ = self.io.read_json_file(self.cache_path)
+        if not isinstance(data, dict):
+            return {"oldest_complete": None, "days": {}}
+        data.setdefault("days", {})
+        data.setdefault("oldest_complete", None)
+        return data
+
+    def _save_cache(self, cache):
+        self.io.write_json_file(self.cache_path, cache)
+
+    def _fetch_page(self, until):
+        url = f"{MERGEBOT_BASE}/runbot_merge/{self.branch}"
+        if until:
+            url += f"?until={urllib.parse.quote(until)}&state="
+        return self.io.http_get(url, timeout=30)
+
+    @staticmethod
+    def _blank_day(d):
+        return {
+            "date": d,
+            "batches": 0,
+            "merged": 0,
+            "failed": 0,
+            "killed": 0,
+            "pending": 0,
+            "prs_merged": 0,
+        }
+
+    @classmethod
+    def _parse_page(cls, html):
+        """Return (rows, next_until). rows = [{date, state, prs}] newest-first."""
+        rows = []
+        for cls_name, body in _STAGING_ROW_RE.findall(html):
+            m = _STAGED_AT_RE.search(body)
+            if not m:
+                continue
+            state = _STAGING_STATE.get(cls_name)
+            if not state:
+                continue
+            prs = {f"{repo}#{num}" for repo, num in _PR_RE.findall(body)}
+            rows.append({"date": m.group(1), "state": state, "prs": len(prs)})
+        nxt = _NEXT_UNTIL_RE.search(html)
+        return rows, (html_lib.unescape(nxt.group(1)) if nxt else None)
+
+    def merge_stats(self, days=14, refresh=False):
+        """Per-day stats for the last `days` days (today back), newest-first.
+
+        Walks the stagings pages back in time, folding each row into its UTC day.
+        Completed days already on disk are reused; only today (or an uncached gap)
+        is fetched. Returns a list of day dicts."""
+        today = datetime.now(timezone.utc).date()
+        cutoff = today - timedelta(days=days - 1)
+        cache = self._load_cache()
+        if refresh:
+            cache = {"oldest_complete": None, "days": {}}
+        cached_days = cache["days"]
+        oldest_complete = cache.get("oldest_complete")
+
+        # if every completed day in the window is already cached, we only need to
+        # rescan today; otherwise scan the whole window down to the cutoff.
+        have_window = (
+            not refresh and oldest_complete is not None and oldest_complete <= cutoff.isoformat()
+        )
+        target = today if have_window else cutoff  # stop once a row predates this
+
+        fresh = {}  # date -> aggregated counters, from this run's live scan
+        oldest_seen = None
+        exhausted = False  # reached the end of mergebot's history (no "Next >")
+        until = None
+        for _ in range(self.MAX_PAGES):
+            html, err = self._fetch_page(until)
+            if err or not html:
+                break
+            rows, until = self._parse_page(html)
+            if not rows:
+                break
+            for row in rows:
+                d = row["date"]
+                agg = fresh.setdefault(d, self._blank_day(d))
+                agg["batches"] += 1
+                agg[row["state"]] += 1
+                if row["state"] == "merged":
+                    agg["prs_merged"] += row["prs"]
+            oldest_seen = rows[-1]["date"]
+            if until is None:
+                exhausted = True
+                break
+            if oldest_seen < target.isoformat():
+                break
+
+        # A freshly scanned day is complete once we've read past it — i.e. seen a
+        # row strictly older (so no more of that day can be on a later page), or hit
+        # the end of history. Persist the complete days that are before today (today
+        # is always volatile), and advance the "everything from here to today is
+        # covered" marker so the next call can skip them.
+        today_iso = today.isoformat()
+
+        def complete(d):
+            return d < today_iso and (exhausted or (oldest_seen is not None and d > oldest_seen))
+
+        for d, agg in fresh.items():
+            if complete(d):
+                cached_days[d] = agg
+        complete_days = [d for d in fresh if complete(d)]
+        if complete_days:
+            oldest_complete = (
+                min(complete_days)
+                if oldest_complete is None
+                else min(oldest_complete, min(complete_days))
+            )
+        cache["oldest_complete"] = oldest_complete
+        self._save_cache(cache)
+
+        # assemble the window, newest first: today (and partial days) from the live
+        # scan, completed days from cache, missing days as zeros.
+        out = []
+        d = today
+        while d >= cutoff:
+            iso = d.isoformat()
+            if iso == today_iso:
+                out.append(fresh.get(iso) or self._blank_day(iso))
+            else:
+                out.append(cached_days.get(iso) or fresh.get(iso) or self._blank_day(iso))
+            d -= timedelta(days=1)
+        return out
 
 
 # ─────────────────────────── Nightly builds (HTML scraping) ─────────────────

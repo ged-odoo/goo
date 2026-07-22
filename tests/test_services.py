@@ -855,6 +855,140 @@ class GitHubServiceTest(unittest.TestCase):
         self.assertEqual(svc.ready_pr("odoo/odoo", 275826), (False, "not a draft"))
 
 
+def _mb_row(state_cls, day, prs):
+    """One staging <tr> as the mergebot page renders it: colour class, a 'Staged at'
+    UTC timestamp, and a PR link per (repo, number)."""
+    links = "".join(
+        f'<a href="https://github.com/{repo}/pull/{num}" target="_blank">{repo}#{num}</a>'
+        for repo, num in prs
+    )
+    return (
+        f'<tr class="  {state_cls}  ">'
+        f"<th>Staged at {day} 10:00:00Z</th>"
+        f'<td class="pr-listing"><ul>{links}</ul></td>'
+        f"</tr>"
+    )
+
+
+def _mb_page(rows, next_until=None):
+    nxt = (
+        f'<a href="/runbot_merge/1?until={next_until} 10:00:00&amp;state=">Next &gt;</a>'
+        if next_until
+        else ""
+    )
+    return f"<table>{''.join(rows)}</table>{nxt}"
+
+
+class CiServiceTest(unittest.TestCase):
+    CACHE = "/cfg/goo/ci_merge_stats.json"
+
+    @staticmethod
+    def _today():
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).date()
+
+    @staticmethod
+    def _day(offset):
+        from datetime import timedelta
+
+        return (CiServiceTest._today() + timedelta(days=offset)).isoformat()
+
+    def test_parse_and_aggregate_single_page(self):
+        t0, t1 = self._day(0), self._day(-1)
+        page = _mb_page(
+            [
+                _mb_row("bg-success", t0, [("odoo/odoo", 1)]),
+                _mb_row("bg-success", t0, [("odoo/odoo", 2)]),
+                _mb_row("bg-danger", t0, [("odoo/odoo", 3)]),
+                # a batch pairing two repos → 2 PRs; plus a duplicate link (dedup → still 2)
+                _mb_row(
+                    "bg-success", t1, [("odoo/odoo", 4), ("odoo/enterprise", 4), ("odoo/odoo", 4)]
+                ),
+                _mb_row("bg-gray-lighter", t1, [("odoo/odoo", 5)]),
+                _mb_row("bg-info", t1, [("odoo/odoo", 6)]),
+            ]
+        )
+        io = FakeIO(http={"runbot_merge/1": (page, None)})
+        svc = services.CiService(io, self.CACHE)
+        out = svc.merge_stats(days=14)
+
+        self.assertEqual(len(out), 14)
+        self.assertEqual(out[0]["date"], t0)
+        self.assertEqual(
+            {
+                k: out[0][k]
+                for k in ("batches", "merged", "failed", "killed", "pending", "prs_merged")
+            },
+            {"batches": 3, "merged": 2, "failed": 1, "killed": 0, "pending": 0, "prs_merged": 2},
+        )
+        self.assertEqual(
+            {
+                k: out[1][k]
+                for k in ("batches", "merged", "failed", "killed", "pending", "prs_merged")
+            },
+            {"batches": 3, "merged": 1, "failed": 0, "killed": 1, "pending": 1, "prs_merged": 2},
+        )
+        # older days with no data are zero-filled
+        self.assertEqual(out[5]["batches"], 0)
+
+    def test_completed_days_cached_and_not_refetched(self):
+        t0, t1, t2 = self._day(0), self._day(-1), self._day(-2)
+        page1 = _mb_page(
+            [
+                _mb_row("bg-success", t0, [("odoo/odoo", 10)]),
+                _mb_row("bg-success", t1, [("odoo/odoo", 11)]),
+            ],
+            next_until=t2,
+        )
+        page2 = _mb_page([_mb_row("bg-success", t2, [("odoo/odoo", 12)])])  # exhausted
+        io = FakeIO(http={f"until={t2}": (page2, None), "runbot_merge/1": (page1, None)})
+        svc = services.CiService(io, self.CACHE)
+
+        out1 = svc.merge_stats(days=3)
+        self.assertEqual([d["merged"] for d in out1], [1, 1, 1])
+        self.assertEqual(len(io.http_calls), 2)  # both pages fetched
+
+        # completed days (t1, t2) are now on disk; a fresh staging appears today
+        io.http_calls.clear()
+        io._http = {
+            "runbot_merge/1": (
+                _mb_page(
+                    [
+                        _mb_row("bg-success", t0, [("odoo/odoo", 10)]),
+                        _mb_row("bg-success", t0, [("odoo/odoo", 99)]),
+                        _mb_row("bg-success", t1, [("odoo/odoo", 11)]),
+                    ],
+                    next_until=t2,
+                ),
+                None,
+            )
+        }
+        out2 = svc.merge_stats(days=3)
+        self.assertEqual(len(io.http_calls), 1)  # only today's page — page2 skipped
+        self.assertFalse(any(f"until={t2}" in u for u in io.http_calls))
+        self.assertEqual(out2[0]["merged"], 2)  # today refreshed live
+        self.assertEqual(out2[2]["merged"], 1)  # t2 served from the immutable cache
+
+    def test_refresh_bypasses_cache(self):
+        t0, t1, t2 = self._day(0), self._day(-1), self._day(-2)
+        page1 = _mb_page(
+            [
+                _mb_row("bg-success", t0, [("odoo/odoo", 10)]),
+                _mb_row("bg-success", t1, [("odoo/odoo", 11)]),
+            ],
+            next_until=t2,
+        )
+        page2 = _mb_page([_mb_row("bg-success", t2, [("odoo/odoo", 12)])])
+        io = FakeIO(http={f"until={t2}": (page2, None), "runbot_merge/1": (page1, None)})
+        svc = services.CiService(io, self.CACHE)
+        svc.merge_stats(days=3)
+
+        io.http_calls.clear()
+        svc.merge_stats(days=3, refresh=True)
+        self.assertTrue(any(f"until={t2}" in u for u in io.http_calls))  # page2 re-fetched
+
+
 class TTLCacheTest(unittest.TestCase):
     def test_single_flight(self):
         cache = TTLCache(ttl=60)

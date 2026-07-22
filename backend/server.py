@@ -1468,6 +1468,10 @@ def _default_config_path():
 CONFIG_PATH = _default_config_path()
 CONFIG = services.ConfigStore(effects, CONFIG_PATH, notify=BUS.publish_config)
 
+# CI dashboard: per-day mergebot merge stats. Its immutable-completed-day cache
+# lives next to config.json (outside GOO_DIR, so the self-updater never touches it).
+CI = services.CiService(effects, os.path.join(os.path.dirname(CONFIG_PATH), "ci_merge_stats.json"))
+
 
 def _autoreload_repos():
     """The config's repos opted into the 4h background `git fetch master`."""
@@ -1965,6 +1969,12 @@ def _api_runbot_bundle_info(body):
 def _api_nightly(body):
     max_nights = min(max(int(body.get("max_nights", 14)), 7), 84)
     return {"ok": True, **NIGHTLY.builds(refresh=bool(body.get("refresh")), max_nights=max_nights)}
+
+
+@post_route("/api/ci/merge-stats")
+def _api_ci_merge_stats(body):
+    days = min(max(int(body.get("days", 14)), 1), 60)
+    return {"ok": True, "days": CI.merge_stats(days=days, refresh=bool(body.get("refresh")))}
 
 
 @post_route("/api/nightly/errors")
@@ -2596,6 +2606,8 @@ def main():
     # loaded/cached yet at startup.
     if args.config:
         CONFIG.path = os.path.expanduser(args.config)
+        # keep the CI cache beside the chosen config file
+        CI.cache_path = os.path.join(os.path.dirname(CONFIG.path), "ci_merge_stats.json")
 
     # turn on tracing before any work (incl. the one-shot --test-tags run) happens
     if args.trace:

@@ -150,6 +150,7 @@ var SECTIONS = [
   "databases",
   "nightly",
   "memory",
+  "ci",
   "config"
 ];
 var MERGEBOT = "https://mergebot.odoo.com";
@@ -4445,6 +4446,7 @@ var ICONS = {
   worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
   nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
   memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`,
+  ci: `<svg viewBox="0 0 24 24"><path d="M3 12h4l2 5 3-11 2.5 8 1.5-4h5"/></svg>`,
   // sidebar collapse/expand toggle: a double chevron (points left; CSS flips it
   // when collapsed so it points right = "expand")
   collapse: `<svg viewBox="0 0 24 24"><polyline points="13 17 8 12 13 7"/><polyline points="18 17 13 12 18 7"/></svg>`
@@ -4456,6 +4458,7 @@ var NAV = [
   { id: "databases", label: "Databases", icon: ICONS.databases },
   { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },
   { id: "memory", label: "Memory", icon: ICONS.memory, optIn: true },
+  { id: "ci", label: "CI", icon: ICONS.ci, optIn: true },
   { id: "config", label: "Configuration", icon: ICONS.config }
 ];
 function mergedTabIds(configured) {
@@ -8371,6 +8374,144 @@ var MbMenu = class extends Component {
   // "blocked · Review, CI" — the state word, plus the unmet requirements when present
   label(r) {
     return r.detail ? `${r.state} \xB7 ${r.detail}` : r.state;
+  }
+};
+
+// static/src/ci_screen/ci_plugin.js
+var CiPlugin = class extends Plugin {
+  static sequence = 4;
+  days = signal([]);
+  // [{date, batches, merged, failed, killed, pending, prs_merged}]
+  loading = signal(false);
+  error = signal("");
+  at = signal(0);
+  _window = 0;
+  // how many days the backend last fetched, this session
+  async load(force = false, days = 14) {
+    if (this.loading()) return;
+    if (!force && this.at() && this._window >= days) return;
+    this.loading.set(true);
+    this.error.set("");
+    try {
+      const res = await postJSON("/api/ci/merge-stats", { refresh: !!force, days });
+      this.days.set(res.days || []);
+      this._window = days;
+      this.at.set(Date.now());
+    } catch (e) {
+      this.error.set(e.message);
+    } finally {
+      this.loading.set(false);
+    }
+  }
+};
+
+// static/src/ci_screen/ci.js
+var CiScreen = class extends Component {
+  static components = { Panel };
+  static template = xml`
+    <section class="ci-screen">
+      <Panel title="'CI — merge queue'">
+        <t t-set-slot="title-extra">
+          <span class="dim ci-sub">master · last 14 days</span>
+        </t>
+        <t t-set-slot="top-right">
+          <span class="meta" t-if="this.stamp" t-out="this.stamp"/>
+          <button class="pbtn" t-att-disabled="this.ci.loading()" t-on-click="() => this.refresh()">
+            <t t-out="this.refreshIcon"/> Refresh
+          </button>
+        </t>
+      </Panel>
+      <div class="content ci-content">
+        <div t-if="this.ci.loading() and !this.ci.days().length" class="dim ci-status">Loading merge-queue data…</div>
+        <div t-elif="this.ci.error()" class="dim ci-status">Failed to load: <t t-out="this.ci.error()"/></div>
+        <table t-else="" class="ci-table">
+          <thead>
+            <tr>
+              <th class="ci-col-day">Day</th>
+              <th class="ci-num">Stagings</th>
+              <th class="ci-num ci-merged">Merged</th>
+              <th class="ci-num ci-failed">Failed</th>
+              <th class="ci-num ci-killed">Killed</th>
+              <th class="ci-num ci-pending">In&#160;progress</th>
+              <th class="ci-num ci-prs">PRs&#160;merged</th>
+              <th class="ci-num ci-rate">PR/hour</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr t-foreach="this.ci.days()" t-as="d" t-key="d.date" t-att-class="{'ci-today': d_index === 0}">
+              <td class="ci-col-day">
+                <b t-out="this.weekday(d.date)"/><span class="dim ci-date" t-out="d.date"/>
+                <span t-if="d_index === 0" class="ci-tag">today</span>
+              </td>
+              <td class="ci-num" t-out="d.batches"/>
+              <td class="ci-num ci-merged" t-out="d.merged or '·'"/>
+              <td class="ci-num ci-failed" t-out="d.failed or '·'"/>
+              <td class="ci-num ci-killed" t-out="d.killed or '·'"/>
+              <td class="ci-num ci-pending" t-out="d.pending or '·'"/>
+              <td class="ci-num ci-prs" t-out="d.prs_merged or '·'"/>
+              <td class="ci-num ci-rate" t-out="this.perHour(d, d_index)"/>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="ci-total">
+              <td class="ci-col-day">14-day total</td>
+              <td class="ci-num" t-out="this.totals.batches"/>
+              <td class="ci-num ci-merged" t-out="this.totals.merged"/>
+              <td class="ci-num ci-failed" t-out="this.totals.failed"/>
+              <td class="ci-num ci-killed" t-out="this.totals.killed"/>
+              <td class="ci-num ci-pending" t-out="this.totals.pending"/>
+              <td class="ci-num ci-prs" t-out="this.totals.prs_merged"/>
+              <td class="ci-num ci-rate" t-out="this.totalPerHour"/>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>`;
+  ci = usePlugin(CiPlugin);
+  refreshIcon = m(ICONS.refresh);
+  setup() {
+    this.ci.load();
+  }
+  refresh() {
+    this.ci.load(true);
+  }
+  get stamp() {
+    const at = this.ci.at();
+    if (!at) return "";
+    return "updated " + new Date(at).toLocaleTimeString();
+  }
+  get totals() {
+    const t2 = { batches: 0, merged: 0, failed: 0, killed: 0, pending: 0, prs_merged: 0 };
+    for (const d of this.ci.days()) for (const k in t2) t2[k] += d[k] || 0;
+    return t2;
+  }
+  // hours the day has run: a full 24 for a completed day, the UTC hours elapsed so
+  // far for today (row 0) — so today's PR/hour is a live rate, not diluted by /24
+  _hours(dIndex) {
+    if (dIndex !== 0) return 24;
+    const now = /* @__PURE__ */ new Date();
+    return Math.max(now.getUTCHours() + now.getUTCMinutes() / 60, 0.25);
+  }
+  perHour(d, dIndex) {
+    return (d.prs_merged / this._hours(dIndex)).toFixed(1);
+  }
+  get totalPerHour() {
+    const days = this.ci.days();
+    if (!days.length) return "0.0";
+    let prs = 0;
+    let hours = 0;
+    days.forEach((d, i) => {
+      prs += d.prs_merged || 0;
+      hours += this._hours(i);
+    });
+    return (prs / hours).toFixed(1);
+  }
+  // "Wed" from an ISO date (parsed as UTC to match the server's staged day)
+  weekday(iso) {
+    return (/* @__PURE__ */ new Date(iso + "T00:00:00Z")).toLocaleDateString(void 0, {
+      weekday: "short",
+      timeZone: "UTC"
+    });
   }
 };
 
@@ -12909,6 +13050,7 @@ var SCREENS = {
   databases: DatabasesScreen,
   nightly: NightlyScreen,
   memory: MemoryScreen,
+  ci: CiScreen,
   config: ConfigScreen
 };
 var App = class extends Component {
@@ -12921,6 +13063,7 @@ var App = class extends Component {
     DatabasesScreen,
     NightlyScreen,
     MemoryScreen,
+    CiScreen,
     ConfigScreen,
     ActionMenu,
     CiMenu,
@@ -12996,7 +13139,8 @@ var PLUGINS = [
   WorkspacePlugin,
   ClaudePlugin,
   NightlyPlugin,
-  MemoryPlugin
+  MemoryPlugin,
+  CiPlugin
 ];
 async function boot() {
   await loadServerConfig();
