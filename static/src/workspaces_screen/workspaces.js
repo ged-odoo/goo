@@ -150,10 +150,37 @@ export class WorkspacesScreen extends Component {
             <div class="wt-detail-name-row">
               <div class="wt-detail-name" t-att-title="this.sel.name + ' — double-click to edit'"
                    t-on-dblclick="() => this.edit(this.sel)" t-out="this.sel.name"/>
+              <!-- one primary slot: a main-located workspace that isn't loaded offers
+                   Activate (check out its branches first); once loaded — and always
+                   for worktrees — the slot is the Start/Stop toggle -->
+              <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
+              <t t-else="">
+                <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+              </t>
+              <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
+              <t t-if="ci">
+                <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
+                <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                  <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                  <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                </a>
+                <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
+                  <span class="dash-ci-dot"/><t t-out="ci.label"/>
+                  <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
+                </span>
+              </t>
+              <t t-set="mb" t-value="this.mbStatus(this.sel)"/>
+              <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
+                <span class="dash-ci-dot"/><t t-out="mb.label"/>
+              </a>
+              <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
               <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
+              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -164,38 +191,6 @@ export class WorkspacesScreen extends Component {
                   <button class="dash-menu-item danger" t-att-disabled="!this.canDropDb(this.sel)" t-att-title="this.dropDbTitle(this.sel)" t-on-click="() => this.headMenu(() => this.dropDb(this.sel))">Drop database</button>
                   <button class="dash-menu-item danger" t-att-disabled="this.removeBlocked(this.sel)" t-att-title="this.removeTitle(this.sel)" t-on-click="() => this.headMenu(() => this.remove(this.sel))">Remove workspace</button>
                 </div>
-              </div>
-            </div>
-            <div class="wt-detail-head">
-              <div class="wt-head-row">
-                <!-- one primary slot: a main-located workspace that isn't loaded offers
-                     Activate (check out its branches first); once loaded — and always
-                     for worktrees — the slot is the Start/Stop toggle -->
-                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
-                <t t-else="">
-                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                  <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
-                </t>
-                <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
-                <t t-if="ci">
-                  <t t-set="rbUrl" t-value="this.runbotUrl(this.sel)"/>
-                  <a t-if="rbUrl" class="dash-ci" t-att-class="ci.cls" target="_blank" t-att-href="rbUrl" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                    <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
-                  </a>
-                  <span t-else="" class="dash-ci" t-att-class="ci.cls" t-att-title="ci.checks ? '' : ('runbot: ' + ci.title)" t-on-mouseenter="(ev) => this.showCiMenu(ev, ci.checks)" t-on-mouseleave="() => this.hideCiMenu()">
-                    <span class="dash-ci-dot"/><t t-out="ci.label"/>
-                    <span t-if="ci.running" class="dash-ci-run" title="some checks still running"/>
-                  </span>
-                </t>
-                <t t-set="mb" t-value="this.mbStatus(this.sel)"/>
-                <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
-                  <span class="dash-ci-dot"/><t t-out="mb.label"/>
-                </a>
-                <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
-                <span class="wt-sp"/>
-                <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-                <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               </div>
             </div>
             <div class="wt-tabs">

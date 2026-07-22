@@ -4796,19 +4796,6 @@ a.commit-detail-hash svg {
   border: 1px dashed var(--l-line);
   border-radius: 13px;
 }
-.wt-detail-head {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 0;
-}
-/* lifecycle control + state pills on the left, overflow actions on the right */
-.wt-head-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
 /* the Code pane stacks the drift banner above the checkout list */
 .ws-code-pane {
   flex-direction: column;
