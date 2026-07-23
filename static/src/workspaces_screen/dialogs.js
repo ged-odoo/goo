@@ -458,10 +458,16 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
 // (matched by parent + the row's branch — that pair is what a prior click of the
 // button created). Exported so the button can label itself "Open" instead of
 // "Create" and so a re-click jumps to the existing workspace instead of duplicating it.
+// A forward-port sub-workspace checks out fw-bot's head branch, which is named
+// `<target>-<source>-<n>-fw` (e.g. master-saas-19.4-…-fw) — not the matrix's bare
+// target label (`row.branch` = "master"). So match a child of this parent whose
+// checkout branch is a forward port onto this row's target.
 export function findSubWorkspace(config, parentWs, row) {
+  const isFwOnto = (branch) =>
+    typeof branch === "string" && branch.startsWith(`${row.branch}-`) && branch.endsWith("-fw");
   return (
     (config.config.workspaces || []).find(
-      (w) => w.parent === parentWs.id && (w.checkouts || []).some((c) => c.branch === row.branch),
+      (w) => w.parent === parentWs.id && (w.checkouts || []).some((c) => isFwOnto(c.branch)),
     ) || null
   );
 }
@@ -484,38 +490,50 @@ export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) 
     wt.select(existing.id);
     return;
   }
-  const branch = row.branch;
   const repoFor = (slug) => {
     const exact = (config.config.repos || []).find((r) => r.github === slug);
     if (exact) return exact;
     const name = slug.split("/")[1];
     return (config.config.repos || []).find((r) => (r.github || "").split("/")[1] === name) || null;
   };
-  const matches = (row.cells || [])
-    .map((cell) => repoFor(cell.repository))
-    .filter((r) => r && r.path);
-  if (!matches.length) {
+  // one {repo, pull} per cell that both maps to a configured repo and has a PR (a
+  // "waiting" cell — no PR yet — is skipped)
+  const targets = [];
+  for (const cell of row.cells || []) {
+    const repo = repoFor(cell.repository);
+    const pull = (cell.pulls || [])[0];
+    if (repo && repo.path && pull) targets.push({ repo, pull });
+  }
+  if (!targets.length) {
     return dialogs.open({
       title: "Create sub workspace",
-      message: `none of this row's repositories (${(row.cells || []).map((c) => c.repository).join(", ") || "none"}) match your configured repos`,
+      message: `no forward-port PR here maps to a configured repo (${(row.cells || []).map((c) => c.repository).join(", ") || "none"})`,
       okLabel: "OK",
       cancelLabel: null,
     });
   }
+  // Each cell's PR head is fw-bot's real branch (master-…-fw), which the matrix
+  // doesn't carry — resolve it per PR, then fetch it from the push remote (the dev
+  // fork the fw branches live on). Fetching from there — not origin's pull/<n>/head —
+  // also writes the refs/remotes/<dev>/<branch> tracking ref, so the checkout counts
+  // as pushed and goo re-detects the PR by its head branch.
   const results = await Promise.all(
-    matches.map(async (r) => {
-      const eid = eventLog.begin(`fetching ${branch} (${r.id}) from ${r.pull_remote || "origin"}`);
+    targets.map(async ({ repo, pull }) => {
+      const eid = eventLog.begin(`fetching forward-port #${pull.number} (${repo.id})`);
       try {
+        const head = await postJSON("/api/prs/head", { repo: pull.github, number: pull.number });
+        const branch = head.branch;
+        if (!branch) throw new Error("could not resolve the PR's head branch");
         await postJSON("/api/code/remote-branch/fetch", {
-          path: r.path,
+          path: repo.path,
           branch,
-          pull_remote: r.pull_remote || "origin",
+          pull_remote: repo.push_remote || "dev",
         });
         eventLog.finish(eid, "done");
-        return { repo: r, ok: true };
+        return { repo, branch, ok: true };
       } catch (e) {
         eventLog.finish(eid, "error");
-        return { repo: r, ok: false, error: e.message };
+        return { repo, ok: false, error: e.message };
       }
     }),
   );
@@ -527,12 +545,12 @@ export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) 
     );
     if (failed.length === results.length) return;
   }
-  const got = results.filter((r) => r.ok).map((r) => r.repo.id);
-  await code.refreshBranches(new Set(got));
-  const name = `${parentWs.name}-${branch}`;
+  const got = results.filter((r) => r.ok);
+  await code.refreshBranches(new Set(got.map((g) => g.repo.id)));
+  const name = got[0].branch; // the fw branch — unambiguous; editable in the form
   return startCreateWorkspace(plugins, {
     name,
-    config: repoBranchList.format(got.map((repo) => ({ repo, branch }))),
+    config: repoBranchList.format(got.map((g) => ({ repo: g.repo.id, branch: g.branch }))),
     db: name,
     template: "",
     createBranches: false,

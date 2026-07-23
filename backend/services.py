@@ -286,6 +286,27 @@ class GitHubService:
         self.cache.invalidate()
         return True, None
 
+    def pr_head(self, github, number):
+        """The head branch ref of a PR by number. Used for forward-port sub-workspaces:
+        the mergebot matrix only exposes the target branch (e.g. "master"), while the
+        forward-port PR's actual head is fw-bot's `master-<src>-<n>-fw` on odoo-dev.
+        Returns (branch, error)."""
+        self.io.log_request(f"gh pr view {number} --repo {github} --json headRefName")
+        try:
+            r = self.io.run(
+                ["gh", "pr", "view", str(number), "--repo", github, "--json", "headRefName"],
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return "", str(e)
+        if r.returncode != 0:
+            return "", r.stderr.strip().split("\n")[0] or "gh pr view failed"
+        try:
+            data = json.loads(r.stdout or "{}")
+        except ValueError as e:
+            return "", str(e)
+        return data.get("headRefName", ""), None
+
     def search_branches(self, repos, query):
         """Search GitHub for branches whose name starts with `query`, across all
         repos that have a github field (one `gh api` call per repo, in parallel).
@@ -2300,7 +2321,9 @@ class GitService:
 
     def fetch_remote_branch(self, path, branch, pull_remote="origin"):
         """Fetch a remote branch and create/reset the local branch to track it
-        (git fetch <pull_remote> {branch}:{branch}). Returns (ok, error)."""
+        (git fetch <pull_remote> {branch}:{branch}). Also updates the remote's
+        opportunistic tracking ref (refs/remotes/<remote>/<branch>), so callers can
+        pass a fork remote to make a forward-port head look pushed. Returns (ok, error)."""
         remote = pull_remote or "origin"
         _, error = self._git(
             path, "fetch", remote, f"{branch}:{branch}", timeout=60, err="git fetch failed"

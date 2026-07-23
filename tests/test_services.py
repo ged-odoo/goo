@@ -829,6 +829,20 @@ class GitHubServiceTest(unittest.TestCase):
         svc = services.GitHubService(io, TTLCache(ttl=600))
         self.assertEqual(svc.post_r_plus("odoo/odoo", 275826), (False, "not allowed"))
 
+    def test_pr_head_returns_head_ref(self):
+        io = FakeIO(run_result=completed(stdout='{"headRefName": "master-saas-19.4-x-548384-fw"}'))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        self.assertEqual(svc.pr_head("odoo/odoo", 278098), ("master-saas-19.4-x-548384-fw", None))
+        self.assertEqual(
+            io.run_calls,
+            [["gh", "pr", "view", "278098", "--repo", "odoo/odoo", "--json", "headRefName"]],
+        )
+
+    def test_pr_head_surfaces_gh_failure(self):
+        io = FakeIO(run_result=completed(returncode=1, stderr="no pull requests found"))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        self.assertEqual(svc.pr_head("odoo/odoo", 1), ("", "no pull requests found"))
+
     def test_ready_pr_marks_ready_through_gh(self):
         io = FakeIO(run_result=completed())
         svc = services.GitHubService(io, TTLCache(ttl=600))
@@ -1825,6 +1839,16 @@ class GitServiceTest(unittest.TestCase):
         )
         self.assertEqual((ok, err), (True, None))
         self.assertIn("fetch upstream master-x:master-x", " ".join(io.run_calls[-1]))
+
+    def test_fetch_remote_branch_from_push_remote(self):
+        # forward-port sub-workspace fetches the fw head from the dev fork, so the
+        # opportunistic refs/remotes/dev/<branch> ref makes it look pushed
+        io = FakeIO()
+        ok, err = services.GitService(io).fetch_remote_branch(
+            "/r", "master-x-548384-fw", pull_remote="dev"
+        )
+        self.assertEqual((ok, err), (True, None))
+        self.assertIn("fetch dev master-x-548384-fw:master-x-548384-fw", " ".join(io.run_calls[-1]))
 
     def test_fetch_master_uses_pull_remote(self):
         io = FakeIO()
