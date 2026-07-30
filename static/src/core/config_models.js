@@ -214,7 +214,7 @@ export class Workspace extends Model {
   // only one main-located workspace is loaded at a time, on the implicit :8069),
   // "worktree" = its own git worktree dir, running concurrently on its own port
   location = fields.char({ defaultValue: "main" });
-  worktree = fields.json(); // { base, dir } | null — only worktree workspaces
+  worktree = fields.json(); // { base, dir, venv? } | null — only worktree workspaces
   port = fields.number(); // stable server port (worktree only; 0 = none/main)
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
 

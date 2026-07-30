@@ -1147,8 +1147,23 @@ var RepoStatus = class extends Model {
   // [{ name, date, runbot, remote, synced, subject }, …]
   pushGithub = fields.json();
   // "owner/repo" the push remote's URL resolves to, or null
+  ahead = fields.number();
+  // current branch commits not on its base (target) branch
+  behind = fields.number();
+  // base branch commits not on the current branch
   fetchedAt = fields.number();
   // request-start stamp — the step-4 "latest wins" key
+};
+var WorktreeRepoStatus = class extends Model {
+  static id = "worktreerepostatus";
+  current = fields.char();
+  dirty = fields.bool();
+  error = fields.json();
+  branches = fields.json();
+  pushGithub = fields.json();
+  ahead = fields.number();
+  behind = fields.number();
+  fetchedAt = fields.number();
 };
 var PrRepo = class extends Model {
   static id = "prrepo";
@@ -1209,6 +1224,8 @@ var StorePlugin = class extends Plugin {
       error: r.error(),
       branches: r.branches(),
       pushGithub: r.pushGithub(),
+      ahead: r.ahead(),
+      behind: r.behind(),
       fetchedAt: r.fetchedAt()
     }))
   );
@@ -1270,6 +1287,8 @@ var StorePlugin = class extends Plugin {
           error: raw.error ?? null,
           branches: raw.branches ?? [],
           pushGithub: raw.push_github ?? null,
+          ahead: raw.ahead ?? 0,
+          behind: raw.behind ?? 0,
           fetchedAt
         });
       } else if (rec.fetchedAt() <= fetchedAt) {
@@ -1278,12 +1297,71 @@ var StorePlugin = class extends Plugin {
         rec.error.set(raw.error ?? null);
         rec.branches.set(raw.branches ?? []);
         rec.pushGithub.set(raw.push_github ?? null);
+        rec.ahead.set(raw.ahead ?? 0);
+        rec.behind.set(raw.behind ?? 0);
         rec.fetchedAt.set(fetchedAt);
       }
     }
     if (authoritative) {
       const seen = new Set(repos.map((r) => r.id));
       for (const rec of this.orm.records(RepoStatus)) if (!seen.has(rec.id)) this.orm.delete(rec);
+    }
+  }
+  // fold a worktree-scoped branch-state fetch into WorktreeRepoStatus records
+  // — same step-4 upsert as mergeRepoStatus, but never authoritative (a
+  // worktree-scoped fetch only ever touches its own repos' rows, in their own
+  // table, so it can't and shouldn't drop anything).
+  mergeWorktreeRepoStatus(repos, at) {
+    for (const raw of repos) {
+      const fetchedAt = raw.fetchedAt ?? at;
+      const rec = this._live(WorktreeRepoStatus, raw.id);
+      if (!rec) {
+        this.orm.create(WorktreeRepoStatus, {
+          id: raw.id,
+          current: raw.current ?? "",
+          dirty: !!raw.dirty,
+          error: raw.error ?? null,
+          branches: raw.branches ?? [],
+          pushGithub: raw.push_github ?? null,
+          ahead: raw.ahead ?? 0,
+          behind: raw.behind ?? 0,
+          fetchedAt
+        });
+      } else if (rec.fetchedAt() <= fetchedAt) {
+        rec.current.set(raw.current ?? "");
+        rec.dirty.set(!!raw.dirty);
+        rec.error.set(raw.error ?? null);
+        rec.branches.set(raw.branches ?? []);
+        rec.pushGithub.set(raw.push_github ?? null);
+        rec.ahead.set(raw.ahead ?? 0);
+        rec.behind.set(raw.behind ?? 0);
+        rec.fetchedAt.set(fetchedAt);
+      }
+    }
+  }
+  // one worktree workspace's own branch-state row for one repo — the
+  // composite-keyed WorktreeRepoStatus counterpart to repoStatusList()'s
+  // bare-id RepoStatus rows. null if not fetched yet (CodePlugin.loadWorktreeBranches).
+  worktreeRepoStatus(workspaceId, repoId) {
+    const rec = this.orm.getById(WorktreeRepoStatus, `${workspaceId}:${repoId}`);
+    if (!rec) return null;
+    return {
+      current: rec.current(),
+      dirty: rec.dirty(),
+      error: rec.error(),
+      branches: rec.branches(),
+      pushGithub: rec.pushGithub(),
+      ahead: rec.ahead(),
+      behind: rec.behind(),
+      fetchedAt: rec.fetchedAt()
+    };
+  }
+  // drop every composite row for a removed workspace — called from
+  // WorkspacePlugin's _removeCleanup, alongside dropServer(tgt.id)
+  dropWorktreeRepoStatusFor(workspaceId) {
+    const prefix = `${workspaceId}:`;
+    for (const rec of this.orm.records(WorktreeRepoStatus)) {
+      if (rec.id.startsWith(prefix)) this.orm.delete(rec);
     }
   }
   // fold a PR fetch into PrRepo records. Authoritative only over the repos it requested
@@ -1442,8 +1520,9 @@ var StorePlugin = class extends Plugin {
   // (current branch, does it match, dirty), its server, and the one-shot run holding
   // its slot. db/claude are filled in a later step.
   workspaceView(tgt) {
+    const isWt = tgt.location === "worktree";
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
-      const rec = this.orm.getById(RepoStatus, repo);
+      const rec = isWt ? this.orm.getById(WorktreeRepoStatus, `${tgt.id}:${repo}`) : this.orm.getById(RepoStatus, repo);
       const current = rec ? rec.current() : void 0;
       return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });
@@ -2124,6 +2203,42 @@ var CodePlugin = class extends Plugin {
       this.error.set(e.message);
     }
   }
+  // fetch local branch/checkout state for a worktree workspace's OWN on-disk
+  // repos (never the main checkout config points at). repoPaths: [{id, path}] —
+  // pull/push remotes are config-level (same for a worktree's repo as for the
+  // main one), so they're resolved here from groups() rather than required from
+  // the caller. Stored under composite `${workspaceId}:${repoId}` keys in a
+  // SEPARATE table (mergeWorktreeRepoStatus/WorktreeRepoStatus) so it never
+  // touches the bare-repo-id RepoStatus rows the Branches screen and other
+  // workspaces rely on. In-flight de-dup reuses _workspaceLoads (key prefixed
+  // "wt:" so it can't collide with loadWorkspace's own keys).
+  async loadWorktreeBranches(workspaceId, repoPaths) {
+    if (!repoPaths.length) return;
+    const key = `wt:${workspaceId}:${repoPaths.map((r) => r.id).sort().join(",")}`;
+    const pending = this._workspaceLoads.get(key);
+    if (pending) return pending;
+    const { pullRemoteByRepo, pushRemoteByRepo } = this.groups();
+    const at = Date.now();
+    const request = postJSON("/api/code/branches", {
+      repos: repoPaths.map((r) => ({
+        id: `${workspaceId}:${r.id}`,
+        path: r.path,
+        pull_remote: pullRemoteByRepo[r.id],
+        push_remote: pushRemoteByRepo[r.id]
+      }))
+    }).then((b) => this.store.mergeWorktreeRepoStatus(b.repos, at)).catch((e) => this.error.set(e.message)).finally(() => {
+      if (this._workspaceLoads.get(key) === request) this._workspaceLoads.delete(key);
+    });
+    this._workspaceLoads.set(key, request);
+    return request;
+  }
+  // after a mutation at a worktree workspace's own path, refresh ITS composite
+  // row instead of the main checkout's — shared by checkout/rebase/commit/
+  // wipCommit/amendCommit/discard/push below.
+  _refreshRepo(repo, path, workspaceId, ids = null) {
+    if (workspaceId) return this.loadWorktreeBranches(workspaceId, [{ id: repo, path }]);
+    return this.refreshBranches(ids || /* @__PURE__ */ new Set([repo]));
+  }
   _groups() {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
@@ -2278,7 +2393,7 @@ ${head.body}` : head.subject;
   // refresh only them (merging into the view) and leave every other repo alone —
   // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
   // unaffected, so we keep those from the cache (the screens lazily fill any new).
-  async checkout(repos) {
+  async checkout(repos, workspaceId = "") {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
     this._beginWork(ids);
@@ -2290,7 +2405,14 @@ ${head.body}` : head.subject;
           "Checkout failed",
           failed.map((r) => `${r.branch}: ${r.error}`).join("\n")
         );
-      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(false));
+      if (ids.length) {
+        await (workspaceId ? this.loadWorktreeBranches(
+          workspaceId,
+          repos.map((r) => ({ id: r.repo, path: r.path }))
+        ) : this.refreshBranches(new Set(ids)));
+      } else if (!workspaceId) {
+        await this.load(false);
+      }
     } catch (e) {
       this.dialogs.error("Checkout failed", e.message);
     } finally {
@@ -2303,7 +2425,7 @@ ${head.body}` : head.subject;
   // commits (head sha, ahead/behind, pushed-state), so we refresh only them; the PR
   // list / runbot / mergebot reflect the pushed branch, which a local rebase hasn't
   // touched, so we leave those as-is rather than re-querying everything.
-  async rebase(repos) {
+  async rebase(repos, workspaceId = "") {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     const { pullRemoteByRepo } = this.groups();
     repos = repos.map((r) => ({ ...r, pull_remote: pullRemoteByRepo[r.repo] }));
@@ -2320,7 +2442,14 @@ ${head.body}` : head.subject;
           failed.map((r) => `${r.repo}: ${r.error}`).join("\n")
         );
       }
-      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(true));
+      if (ids.length) {
+        await (workspaceId ? this.loadWorktreeBranches(
+          workspaceId,
+          repos.map((r) => ({ id: r.repo, path: r.path }))
+        ) : this.refreshBranches(new Set(ids)));
+      } else if (!workspaceId) {
+        await this.load(true);
+      }
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
       this.dialogs.error("Fetch & rebase failed", e.message);
@@ -2498,12 +2627,12 @@ ${res.remote_error}`
       this.dialogs.error("Could not open the editor", e.message);
     }
   }
-  async wipCommit(path, repo) {
+  async wipCommit(path, repo, workspaceId = "") {
     this.busy.set(true);
     try {
       this.eventLog.add(`WIP commit (${repo})`);
       await postJSON("/api/code/wip-commit", { path });
-      await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
       this.dialogs.error("WIP commit failed", e.message);
@@ -2513,12 +2642,12 @@ ${res.remote_error}`
   }
   // stage all changes and commit with a user-supplied message (see
   // dialogs.js's editCommitMessage — the "Commit" menu action's caller)
-  async commit(path, repo, message) {
+  async commit(path, repo, message, workspaceId = "") {
     this.busy.set(true);
     try {
       this.eventLog.add(`commit (${repo})`);
       await postJSON("/api/code/commit", { path, message });
-      await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`commit failed (${repo})`);
       this.dialogs.error("Commit failed", e.message);
@@ -2529,12 +2658,12 @@ ${res.remote_error}`
   // stage all changes and fold them into the HEAD commit with a (possibly
   // edited) message — git commit --amend (see dialogs.js's editCommitMessage —
   // the "Amend commit" menu action's caller)
-  async amendCommit(path, repo, message) {
+  async amendCommit(path, repo, message, workspaceId = "") {
     this.busy.set(true);
     try {
       this.eventLog.add(`amend commit (${repo})`);
       await postJSON("/api/code/amend", { path, message });
-      await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`amend commit failed (${repo})`);
       this.dialogs.error("Amend commit failed", e.message);
@@ -2593,7 +2722,7 @@ ${res.remote_error}`
     if (!res.ok) throw new Error(res.error || "couldn't check rebase status");
     return !!res.in_progress;
   }
-  async discard(path, repo) {
+  async discard(path, repo, workspaceId = "") {
     const ok = await this.dialogs.open({
       title: `Discard changes in ${repo}?`,
       message: "This permanently removes all uncommitted changes, including untracked files. This cannot be undone.",
@@ -2604,7 +2733,7 @@ ${res.remote_error}`
     try {
       this.eventLog.add(`discarding changes (${repo})`);
       await postJSON("/api/code/discard", { path });
-      await this.refreshBranches(/* @__PURE__ */ new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
       this.dialogs.error("Discard changes failed", e.message);
@@ -2613,24 +2742,27 @@ ${res.remote_error}`
     }
   }
   // push a branch to the dev remote without prompting — caller has confirmed
-  // (via the app modal) before calling
-  pushBranchNoConfirm(path, branch, reload = true, force = false) {
-    const repo = this.config.config.repos.find((r) => r.path === path);
+  // (via the app modal) before calling. `repo` is the config repo id (not
+  // derived from `path` — a worktree's path never matches any configured repo
+  // path, and defaulting its push_remote to a hardcoded "dev" would silently
+  // push to the wrong remote).
+  pushBranchNoConfirm(path, branch, repo, reload = true, force = false, workspaceId = "") {
+    const repoCfg = this.config.config.repos.find((r) => r.id === repo);
     return this._mutate(
       force ? "Force push" : "Push",
       async () => {
         const verb = force ? "force-pushing" : "pushing";
-        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
+        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo})` : ""} to GitHub`);
         await postJSON("/api/code/branch/push", {
           path,
           branch,
           force,
-          push_remote: repo?.push_remote || "dev"
+          push_remote: repoCfg?.push_remote || "dev"
         });
-        if (reload && repo) await this.refreshBranches(/* @__PURE__ */ new Set([repo.id]));
+        if (reload && repo) await this._refreshRepo(repo, path, workspaceId);
       },
       false
-      // never the _mutate full reload — refreshBranches above is enough
+      // never the _mutate full reload — the refresh above is enough
     );
   }
 };
@@ -3119,7 +3251,7 @@ var Workspace = class _Workspace extends Model {
   // "worktree" = its own git worktree dir, running concurrently on its own port
   location = fields.char({ defaultValue: "main" });
   worktree = fields.json();
-  // { base, dir } | null — only worktree workspaces
+  // { base, dir, venv? } | null — only worktree workspaces
   port = fields.number();
   // stable server port (worktree only; 0 = none/main)
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
@@ -4127,7 +4259,8 @@ var WorkspacePlugin = class extends Plugin {
   // persist the workspace (canonical `workspaces` write — the create path deals it
   // the next stable port) and select it.
   // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
-  //         baseId?, on_create_args?, demo_data?, favorite?, parent? }
+  //         baseId?, on_create_args?, demo_data?, favorite?, parent?, createVenv?,
+  //         existingBranches? }
   async createWorktree({
     name,
     dbName,
@@ -4139,7 +4272,9 @@ var WorkspacePlugin = class extends Plugin {
     demo_data = true,
     favorite = false,
     category = "",
-    parent = ""
+    parent = "",
+    createVenv = false,
+    existingBranches = false
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -4163,14 +4298,22 @@ var WorkspacePlugin = class extends Plugin {
     const g = this.code.groups();
     const dir = this.dirPath(ws);
     ws.worktree.dir = dir;
-    const repos = checkouts.map(({ repo, branch }) => ({
-      repo,
-      newBranch: branch,
-      startPoint: startPointByRepo[repo],
-      mainPath: g.pathByRepo[repo] || "",
-      pull_remote: g.pullRemoteByRepo[repo],
-      worktreePath: `${dir}/${repo}`
-    })).filter((r) => r.mainPath);
+    const repos = checkouts.map(
+      ({ repo, branch }) => existingBranches ? {
+        repo,
+        branch,
+        mainPath: g.pathByRepo[repo] || "",
+        pull_remote: g.pullRemoteByRepo[repo],
+        worktreePath: `${dir}/${repo}`
+      } : {
+        repo,
+        newBranch: branch,
+        startPoint: startPointByRepo[repo],
+        mainPath: g.pathByRepo[repo] || "",
+        pull_remote: g.pullRemoteByRepo[repo],
+        worktreePath: `${dir}/${repo}`
+      }
+    ).filter((r) => r.mainPath);
     if (!repos.length) return this._error("Create workspace", "no local repos for the checkouts");
     const eid = this.eventLog.begin(`creating worktree workspace ${ws.name}`);
     try {
@@ -4186,6 +4329,20 @@ var WorkspacePlugin = class extends Plugin {
         this.eventLog.finish(eid, "error");
         const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
         return this._error("Workspace creation failed", msg || "git worktree add failed");
+      }
+      if (createVenv) {
+        const veid = this.eventLog.begin(`creating venv (${ws.name})`);
+        try {
+          await postJSON("/api/workspace/venv/create", {
+            venvPath: `${dir}/.venv`,
+            requirementsPath: `${dir}/community/requirements.txt`
+          });
+          ws.worktree.venv = true;
+          this.eventLog.finish(veid, "done");
+        } catch (e) {
+          this.eventLog.finish(veid, "error");
+          this._error("Venv creation failed", e.message);
+        }
       }
       this.config.updateConfig({ workspaces: [...this.config.config.workspaces, ws] });
       this._merge(id, { exists: true, state: "stopped", port: null });
@@ -4269,6 +4426,7 @@ var WorkspacePlugin = class extends Plugin {
       workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id)
     });
     this.store.dropServer(tgt.id);
+    this.store.dropWorktreeRepoStatusFor(tgt.id);
     this.logs.delete(tgt.id);
     if (this.selectedId() === tgt.id) this.select("");
     return true;
@@ -4620,12 +4778,20 @@ var SearchBox = class extends Component {
 var DirtyBadge = class extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
-  props = useProps({ path: t.string(), repo: t.string() });
+  // workspaceId (optional): set for a worktree workspace's checkout, so the
+  // menu's commit/discard actions refresh ITS OWN branch state afterward
+  // instead of the main checkout's (see DirtyMenu / CodePlugin.loadWorktreeBranches)
+  props = useProps({ path: t.string(), repo: t.string(), workspaceId: t.string().optional() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
     appBus.dispatchEvent(
       new CustomEvent("dirty-menu", {
-        detail: { rect, path: this.props.path, repo: this.props.repo }
+        detail: {
+          rect,
+          path: this.props.path,
+          repo: this.props.repo,
+          workspaceId: this.props.workspaceId || ""
+        }
       })
     );
   }
@@ -4639,10 +4805,13 @@ var DirtyMenu = class extends Component {
       <button class="dash-menu-item danger" t-on-click="() => this.discard()">Discard changes</button>
     </div>`;
   code = usePlugin(CodePlugin);
+  store = usePlugin(StorePlugin);
   dialogs = usePlugin(DialogPlugin);
   open = signal(false);
   _path = null;
   _repo = null;
+  _workspaceId = "";
+  // set for a worktree workspace's checkout — see DirtyBadge
   _el = null;
   setup() {
     onMounted(() => {
@@ -4654,9 +4823,10 @@ var DirtyMenu = class extends Component {
       });
     });
   }
-  async openMenu({ rect, path, repo }) {
+  async openMenu({ rect, path, repo, workspaceId }) {
     this._path = path;
     this._repo = repo;
+    this._workspaceId = workspaceId || "";
     this.open.set(true);
     await Promise.resolve();
     const w = this._el.offsetWidth;
@@ -4672,21 +4842,22 @@ var DirtyMenu = class extends Component {
     this.open.set(false);
     const path = this._path;
     const repo = this._repo;
+    const workspaceId = this._workspaceId;
     const message = await editCommitMessage(this.dialogs, {
       title: `Commit \u2014 ${repo}`,
       okLabel: "Commit"
     });
     if (!message) return;
-    this.code.commit(path, repo, message);
+    this.code.commit(path, repo, message, workspaceId);
   }
   wipCommit() {
     this.open.set(false);
-    this.code.wipCommit(this._path, this._repo);
+    this.code.wipCommit(this._path, this._repo, this._workspaceId);
   }
   // the current HEAD commit's subject, for the amend dialog's prefill fallback if
   // fetching the full message fails
   _headSubject() {
-    const repo = this.code.branchRepos().find((r) => r.id === this._repo);
+    const repo = this._workspaceId ? this.store.worktreeRepoStatus(this._workspaceId, this._repo) : this.code.branchRepos().find((r) => r.id === this._repo);
     const b = (repo?.branches || []).find((x) => x.name === repo.current);
     return b?.subject || "";
   }
@@ -4694,6 +4865,7 @@ var DirtyMenu = class extends Component {
     this.open.set(false);
     const path = this._path;
     const repo = this._repo;
+    const workspaceId = this._workspaceId;
     let initialMessage;
     try {
       initialMessage = await this.code.commitMessage(path);
@@ -4706,11 +4878,11 @@ var DirtyMenu = class extends Component {
       okLabel: "Amend"
     });
     if (!message) return;
-    this.code.amendCommit(path, repo, message);
+    this.code.amendCommit(path, repo, message, workspaceId);
   }
   discard() {
     this.open.set(false);
-    this.code.discard(this._path, this._repo);
+    this.code.discard(this._path, this._repo, this._workspaceId);
   }
 };
 async function editCommitMessage(dialogs, { title, initialMessage = "", okLabel = "Commit" }) {
@@ -5232,7 +5404,8 @@ async function pushBranchesDialog(code, dialogs, branches, { title, message, for
   if (!branches.length) return false;
   const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
   if (!ok) return false;
-  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
+  for (const b of branches)
+    await code.pushBranchNoConfirm(b.path, b.branch, b.repo, true, force, b.workspaceId || "");
   return true;
 }
 
@@ -5798,10 +5971,15 @@ var BranchesScreen = class extends Component {
     this.code.checkout([{ repo: row.repo, path: row.path, branch: row.branch }]);
   }
   pushBranch(row) {
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: row.path, branch: row.branch }], {
-      title: `Push "${row.branch}"?`,
-      message: `Push ${row.branch} (${row.repo}) to the ${row.push_remote} remote?`
-    });
+    return pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      [{ path: row.path, branch: row.branch, repo: row.repo }],
+      {
+        title: `Push "${row.branch}"?`,
+        message: `Push ${row.branch} (${row.repo}) to the ${row.push_remote} remote?`
+      }
+    );
   }
   // show the last commits on this branch (in a floating dialog)
   openCommits(row) {
@@ -8986,12 +9164,14 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       if (existing.some((w) => w.name === name))
         return `a workspace named "${name}" already exists`;
       if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if (v.location === "worktree" && !tpl)
-        return "a worktree workspace needs a template \u2014 go back and pick one as the source";
+      if (v.location === "worktree" && !tpl && v.createBranches !== false)
+        return "a worktree workspace needs a template, or an existing-branches source (bundle/remote branch) \u2014 go back and pick one";
       if ((v.cloneDb || "") && !(v.db || "").trim())
         return "set a database name to clone the selected database into";
       if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
         return `database "${(v.db || "").trim()}" already exists \u2014 pick a new name to clone into`;
+      if (v.createVenv && v.location !== "worktree")
+        return 'a venv needs Location set to "Own worktree + port"';
       return "";
     },
     fields: [
@@ -9079,10 +9259,21 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       {
         key: "createBranches",
         type: "checkbox",
-        label: "Create branches (main)",
+        label: "Create branches",
+        // true (the default, e.g. from a template): fork fresh branches. false
+        // (bundle / remote branch / forward-port prefills): the checkouts are
+        // already-existing local branches from an earlier fetch — a main-located
+        // workspace just adopts them as-is (no git), a worktree one attaches them
+        // instead of forking (see startPointByRepo/existingBranches below)
         value: prefill.createBranches ?? true
       },
-      { key: "activate", type: "checkbox", label: "Activate it (main)", value: true }
+      { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
+      {
+        key: "createVenv",
+        type: "checkbox",
+        label: "Create venv from requirements.txt (worktree)",
+        value: prefill.createVenv ?? false
+      }
     ]
   });
   if (!res) return;
@@ -9104,7 +9295,9 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       demo_data: !!res.demoData,
       favorite: false,
       category: res.category || "",
-      parent: prefill.parent || ""
+      parent: prefill.parent || "",
+      createVenv: !!res.createVenv,
+      existingBranches: res.createBranches === false
     });
     return;
   }
@@ -11332,7 +11525,7 @@ var CodePane = class extends Component {
             <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
               <span class="ws-sync-dot"/>working…
             </span>
-            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
+            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo" workspaceId="this.wsId"/>
             <span t-if="r.missing and !this.code.repoWorking(r.repo)" class="ws-missing dim">not found locally</span>
             <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
               <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
@@ -11439,14 +11632,27 @@ var CodePane = class extends Component {
   toggleMenu(id) {
     this.menuId.set(this.menuId() === id ? "" : id);
   }
+  // this workspace's id when it's a worktree, else "" — the signal every
+  // mutation call below uses to target its OWN branch state (composite-keyed
+  // WorktreeRepoStatus) instead of the main checkout's.
+  get wsId() {
+    return this.isWt ? this.props.ws.id : "";
+  }
+  get isWt() {
+    return this.wt.isWorktree(this.props.ws);
+  }
   // repositories shown in the sync strip: this workspace's repos, in config order,
-  // joined with live git state (current branch, sync counts) and their PRs
+  // joined with live git state (current branch, sync counts) and their PRs. A
+  // worktree workspace's live state comes from ITS OWN branch-state row (fetched
+  // at its own directory, never the main checkout's) — see wsId/CodePlugin.loadWorktreeBranches.
   get repos() {
-    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
     const repoIds = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    const isWt = this.isWt;
+    const wtDir = isWt ? this.wt.dirPath(this.props.ws) : "";
+    const byId = isWt ? null : Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     return this.config.config.repos.filter((r) => repoIds.has(r.id)).map((r) => {
-      const b = byId[r.id] || {};
+      const b = (isWt ? this.store.worktreeRepoStatus(this.wsId, r.id) : byId[r.id]) || {};
       const current = b.current || "";
       const github = groups.githubByRepo[r.id] || "";
       const pr = groups.prIndex[`${r.id}:${current}`] || null;
@@ -11465,7 +11671,7 @@ var CodePane = class extends Component {
         base: baseBranchOf(current),
         error: b.error || "",
         github,
-        path: groups.pathByRepo[r.id] || "",
+        path: isWt ? `${wtDir}/${r.id}` : groups.pathByRepo[r.id] || "",
         pull_remote: groups.pullRemoteByRepo[r.id] || "origin",
         push_remote: groups.pushRemoteByRepo[r.id] || "dev",
         pr,
@@ -11499,9 +11705,10 @@ var CodePane = class extends Component {
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
     this.touchActivity();
-    await this.code.rebase([
-      { repo: r.id, base: baseBranchOf(r.current), github: r.github, path: r.path }
-    ]);
+    await this.code.rebase(
+      [{ repo: r.id, base: baseBranchOf(r.current), github: r.github, path: r.path }],
+      this.wsId
+    );
   }
   // push a checkout's branch to the repo's push remote. Git pushes an explicit
   // branch name (git push <remote> <branch>), so this works whether or not it's
@@ -11519,7 +11726,7 @@ var CodePane = class extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      [{ path: r.path, branch: r.branch }],
+      [{ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId }],
       {
         title: `Push "${r.branch}"?`,
         message: `Push ${r.branch} (${r.repo}) to the ${r.push_remote} remote?`
@@ -11532,7 +11739,7 @@ var CodePane = class extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      [{ path: r.path, branch: r.branch }],
+      [{ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId }],
       {
         title: `Force-push "${r.branch}"?`,
         message: `Force-push ${r.branch} (${r.repo}) to the ${r.push_remote} remote with --force-with-lease? This overwrites the remote branch.`,
@@ -11547,9 +11754,10 @@ var CodePane = class extends Component {
   }
   // "Fetch & rebase all" operates on the repos' CURRENT branches (git can't rebase
   // a branch without checking it out), so it only means "rebase this workspace's
-  // branches" when every checkout is what its repo actually has checked out. A
-  // worktree workspace never qualifies: its branches live in the worktree, so the
-  // main checkouts this pane rebases are someone else's by construction.
+  // branches" when every checkout is what's actually checked out — the main
+  // checkout for a main-location workspace, or the worktree's own directory for a
+  // worktree one (workspaceView/checkoutRows resolve `matches` against whichever
+  // is correct — see StorePlugin.workspaceView).
   get wsCheckedOut() {
     const rows = this.checkoutRows;
     return rows.length > 0 && rows.every((r) => r.checkedOut);
@@ -11558,8 +11766,6 @@ var CodePane = class extends Component {
     return this.wsCheckedOut && this.rebasableRepos.length > 0;
   }
   rebaseAllTitle() {
-    if (this.props.ws.location === "worktree")
-      return "not available for worktree workspaces \u2014 it would rebase the main checkout, not the worktree";
     if (!this.wsCheckedOut)
       return "this workspace is not active \u2014 load it first, so rebasing applies to its branches";
     const repos = this.rebasableRepos;
@@ -11579,7 +11785,7 @@ var CodePane = class extends Component {
     }));
     if (repos.length) {
       this.touchActivity();
-      await this.code.rebase(repos);
+      await this.code.rebase(repos, this.wsId);
     }
   }
   // every work-branch checkout with something to push — base branches are excluded
@@ -11609,7 +11815,7 @@ var CodePane = class extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      rows.map((r) => ({ path: r.path, branch: r.branch })),
+      rows.map((r) => ({ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId })),
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
         message: `Push ${this._pushList(rows)}?`
@@ -11631,7 +11837,7 @@ var CodePane = class extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      rows.map((r) => ({ path: r.path, branch: r.branch })),
+      rows.map((r) => ({ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId })),
       {
         title: `Force-push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
         message: `Force-push ${this._pushList(rows)} with --force-with-lease? This overwrites the remote branches.`,
@@ -11722,7 +11928,8 @@ var CodePane = class extends Component {
   reloadHistory() {
     const row = this.history()?.row;
     if (!row) return;
-    return Promise.all([this.code.refreshBranches(/* @__PURE__ */ new Set([row.repo])), this.openHistory(row)]);
+    const refresh = this.isWt ? this.code.loadWorktreeBranches(this.wsId, [{ id: row.repo, path: row.path }]) : this.code.refreshBranches(/* @__PURE__ */ new Set([row.repo]));
+    return Promise.all([refresh, this.openHistory(row)]);
   }
   // open GitHub's PR-creation page for this repo's current branch
   openPr(r) {
@@ -11748,11 +11955,13 @@ var CodePane = class extends Component {
   // counts and the repo's actions are for whatever is actually checked out.
   get checkoutRows() {
     const view = this.store.workspaceView(this.props.ws);
-    const gitByRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
+    const isWt = this.isWt;
+    const wsId = this.wsId;
+    const gitByRepo = isWt ? null : new Map(this.code.branchRepos().map((r) => [r.id, r]));
     const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
     const prIndex = this.code.groups().prIndex;
     return (view.checkouts || []).map((c) => {
-      const git = gitByRepo.get(c.repo);
+      const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo.get(c.repo);
       const b = (git?.branches || []).find((x) => x.name === c.branch);
       const entry = entryByRepo.get(c.repo) || null;
       const checkedOut = !!c.matches;
@@ -11900,11 +12109,11 @@ var CodePane = class extends Component {
     });
     if (!message) return;
     this.touchActivity();
-    return this.code.commit(r.path, r.repo, message);
+    return this.code.commit(r.path, r.repo, message, this.wsId);
   }
   wipCommit(r) {
     this.touchActivity();
-    return this.code.wipCommit(r.path, r.repo);
+    return this.code.wipCommit(r.path, r.repo, this.wsId);
   }
   // the row's subject line is a summary only (branchRepos never fetches commit
   // bodies up front) — fetch the full message on demand for an edit/amend dialog's
@@ -11926,11 +12135,11 @@ var CodePane = class extends Component {
     });
     if (!message) return;
     this.touchActivity();
-    return this.code.amendCommit(r.path, r.repo, message);
+    return this.code.amendCommit(r.path, r.repo, message, this.wsId);
   }
   discard(r) {
     this.touchActivity();
-    return this.code.discard(r.path, r.repo);
+    return this.code.discard(r.path, r.repo, this.wsId);
   }
   // the PR's GitHub state for the pill: open / draft / closed / merged (the
   // runbot/CI signal lives in the workspace header, not per card)
@@ -12980,7 +13189,16 @@ var WorkspacesScreen = class extends Component {
       const key = `${ws.id}:${[...ids].sort().join(",")}`;
       if (!ids.size || key === loadedWsKey) return;
       loadedWsKey = key;
-      untrack(() => this.code.loadWorkspace(ws.id, ids));
+      untrack(() => {
+        this.code.loadWorkspace(ws.id, ids);
+        if (this.wt.isWorktree(ws)) {
+          const dir = this.wt.dirPath(ws);
+          this.code.loadWorktreeBranches(
+            ws.id,
+            [...ids].map((repo) => ({ id: repo, path: `${dir}/${repo}` }))
+          );
+        }
+      });
     });
     useEffect(() => {
       const pane = this.wt.requestedPane();

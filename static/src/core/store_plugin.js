@@ -13,7 +13,14 @@
 //     derived join. (Real fields + the OdooServer→Target twin ride a later pass — the
 //     config models live in ConfigPlugin's ORM, this runtime state in StorePlugin's.)
 
-import { ORM, RepoStatus, PrRepo, MergebotStatus, RunbotStatus } from "./observed_models.js";
+import {
+  ORM,
+  RepoStatus,
+  WorktreeRepoStatus,
+  PrRepo,
+  MergebotStatus,
+  RunbotStatus,
+} from "./observed_models.js";
 import { OdooServer, Run } from "./runtime_models.js";
 
 import { Plugin, computed } from "@odoo/owl";
@@ -38,6 +45,8 @@ export class StorePlugin extends Plugin {
       error: r.error(),
       branches: r.branches(),
       pushGithub: r.pushGithub(),
+      ahead: r.ahead(),
+      behind: r.behind(),
       fetchedAt: r.fetchedAt(),
     })),
   );
@@ -115,6 +124,8 @@ export class StorePlugin extends Plugin {
           error: raw.error ?? null,
           branches: raw.branches ?? [],
           pushGithub: raw.push_github ?? null,
+          ahead: raw.ahead ?? 0,
+          behind: raw.behind ?? 0,
           fetchedAt,
         });
       } else if (rec.fetchedAt() <= fetchedAt) {
@@ -124,12 +135,74 @@ export class StorePlugin extends Plugin {
         rec.error.set(raw.error ?? null);
         rec.branches.set(raw.branches ?? []);
         rec.pushGithub.set(raw.push_github ?? null);
+        rec.ahead.set(raw.ahead ?? 0);
+        rec.behind.set(raw.behind ?? 0);
         rec.fetchedAt.set(fetchedAt);
       }
     }
     if (authoritative) {
       const seen = new Set(repos.map((r) => r.id));
       for (const rec of this.orm.records(RepoStatus)) if (!seen.has(rec.id)) this.orm.delete(rec);
+    }
+  }
+
+  // fold a worktree-scoped branch-state fetch into WorktreeRepoStatus records
+  // — same step-4 upsert as mergeRepoStatus, but never authoritative (a
+  // worktree-scoped fetch only ever touches its own repos' rows, in their own
+  // table, so it can't and shouldn't drop anything).
+  mergeWorktreeRepoStatus(repos, at) {
+    for (const raw of repos) {
+      const fetchedAt = raw.fetchedAt ?? at;
+      const rec = this._live(WorktreeRepoStatus, raw.id);
+      if (!rec) {
+        this.orm.create(WorktreeRepoStatus, {
+          id: raw.id,
+          current: raw.current ?? "",
+          dirty: !!raw.dirty,
+          error: raw.error ?? null,
+          branches: raw.branches ?? [],
+          pushGithub: raw.push_github ?? null,
+          ahead: raw.ahead ?? 0,
+          behind: raw.behind ?? 0,
+          fetchedAt,
+        });
+      } else if (rec.fetchedAt() <= fetchedAt) {
+        rec.current.set(raw.current ?? "");
+        rec.dirty.set(!!raw.dirty);
+        rec.error.set(raw.error ?? null);
+        rec.branches.set(raw.branches ?? []);
+        rec.pushGithub.set(raw.push_github ?? null);
+        rec.ahead.set(raw.ahead ?? 0);
+        rec.behind.set(raw.behind ?? 0);
+        rec.fetchedAt.set(fetchedAt);
+      }
+    }
+  }
+
+  // one worktree workspace's own branch-state row for one repo — the
+  // composite-keyed WorktreeRepoStatus counterpart to repoStatusList()'s
+  // bare-id RepoStatus rows. null if not fetched yet (CodePlugin.loadWorktreeBranches).
+  worktreeRepoStatus(workspaceId, repoId) {
+    const rec = this.orm.getById(WorktreeRepoStatus, `${workspaceId}:${repoId}`);
+    if (!rec) return null;
+    return {
+      current: rec.current(),
+      dirty: rec.dirty(),
+      error: rec.error(),
+      branches: rec.branches(),
+      pushGithub: rec.pushGithub(),
+      ahead: rec.ahead(),
+      behind: rec.behind(),
+      fetchedAt: rec.fetchedAt(),
+    };
+  }
+
+  // drop every composite row for a removed workspace — called from
+  // WorkspacePlugin's _removeCleanup, alongside dropServer(tgt.id)
+  dropWorktreeRepoStatusFor(workspaceId) {
+    const prefix = `${workspaceId}:`;
+    for (const rec of this.orm.records(WorktreeRepoStatus)) {
+      if (rec.id.startsWith(prefix)) this.orm.delete(rec);
     }
   }
 
@@ -309,8 +382,14 @@ export class StorePlugin extends Plugin {
   // (current branch, does it match, dirty), its server, and the one-shot run holding
   // its slot. db/claude are filled in a later step.
   workspaceView(tgt) {
+    const isWt = tgt.location === "worktree";
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
-      const rec = this.orm.getById(RepoStatus, repo);
+      // a worktree's checkout lives in ITS OWN directory (its branch can't also
+      // be checked out in the main repo), so its live state comes from the
+      // composite-keyed WorktreeRepoStatus row, not the main checkout's RepoStatus
+      const rec = isWt
+        ? this.orm.getById(WorktreeRepoStatus, `${tgt.id}:${repo}`)
+        : this.orm.getById(RepoStatus, repo);
       const current = rec ? rec.current() : undefined;
       return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });

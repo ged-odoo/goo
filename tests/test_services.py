@@ -2502,6 +2502,60 @@ class RustBundlerServiceTest(unittest.TestCase):
         self.assertIn("already in progress", result["error"])
 
 
+class VenvServiceTest(unittest.TestCase):
+    VENV = "/wt/feature-x/.venv"
+    REQ = "/wt/feature-x/community/requirements.txt"
+
+    def test_create_installs_requirements_when_present(self):
+        io = FakeIO(files={self.REQ: "odoo-stubs==1.0\n"})
+        events = []
+        svc = services.VenvService(io, notify=lambda *args, **kwargs: events.append((args, kwargs)))
+        ok, error = svc.create(self.VENV, self.REQ)
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertEqual(io.run_calls[0], ["python3", "-m", "venv", self.VENV])
+        self.assertEqual(io.run_calls[1], [f"{self.VENV}/bin/pip", "install", "-r", self.REQ])
+        self.assertEqual(len(io.run_calls), 2)
+        self.assertEqual([kw["status"] for _, kw in events], ["start", "done"])
+
+    def test_create_skips_pip_when_requirements_missing(self):
+        io = FakeIO()  # no files registered — read_text(REQ) is None
+        svc = services.VenvService(io)
+        ok, error = svc.create(self.VENV, self.REQ)
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertEqual(len(io.run_calls), 1)  # venv only, no pip install
+
+    def test_venv_creation_failure_is_reported_and_notified(self):
+        io = FakeIO(runs={"-m venv": completed(returncode=1, stderr="boom\nno space left\n")})
+        events = []
+        svc = services.VenvService(io, notify=lambda *args, **kwargs: events.append((args, kwargs)))
+        ok, error = svc.create(self.VENV, self.REQ)
+        self.assertFalse(ok)
+        self.assertIn("no space left", error)
+        self.assertEqual([kw["status"] for _, kw in events], ["start", "error"])
+
+    def test_pip_install_failure_is_reported(self):
+        io = FakeIO(
+            files={self.REQ: "odoo-stubs==1.0\n"},
+            runs={"pip": completed(returncode=1, stderr="first\nresolution failed\n")},
+        )
+        svc = services.VenvService(io)
+        ok, error = svc.create(self.VENV, self.REQ)
+        self.assertFalse(ok)
+        self.assertIn("resolution failed", error)
+
+    def test_missing_python3_is_reported(self):
+        class MissingPython(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise FileNotFoundError("python3 not found")
+
+        svc = services.VenvService(MissingPython())
+        ok, error = svc.create(self.VENV, self.REQ)
+        self.assertFalse(ok)
+        self.assertIn("python3 not found", error)
+
+
 class ConfigStoreTest(unittest.TestCase):
     P = "/cfg/config.json"
 
@@ -2564,6 +2618,7 @@ class WorkspaceResolutionTest(unittest.TestCase):
 
     CFG = {
         "worktree_dir": "/wt",
+        "venv_activate": "source /global/env/bin/activate",
         "repos": [
             {"id": "community", "path": "/c", "github": "odoo/odoo"},
             {"id": "enterprise", "path": "/e", "github": "odoo/enterprise"},
@@ -2592,6 +2647,14 @@ class WorkspaceResolutionTest(unittest.TestCase):
                 "location": "worktree",
                 "worktree": {"base": "w1", "dir": "/wt/feature-y"},
                 "checkouts": [{"repo": "community", "branch": "feat-y"}],
+            },
+            {
+                "id": "ww3",
+                "name": "feature-z",
+                "db": "wzdb",
+                "location": "worktree",
+                "worktree": {"base": "w1", "dir": "/wt/feature-z", "venv": True},
+                "checkouts": [{"repo": "community", "branch": "feat-z"}],
             },
             {
                 "id": "w2",
@@ -2647,6 +2710,21 @@ class WorkspaceResolutionTest(unittest.TestCase):
         self.assertEqual(cfg["server_path"], "/wt/feature-y/community/odoo-bin")
         self.assertNotIn("worktree_port", cfg)
 
+    def test_worktree_without_dedicated_venv_keeps_global_venv_activate(self):
+        cfg = services.build_start_config(self.CFG, "ww1")
+        self.assertEqual(cfg["venv_activate"], "source /global/env/bin/activate")
+
+    def test_worktree_with_dedicated_venv_overrides_venv_activate(self):
+        cfg = services.build_start_config(self.CFG, "ww3")
+        self.assertEqual(cfg["venv_activate"], "source /wt/feature-z/.venv/bin/activate")
+        # pins the exact interpreter too — odoo-bin then runs under it regardless
+        # of its own shebang line (see server._odoo_cmd_base)
+        self.assertEqual(cfg["venv_python"], "/wt/feature-z/.venv/bin/python")
+
+    def test_worktree_without_dedicated_venv_has_no_venv_python(self):
+        cfg = services.build_start_config(self.CFG, "ww1")
+        self.assertNotIn("venv_python", cfg)
+
     def test_shell_cmd_uses_worktree_checkout(self):
         # /api/assets/generate with a workspace: the shell command must run the
         # worktree's own odoo-bin from its own checkout
@@ -2656,6 +2734,27 @@ class WorkspaceResolutionTest(unittest.TestCase):
         cmd = server.build_shell_cmd(cfg, "wwdb")
         self.assertIn("cd /wt/feature-x/community", cmd)
         self.assertIn("/wt/feature-x/community/odoo-bin", cmd)
+
+    def test_worktree_with_venv_end_to_end_runs_its_own_odoo_bin_via_its_own_venv(self):
+        # the full chain a real server start goes through: build_start_config
+        # (worktree + venv resolution) feeding build_odoo_cmd (the shell cmd) — the
+        # odoo-bin invoked must be feature-z's own, run by feature-z's own venv,
+        # never the main/global community checkout or python
+        from backend import server
+
+        cfg = services.build_start_config(self.CFG, "ww3")
+        orig = server.DATABASE.db_initialized
+        server.DATABASE.db_initialized = lambda db: True
+        try:
+            cmd, db, _is_new = server.build_odoo_cmd(cfg)
+        finally:
+            server.DATABASE.db_initialized = orig
+        self.assertEqual(db, "wzdb")
+        self.assertIn("cd /wt/feature-z/community &&", cmd)
+        self.assertIn(
+            "/wt/feature-z/.venv/bin/python /wt/feature-z/community/odoo-bin", cmd
+        )
+        self.assertNotIn("/c/odoo-bin", cmd)  # never the global community repo's own
 
 
 class BuildOdooCmdTest(unittest.TestCase):
@@ -2694,6 +2793,32 @@ class BuildOdooCmdTest(unittest.TestCase):
     def test_rust_bundler_environment_is_opt_in(self):
         self.assertNotIn("RUST_BUNDLER=1", self._cmd())
         self.assertIn("RUST_BUNDLER=1", self._cmd(rust_bundler=True))
+
+    def test_venv_python_invokes_odoo_bin_via_the_dedicated_interpreter(self):
+        from backend import server
+
+        config = {
+            "repos": [{"id": "community", "path": "/wt/feature-z/community"}],
+            "start": {"repos": ["community"], "db": "db1"},
+            "venv_activate": "source /wt/feature-z/.venv/bin/activate",
+            "venv_python": "/wt/feature-z/.venv/bin/python",
+        }
+        orig = server.DATABASE.db_initialized
+        server.DATABASE.db_initialized = lambda db: True
+        try:
+            cmd, _db, _is_new = server.build_odoo_cmd(config)
+        finally:
+            server.DATABASE.db_initialized = orig
+        self.assertIn("source /wt/feature-z/.venv/bin/activate &&", cmd)
+        # the venv's own python invokes odoo-bin explicitly — correct regardless
+        # of odoo-bin's shebang line
+        self.assertIn(
+            "/wt/feature-z/.venv/bin/python /wt/feature-z/community/odoo-bin", cmd
+        )
+
+    def test_without_venv_python_odoo_bin_runs_directly(self):
+        self.assertIn("&& /repo/community/odoo-bin", self._cmd())
+        self.assertNotIn("bin/python /repo/community/odoo-bin", self._cmd())
 
 
 class RustBundlerWarningTest(unittest.TestCase):

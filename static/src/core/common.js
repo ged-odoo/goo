@@ -14,6 +14,7 @@ import {
 import { CodePlugin } from "./code_plugin.js";
 import { DialogPlugin } from "./dialog_plugin.js";
 import { ServerPlugin } from "./server_plugin.js";
+import { StorePlugin } from "./store_plugin.js";
 
 export const appBus = new EventBus();
 
@@ -197,12 +198,20 @@ export class DirtyBadge extends Component {
   static template = xml`
     <button class="dirty-badge" t-on-click.stop="(ev) => this.openMenu(ev)" title="uncommitted changes">dirty</button>`;
 
-  props = useProps({ path: t.string(), repo: t.string() });
+  // workspaceId (optional): set for a worktree workspace's checkout, so the
+  // menu's commit/discard actions refresh ITS OWN branch state afterward
+  // instead of the main checkout's (see DirtyMenu / CodePlugin.loadWorktreeBranches)
+  props = useProps({ path: t.string(), repo: t.string(), workspaceId: t.string().optional() });
   openMenu(ev) {
     const rect = ev.currentTarget.getBoundingClientRect();
     appBus.dispatchEvent(
       new CustomEvent("dirty-menu", {
-        detail: { rect, path: this.props.path, repo: this.props.repo },
+        detail: {
+          rect,
+          path: this.props.path,
+          repo: this.props.repo,
+          workspaceId: this.props.workspaceId || "",
+        },
       }),
     );
   }
@@ -218,10 +227,12 @@ export class DirtyMenu extends Component {
     </div>`;
 
   code = usePlugin(CodePlugin);
+  store = usePlugin(StorePlugin);
   dialogs = usePlugin(DialogPlugin);
   open = signal(false);
   _path = null;
   _repo = null;
+  _workspaceId = ""; // set for a worktree workspace's checkout — see DirtyBadge
   _el = null;
 
   setup() {
@@ -235,9 +246,10 @@ export class DirtyMenu extends Component {
     });
   }
 
-  async openMenu({ rect, path, repo }) {
+  async openMenu({ rect, path, repo, workspaceId }) {
     this._path = path;
     this._repo = repo;
+    this._workspaceId = workspaceId || "";
     this.open.set(true);
     await Promise.resolve();
     const w = this._el.offsetWidth;
@@ -254,23 +266,26 @@ export class DirtyMenu extends Component {
     this.open.set(false);
     const path = this._path;
     const repo = this._repo;
+    const workspaceId = this._workspaceId;
     const message = await editCommitMessage(this.dialogs, {
       title: `Commit — ${repo}`,
       okLabel: "Commit",
     });
     if (!message) return;
-    this.code.commit(path, repo, message);
+    this.code.commit(path, repo, message, workspaceId);
   }
 
   wipCommit() {
     this.open.set(false);
-    this.code.wipCommit(this._path, this._repo);
+    this.code.wipCommit(this._path, this._repo, this._workspaceId);
   }
 
   // the current HEAD commit's subject, for the amend dialog's prefill fallback if
   // fetching the full message fails
   _headSubject() {
-    const repo = this.code.branchRepos().find((r) => r.id === this._repo);
+    const repo = this._workspaceId
+      ? this.store.worktreeRepoStatus(this._workspaceId, this._repo)
+      : this.code.branchRepos().find((r) => r.id === this._repo);
     const b = (repo?.branches || []).find((x) => x.name === repo.current);
     return b?.subject || "";
   }
@@ -279,6 +294,7 @@ export class DirtyMenu extends Component {
     this.open.set(false);
     const path = this._path;
     const repo = this._repo;
+    const workspaceId = this._workspaceId;
     let initialMessage;
     try {
       initialMessage = await this.code.commitMessage(path);
@@ -291,12 +307,12 @@ export class DirtyMenu extends Component {
       okLabel: "Amend",
     });
     if (!message) return;
-    this.code.amendCommit(path, repo, message);
+    this.code.amendCommit(path, repo, message, workspaceId);
   }
 
   discard() {
     this.open.set(false);
-    this.code.discard(this._path, this._repo);
+    this.code.discard(this._path, this._repo, this._workspaceId);
   }
 }
 

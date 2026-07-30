@@ -392,6 +392,50 @@ export class CodePlugin extends Plugin {
     }
   }
 
+  // fetch local branch/checkout state for a worktree workspace's OWN on-disk
+  // repos (never the main checkout config points at). repoPaths: [{id, path}] —
+  // pull/push remotes are config-level (same for a worktree's repo as for the
+  // main one), so they're resolved here from groups() rather than required from
+  // the caller. Stored under composite `${workspaceId}:${repoId}` keys in a
+  // SEPARATE table (mergeWorktreeRepoStatus/WorktreeRepoStatus) so it never
+  // touches the bare-repo-id RepoStatus rows the Branches screen and other
+  // workspaces rely on. In-flight de-dup reuses _workspaceLoads (key prefixed
+  // "wt:" so it can't collide with loadWorkspace's own keys).
+  async loadWorktreeBranches(workspaceId, repoPaths) {
+    if (!repoPaths.length) return;
+    const key = `wt:${workspaceId}:${repoPaths
+      .map((r) => r.id)
+      .sort()
+      .join(",")}`;
+    const pending = this._workspaceLoads.get(key);
+    if (pending) return pending;
+    const { pullRemoteByRepo, pushRemoteByRepo } = this.groups();
+    const at = Date.now();
+    const request = postJSON("/api/code/branches", {
+      repos: repoPaths.map((r) => ({
+        id: `${workspaceId}:${r.id}`,
+        path: r.path,
+        pull_remote: pullRemoteByRepo[r.id],
+        push_remote: pushRemoteByRepo[r.id],
+      })),
+    })
+      .then((b) => this.store.mergeWorktreeRepoStatus(b.repos, at))
+      .catch((e) => this.error.set(e.message))
+      .finally(() => {
+        if (this._workspaceLoads.get(key) === request) this._workspaceLoads.delete(key);
+      });
+    this._workspaceLoads.set(key, request);
+    return request;
+  }
+
+  // after a mutation at a worktree workspace's own path, refresh ITS composite
+  // row instead of the main checkout's — shared by checkout/rebase/commit/
+  // wipCommit/amendCommit/discard/push below.
+  _refreshRepo(repo, path, workspaceId, ids = null) {
+    if (workspaceId) return this.loadWorktreeBranches(workspaceId, [{ id: repo, path }]);
+    return this.refreshBranches(ids || new Set([repo]));
+  }
+
   _groups() {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
@@ -578,7 +622,7 @@ export class CodePlugin extends Plugin {
   // refresh only them (merging into the view) and leave every other repo alone —
   // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
   // unaffected, so we keep those from the cache (the screens lazily fill any new).
-  async checkout(repos) {
+  async checkout(repos, workspaceId = "") {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
     this._beginWork(ids);
@@ -590,7 +634,16 @@ export class CodePlugin extends Plugin {
           "Checkout failed",
           failed.map((r) => `${r.branch}: ${r.error}`).join("\n"),
         );
-      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(false));
+      if (ids.length) {
+        await (workspaceId
+          ? this.loadWorktreeBranches(
+              workspaceId,
+              repos.map((r) => ({ id: r.repo, path: r.path })),
+            )
+          : this.refreshBranches(new Set(ids)));
+      } else if (!workspaceId) {
+        await this.load(false);
+      }
     } catch (e) {
       this.dialogs.error("Checkout failed", e.message);
     } finally {
@@ -604,7 +657,7 @@ export class CodePlugin extends Plugin {
   // commits (head sha, ahead/behind, pushed-state), so we refresh only them; the PR
   // list / runbot / mergebot reflect the pushed branch, which a local rebase hasn't
   // touched, so we leave those as-is rather than re-querying everything.
-  async rebase(repos) {
+  async rebase(repos, workspaceId = "") {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     const { pullRemoteByRepo } = this.groups();
     repos = repos.map((r) => ({ ...r, pull_remote: pullRemoteByRepo[r.repo] }));
@@ -623,7 +676,16 @@ export class CodePlugin extends Plugin {
           failed.map((r) => `${r.repo}: ${r.error}`).join("\n"),
         );
       }
-      await (ids.length ? this.refreshBranches(new Set(ids)) : this.load(true));
+      if (ids.length) {
+        await (workspaceId
+          ? this.loadWorktreeBranches(
+              workspaceId,
+              repos.map((r) => ({ id: r.repo, path: r.path })),
+            )
+          : this.refreshBranches(new Set(ids)));
+      } else if (!workspaceId) {
+        await this.load(true);
+      }
     } catch (e) {
       this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
       this.dialogs.error("Fetch & rebase failed", e.message);
@@ -816,14 +878,14 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  async wipCommit(path, repo) {
+  async wipCommit(path, repo, workspaceId = "") {
     this.busy.set(true);
     try {
       this.eventLog.add(`WIP commit (${repo})`);
       await postJSON("/api/code/wip-commit", { path });
       // a WIP commit is local-only (not pushed) — refresh this repo's branch state
       // (dirty flag, ahead count, synced state) and leave PRs/runbot/mergebot as-is
-      await this.refreshBranches(new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
       this.dialogs.error("WIP commit failed", e.message);
@@ -834,12 +896,12 @@ export class CodePlugin extends Plugin {
 
   // stage all changes and commit with a user-supplied message (see
   // dialogs.js's editCommitMessage — the "Commit" menu action's caller)
-  async commit(path, repo, message) {
+  async commit(path, repo, message, workspaceId = "") {
     this.busy.set(true);
     try {
       this.eventLog.add(`commit (${repo})`);
       await postJSON("/api/code/commit", { path, message });
-      await this.refreshBranches(new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`commit failed (${repo})`);
       this.dialogs.error("Commit failed", e.message);
@@ -851,12 +913,12 @@ export class CodePlugin extends Plugin {
   // stage all changes and fold them into the HEAD commit with a (possibly
   // edited) message — git commit --amend (see dialogs.js's editCommitMessage —
   // the "Amend commit" menu action's caller)
-  async amendCommit(path, repo, message) {
+  async amendCommit(path, repo, message, workspaceId = "") {
     this.busy.set(true);
     try {
       this.eventLog.add(`amend commit (${repo})`);
       await postJSON("/api/code/amend", { path, message });
-      await this.refreshBranches(new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`amend commit failed (${repo})`);
       this.dialogs.error("Amend commit failed", e.message);
@@ -920,7 +982,7 @@ export class CodePlugin extends Plugin {
     return !!res.in_progress;
   }
 
-  async discard(path, repo) {
+  async discard(path, repo, workspaceId = "") {
     const ok = await this.dialogs.open({
       title: `Discard changes in ${repo}?`,
       message:
@@ -934,7 +996,7 @@ export class CodePlugin extends Plugin {
       await postJSON("/api/code/discard", { path });
       // discard only touches the working tree — refresh this repo's local branch
       // state (clears its dirty flag) and leave PRs/runbot/mergebot as-is
-      await this.refreshBranches(new Set([repo]));
+      await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
       this.dialogs.error("Discard changes failed", e.message);
@@ -944,25 +1006,28 @@ export class CodePlugin extends Plugin {
   }
 
   // push a branch to the dev remote without prompting — caller has confirmed
-  // (via the app modal) before calling
-  pushBranchNoConfirm(path, branch, reload = true, force = false) {
-    const repo = this.config.config.repos.find((r) => r.path === path);
+  // (via the app modal) before calling. `repo` is the config repo id (not
+  // derived from `path` — a worktree's path never matches any configured repo
+  // path, and defaulting its push_remote to a hardcoded "dev" would silently
+  // push to the wrong remote).
+  pushBranchNoConfirm(path, branch, repo, reload = true, force = false, workspaceId = "") {
+    const repoCfg = this.config.config.repos.find((r) => r.id === repo);
     return this._mutate(
       force ? "Force push" : "Push",
       async () => {
         const verb = force ? "force-pushing" : "pushing";
-        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo.id})` : ""} to GitHub`);
+        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo})` : ""} to GitHub`);
         await postJSON("/api/code/branch/push", {
           path,
           branch,
           force,
-          push_remote: repo?.push_remote || "dev",
+          push_remote: repoCfg?.push_remote || "dev",
         });
         // a push only flips this repo's remote-tracking/synced state — refresh just
         // that branch row, not every repo's PRs/runbot/mergebot
-        if (reload && repo) await this.refreshBranches(new Set([repo.id]));
+        if (reload && repo) await this._refreshRepo(repo, path, workspaceId);
       },
-      false, // never the _mutate full reload — refreshBranches above is enough
+      false, // never the _mutate full reload — the refresh above is enough
     );
   }
 }

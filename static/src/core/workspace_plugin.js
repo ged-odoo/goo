@@ -6,6 +6,9 @@
 // state — { exists, state, port } — lives in the shared servers map, updated live
 // from the backend's "server" SSE events (relayed by ServerPlugin), and each
 // worktree server log streams into its own LogBuffer (the unified "log" SSE).
+// `worktree` is { base, dir, venv }: `venv` (optional) marks a dedicated
+// <dir>/.venv built from this worktree's own requirements.txt — build_start_config
+// (backend/services.py) activates it instead of the global venv_activate.
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
@@ -234,7 +237,8 @@ export class WorkspacePlugin extends Plugin {
   // persist the workspace (canonical `workspaces` write — the create path deals it
   // the next stable port) and select it.
   // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
-  //         baseId?, on_create_args?, demo_data?, favorite?, parent? }
+  //         baseId?, on_create_args?, demo_data?, favorite?, parent?, createVenv?,
+  //         existingBranches? }
   async createWorktree({
     name,
     dbName,
@@ -247,6 +251,8 @@ export class WorkspacePlugin extends Plugin {
     favorite = false,
     category = "",
     parent = "",
+    createVenv = false,
+    existingBranches = false,
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -272,15 +278,29 @@ export class WorkspacePlugin extends Plugin {
     // workspace so a later rename can't orphan the checkout git is about to create.
     const dir = this.dirPath(ws);
     ws.worktree.dir = dir;
+    // existingBranches (bundle / remote branch / forward-port sources, which
+    // already fetched real local branches): attach them to the worktree as-is
+    // instead of forking — `-b <branch>` would fail with "already exists" since
+    // the branch is real, not a fresh name to fork from a start point.
     const repos = checkouts
-      .map(({ repo, branch }) => ({
-        repo,
-        newBranch: branch,
-        startPoint: startPointByRepo[repo],
-        mainPath: g.pathByRepo[repo] || "",
-        pull_remote: g.pullRemoteByRepo[repo],
-        worktreePath: `${dir}/${repo}`,
-      }))
+      .map(({ repo, branch }) =>
+        existingBranches
+          ? {
+              repo,
+              branch,
+              mainPath: g.pathByRepo[repo] || "",
+              pull_remote: g.pullRemoteByRepo[repo],
+              worktreePath: `${dir}/${repo}`,
+            }
+          : {
+              repo,
+              newBranch: branch,
+              startPoint: startPointByRepo[repo],
+              mainPath: g.pathByRepo[repo] || "",
+              pull_remote: g.pullRemoteByRepo[repo],
+              worktreePath: `${dir}/${repo}`,
+            },
+      )
       .filter((r) => r.mainPath);
     if (!repos.length) return this._error("Create workspace", "no local repos for the checkouts");
 
@@ -301,6 +321,23 @@ export class WorkspacePlugin extends Plugin {
           .map((r) => `${r.repo}: ${r.error}`)
           .join("\n");
         return this._error("Workspace creation failed", msg || "git worktree add failed");
+      }
+      // best-effort: a failed venv build doesn't undo the worktrees that already
+      // exist, so it just leaves worktree.venv unset (falls back to the global
+      // venv_activate at launch, same as any workspace without a dedicated venv)
+      if (createVenv) {
+        const veid = this.eventLog.begin(`creating venv (${ws.name})`);
+        try {
+          await postJSON("/api/workspace/venv/create", {
+            venvPath: `${dir}/.venv`,
+            requirementsPath: `${dir}/community/requirements.txt`,
+          });
+          ws.worktree.venv = true;
+          this.eventLog.finish(veid, "done");
+        } catch (e) {
+          this.eventLog.finish(veid, "error");
+          this._error("Venv creation failed", e.message);
+        }
       }
       // canonical write: spread the existing workspaces so their ports survive;
       // this workspace carries none — the reconcile deals it the next stable port
@@ -402,6 +439,7 @@ export class WorkspacePlugin extends Plugin {
       workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id),
     });
     this.store.dropServer(tgt.id);
+    this.store.dropWorktreeRepoStatusFor(tgt.id);
     this.logs.delete(tgt.id);
     // through select() so the remembered selection is cleared too, not just the signal
     if (this.selectedId() === tgt.id) this.select("");

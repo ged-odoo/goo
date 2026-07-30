@@ -87,7 +87,7 @@ export class CodePane extends Component {
             <span t-if="this.code.repoWorking(r.repo)" class="ws-sync working" title="a git operation is running for this repository (fetch / branch create / checkout / rebase) — large fetches can take a while">
               <span class="ws-sync-dot"/>working…
             </span>
-            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo"/>
+            <DirtyBadge t-if="r.dirty" path="r.path" repo="r.repo" workspaceId="this.wsId"/>
             <span t-if="r.missing and !this.code.repoWorking(r.repo)" class="ws-missing dim">not found locally</span>
             <span t-if="r.checkedOut and !r.missing" class="ws-sync" t-att-class="r.behind ? 'behind' : 'ok'" t-att-title="this.syncTitleRow(r)">
               <span class="ws-sync-dot"/><t t-out="this.syncTextRow(r)"/>
@@ -192,16 +192,31 @@ export class CodePane extends Component {
     this.menuId.set(this.menuId() === id ? "" : id);
   }
 
+  // this workspace's id when it's a worktree, else "" — the signal every
+  // mutation call below uses to target its OWN branch state (composite-keyed
+  // WorktreeRepoStatus) instead of the main checkout's.
+  get wsId() {
+    return this.isWt ? this.props.ws.id : "";
+  }
+
+  get isWt() {
+    return this.wt.isWorktree(this.props.ws);
+  }
+
   // repositories shown in the sync strip: this workspace's repos, in config order,
-  // joined with live git state (current branch, sync counts) and their PRs
+  // joined with live git state (current branch, sync counts) and their PRs. A
+  // worktree workspace's live state comes from ITS OWN branch-state row (fetched
+  // at its own directory, never the main checkout's) — see wsId/CodePlugin.loadWorktreeBranches.
   get repos() {
-    const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
     const repoIds = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
+    const isWt = this.isWt;
+    const wtDir = isWt ? this.wt.dirPath(this.props.ws) : "";
+    const byId = isWt ? null : Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     return this.config.config.repos
       .filter((r) => repoIds.has(r.id))
       .map((r) => {
-        const b = byId[r.id] || {};
+        const b = (isWt ? this.store.worktreeRepoStatus(this.wsId, r.id) : byId[r.id]) || {};
         const current = b.current || "";
         const github = groups.githubByRepo[r.id] || "";
         const pr = groups.prIndex[`${r.id}:${current}`] || null;
@@ -217,7 +232,7 @@ export class CodePane extends Component {
           base: baseBranchOf(current),
           error: b.error || "",
           github,
-          path: groups.pathByRepo[r.id] || "",
+          path: isWt ? `${wtDir}/${r.id}` : groups.pathByRepo[r.id] || "",
           pull_remote: groups.pullRemoteByRepo[r.id] || "origin",
           push_remote: groups.pushRemoteByRepo[r.id] || "dev",
           pr,
@@ -256,9 +271,10 @@ export class CodePane extends Component {
   async rebaseRepo(r) {
     if (!this.canRebaseRepo(r)) return;
     this.touchActivity();
-    await this.code.rebase([
-      { repo: r.id, base: baseBranchOf(r.current), github: r.github, path: r.path },
-    ]);
+    await this.code.rebase(
+      [{ repo: r.id, base: baseBranchOf(r.current), github: r.github, path: r.path }],
+      this.wsId,
+    );
   }
 
   // push a checkout's branch to the repo's push remote. Git pushes an explicit
@@ -278,7 +294,7 @@ export class CodePane extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      [{ path: r.path, branch: r.branch }],
+      [{ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId }],
       {
         title: `Push "${r.branch}"?`,
         message: `Push ${r.branch} (${r.repo}) to the ${r.push_remote} remote?`,
@@ -292,7 +308,7 @@ export class CodePane extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      [{ path: r.path, branch: r.branch }],
+      [{ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId }],
       {
         title: `Force-push "${r.branch}"?`,
         message: `Force-push ${r.branch} (${r.repo}) to the ${r.push_remote} remote with --force-with-lease? This overwrites the remote branch.`,
@@ -309,9 +325,10 @@ export class CodePane extends Component {
 
   // "Fetch & rebase all" operates on the repos' CURRENT branches (git can't rebase
   // a branch without checking it out), so it only means "rebase this workspace's
-  // branches" when every checkout is what its repo actually has checked out. A
-  // worktree workspace never qualifies: its branches live in the worktree, so the
-  // main checkouts this pane rebases are someone else's by construction.
+  // branches" when every checkout is what's actually checked out — the main
+  // checkout for a main-location workspace, or the worktree's own directory for a
+  // worktree one (workspaceView/checkoutRows resolve `matches` against whichever
+  // is correct — see StorePlugin.workspaceView).
   get wsCheckedOut() {
     const rows = this.checkoutRows;
     return rows.length > 0 && rows.every((r) => r.checkedOut);
@@ -322,8 +339,6 @@ export class CodePane extends Component {
   }
 
   rebaseAllTitle() {
-    if (this.props.ws.location === "worktree")
-      return "not available for worktree workspaces — it would rebase the main checkout, not the worktree";
     if (!this.wsCheckedOut)
       return "this workspace is not active — load it first, so rebasing applies to its branches";
     const repos = this.rebasableRepos;
@@ -347,7 +362,7 @@ export class CodePane extends Component {
     }));
     if (repos.length) {
       this.touchActivity();
-      await this.code.rebase(repos);
+      await this.code.rebase(repos, this.wsId);
     }
   }
 
@@ -384,7 +399,7 @@ export class CodePane extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      rows.map((r) => ({ path: r.path, branch: r.branch })),
+      rows.map((r) => ({ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId })),
       {
         title: `Push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
         message: `Push ${this._pushList(rows)}?`,
@@ -410,7 +425,7 @@ export class CodePane extends Component {
     const pushed = await pushBranchesDialog(
       this.code,
       this.dialogs,
-      rows.map((r) => ({ path: r.path, branch: r.branch })),
+      rows.map((r) => ({ path: r.path, branch: r.branch, repo: r.repo, workspaceId: this.wsId })),
       {
         title: `Force-push ${rows.length} branch${rows.length === 1 ? "" : "es"}?`,
         message: `Force-push ${this._pushList(rows)} with --force-with-lease? This overwrites the remote branches.`,
@@ -512,7 +527,10 @@ export class CodePane extends Component {
   reloadHistory() {
     const row = this.history()?.row;
     if (!row) return;
-    return Promise.all([this.code.refreshBranches(new Set([row.repo])), this.openHistory(row)]);
+    const refresh = this.isWt
+      ? this.code.loadWorktreeBranches(this.wsId, [{ id: row.repo, path: row.path }])
+      : this.code.refreshBranches(new Set([row.repo]));
+    return Promise.all([refresh, this.openHistory(row)]);
   }
 
   // open GitHub's PR-creation page for this repo's current branch
@@ -542,11 +560,16 @@ export class CodePane extends Component {
   // counts and the repo's actions are for whatever is actually checked out.
   get checkoutRows() {
     const view = this.store.workspaceView(this.props.ws);
-    const gitByRepo = new Map(this.code.branchRepos().map((r) => [r.id, r]));
+    const isWt = this.isWt;
+    const wsId = this.wsId;
+    // a worktree's own branch list (sha/subject/date/remote/synced) comes from ITS
+    // OWN fetch (loadWorktreeBranches) — the main checkout's branchRepos() scan
+    // wouldn't reflect a commit just made in the worktree until its own next rescan
+    const gitByRepo = isWt ? null : new Map(this.code.branchRepos().map((r) => [r.id, r]));
     const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
     const prIndex = this.code.groups().prIndex;
     return (view.checkouts || []).map((c) => {
-      const git = gitByRepo.get(c.repo);
+      const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo.get(c.repo);
       const b = (git?.branches || []).find((x) => x.name === c.branch);
       const entry = entryByRepo.get(c.repo) || null;
       const checkedOut = !!c.matches;
@@ -709,12 +732,12 @@ export class CodePane extends Component {
     });
     if (!message) return;
     this.touchActivity();
-    return this.code.commit(r.path, r.repo, message);
+    return this.code.commit(r.path, r.repo, message, this.wsId);
   }
 
   wipCommit(r) {
     this.touchActivity();
-    return this.code.wipCommit(r.path, r.repo);
+    return this.code.wipCommit(r.path, r.repo, this.wsId);
   }
 
   // the row's subject line is a summary only (branchRepos never fetches commit
@@ -738,12 +761,12 @@ export class CodePane extends Component {
     });
     if (!message) return;
     this.touchActivity();
-    return this.code.amendCommit(r.path, r.repo, message);
+    return this.code.amendCommit(r.path, r.repo, message, this.wsId);
   }
 
   discard(r) {
     this.touchActivity();
-    return this.code.discard(r.path, r.repo);
+    return this.code.discard(r.path, r.repo, this.wsId);
   }
 
   // the PR's GitHub state for the pill: open / draft / closed / merged (the

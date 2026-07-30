@@ -248,12 +248,18 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       if (existing.some((w) => w.name === name))
         return `a workspace named "${name}" already exists`;
       if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if (v.location === "worktree" && !tpl)
-        return "a worktree workspace needs a template — go back and pick one as the source";
+      // a worktree forks fresh branches (needs a template's checkouts as fork
+      // points) UNLESS the source already fetched real existing branches
+      // (bundle / remote branch / forward-port all set createBranches: false) —
+      // those attach as-is instead of forking
+      if (v.location === "worktree" && !tpl && v.createBranches !== false)
+        return "a worktree workspace needs a template, or an existing-branches source (bundle/remote branch) — go back and pick one";
       if ((v.cloneDb || "") && !(v.db || "").trim())
         return "set a database name to clone the selected database into";
       if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
         return `database "${(v.db || "").trim()}" already exists — pick a new name to clone into`;
+      if (v.createVenv && v.location !== "worktree")
+        return 'a venv needs Location set to "Own worktree + port"';
       return "";
     },
     fields: [
@@ -348,10 +354,21 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       {
         key: "createBranches",
         type: "checkbox",
-        label: "Create branches (main)",
+        label: "Create branches",
+        // true (the default, e.g. from a template): fork fresh branches. false
+        // (bundle / remote branch / forward-port prefills): the checkouts are
+        // already-existing local branches from an earlier fetch — a main-located
+        // workspace just adopts them as-is (no git), a worktree one attaches them
+        // instead of forking (see startPointByRepo/existingBranches below)
         value: prefill.createBranches ?? true,
       },
       { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
+      {
+        key: "createVenv",
+        type: "checkbox",
+        label: "Create venv from requirements.txt (worktree)",
+        value: prefill.createVenv ?? false,
+      },
     ],
   });
   if (!res) return;
@@ -379,6 +396,8 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       favorite: false,
       category: res.category || "",
       parent: prefill.parent || "",
+      createVenv: !!res.createVenv,
+      existingBranches: res.createBranches === false,
     });
     return;
   }

@@ -19,7 +19,26 @@ export class RepoStatus extends Model {
   error = fields.json(); // null | string
   branches = fields.json(); // [{ name, date, runbot, remote, synced, subject }, …]
   pushGithub = fields.json(); // "owner/repo" the push remote's URL resolves to, or null
+  ahead = fields.number(); // current branch commits not on its base (target) branch
+  behind = fields.number(); // base branch commits not on the current branch
   fetchedAt = fields.number(); // request-start stamp — the step-4 "latest wins" key
+}
+
+// A worktree workspace's OWN branch state — same shape as RepoStatus, fetched
+// at the worktree's own on-disk directory instead of the main checkout, and
+// kept in this SEPARATE table (never repoStatusList()/branchRepos()) so it can
+// never leak into the Branches & PRs screen or workspace-list badges, which
+// must keep reflecting the main checkout. id = "<workspaceId>:<repoId>".
+export class WorktreeRepoStatus extends Model {
+  static id = "worktreerepostatus";
+  current = fields.char();
+  dirty = fields.bool();
+  error = fields.json();
+  branches = fields.json();
+  pushGithub = fields.json();
+  ahead = fields.number();
+  behind = fields.number();
+  fetchedAt = fields.number();
 }
 
 export class PrRepo extends Model {

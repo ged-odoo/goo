@@ -261,7 +261,7 @@ export class CommitsDialog extends Component {
 }
 
 // confirm (via the app modal) then push one or more branches to the dev remote.
-// branches: [{ path, branch }]. Shared by every "Push" affordance.
+// branches: [{ path, branch, repo, workspaceId? }]. Shared by every "Push" affordance.
 export async function pushBranchesDialog(
   code,
   dialogs,
@@ -271,6 +271,7 @@ export async function pushBranchesDialog(
   if (!branches.length) return false;
   const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
   if (!ok) return false;
-  for (const b of branches) await code.pushBranchNoConfirm(b.path, b.branch, true, force);
+  for (const b of branches)
+    await code.pushBranchNoConfirm(b.path, b.branch, b.repo, true, force, b.workspaceId || "");
   return true;
 }

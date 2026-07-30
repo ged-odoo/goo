@@ -358,7 +358,20 @@ export class WorkspacesScreen extends Component {
       const key = `${ws.id}:${[...ids].sort().join(",")}`;
       if (!ids.size || key === loadedWsKey) return;
       loadedWsKey = key;
-      untrack(() => this.code.loadWorkspace(ws.id, ids));
+      untrack(() => {
+        this.code.loadWorkspace(ws.id, ids);
+        // a worktree workspace's own branch/dirty state (Commit/WIP/Amend/Discard/
+        // Rebase in its Code tab) lives at ITS OWN directory, never the main
+        // checkout loadWorkspace above just scanned — fetched + stored separately
+        // (composite-keyed WorktreeRepoStatus, CodePlugin.loadWorktreeBranches)
+        if (this.wt.isWorktree(ws)) {
+          const dir = this.wt.dirPath(ws);
+          this.code.loadWorktreeBranches(
+            ws.id,
+            [...ids].map((repo) => ({ id: repo, path: `${dir}/${repo}` })),
+          );
+        }
+      });
     });
     // consume the event log's one-shot pane request (its [jump] selects the
     // workspace and sets this before navigating here — the plugin holds it so it

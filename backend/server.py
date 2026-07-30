@@ -473,11 +473,18 @@ def _odoo_cmd_base(config, addons_repo_ids=None):
     # config — which passes the worktree's community path — automatically runs the
     # worktree's odoo-bin without any extra wiring.
     server_path = config.get("server_path") or os.path.join(community_path, "odoo-bin")
+    # a dedicated per-workspace venv (config["venv_python"], set by
+    # build_start_config for a worktree with worktree.venv) invokes odoo-bin's
+    # interpreter explicitly instead of relying on odoo-bin's own shebang line to
+    # pick up the activated venv via PATH — correct either way, but doesn't
+    # depend on it being `#!/usr/bin/env python3`
+    venv_python = config.get("venv_python")
+    invocation = f"{venv_python} {server_path}" if venv_python else server_path
     parts = []
     if config.get("venv_activate"):
         parts.append(config["venv_activate"])
     rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
-    parts.append(f"cd {community_path} && {rust}{server_path}")
+    parts.append(f"cd {community_path} && {rust}{invocation}")
     return " && ".join(parts), addons_path
 
 
@@ -1441,6 +1448,8 @@ DATABASE = services.DatabaseService(effects, TTLCache(60))
 # git on the user's repos — uncached (branch reads are volatile + fast); notify
 # routes the fetch/rebase progress phases to the browser event log
 GIT = services.GitService(effects, notify=BUS.publish_event)
+# builds a worktree workspace's dedicated venv from its own requirements.txt
+VENV = services.VenvService(effects, notify=BUS.publish_event)
 ADDONS = services.AddonsService(effects)
 ASSETS = services.AssetsService(effects, TTLCache(30))
 RUST_BUNDLER = services.RustBundlerService(
@@ -1641,6 +1650,15 @@ def _api_workspace_create(body):
         )
         results.append({"repo": r.get("repo"), "ok": ok, "error": error})
     return {"ok": all(x["ok"] for x in results), "results": results}
+
+
+@post_route("/api/workspace/venv/create", "venvPath", "requirementsPath")
+def _api_workspace_venv_create(body):
+    # best-effort step after a worktree's own /api/workspace/create: paths are
+    # precomputed by the frontend (venvPath = <worktree.dir>/.venv), same
+    # division of labor as /api/workspace/create's repos list
+    ok, error = VENV.create(body["venvPath"], body["requirementsPath"])
+    return (200 if ok else 400), {"ok": ok, "error": error}
 
 
 @post_route("/api/workspace/remove", "repos:list")

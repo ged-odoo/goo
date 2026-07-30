@@ -2636,6 +2636,62 @@ class GitService:
             self.io.log(f"{tag} auto-reload {rid} failed: {e}")
 
 
+# ─────────────────────────── Venv (worktree Python environments) ────────────
+
+
+class VenvService:
+    """Build a dedicated Python venv for a worktree workspace, from its own
+    requirements.txt (python3 -m venv, then pip install -r if the file is
+    present). Same notify-timed-event shape as GitService's mutations."""
+
+    def __init__(self, io, notify=None):
+        self.io = io
+        self.notify = notify or (lambda *a, **k: None)
+
+    def _pip(self, pip, *args, timeout, err):
+        """Run one pip command in the venv. Returns (ok, error): error is the last
+        stderr line (or <err> when pip was silent), or a raised
+        FileNotFoundError/TimeoutExpired's message."""
+        try:
+            result = self.io.run([pip, *args], timeout=timeout)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if result.returncode != 0:
+            lines = (result.stderr or "").strip().splitlines()
+            return False, (lines[-1] if lines else err)
+        return True, None
+
+    def create(self, venv_path, requirements_path, timeout=600):
+        """Create the venv at <venv_path> and install <requirements_path> into it
+        if that file exists. Returns (ok, error). Announced as a timed event."""
+        vp = os.path.expanduser(venv_path)
+        label = os.path.basename(os.path.dirname(vp.rstrip("/")))
+        eid = uuid.uuid4().hex
+        creating = f"creating venv ({label})"
+        self.notify(creating, event_id=eid, status="start")
+        try:
+            result = self.io.run(["python3", "-m", "venv", vp], timeout=60)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self.notify(creating, event_id=eid, status="error")
+            return False, str(e)
+        if result.returncode != 0:
+            error = (result.stderr or "python3 -m venv failed").strip().splitlines()[-1]
+            self.notify(creating, event_id=eid, status="error")
+            return False, error
+
+        # a missing requirements.txt is not an error — just nothing to install
+        if self.io.read_text(requirements_path) is not None:
+            pip = os.path.join(vp, "bin", "pip")
+            req = os.path.expanduser(requirements_path)
+            ok, error = self._pip(pip, "install", "-r", req, timeout=timeout, err="pip failed")
+            if not ok:
+                self.notify(creating, event_id=eid, status="error")
+                return False, error
+
+        self.notify(creating, event_id=eid, status="done")
+        return True, None
+
+
 # ─────────────────────────── Addons (filesystem scan) ───────────────────────
 
 
@@ -3159,4 +3215,12 @@ def build_start_config(config, workspace_id, overrides=None):
         cfg["server_path"] = f"{d}/community/odoo-bin"
         if target.get("port"):
             cfg["worktree_port"] = target["port"]
+        # a workspace with its own venv (built from ITS OWN requirements.txt at
+        # creation, VenvService) always launches through it, in place of whatever
+        # venv_activate the global config carries. venv_python additionally pins
+        # the exact interpreter (server.py's _odoo_cmd_base), so odoo-bin runs
+        # under it regardless of its own shebang line.
+        if (target.get("worktree") or {}).get("venv"):
+            cfg["venv_activate"] = f"source {d}/.venv/bin/activate"
+            cfg["venv_python"] = f"{d}/.venv/bin/python"
     return cfg

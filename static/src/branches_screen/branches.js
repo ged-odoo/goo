@@ -554,10 +554,15 @@ export class BranchesScreen extends Component {
   }
 
   pushBranch(row) {
-    return pushBranchesDialog(this.code, this.dialogs, [{ path: row.path, branch: row.branch }], {
-      title: `Push "${row.branch}"?`,
-      message: `Push ${row.branch} (${row.repo}) to the ${row.push_remote} remote?`,
-    });
+    return pushBranchesDialog(
+      this.code,
+      this.dialogs,
+      [{ path: row.path, branch: row.branch, repo: row.repo }],
+      {
+        title: `Push "${row.branch}"?`,
+        message: `Push ${row.branch} (${row.repo}) to the ${row.push_remote} remote?`,
+      },
+    );
   }
 
   // show the last commits on this branch (in a floating dialog)
