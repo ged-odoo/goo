@@ -1680,7 +1680,25 @@ def _api_workspace_create(body):
             pull_remote=r.get("pull_remote"),
         )
         results.append({"repo": r.get("repo"), "ok": ok, "error": error})
-    return {"ok": all(x["ok"] for x in results), "results": results}
+    ok = all(x["ok"] for x in results)
+    # odoo.conf needs every repo's path to build an accurate addons_path — generate
+    # it here (once all of them exist), not per-repo inside worktree_add, where
+    # a later sibling repo (e.g. enterprise) wouldn't be known about yet
+    community = next((r for r in body["repos"] if r.get("repo") == "community"), None)
+    if ok and community and community.get("worktreePath"):
+        community_path = community["worktreePath"]
+        worktree_parent = os.path.dirname(community_path)
+        other_paths = [
+            r["worktreePath"]
+            for r in body["repos"]
+            if r.get("repo") != "community" and r.get("worktreePath")
+        ]
+        addons_path = ",".join([os.path.join(community_path, "addons"), *other_paths, ADDONS_DIR])
+        cfg = CONFIG.get()["config"] or {}
+        GIT.write_odoo_conf(
+            worktree_parent, addons_path, cfg.get("db_user", "odoo"), cfg.get("db_password", "odoo")
+        )
+    return {"ok": ok, "results": results}
 
 
 @post_route("/api/workspace/venv/create", "venvPath", "requirementsPath")

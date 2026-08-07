@@ -1655,6 +1655,9 @@ class GitServiceTest(unittest.TestCase):
         )
         self.assertTrue(ok)
         self.assertIn("/wt/demo/.claude/CLAUDE.md", io._files)
+        claude_md = io._files["/wt/demo/.claude/CLAUDE.md"]
+        self.assertIn("psql", claude_md)
+        self.assertIn("../odoo.conf", claude_md)
         for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing"):
             self.assertIn(f"/wt/demo/.claude/skills/{slug}/SKILL.md", io._files)
         # never written inside the repo itself
@@ -1738,6 +1741,22 @@ class GitServiceTest(unittest.TestCase):
             content = io._files[f"/ctx/.claude/skills/{slug}/SKILL.md"]
             self.assertIn(f"name: {slug}", content)
         self.assertNotEqual(io._files["/ctx/.claude/skills/odoo-orm/SKILL.md"], "stale")
+
+    def test_write_odoo_conf_writes_addons_path_and_db_role(self):
+        io = FakeIO()
+        services.GitService(io).write_odoo_conf(
+            "/wt/demo", "/wt/demo/community/addons,/wt/demo/enterprise", "odoo", "odoo"
+        )
+        conf = io._files["/wt/demo/odoo.conf"]
+        self.assertIn("[options]", conf)
+        self.assertIn("addons_path = /wt/demo/community/addons,/wt/demo/enterprise", conf)
+        self.assertIn("db_user = odoo", conf)
+        self.assertIn("db_password = odoo", conf)
+
+    def test_write_odoo_conf_does_not_overwrite_existing_file(self):
+        io = FakeIO(files={"/wt/demo/odoo.conf": "user-edited content"})
+        services.GitService(io).write_odoo_conf("/wt/demo", "addons", "odoo", "odoo")
+        self.assertEqual(io._files["/wt/demo/odoo.conf"], "user-edited content")
 
     def test_worktree_add_requires_start_point_for_new_branch(self):
         ok, err = services.GitService(FakeIO()).worktree_add(
