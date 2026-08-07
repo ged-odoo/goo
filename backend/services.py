@@ -1870,6 +1870,13 @@ def base_branch(name):
     return m.group(1) if m else "master"
 
 
+# the vendored owl.js bundle exports a literal `version = "X.Y.Z"` plus an
+# `__info__ = {..., hash: "<short sha>"}` — used to pin the odoo-frontend-owl skill's
+# doc links to the Owl build actually checked out (see GitService._resolve_owl_docs).
+_OWL_VERSION_RE = re.compile(r'version = "(\d+)\.[^"]*"')
+_OWL_HASH_RE = re.compile(r'hash:\s*"([0-9a-f]+)"')
+
+
 def is_base_branch(name):
     """Whether <name> IS a base branch (exact match — master-foo is a work branch)."""
     return bool(_BASE_BRANCH_RE.fullmatch(name or ""))
@@ -1916,6 +1923,15 @@ class GitService:
             lines = r.stderr.strip().split("\n")
             return r, (lines[-1] if tail else lines[0]) or err
         return r, None
+
+    def current_branch(self, path):
+        """The branch currently checked out at <path> ("" if detached/unreadable).
+        A lightweight single-subprocess alternative to branches() for callers that
+        only need the current branch name (e.g. the headless Claude chat, which
+        needs it on every fresh conversation and shouldn't pay for the full
+        dirty/ahead-behind/remote-refs read)."""
+        r, error = self._git(path, "branch", "--show-current", timeout=10)
+        return "" if error else (r.stdout or "").strip()
 
     def branches(self, repos):
         """For each repo {id, path}: the checked-out branch and all local branches
@@ -2142,8 +2158,270 @@ class GitService:
         else:
             args = ["worktree", "add", wp, branch]
         _, error = self._git(p, *args, timeout=120, err="git worktree add failed")
+        if not error:
+            self._create_worktree_claude_md(wp, branch)
+            if repo == "community":
+                self._create_worktree_skills(wp, os.path.dirname(wp), branch)
         self.notify(creating, event_id=eid, status="error" if error else "done")
         return error is None, error
+
+    def _create_worktree_claude_md(self, repo_worktree_path, branch):
+        """Create a .claude/CLAUDE.md file at the worktree's parent dir for Claude Code context.
+
+        The worktree structure is <worktree_dir>/<slug>/<repo>. We create the file at
+        <worktree_dir>/<slug>/.claude/CLAUDE.md so it's not within any git-tracked repo."""
+        # Extract parent dir: /path/to/worktrees/my-feature/community → /path/to/worktrees/my-feature
+        worktree_parent = os.path.dirname(repo_worktree_path)
+        claude_md_path = os.path.join(worktree_parent, ".claude", "CLAUDE.md")
+
+        # Only create if it doesn't exist (first repo in the worktree creates it)
+        if self.io.read_text(claude_md_path) is not None:
+            return
+        self.io.write_text(claude_md_path, self._claude_md_content(branch))
+
+    def _claude_md_content(self, branch):
+        return f"""# Odoo Development Worktree
+
+This worktree is checked out on branch **{branch}**.
+
+## About this worktree
+
+This worktree was created from the main development repository. Use Claude Code here
+for development tasks, debugging, refactoring, and code review.
+
+## Key Claude Code skills for Odoo development
+
+Project skills (generated for this worktree, in `.claude/skills/` — version-matched
+to branch {branch}):
+
+- **`/odoo-orm`** — models, fields, ORM methods, security, module manifests, mixins,
+  HTTP controllers.
+- **`/odoo-views`** — view XML (form/list/kanban/search), actions, qweb reports.
+- **`/odoo-frontend-owl`** — the JS framework layer (services, registries, hooks,
+  assets) and the Owl component framework itself.
+- **`/odoo-testing`** — Python tests (TransactionCase/HttpCase/tours) and JS unit
+  tests (hoot).
+
+Other useful (user-level) skills:
+
+- **`/run`** — Start the Odoo application to test changes in real-time. Use this before
+  submitting PRs to verify the UI works as expected.
+- **`/simplify`** — Review and optimize your code changes for reuse and efficiency.
+- **`/security-review`** — Complete a security review of pending changes on this branch.
+- **`/check-commit`** — Validate commit messages against Odoo Git guidelines before pushing.
+
+## Development workflow
+
+1. **Branch work** — Make your changes in this worktree
+2. **Test locally** — Use `/run` to start the app and verify behavior
+3. **Code review** — Use `/simplify` and `/security-review` to audit changes
+4. **Commit & push** — Use `/check-commit` to ensure your commit message is compliant
+
+## Repos in this worktree
+
+- `community/` — the main odoo/odoo repo
+- `enterprise/` — the private odoo/enterprise repo (if available)
+
+Each repo's checkout is independent; changes in one don't affect the other.
+
+---
+
+*This file was auto-generated. Feel free to edit it.*
+"""
+
+    def _resolve_owl_docs(self, community_path):
+        """(ref, doc_base_path, major) to fetch odoo/owl docs matching the Owl build
+        actually vendored at <community_path>/addons/web/static/lib/owl/owl.js — the
+        bundle exports a literal `version = "X.Y.Z..."` plus `__info__.hash` (a short
+        commit sha). Tries the exact vendored commit first (perfect API match, no
+        drift from an alpha framework's fast-moving master), then odoo/owl's own
+        master branch (current doc/v{2,3}/... layout) for the matching major version.
+        A canary file fetch decides each candidate: raw.githubusercontent.com 404s
+        for a ref/layout that doesn't exist (e.g. old commits predate the v2/v3 doc
+        split, and some alpha-build hashes aren't reachable on the public mirror at
+        all)."""
+        owl_js = (
+            self.io.read_text(os.path.join(community_path, "addons/web/static/lib/owl/owl.js"))
+            or ""
+        )
+        v_match = _OWL_VERSION_RE.search(owl_js)
+        major = v_match.group(1) if v_match else "2"  # undetectable -> assume the long-stable v2
+        h_match = _OWL_HASH_RE.search(owl_js)
+        versioned_path = "doc/v3/owl/reference" if major == "3" else "doc/v2/reference"
+        candidates = []
+        if h_match:
+            h = h_match.group(1)
+            if major != "3":
+                candidates.append((h, "doc/reference"))  # pre-v2/v3-split layout
+            candidates.append((h, versioned_path))
+        candidates.append(("master", versioned_path))  # always-good fallback
+        for ref, path in candidates:
+            text, error = self.io.http_get(
+                f"https://raw.githubusercontent.com/odoo/owl/{ref}/{path}/component.md"
+            )
+            if not error and text:
+                return ref, path, major
+        return "master", versioned_path, major
+
+    def _create_worktree_skills(self, community_path, worktree_parent, branch):
+        """Create the .claude/skills/ Odoo-dev skills at the worktree's parent dir
+        (alongside .claude/CLAUDE.md — see _create_worktree_claude_md), one per domain,
+        each pointing at documentation matched to this worktree's Odoo version (and,
+        for the frontend skill, its exact vendored Owl build). Only called for the
+        `community` repo (the one with addons/web/static/lib/owl/owl.js), and only
+        once per worktree."""
+        skills_dir = os.path.join(worktree_parent, ".claude", "skills")
+        marker = os.path.join(skills_dir, "odoo-orm", "SKILL.md")
+        if self.io.read_text(marker) is not None:
+            return
+        for slug, content in self._skill_contents(community_path, branch).items():
+            self.io.write_text(os.path.join(skills_dir, slug, "SKILL.md"), content)
+
+    def _skill_contents(self, community_path, branch):
+        """{slug: full SKILL.md content (frontmatter + body)} for the four Odoo-dev
+        skills, version-matched to <branch> (and, for odoo-frontend-owl, the Owl
+        build actually vendored at <community_path>)."""
+        doc_branch = base_branch(branch)
+        doc_base = f"https://raw.githubusercontent.com/odoo/documentation/{doc_branch}/content/developer"
+        owl_ref, owl_doc_path, major = self._resolve_owl_docs(community_path)
+        owl_pinned = owl_ref != "master"
+        owl_base = f"https://raw.githubusercontent.com/odoo/owl/{owl_ref}/{owl_doc_path}"
+
+        skills = {
+            "odoo-orm": (
+                "Use when writing or editing Odoo backend Python code: models, fields, "
+                "compute/onchange/constrain methods, recordsets, the environment, "
+                "security (ir.model.access.csv, record rules), module manifests, "
+                "mixins, data files, or HTTP controllers/routing.",
+                f"""# Odoo ORM & backend reference (branch: {doc_branch})
+
+This worktree targets Odoo **{doc_branch}**. The ORM API, security model, and
+manifest format change across versions — prefer these version-matched docs over
+general/training knowledge.
+
+Base URL: `{doc_base}/`
+
+Key files (WebFetch the raw URL):
+- `reference/backend/orm.rst` — fields, recordsets, environment, ORM methods
+- `reference/backend/security.rst` — ACL, record rules, groups
+- `reference/backend/module.rst` — manifest format, module structure
+- `reference/backend/mixins.rst` — mail.thread and other mixins
+- `reference/backend/data.rst` — data/demo XML/CSV files
+- `reference/backend/http.rst` — controllers, routing, JSON-RPC
+- `reference/backend/actions.rst` — server actions, window actions
+- `reference/backend/performance.rst` — batching, prefetching, N+1 pitfalls
+- `tutorials/server_framework_101.rst` (+ numbered chapters 01_ to 15_ under
+  `tutorials/server_framework_101/`) — the guided from-scratch walkthrough
+
+Not listed above? Browse the directory:
+`gh api repos/odoo/documentation/contents/content/developer/reference/backend?ref={doc_branch}`
+""",
+            ),
+            "odoo-views": (
+                "Use when writing or editing Odoo view XML (form/list/kanban/search), "
+                "window actions, menus, or qweb PDF reports.",
+                f"""# Odoo views, actions & reports reference (branch: {doc_branch})
+
+This worktree targets Odoo **{doc_branch}**. View architecture and attributes change
+across versions — prefer these version-matched docs over general/training knowledge.
+
+Base URL: `{doc_base}/`
+
+Key files (WebFetch the raw URL):
+- `reference/backend/actions.rst` — window/server actions, menus
+- `reference/backend/reports.rst` — qweb PDF reports
+- `reference/user_interface/view_architectures.rst` — view XML attributes reference
+- `reference/user_interface/view_records.rst` — <record> declarations for views
+- `reference/user_interface/icons.rst` — icon widgets/classes
+
+Not listed above? Browse the directories:
+`gh api repos/odoo/documentation/contents/content/developer/reference/user_interface?ref={doc_branch}`
+`gh api repos/odoo/documentation/contents/content/developer/reference/user_interface/view_architectures?ref={doc_branch}`
+(the latter has one short file per view attribute)
+""",
+            ),
+            "odoo-frontend-owl": (
+                "Use when writing or editing Odoo frontend JS: Owl components, "
+                "services, registries, hooks, assets bundling, qweb templates, or "
+                "patching existing code.",
+                f"""# Odoo frontend & Owl framework reference (branch: {doc_branch})
+
+This worktree targets Odoo **{doc_branch}**, which vendors Owl **major v{major}**
+{"(pinned to the exact vendored commit `" + owl_ref + "`)" if owl_pinned else "(exact commit docs weren't reachable — using odoo/owl's master branch instead, latest v" + major + " docs)"}.
+Owl's API differs significantly between v2 and v3 (v3 is still alpha and fast-moving)
+— prefer these version-matched docs over general/training knowledge.
+
+## Odoo's frontend layer
+Base URL: `{doc_base}/reference/frontend/`
+
+Key files (WebFetch the raw URL):
+- `framework_overview.rst` — how the pieces fit together
+- `owl_components.rst` — Odoo-specific Owl conventions
+- `services.rst` — the service layer (registry, useService)
+- `registries.rst` — fields/views/actions registries
+- `hooks.rst` — Odoo's own hooks on top of Owl's
+- `assets.rst` — bundles, asset targets
+- `qweb.rst` — template directives
+- `patching_code.rst` — patch()/the monkey-patch helper
+- `javascript_modules.rst` — module system (`/** @odoo-module **/`)
+- `unit_testing/{{hoot,mock_server,web_helpers}}.rst` — JS unit tests (hoot)
+
+Not listed above? Browse:
+`gh api repos/odoo/documentation/contents/content/developer/reference/frontend?ref={doc_branch}`
+
+## The Owl framework itself
+Base URL: `{owl_base}/`
+
+Key files (WebFetch the raw URL, e.g. `{owl_base}/component.md`): `component.md`,
+`hooks.md`, `props.md`, `reactivity.md`, `slots.md`, `event_handling.md`,
+`error_handling.md`, `app.md`, `refs.md`, `concurrency_model.md`.
+
+Not listed above (v3 adds several concepts v2 doesn't have — signals, effects,
+resources, plugins, scope, proxies, error boundaries)? Browse:
+`gh api repos/odoo/owl/contents/{owl_doc_path}?ref={owl_ref}`
+""",
+            ),
+            "odoo-testing": (
+                "Use when writing or debugging Odoo tests: Python TransactionCase/"
+                "HttpCase/tours, or JS unit tests (hoot).",
+                f"""# Odoo testing reference (branch: {doc_branch})
+
+This worktree targets Odoo **{doc_branch}**. Prefer these version-matched docs over
+general/training knowledge.
+
+Base URL: `{doc_base}/`
+
+Key files (WebFetch the raw URL):
+- `reference/backend/testing.rst` — TransactionCase, HttpCase, tours, tags
+- `reference/frontend/unit_testing/hoot.rst` — the hoot JS test runner
+- `reference/frontend/unit_testing/mock_server.rst` — mocking RPCs in JS tests
+- `reference/frontend/unit_testing/web_helpers.rst` — DOM/query test helpers
+- `tutorials/unit_tests.rst` — guided walkthrough
+
+Not listed above? Browse:
+`gh api repos/odoo/documentation/contents/content/developer/reference/backend/testing?ref={doc_branch}`
+""",
+            ),
+        }
+
+        return {
+            slug: f"---\nname: {slug}\ndescription: '{description}'\n---\n\n{body}"
+            for slug, (description, body) in skills.items()
+        }
+
+    def write_dev_context(self, out_dir, community_path, branch):
+        """Materialize the Odoo-dev CLAUDE.md + skills straight into <out_dir>/.claude/
+        (no existence guard — meant for a fresh, throwaway directory, e.g. the headless
+        Claude chat's per-conversation temp dir). Unlike the persisted worktree copy
+        (_create_worktree_claude_md/_create_worktree_skills, generated once at worktree
+        creation), this always reflects goo's current skill templates and <branch>'s
+        current state — and works for a main-located checkout too, which has no
+        worktree parent dir of its own to persist into."""
+        self.io.write_text(
+            os.path.join(out_dir, ".claude", "CLAUDE.md"), self._claude_md_content(branch)
+        )
+        for slug, content in self._skill_contents(community_path, branch).items():
+            self.io.write_text(os.path.join(out_dir, ".claude", "skills", slug, "SKILL.md"), content)
 
     def worktree_remove(self, main_path, worktree_path, repo=""):
         """Remove the git worktree at <worktree_path> (--force, so it goes even with

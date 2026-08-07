@@ -93,6 +93,13 @@ class FakeIO:
     def read_text(self, path):
         return self._files.get(path)
 
+    def write_text(self, path, text):
+        self.fs_ops.append(("write_text", path, None))
+        if self.fs_fail and self.fs_fail in path:
+            return False, "boom"
+        self._files[path] = text
+        return True, None
+
     # JSON file IO — an in-memory {path: object} store mirroring effects.*_json_file.
     # A missing file is (None, None); fs_fail (a path substring) forces a write error.
     def read_json_file(self, path):
@@ -1632,6 +1639,97 @@ class GitServiceTest(unittest.TestCase):
         cmd = " ".join(io.run_calls[-1])
         self.assertIn("worktree add /wt/demo/community 19.0", cmd)
         self.assertNotIn(" -b ", cmd)
+
+    def test_worktree_add_creates_claude_md_and_skills_at_parent_dir(self):
+        io = FakeIO()
+        ok, _ = services.GitService(io).worktree_add(
+            "/repo/community", "/wt/demo/community", "18.0-fix", repo="community"
+        )
+        self.assertTrue(ok)
+        self.assertIn("/wt/demo/.claude/CLAUDE.md", io._files)
+        for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing"):
+            self.assertIn(f"/wt/demo/.claude/skills/{slug}/SKILL.md", io._files)
+        # never written inside the repo itself
+        self.assertFalse(any(p.startswith("/wt/demo/community/.claude") for p in io._files))
+        skill = io._files["/wt/demo/.claude/skills/odoo-orm/SKILL.md"]
+        self.assertIn("name: odoo-orm", skill)
+        self.assertIn(
+            "https://raw.githubusercontent.com/odoo/documentation/18.0/content/developer",
+            skill,
+        )
+
+    def test_worktree_add_skips_skills_for_non_community_repo(self):
+        io = FakeIO()
+        ok, _ = services.GitService(io).worktree_add(
+            "/repo/enterprise", "/wt/demo/enterprise", "18.0-fix", repo="enterprise"
+        )
+        self.assertTrue(ok)
+        # CLAUDE.md is repo-agnostic (created regardless of which repo comes first)...
+        self.assertIn("/wt/demo/.claude/CLAUDE.md", io._files)
+        # ...but the skills need the community checkout (for owl.js) and only fire there
+        self.assertNotIn("/wt/demo/.claude/skills/odoo-orm/SKILL.md", io._files)
+
+    def test_worktree_add_does_not_overwrite_existing_skills(self):
+        io = FakeIO(
+            files={"/wt/demo/.claude/skills/odoo-orm/SKILL.md": "user-edited content"}
+        )
+        services.GitService(io).worktree_add(
+            "/repo/community", "/wt/demo/community", "18.0-fix", repo="community"
+        )
+        self.assertEqual(
+            io._files["/wt/demo/.claude/skills/odoo-orm/SKILL.md"], "user-edited content"
+        )
+        self.assertNotIn("/wt/demo/.claude/skills/odoo-views/SKILL.md", io._files)
+
+    def test_resolve_owl_docs_pins_exact_commit_when_reachable(self):
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "2.8.4"; var __info__ = {hash: "5093c0b"};'
+                )
+            },
+            http={"odoo/owl/5093c0b/doc/reference/component.md": ("# component", None)},
+        )
+        ref, path, major = services.GitService(io)._resolve_owl_docs("/wt/community")
+        self.assertEqual((ref, path, major), ("5093c0b", "doc/reference", "2"))
+
+    def test_resolve_owl_docs_falls_back_to_master_when_hash_unreachable(self):
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "3.0.0-alpha.45"; var __info__ = {hash: "cf5b97cd"};'
+                )
+            }
+            # no http stub matches the hash-pinned candidates -> "not stubbed" errors
+        )
+        ref, path, major = services.GitService(io)._resolve_owl_docs("/wt/community")
+        self.assertEqual((ref, path, major), ("master", "doc/v3/owl/reference", "3"))
+
+    def test_resolve_owl_docs_defaults_to_v2_when_owl_js_missing(self):
+        io = FakeIO()  # no owl.js file at all
+        ref, path, major = services.GitService(io)._resolve_owl_docs("/wt/community")
+        self.assertEqual((ref, path, major), ("master", "doc/v2/reference", "2"))
+
+    def test_current_branch_returns_checked_out_name(self):
+        io = FakeIO(runs={"branch --show-current": completed(stdout="master-thing\n")})
+        self.assertEqual(services.GitService(io).current_branch("/repo"), "master-thing")
+
+    def test_current_branch_empty_on_error(self):
+        io = FakeIO(run_result=completed(returncode=128, stderr="not a git repository"))
+        self.assertEqual(services.GitService(io).current_branch("/nope"), "")
+
+    def test_write_dev_context_writes_claude_md_and_all_skills_unconditionally(self):
+        # pre-existing content at the target paths — unlike the worktree-creation
+        # helpers, write_dev_context has no "don't overwrite" guard: it's meant for a
+        # fresh, throwaway directory (the headless chat's per-conversation temp dir)
+        io = FakeIO(files={"/ctx/.claude/skills/odoo-orm/SKILL.md": "stale"})
+        services.GitService(io).write_dev_context("/ctx", "/wt/community", "19.0-fix")
+        self.assertIn("/ctx/.claude/CLAUDE.md", io._files)
+        self.assertIn("19.0-fix", io._files["/ctx/.claude/CLAUDE.md"])
+        for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing"):
+            content = io._files[f"/ctx/.claude/skills/{slug}/SKILL.md"]
+            self.assertIn(f"name: {slug}", content)
+        self.assertNotEqual(io._files["/ctx/.claude/skills/odoo-orm/SKILL.md"], "stale")
 
     def test_worktree_add_requires_start_point_for_new_branch(self):
         ok, err = services.GitService(FakeIO()).worktree_add(

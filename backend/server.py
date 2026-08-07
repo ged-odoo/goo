@@ -23,6 +23,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -1247,7 +1248,13 @@ class ClaudeManager:
     def _entry(self, target):
         e = self.convos.get(target)
         if e is None:
-            e = {"state": "idle", "session": None, "process": None, "history": []}
+            e = {
+                "state": "idle",
+                "session": None,
+                "process": None,
+                "history": [],
+                "ctx_dir": None,  # this conversation's ephemeral Odoo-dev context (see send())
+            }
             self.convos[target] = e
         return e
 
@@ -1276,6 +1283,19 @@ class ClaudeManager:
             if e["state"] == "running":
                 return False, "already_running"
             session = e["session"]
+            ctx_dir = e["ctx_dir"]
+        if not session and not ctx_dir:
+            # fresh conversation: materialize a one-shot Odoo-dev context (CLAUDE.md +
+            # skills) into a throwaway temp dir, matching <cwd>'s *current* branch.
+            # Regenerated per conversation rather than reused from the worktree's
+            # persisted .claude/ (see GitService._create_worktree_claude_md/_skills):
+            # always reflects goo's latest skill templates, and also covers a
+            # main-located target, which has no worktree parent dir of its own.
+            ctx_dir = tempfile.mkdtemp(prefix="goo-claude-ctx-")
+            branch = GIT.current_branch(cwd)
+            GIT.write_dev_context(ctx_dir, cwd, branch)
+            with self.lock:
+                self._entry(target)["ctx_dir"] = ctx_dir
         cmd = [
             "claude",
             "-p",
@@ -1289,16 +1309,21 @@ class ClaudeManager:
             cmd += ["--model", model]
         if session:
             cmd += ["--resume", session]
-        for d in add_dirs or []:
+        for d in [*(add_dirs or []), ctx_dir]:
             if d:
                 cmd += ["--add-dir", d]
         self._emit(target, {"role": "user", "text": prompt})
         self.bus.publish_log(f"{TAG} claude ({target}) in {cwd}: {' '.join(cmd)}")
         effects.trace("run", " ".join(cmd))
+        # --add-dir dirs auto-load their .claude/skills/ (a documented exception), but
+        # NOT their CLAUDE.md unless this is set — needed for ctx_dir's CLAUDE.md to
+        # surface too.
+        env = {**os.environ, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1"}
         try:
             process = subprocess.Popen(
                 cmd,
                 cwd=cwd,
+                env=env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -1425,14 +1450,20 @@ class ClaudeManager:
         """Drop a workspace's conversation (its worktree was removed)."""
         self.stop(target)
         with self.lock:
-            self.convos.pop(target, None)
+            e = self.convos.pop(target, None)
+        if e and e.get("ctx_dir"):
+            effects.remove_tree(e["ctx_dir"])
 
     def shutdown(self):
-        """Stop every running turn (goo exit / restart)."""
+        """Stop every running turn (goo exit / restart), and clean up every
+        conversation's ephemeral context dir (see send())."""
         with self.lock:
             targets = [t for t, e in self.convos.items() if e["state"] == "running"]
+            ctx_dirs = [e["ctx_dir"] for e in self.convos.values() if e.get("ctx_dir")]
         for t in targets:
             self.stop(t)
+        for d in ctx_dirs:
+            effects.remove_tree(d)
 
 
 BUS = EventBus()

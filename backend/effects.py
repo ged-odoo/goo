@@ -143,6 +143,34 @@ def read_json_file(path):
         return None, str(e)
 
 
+def write_text(path, text):
+    """Write text to a file atomically, creating parent dirs. Returns (ok, error).
+
+    Writes to a temp file in the target directory, fsyncs, then os.replace()s it into
+    place — so a crash mid-write can never leave a partial/corrupt file."""
+    trace("write", path)
+    p = os.path.expanduser(path)
+    try:
+        parent = os.path.dirname(p) or "."
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=parent, prefix=".goo-tmp-", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return True, None
+    except OSError as e:
+        return False, str(e)
+
+
 def write_json_file(path, data):
     """Write data as pretty JSON atomically, creating parent dirs. Returns (ok, error).
 

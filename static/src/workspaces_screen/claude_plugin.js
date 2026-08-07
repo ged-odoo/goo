@@ -110,6 +110,9 @@ export class ClaudePlugin extends Plugin {
         this.dialogs.error("Cannot run Claude", "this worktree has no community repo");
         return null;
       }
+      // (the backend materializes its own ephemeral Odoo-dev .claude/ context per
+      // conversation — see ClaudeManager.send in server.py — rather than relying on
+      // the worktree's persisted one, so it isn't threaded through here)
       return {
         cwd: community.worktreePath,
         addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath),
