@@ -1661,9 +1661,10 @@ class DatabaseService:
 
     def drop(self, name, filestore=None):
         """Drop a database (and its filestore). Returns (ok, error); invalidates the
-        list cache."""
+        list cache. --if-exists: a target's db may never have been created (or was
+        already dropped) — that's not a failure, so dropdb shouldn't error on it."""
         try:
-            r = self.io.run(["dropdb", name], timeout=15)
+            r = self.io.run(["dropdb", "--if-exists", name], timeout=15)
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return False, str(e)
         if r.returncode != 0:

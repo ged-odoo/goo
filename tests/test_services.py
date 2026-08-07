@@ -1315,6 +1315,14 @@ class DatabaseServiceTest(unittest.TestCase):
         list_calls = sum("ORDER BY datname" in " ".join(c) for c in svc.io.run_calls)
         self.assertEqual(list_calls, 2)
 
+    def test_drop_uses_if_exists_so_an_already_absent_db_is_not_an_error(self):
+        io = self._io(dropdb=completed())
+        ok, err = services.DatabaseService(io, TTLCache(ttl=600)).drop("gone-already")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        [dropdb_call] = [c for c in io.run_calls if c[0] == "dropdb"]
+        self.assertIn("--if-exists", dropdb_call)
+
     def test_clone_runs_createdb_and_invalidates_cache(self):
         cache = TTLCache(ttl=600)
         svc = services.DatabaseService(self._io(), cache)
