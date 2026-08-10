@@ -178,6 +178,53 @@ a {
   }
 }
 
+/* ambient "something is happening" bar (bottom-center) — the event log's current
+   pending step, surfaced without opening the full panel; non-blocking, unlike
+   .goo-updating above. See core/event_log.js's ActivityBar. */
+.activity-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px oklch(0 0 0 / 0.35);
+  cursor: pointer;
+}
+.activity-bar .spin {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  animation: goo-spin 0.8s linear infinite;
+}
+.activity-bar-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.activity-bar-count {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  background: var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
 /* current target chip — sits at the start of the main area, just past the sidebar */
 .nav-target {
   grid-column: 2;

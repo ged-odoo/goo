@@ -22,7 +22,7 @@ import { BranchesScreen } from "../branches_screen/branches.js";
 import { DirtyMenu, ICONS, NAV, m, mergedTabIds } from "./common.js";
 import { ConfigScreen } from "../config_screen/config.js";
 import { DatabasesScreen } from "../databases_screen/databases.js";
-import { EventLog } from "./event_log.js";
+import { EventLog, ActivityBar } from "./event_log.js";
 import { MemoryScreen } from "../memory_screen/memory.js";
 import { ActionMenu, CiMenu, MbMenu } from "./menus.js";
 import { NightlyScreen } from "../nightly_screen/nightly.js";
@@ -318,6 +318,7 @@ export class App extends Component {
     MbMenu,
     DirtyMenu,
     EventLog,
+    ActivityBar,
     TerminalPanel,
   };
 
@@ -333,6 +334,7 @@ export class App extends Component {
       <MbMenu/>
       <DirtyMenu/>
       <EventLog/>
+      <ActivityBar/>
       <TerminalPanel/>
       <div t-ref="this.dialogRoot"/>
       <div t-if="this.update.applying()" class="goo-updating">

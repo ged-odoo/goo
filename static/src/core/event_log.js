@@ -124,6 +124,32 @@ export class EventLog extends Component {
   }
 }
 
+// Ambient "something is happening" bar, fixed to the bottom of the screen —
+// surfaces the event log's current pending step (including the fine-grained
+// server-driven ones fed by SSE, e.g. per-repo worktree creation — see
+// server_plugin.js's "event" listener) without requiring the user to open the
+// full panel. Hidden whenever nothing is pending; click opens the panel for detail.
+export class ActivityBar extends Component {
+  static template = xml`
+    <div t-if="this.pending.length" class="activity-bar" t-on-click="() => this.log.open.set(true)">
+      <span class="spin"/>
+      <span class="activity-bar-text" t-out="this.current.text"/>
+      <span t-if="this.pending.length > 1" class="activity-bar-count" t-out="'+' + (this.pending.length - 1)"/>
+    </div>`;
+
+  log = usePlugin(EventLogPlugin);
+
+  // oldest-first (see EventLog.rows) — the last pending entry is the most
+  // recently started step, i.e. the most specific "what's happening right now"
+  get pending() {
+    return this.log.entries().filter((e) => e.status === "pending");
+  }
+
+  get current() {
+    return this.pending[this.pending.length - 1];
+  }
+}
+
 // ─────────────────────────── Nightly ───────────────────────────
 
 // one line-chart metric option in the graph sidebar; `fmt` formats both the

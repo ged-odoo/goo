@@ -7589,6 +7589,23 @@ var EventLog = class extends Component {
     });
   }
 };
+var ActivityBar = class extends Component {
+  static template = xml`
+    <div t-if="this.pending.length" class="activity-bar" t-on-click="() => this.log.open.set(true)">
+      <span class="spin"/>
+      <span class="activity-bar-text" t-out="this.current.text"/>
+      <span t-if="this.pending.length > 1" class="activity-bar-count" t-out="'+' + (this.pending.length - 1)"/>
+    </div>`;
+  log = usePlugin(EventLogPlugin);
+  // oldest-first (see EventLog.rows) — the last pending entry is the most
+  // recently started step, i.e. the most specific "what's happening right now"
+  get pending() {
+    return this.log.entries().filter((e) => e.status === "pending");
+  }
+  get current() {
+    return this.pending[this.pending.length - 1];
+  }
+};
 
 // static/src/memory_screen/memory_plugin.js
 var STORAGE_KEY2 = "oo-memory-builds";
@@ -9097,7 +9114,7 @@ async function startNewWorkspaceWizard(plugins) {
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
     const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
-    if (!r || !r.path) continue;
+    if (!r || !r.path || r.id === "owl") continue;
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
@@ -14251,6 +14268,7 @@ var App = class extends Component {
     MbMenu,
     DirtyMenu,
     EventLog,
+    ActivityBar,
     TerminalPanel
   };
   static template = xml`
@@ -14265,6 +14283,7 @@ var App = class extends Component {
       <MbMenu/>
       <DirtyMenu/>
       <EventLog/>
+      <ActivityBar/>
       <TerminalPanel/>
       <div t-ref="this.dialogRoot"/>
       <div t-if="this.update.applying()" class="goo-updating">
