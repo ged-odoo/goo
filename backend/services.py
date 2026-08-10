@@ -2159,28 +2159,50 @@ class GitService:
         else:
             args = ["worktree", "add", wp, branch]
         _, error = self._git(p, *args, timeout=120, err="git worktree add failed")
-        if not error:
-            self._create_worktree_claude_md(wp, branch)
-            if repo == "community":
-                self._create_worktree_skills(wp, os.path.dirname(wp), branch)
         self.notify(creating, event_id=eid, status="error" if error else "done")
         return error is None, error
 
-    def _create_worktree_claude_md(self, repo_worktree_path, branch):
-        """Create a .claude/CLAUDE.md file at the worktree's parent dir for Claude Code context.
-
-        The worktree structure is <worktree_dir>/<slug>/<repo>. We create the file at
-        <worktree_dir>/<slug>/.claude/CLAUDE.md so it's not within any git-tracked repo."""
-        # Extract parent dir: /path/to/worktrees/my-feature/community → /path/to/worktrees/my-feature
-        worktree_parent = os.path.dirname(repo_worktree_path)
+    def create_worktree_claude_md(
+        self, worktree_parent, branch, has_enterprise, documentation_path=None, owl_path=None
+    ):
+        """Create a .claude/CLAUDE.md file at the worktree's parent dir for Claude Code
+        context — outside any git-tracked repo (<worktree_dir>/<slug>/.claude/CLAUDE.md,
+        <worktree_dir>/<slug>/{community,enterprise,documentation,owl}/ are its
+        siblings). Called once, explicitly, after every repo in the workspace has been
+        created (server.py's _api_workspace_create) — so has_enterprise/
+        documentation_path/owl_path are known for certain rather than guessed."""
         claude_md_path = os.path.join(worktree_parent, ".claude", "CLAUDE.md")
-
-        # Only create if it doesn't exist (first repo in the worktree creates it)
         if self.io.read_text(claude_md_path) is not None:
             return
-        self.io.write_text(claude_md_path, self._claude_md_content(branch))
+        self.io.write_text(
+            claude_md_path,
+            self._claude_md_content(branch, has_enterprise, documentation_path, owl_path),
+        )
 
-    def _claude_md_content(self, branch):
+    def _claude_md_content(self, branch, has_enterprise, documentation_path=None, owl_path=None):
+        repo_lines = [
+            "- `community/` — an independent `git worktree` checkout of odoo/odoo, on "
+            f"branch **{branch}**. It shares git history/objects with the main checkout "
+            "but is its own working tree — commits, checkouts, and file edits here "
+            "don't touch the main one.",
+        ]
+        if has_enterprise:
+            repo_lines.append(f"- `enterprise/` — same, for odoo/enterprise, on branch **{branch}**.")
+        if documentation_path:
+            repo_lines.append(
+                f"- `documentation/` — same, for odoo/documentation, forked from "
+                f"**{base_branch(branch)}** (not `{branch}` — the doc repo doesn't have "
+                "per-feature branches). The skills below read it directly from disk, no "
+                "network fetch needed; `git pull --rebase` it here if the docs feel stale."
+            )
+        if owl_path:
+            repo_lines.append(
+                f"- `owl/` — same, for odoo/owl, forked from the exact commit vendored at "
+                "`community/addons/web/static/lib/owl/owl.js` (odoo/owl's `master` branch "
+                "when that exact commit wasn't locally reachable). The frontend skill "
+                "reads it directly from disk too."
+            )
+        repos_section = "\n".join(repo_lines)
         return f"""# Odoo Development Worktree
 
 This worktree is checked out on branch **{branch}**.
@@ -2192,11 +2214,7 @@ for development tasks, debugging, refactoring, and code review.
 
 ## Repos in this worktree
 
-- `community/` — an independent `git worktree` checkout of odoo/odoo, on branch
-  **{branch}**. It shares git history/objects with the main checkout but is its own
-  working tree — commits, checkouts, and file edits here don't touch the main one.
-- `enterprise/` — same, for odoo/enterprise, only if this workspace includes it.
-  Run `ls ..` from here if you're not sure whether it's present.
+{repos_section}
 
 ## Database
 
@@ -2295,29 +2313,111 @@ Other useful (user-level) skills:
                 return ref, path, major
         return "master", versioned_path, major
 
-    def _create_worktree_skills(self, community_path, worktree_parent, branch):
+    def resolve_owl_worktree_start(self, community_path, owl_main_path, pull_remote="origin"):
+        """The odoo/owl ref to fork an owl worktree from, matching the Owl build
+        actually vendored at <community_path> (an already-created worktree — this is
+        called after community's own worktree_add, once its owl.js is real). Returns
+        the exact vendored commit if it's reachable, else "master" — same fallback
+        rationale as _resolve_owl_docs's remote lookup (some alpha-build hashes
+        aren't reachable at all, e.g. built from a commit never pushed publicly).
+        Checked in two steps: the LOCAL owl clone's object store first (free), then
+        an explicit `git fetch <remote> <commit>` (most hosts, GitHub included,
+        allow fetching by sha when it's reachable there — this catches a commit
+        that's genuinely available upstream but predates however much history the
+        local clone happens to have fetched so far)."""
+        owl_js = (
+            self.io.read_text(os.path.join(community_path, "addons/web/static/lib/owl/owl.js"))
+            or ""
+        )
+        h_match = _OWL_HASH_RE.search(owl_js)
+        if not h_match:
+            return "master"
+        commit = h_match.group(1)
+        _, error = self._git(owl_main_path, "cat-file", "-e", commit, timeout=10, quiet=True)
+        if error:
+            _, error = self._git(
+                owl_main_path, "fetch", pull_remote or "origin", commit, timeout=30, quiet=True
+            )
+        return commit if not error else "master"
+
+    def create_worktree_skills(
+        self, community_path, worktree_parent, branch, documentation_path=None, owl_path=None
+    ):
         """Create the .claude/skills/ Odoo-dev skills at the worktree's parent dir
-        (alongside .claude/CLAUDE.md — see _create_worktree_claude_md), one per domain,
+        (alongside .claude/CLAUDE.md — see create_worktree_claude_md), one per domain,
         each pointing at documentation matched to this worktree's Odoo version (and,
-        for the frontend skill, its exact vendored Owl build). Only called for the
-        `community` repo (the one with addons/web/static/lib/owl/owl.js), and only
-        once per worktree."""
+        for the frontend skill, its exact vendored Owl build) — read locally from
+        <documentation_path>/<owl_path> when the workspace has those checkouts (see
+        create_worktree_claude_md's sibling note), else fetched from
+        raw.githubusercontent.com. Called once, explicitly, from server.py after every
+        repo in the workspace has been created."""
         skills_dir = os.path.join(worktree_parent, ".claude", "skills")
         marker = os.path.join(skills_dir, "odoo-orm", "SKILL.md")
         if self.io.read_text(marker) is not None:
             return
-        for slug, content in self._skill_contents(community_path, branch).items():
-            self.io.write_text(os.path.join(skills_dir, slug, "SKILL.md"), content)
+        contents = self._skill_contents(community_path, branch, documentation_path, owl_path)
+        for slug, files in contents.items():
+            for rel_path, content in files.items():
+                self.io.write_text(os.path.join(skills_dir, slug, rel_path), content)
 
-    def _skill_contents(self, community_path, branch):
+    def _owl_local_layout(self, owl_path, major):
+        """Which on-disk doc/ layout an owl worktree checkout actually has — probed
+        directly (the checkout is real, so there's no need to guess/retry like
+        _resolve_owl_docs's remote canary-fetch does): the pre-v2/v3-split flat
+        layout (older commits), or the newer doc/v{2,3}/... split."""
+        split = f"doc/v{major}/owl/reference" if major == "3" else f"doc/v{major}/reference"
+        if self.io.is_dir(os.path.join(owl_path, "doc", "reference")):
+            return "doc/reference"
+        return split
+
+    def _skill_contents(self, community_path, branch, documentation_path=None, owl_path=None):
         """{slug: full SKILL.md content (frontmatter + body)} for the four Odoo-dev
         skills, version-matched to <branch> (and, for odoo-frontend-owl, the Owl
-        build actually vendored at <community_path>)."""
+        build actually vendored at <community_path>). Odoo/Owl doc references read
+        <documentation_path>/<owl_path> directly (local worktree checkouts — see
+        create_worktree_claude_md) when given, else fall back to
+        raw.githubusercontent.com/gh api at <branch>'s/the vendored build's matching
+        doc-repo ref."""
         doc_branch = base_branch(branch)
-        doc_base = f"https://raw.githubusercontent.com/odoo/documentation/{doc_branch}/content/developer"
-        owl_ref, owl_doc_path, major = self._resolve_owl_docs(community_path)
-        owl_pinned = owl_ref != "master"
-        owl_base = f"https://raw.githubusercontent.com/odoo/owl/{owl_ref}/{owl_doc_path}"
+        if documentation_path:
+            doc_base = f"{documentation_path}/content/developer"
+            doc_fetch = "Read the file directly"
+
+            def doc_browse(subdir):
+                return f"`find {documentation_path}/content/developer/{subdir} -type f`"
+        else:
+            doc_base = f"https://raw.githubusercontent.com/odoo/documentation/{doc_branch}/content/developer"
+            doc_fetch = "WebFetch the raw URL"
+
+            def doc_browse(subdir):
+                return (
+                    f"`gh api repos/odoo/documentation/contents/content/developer/"
+                    f"{subdir}?ref={doc_branch}`"
+                )
+
+        if owl_path:
+            v_match = _OWL_VERSION_RE.search(
+                self.io.read_text(os.path.join(community_path, "addons/web/static/lib/owl/owl.js"))
+                or ""
+            )
+            major = v_match.group(1) if v_match else "2"
+            owl_layout = self._owl_local_layout(owl_path, major)
+            owl_base = f"{owl_path}/{owl_layout}"
+            owl_pin_note = "checked out locally in `owl/` — always exactly matches what's vendored"
+            owl_key_files = f"Read the file directly, e.g. `{owl_base}/component.md`"
+            owl_browse = f"`find {owl_path}/{owl_layout} -type f`"
+        else:
+            owl_ref, owl_doc_path, major = self._resolve_owl_docs(community_path)
+            owl_pinned = owl_ref != "master"
+            owl_base = f"https://raw.githubusercontent.com/odoo/owl/{owl_ref}/{owl_doc_path}"
+            owl_pin_note = (
+                f"pinned to the exact vendored commit `{owl_ref}`"
+                if owl_pinned
+                else "exact commit docs weren't reachable — using odoo/owl's master branch "
+                f"instead, latest v{major} docs"
+            )
+            owl_key_files = f"WebFetch the raw URL, e.g. `{owl_base}/component.md`"
+            owl_browse = f"`gh api repos/odoo/owl/contents/{owl_doc_path}?ref={owl_ref}`"
 
         skills = {
             "odoo-orm": (
@@ -2333,7 +2433,7 @@ general/training knowledge.
 
 Base URL: `{doc_base}/`
 
-Key files (WebFetch the raw URL):
+Key files ({doc_fetch}):
 - `reference/backend/orm.rst` — fields, recordsets, environment, ORM methods
 - `reference/backend/security.rst` — ACL, record rules, groups
 - `reference/backend/module.rst` — manifest format, module structure
@@ -2345,8 +2445,7 @@ Key files (WebFetch the raw URL):
 - `tutorials/server_framework_101.rst` (+ numbered chapters 01_ to 15_ under
   `tutorials/server_framework_101/`) — the guided from-scratch walkthrough
 
-Not listed above? Browse the directory:
-`gh api repos/odoo/documentation/contents/content/developer/reference/backend?ref={doc_branch}`
+Not listed above? Browse the directory: {doc_browse("reference/backend")}
 """,
             ),
             "odoo-views": (
@@ -2359,7 +2458,7 @@ across versions — prefer these version-matched docs over general/training know
 
 Base URL: `{doc_base}/`
 
-Key files (WebFetch the raw URL):
+Key files ({doc_fetch}):
 - `reference/backend/actions.rst` — window/server actions, menus
 - `reference/backend/reports.rst` — qweb PDF reports
 - `reference/user_interface/view_architectures.rst` — view XML attributes reference
@@ -2367,8 +2466,8 @@ Key files (WebFetch the raw URL):
 - `reference/user_interface/icons.rst` — icon widgets/classes
 
 Not listed above? Browse the directories:
-`gh api repos/odoo/documentation/contents/content/developer/reference/user_interface?ref={doc_branch}`
-`gh api repos/odoo/documentation/contents/content/developer/reference/user_interface/view_architectures?ref={doc_branch}`
+{doc_browse("reference/user_interface")}
+{doc_browse("reference/user_interface/view_architectures")}
 (the latter has one short file per view attribute)
 """,
             ),
@@ -2379,14 +2478,14 @@ Not listed above? Browse the directories:
                 f"""# Odoo frontend & Owl framework reference (branch: {doc_branch})
 
 This worktree targets Odoo **{doc_branch}**, which vendors Owl **major v{major}**
-{"(pinned to the exact vendored commit `" + owl_ref + "`)" if owl_pinned else "(exact commit docs weren't reachable — using odoo/owl's master branch instead, latest v" + major + " docs)"}.
+({owl_pin_note}).
 Owl's API differs significantly between v2 and v3 (v3 is still alpha and fast-moving)
 — prefer these version-matched docs over general/training knowledge.
 
 ## Odoo's frontend layer
 Base URL: `{doc_base}/reference/frontend/`
 
-Key files (WebFetch the raw URL):
+Key files ({doc_fetch}):
 - `framework_overview.rst` — how the pieces fit together
 - `owl_components.rst` — Odoo-specific Owl conventions
 - `services.rst` — the service layer (registry, useService)
@@ -2398,19 +2497,17 @@ Key files (WebFetch the raw URL):
 - `javascript_modules.rst` — module system (`/** @odoo-module **/`)
 - `unit_testing/{{hoot,mock_server,web_helpers}}.rst` — JS unit tests (hoot)
 
-Not listed above? Browse:
-`gh api repos/odoo/documentation/contents/content/developer/reference/frontend?ref={doc_branch}`
+Not listed above? Browse: {doc_browse("reference/frontend")}
 
 ## The Owl framework itself
 Base URL: `{owl_base}/`
 
-Key files (WebFetch the raw URL, e.g. `{owl_base}/component.md`): `component.md`,
+Key files ({owl_key_files}): `component.md`,
 `hooks.md`, `props.md`, `reactivity.md`, `slots.md`, `event_handling.md`,
 `error_handling.md`, `app.md`, `refs.md`, `concurrency_model.md`.
 
 Not listed above (v3 adds several concepts v2 doesn't have — signals, effects,
-resources, plugins, scope, proxies, error boundaries)? Browse:
-`gh api repos/odoo/owl/contents/{owl_doc_path}?ref={owl_ref}`
+resources, plugins, scope, proxies, error boundaries)? Browse: {owl_browse}
 """,
             ),
             "odoo-testing": (
@@ -2423,41 +2520,223 @@ general/training knowledge.
 
 Base URL: `{doc_base}/`
 
-Key files (WebFetch the raw URL):
+Key files ({doc_fetch}):
 - `reference/backend/testing.rst` — TransactionCase, HttpCase, tours, tags
 - `reference/frontend/unit_testing/hoot.rst` — the hoot JS test runner
 - `reference/frontend/unit_testing/mock_server.rst` — mocking RPCs in JS tests
 - `reference/frontend/unit_testing/web_helpers.rst` — DOM/query test helpers
 - `tutorials/unit_tests.rst` — guided walkthrough
 
-Not listed above? Browse:
-`gh api repos/odoo/documentation/contents/content/developer/reference/backend/testing?ref={doc_branch}`
+Not listed above? Browse: {doc_browse("reference/backend/testing")}
 """,
             ),
         }
 
-        return {
-            slug: f"---\nname: {slug}\ndescription: '{description}'\n---\n\n{body}"
+        result = {
+            slug: {"SKILL.md": f"---\nname: {slug}\ndescription: '{description}'\n---\n\n{body}"}
             for slug, (description, body) in skills.items()
+        }
+        result["odoo-memory-perf"] = self._memory_perf_skill_files()
+        return result
+
+    def _memory_perf_skill_files(self):
+        """{relative_path: content} for the odoo-memory-perf skill — unlike the
+        four doc-reference skills above, this one is a runnable tool (empirical
+        heap-diff memory check via memlab + an existing Odoo tour), bundled with
+        its own scripts rather than pointing at documentation."""
+        skill_md = """---
+name: odoo-memory-perf
+description: 'Use when investigating a suspected memory leak or performance regression in the Odoo web client: Owl components not cleaning up, detached DOM nodes, growing listeners/subscriptions across navigation.'
+---
+
+# Odoo memory-leak check (empirical, via memlab + an existing tour)
+
+This complements a *static* code review (e.g. the `/leak-check` command, if
+configured — the known Owl3/JS leak anti-patterns: dangling listeners, `useEffect`
+without cleanup, unbound `useState`/`reactive()` DOM refs, unclosed observers,
+orphaned third-party widgets) with an *empirical* one: actually load the app in a
+real browser, exercise a real interaction, and diff heap snapshots to see what's
+still retained afterwards. Static review tells you what looks suspicious; this
+tells you what's actually leaking.
+
+## How it works
+
+[memlab](https://github.com/facebook/memlab) (Meta's open-source heap-diffing
+tool) drives a real Chrome via Puppeteer: load a URL, run an `action`, run a
+`back` that should return the page to baseline, then diff the heap snapshots
+taken before/after — anything still retained after `back()` that wasn't there at
+baseline is a real leak, printed as a retainer trace (the chain of references
+keeping it alive, which usually points straight at the missing cleanup).
+
+The `action` here runs an **existing Odoo tour** (a real, already-registered test
+scenario) rather than a bespoke click script — reuses real coverage instead of
+inventing new interaction code. Find one near the code you suspect:
+
+```bash
+grep -rn "start_tour(" community/addons/<module>/tests/ enterprise/addons/<module>/tests/
+```
+
+Any tour name works (e.g. from `self.start_tour('/odoo', 'sale_tour')`) — pick one
+that actually exercises the component/view you're investigating.
+
+## Usage
+
+```bash
+.claude/skills/odoo-memory-perf/scripts/run_check.sh <tour_name>
+```
+
+Starts a dedicated, throwaway Odoo instance (its own scratch db + port — never
+touches whatever's already running via goo), waits for it to be ready, runs the
+tour through memlab, then tears the instance + db down. Takes a minute or two;
+`npx` fetches memlab on first use (no install needed — it bundles its own
+Puppeteer).
+
+## Reading the output
+
+- **"MemLab found 0 leak(s)"** (or no leak section at all) — clean; the tour's
+  interaction doesn't leave anything behind. This is the expected/passing result.
+- **"MemLab found N leak(s)"** with retainer traces — real leaks. Each trace is a
+  reference chain, outermost first, e.g. an `[EventTarget]` or `[Window]` holding
+  a `[Closure]` holding a `[Detached HTMLDivElement]`: read it as "the closure
+  (some listener/subscription that was never cleaned up) is still holding this
+  DOM subtree alive." Map the retaining object/closure name back to a component
+  file, then look for the matching anti-pattern (missing `removeEventListener`,
+  missing `useEffect` cleanup, an `env.bus`/service subscription never unbound in
+  `onWillUnmount`, etc.).
+
+## Notes
+
+- Authentication is handled via goo's own `autologin` addon (already on the
+  addons path via the generated `../odoo.conf`) — no login flow to script.
+  See `scripts/tour_scenario.js` if you need to point it at a different URL/tour
+  programmatically instead of through `run_check.sh`.
+- If no tour exists near the suspected leak, it's worth writing a minimal one
+  (`registry.category("web_tour.tours").add(...)`) — it's reusable test coverage
+  either way, not just a one-off memory-check fixture.
+"""
+        run_check_sh = """#!/usr/bin/env bash
+# Empirical memory-leak check: starts a dedicated, throwaway Odoo instance and
+# runs an existing tour through memlab (heap snapshot diff before/after `back()`).
+# Usage: run_check.sh <tour_name> [db_name]
+set -euo pipefail
+
+TOUR="${1:?usage: run_check.sh <tour_name> [db_name]}"
+DB="${2:-memcheck_$$}"
+PORT="${MEMCHECK_PORT:-18269}"
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# .claude/skills/odoo-memory-perf/scripts -> worktree root -> community/
+WORKTREE_ROOT="$(cd "$HERE/../../../.." && pwd)"
+COMMUNITY="$WORKTREE_ROOT/community"
+
+ODOO_PID=""
+cleanup() {
+  [ -n "$ODOO_PID" ] && kill "$ODOO_PID" 2>/dev/null || true
+  dropdb --if-exists "$DB" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "starting a dedicated Odoo instance (db: $DB, port: $PORT)..."
+# `exec` replaces the subshell with odoo-bin itself, so $! below is odoo-bin's own
+# pid (not the subshell's) — otherwise `kill "$ODOO_PID"` in cleanup() might only
+# kill an already-exited wrapper shell and leave odoo-bin running
+(cd "$COMMUNITY" && exec ./odoo-bin -c ../odoo.conf -d "$DB" --http-port "$PORT" --without-demo all) &
+ODOO_PID=$!
+
+until curl -sf "http://localhost:$PORT/web/login" >/dev/null 2>&1; do
+  if ! kill -0 "$ODOO_PID" 2>/dev/null; then
+    echo "odoo-bin exited before becoming ready" >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo "ready - running memlab against tour '$TOUR'..."
+
+MEMCHECK_BASE_URL="http://localhost:$PORT" MEMCHECK_DB="$DB" MEMCHECK_TOUR="$TOUR" \\
+  npx --yes memlab@latest run --scenario "$HERE/tour_scenario.js"
+"""
+        tour_scenario_js = """// memlab scenario: runs an existing Odoo tour and reports anything still
+// retained after navigating back to a neutral screen (a real, empirical leak
+// signal). Normally invoked via run_check.sh, which sets these env vars; set
+// them yourself to point this at a different instance/tour.
+const BASE_URL = process.env.MEMCHECK_BASE_URL || "http://localhost:8069";
+const DB = process.env.MEMCHECK_DB || "";
+const TOUR = process.env.MEMCHECK_TOUR;
+if (!TOUR) throw new Error("set MEMCHECK_TOUR to the tour name to run");
+
+// autologin, same trick goo's own UI uses for its /odoo and /web/tests navbar
+// buttons (static/src/core/workspace_plugin.js's odooUrl/testsUrl)
+function autologinUrl(to) {
+  return `${BASE_URL}/dev/autologin?to=${encodeURIComponent(to)}`;
+}
+
+module.exports = {
+  url: () => autologinUrl(`/odoo?db=${DB}`),
+
+  action: async (page) => {
+    await page.waitForFunction(
+      (tour) => window.odoo && odoo.isTourReady && odoo.isTourReady(tour),
+      {},
+      TOUR,
+    );
+    const succeeded = new Promise((resolve) => {
+      const onConsole = (msg) => {
+        if (msg.text() === "tour succeeded") {
+          page.off("console", onConsole);
+          resolve();
+        }
+      };
+      page.on("console", onConsole);
+    });
+    // matches odoo/odoo/tests/common.py's HttpCase.start_tour invocation exactly
+    await page.evaluate((tour) => odoo.startTour(tour, { stepDelay: 0 }), TOUR);
+    await succeeded;
+  },
+
+  back: async (page) => {
+    await page.goto(`${BASE_URL}/odoo?db=${DB}`, { waitUntil: "networkidle0" });
+  },
+};
+"""
+        return {
+            "SKILL.md": skill_md,
+            "scripts/run_check.sh": run_check_sh,
+            "scripts/tour_scenario.js": tour_scenario_js,
         }
 
     def write_dev_context(self, out_dir, community_path, branch):
         """Materialize the Odoo-dev CLAUDE.md + skills straight into <out_dir>/.claude/
         (no existence guard — meant for a fresh, throwaway directory, e.g. the headless
         Claude chat's per-conversation temp dir). Unlike the persisted worktree copy
-        (_create_worktree_claude_md/_create_worktree_skills, generated once at worktree
+        (create_worktree_claude_md/create_worktree_skills, generated once at worktree
         creation), this always reflects goo's current skill templates and <branch>'s
         current state — and works for a main-located checkout too, which has no
-        worktree parent dir of its own to persist into."""
+        worktree parent dir of its own to persist into. Detects (but never creates)
+        enterprise/documentation/owl siblings next to <community_path> — present for
+        a worktree-based target created via the auto-fork flow, absent otherwise."""
+        parent = os.path.dirname(community_path)
+        has_enterprise = self.io.is_dir(os.path.join(parent, "enterprise"))
+
+        def sibling_or_none(name):
+            path = os.path.join(parent, name)
+            return path if self.io.is_dir(path) else None
+
+        documentation_path = sibling_or_none("documentation")
+        owl_path = sibling_or_none("owl")
         self.io.write_text(
-            os.path.join(out_dir, ".claude", "CLAUDE.md"), self._claude_md_content(branch)
+            os.path.join(out_dir, ".claude", "CLAUDE.md"),
+            self._claude_md_content(branch, has_enterprise, documentation_path, owl_path),
         )
-        for slug, content in self._skill_contents(community_path, branch).items():
-            self.io.write_text(os.path.join(out_dir, ".claude", "skills", slug, "SKILL.md"), content)
+        contents = self._skill_contents(community_path, branch, documentation_path, owl_path)
+        for slug, files in contents.items():
+            for rel_path, content in files.items():
+                self.io.write_text(
+                    os.path.join(out_dir, ".claude", "skills", slug, rel_path), content
+                )
 
     def write_odoo_conf(self, worktree_parent, addons_path, db_user, db_password):
         """Write a ready-to-use odoo.conf at the worktree root (sibling to
-        community/enterprise, alongside .claude/ — see _create_worktree_claude_md), so
+        community/enterprise, alongside .claude/ — see create_worktree_claude_md), so
         `./odoo-bin -c ../odoo.conf -d <db>` just works from within community/ without
         hand-reconstructing --addons-path. Only if absent — like its .claude/ siblings,
         never overwritten (the caller may have edited it)."""

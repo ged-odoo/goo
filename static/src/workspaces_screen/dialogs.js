@@ -156,12 +156,17 @@ export async function startNewWorkspaceWizard(plugins) {
   }
   const info = res.info;
   // map the bundle's github repos onto the configured ones by repo name —
-  // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo
+  // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo. Skips
+  // "owl": it never carries per-feature branches (goo always forks it itself from
+  // the exact vendored commit — see _api_workspace_create in server.py), unlike
+  // "documentation", which real doc work sometimes *does* push alongside a
+  // feature — the backend tries that branch first and only falls back to forking
+  // from the base series when it doesn't actually exist there.
   const matches = [];
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
     const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
-    if (!r || !r.path) continue;
+    if (!r || !r.path || r.id === "owl") continue;
     // canonical repo → its pull remote; anything else is the shared dev fork,
     // which is what the configured push remote points at
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";

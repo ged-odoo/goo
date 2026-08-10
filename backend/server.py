@@ -1663,12 +1663,51 @@ def _api_workspace_stop(body):
     return (200 if ok else 409), {"ok": ok, "error": None if ok else detail}
 
 
+def _configured_repos():
+    """{id: repo-config-dict} for every repo in goo's own config that has both an
+    id and a path — used to auto-fork "well-known" extra repos (documentation, …)
+    into a new workspace without the frontend needing to know about them."""
+    return {
+        r["id"]: r
+        for r in (CONFIG.get()["config"] or {}).get("repos", [])
+        if isinstance(r, dict) and r.get("id") and r.get("path")
+    }
+
+
 @post_route("/api/workspace/create", "repos:list+")
 def _api_workspace_create(body):
-    # add a git worktree per repo (the frontend computes every path); git
-    # creates the parent <worktree_dir>/<target>/ folder on the first add
+    # add a git worktree per repo (the frontend computes every path); git creates
+    # the parent <worktree_dir>/<target>/ folder on the first add.
+    #
+    # "documentation"/"owl" get special handling below instead of the generic loop:
+    # - documentation sometimes DOES carry a real, bundle/PR-linked branch (someone
+    #   documented the feature) — dialogs.js's startNewWorkspaceWizard matches it
+    #   like any other configured repo, so an already-fetched "attach existing
+    #   branch" entry for it may arrive here. Try that first; if it doesn't
+    #   actually exist there (or nothing was sent for it), fork fresh from the
+    #   matching Odoo series instead (base_branch) — never the dev branch itself,
+    #   the doc repo has no per-feature branches of its own.
+    # - owl never carries per-feature branches at all (it's a different project,
+    #   versioned on its own) — always forked from the exact commit
+    #   community/addons/web/static/lib/owl/owl.js vendors (or "master" as a
+    #   fallback), regardless of anything the frontend sends for it.
+    # Both are best-effort extras: a failure is reported in `results` (visible in
+    # the event log) but never fails the whole workspace creation the way a
+    # failure in one of the actually-requested repos does.
+    doc_attach = next(
+        (
+            r
+            for r in body["repos"]
+            if r.get("repo") == "documentation" and r.get("branch") and not r.get("newBranch")
+        ),
+        None,
+    )
+    repos = [r for r in body["repos"] if r.get("repo") != "owl" and r is not doc_attach]
+    community = next((r for r in repos if r.get("repo") == "community"), None)
+    dev_branch = community and (community.get("newBranch") or community.get("branch"))
+
     results = []
-    for r in body["repos"]:
+    for r in repos:
         ok, error = GIT.worktree_add(
             r.get("mainPath"),
             r.get("worktreePath"),
@@ -1681,22 +1720,97 @@ def _api_workspace_create(body):
         )
         results.append({"repo": r.get("repo"), "ok": ok, "error": error})
     ok = all(x["ok"] for x in results)
-    # odoo.conf needs every repo's path to build an accurate addons_path — generate
-    # it here (once all of them exist), not per-repo inside worktree_add, where
-    # a later sibling repo (e.g. enterprise) wouldn't be known about yet
-    community = next((r for r in body["repos"] if r.get("repo") == "community"), None)
+
+    # documentation: a manually-selected entry (ticked like any other repo in the
+    # regular create dialog) already went through the loop above with a proper
+    # base-branch start point (dialogs.js falls back to baseBranchOf() for any repo
+    # without a template start point) — nothing more to do for it here.
+    documentation_path = None
+    manual_doc = next((r for r in repos if r.get("repo") == "documentation"), None)
+    if manual_doc:
+        documentation_path = manual_doc["worktreePath"] if ok else None
+    elif ok and community and community.get("worktreePath") and dev_branch:
+        doc_cfg = _configured_repos().get("documentation")
+        if doc_cfg:
+            worktree_parent = os.path.dirname(community["worktreePath"])
+            doc_worktree_path = os.path.join(worktree_parent, "documentation")
+            if doc_attach:
+                attached_ok, _ = GIT.worktree_add(
+                    doc_cfg["path"], doc_worktree_path, doc_attach["branch"], "documentation"
+                )
+                if attached_ok:
+                    results.append({"repo": "documentation", "ok": True, "error": None})
+                    documentation_path = doc_worktree_path
+            if documentation_path is None:
+                forked_ok, forked_error = GIT.worktree_add(
+                    doc_cfg["path"],
+                    doc_worktree_path,
+                    dev_branch,
+                    "documentation",
+                    new_branch=True,
+                    start_point=services.base_branch(dev_branch),
+                    fresh_start=True,
+                    pull_remote=doc_cfg.get("pull_remote"),
+                )
+                results.append({"repo": "documentation", "ok": forked_ok, "error": forked_error})
+                if forked_ok:
+                    documentation_path = doc_worktree_path
+
+    # owl: only *after* community is a real checkout — its start point is the
+    # exact commit community/addons/web/static/lib/owl/owl.js actually vendors,
+    # which can only be read once that file exists on disk
+    # (GitService.resolve_owl_worktree_start; falls back to "master" when that
+    # commit isn't reachable in the local owl clone).
+    owl_path = None
+    if ok and community and community.get("worktreePath") and dev_branch:
+        owl_cfg = _configured_repos().get("owl")
+        if owl_cfg:
+            worktree_parent = os.path.dirname(community["worktreePath"])
+            owl_worktree_path = os.path.join(worktree_parent, "owl")
+            start = GIT.resolve_owl_worktree_start(
+                community["worktreePath"], owl_cfg["path"], owl_cfg.get("pull_remote")
+            )
+            owl_ok, owl_error = GIT.worktree_add(
+                owl_cfg["path"],
+                owl_worktree_path,
+                dev_branch,
+                "owl",
+                new_branch=True,
+                start_point=start,
+                fresh_start=True,
+                pull_remote=owl_cfg.get("pull_remote"),
+            )
+            results.append({"repo": "owl", "ok": owl_ok, "error": owl_error})
+            if owl_ok:
+                owl_path = owl_worktree_path
+
+    # odoo.conf + CLAUDE.md/skills need every repo's path to be known — generate
+    # them here (once all of them exist), not per-repo inside worktree_add, where a
+    # later sibling (enterprise, documentation, owl) wouldn't be known about yet
     if ok and community and community.get("worktreePath"):
         community_path = community["worktreePath"]
         worktree_parent = os.path.dirname(community_path)
-        other_paths = [
+        has_enterprise = any(r.get("repo") == "enterprise" for r in repos)
+
+        # documentation/owl aren't addons dirs — excluded from the addons_path,
+        # unlike every other extra repo (enterprise, …)
+        addon_repo_paths = [
             r["worktreePath"]
-            for r in body["repos"]
-            if r.get("repo") != "community" and r.get("worktreePath")
+            for r in repos
+            if r.get("repo") not in ("community", "documentation", "owl") and r.get("worktreePath")
         ]
-        addons_path = ",".join([os.path.join(community_path, "addons"), *other_paths, ADDONS_DIR])
+        addons_path = ",".join(
+            [os.path.join(community_path, "addons"), *addon_repo_paths, ADDONS_DIR]
+        )
         cfg = CONFIG.get()["config"] or {}
         GIT.write_odoo_conf(
             worktree_parent, addons_path, cfg.get("db_user", "odoo"), cfg.get("db_password", "odoo")
+        )
+        GIT.create_worktree_claude_md(
+            worktree_parent, dev_branch, has_enterprise, documentation_path, owl_path
+        )
+        GIT.create_worktree_skills(
+            community_path, worktree_parent, dev_branch, documentation_path, owl_path
         )
     return {"ok": ok, "results": results}
 
@@ -1716,8 +1830,19 @@ def _api_workspace_remove(body):
     for r in body["repos"]:
         ok, error = GIT.worktree_remove(r.get("mainPath"), r.get("worktreePath"), r.get("repo", ""))
         results.append({"repo": r.get("repo"), "ok": ok, "error": error})
-    if body.get("dirPath"):
-        effects.remove_tree(body["dirPath"])  # sweep the now-empty parent folder
+    # "documentation"/"owl" are auto-forked at creation without the frontend's
+    # knowledge (see _api_workspace_create) — never in body["repos"], so each needs
+    # its own explicit git worktree deregister here too, or the main repo's
+    # `git worktree list` goes stale
+    dir_path = body.get("dirPath")
+    if dir_path:
+        configured = _configured_repos()
+        for repo_id in ("documentation", "owl"):
+            cfg = configured.get(repo_id)
+            path = os.path.join(dir_path, repo_id)
+            if cfg and effects.is_dir(path):
+                GIT.worktree_remove(cfg["path"], path, repo=repo_id)
+        effects.remove_tree(dir_path)  # sweep the now-empty parent folder
     if body.get("workspace"):
         CLAUDE.forget(body["workspace"])  # its checkout is gone; drop the chat + any run
     return {"ok": all(x["ok"] for x in results), "results": results}

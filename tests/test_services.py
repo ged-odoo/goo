@@ -1648,19 +1648,30 @@ class GitServiceTest(unittest.TestCase):
         self.assertIn("worktree add /wt/demo/community 19.0", cmd)
         self.assertNotIn(" -b ", cmd)
 
-    def test_worktree_add_creates_claude_md_and_skills_at_parent_dir(self):
+    def test_worktree_add_no_longer_self_triggers_claude_md_or_skills(self):
+        # generation moved to server.py's _api_workspace_create, called explicitly
+        # once every repo in the workspace is known — worktree_add itself is now a
+        # plain git operation with no side file generation
         io = FakeIO()
         ok, _ = services.GitService(io).worktree_add(
             "/repo/community", "/wt/demo/community", "18.0-fix", repo="community"
         )
         self.assertTrue(ok)
+        self.assertEqual(io._files, {})
+
+    def test_create_worktree_claude_md_and_skills_at_parent_dir(self):
+        io = FakeIO()
+        svc = services.GitService(io)
+        svc.create_worktree_claude_md("/wt/demo", "18.0-fix", has_enterprise=True)
+        svc.create_worktree_skills("/wt/demo/community", "/wt/demo", "18.0-fix")
         self.assertIn("/wt/demo/.claude/CLAUDE.md", io._files)
         claude_md = io._files["/wt/demo/.claude/CLAUDE.md"]
         self.assertIn("psql", claude_md)
         self.assertIn("../odoo.conf", claude_md)
+        self.assertIn("enterprise/", claude_md)
         for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing"):
             self.assertIn(f"/wt/demo/.claude/skills/{slug}/SKILL.md", io._files)
-        # never written inside the repo itself
+        # never written inside a repo itself
         self.assertFalse(any(p.startswith("/wt/demo/community/.claude") for p in io._files))
         skill = io._files["/wt/demo/.claude/skills/odoo-orm/SKILL.md"]
         self.assertIn("name: odoo-orm", skill)
@@ -1669,28 +1680,87 @@ class GitServiceTest(unittest.TestCase):
             skill,
         )
 
-    def test_worktree_add_skips_skills_for_non_community_repo(self):
+    def test_create_worktree_claude_md_omits_enterprise_when_absent(self):
         io = FakeIO()
-        ok, _ = services.GitService(io).worktree_add(
-            "/repo/enterprise", "/wt/demo/enterprise", "18.0-fix", repo="enterprise"
+        services.GitService(io).create_worktree_claude_md(
+            "/wt/demo", "18.0-fix", has_enterprise=False
         )
-        self.assertTrue(ok)
-        # CLAUDE.md is repo-agnostic (created regardless of which repo comes first)...
-        self.assertIn("/wt/demo/.claude/CLAUDE.md", io._files)
-        # ...but the skills need the community checkout (for owl.js) and only fire there
-        self.assertNotIn("/wt/demo/.claude/skills/odoo-orm/SKILL.md", io._files)
+        self.assertNotIn("enterprise/", io._files["/wt/demo/.claude/CLAUDE.md"])
 
-    def test_worktree_add_does_not_overwrite_existing_skills(self):
+    def test_create_worktree_claude_md_mentions_local_documentation_when_given(self):
+        io = FakeIO()
+        services.GitService(io).create_worktree_claude_md(
+            "/wt/demo", "18.0-fix", has_enterprise=False, documentation_path="/wt/demo/documentation"
+        )
+        claude_md = io._files["/wt/demo/.claude/CLAUDE.md"]
+        self.assertIn("documentation/", claude_md)
+        self.assertIn("18.0", claude_md)  # forked from the base branch, not "18.0-fix"
+
+    def test_create_worktree_claude_md_mentions_local_owl_when_given(self):
+        io = FakeIO()
+        services.GitService(io).create_worktree_claude_md(
+            "/wt/demo", "18.0-fix", has_enterprise=False, owl_path="/wt/demo/owl"
+        )
+        self.assertIn("owl/", io._files["/wt/demo/.claude/CLAUDE.md"])
+
+    def test_create_worktree_skills_uses_local_documentation_path_when_given(self):
+        io = FakeIO()
+        services.GitService(io).create_worktree_skills(
+            "/wt/demo/community", "/wt/demo", "18.0-fix", documentation_path="/wt/demo/documentation"
+        )
+        skill = io._files["/wt/demo/.claude/skills/odoo-orm/SKILL.md"]
+        self.assertIn("/wt/demo/documentation/content/developer", skill)
+        self.assertIn("Read the file directly", skill)
+        self.assertNotIn("raw.githubusercontent.com/odoo/documentation", skill)
+        self.assertNotIn("gh api repos/odoo/documentation", skill)
+
+    def test_create_worktree_skills_uses_local_owl_path_when_given(self):
         io = FakeIO(
-            files={"/wt/demo/.claude/skills/odoo-orm/SKILL.md": "user-edited content"}
+            files={
+                "/wt/demo/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "2.8.4"; var __info__ = {hash: "5093c0b"};'
+                )
+            },
+            dirs={"/wt/demo/owl/doc/reference": []},
         )
-        services.GitService(io).worktree_add(
-            "/repo/community", "/wt/demo/community", "18.0-fix", repo="community"
+        services.GitService(io).create_worktree_skills(
+            "/wt/demo/community", "/wt/demo", "18.0-fix", owl_path="/wt/demo/owl"
         )
+        skill = io._files["/wt/demo/.claude/skills/odoo-frontend-owl/SKILL.md"]
+        self.assertIn("/wt/demo/owl/doc/reference", skill)
+        self.assertIn("Read the file directly", skill)
+        self.assertIn("checked out locally in `owl/`", skill)
+        self.assertNotIn("raw.githubusercontent.com/odoo/owl", skill)
+
+    def test_create_worktree_skills_writes_memory_perf_skill_and_scripts(self):
+        io = FakeIO()
+        services.GitService(io).create_worktree_skills("/wt/demo/community", "/wt/demo", "18.0-fix")
+        base = "/wt/demo/.claude/skills/odoo-memory-perf"
+        skill_md = io._files[f"{base}/SKILL.md"]
+        self.assertIn("name: odoo-memory-perf", skill_md)
+        self.assertIn("memlab", skill_md)
+        run_check = io._files[f"{base}/scripts/run_check.sh"]
+        self.assertIn("odoo-bin -c ../odoo.conf", run_check)
+        self.assertIn("dropdb --if-exists", run_check)
+        self.assertIn("exec ./odoo-bin", run_check)  # pid must be odoo-bin's own, not a wrapper shell's
+        scenario = io._files[f"{base}/scripts/tour_scenario.js"]
+        self.assertIn("/dev/autologin", scenario)
+        self.assertIn("isTourReady", scenario)
+        self.assertIn("odoo.startTour", scenario)
+        self.assertIn("tour succeeded", scenario)
+
+    def test_create_worktree_skills_does_not_overwrite_existing_skills(self):
+        io = FakeIO(files={"/wt/demo/.claude/skills/odoo-orm/SKILL.md": "user-edited content"})
+        services.GitService(io).create_worktree_skills("/wt/demo/community", "/wt/demo", "18.0-fix")
         self.assertEqual(
             io._files["/wt/demo/.claude/skills/odoo-orm/SKILL.md"], "user-edited content"
         )
         self.assertNotIn("/wt/demo/.claude/skills/odoo-views/SKILL.md", io._files)
+
+    def test_create_worktree_claude_md_does_not_overwrite_existing_file(self):
+        io = FakeIO(files={"/wt/demo/.claude/CLAUDE.md": "user-edited content"})
+        services.GitService(io).create_worktree_claude_md("/wt/demo", "18.0-fix", has_enterprise=True)
+        self.assertEqual(io._files["/wt/demo/.claude/CLAUDE.md"], "user-edited content")
 
     def test_resolve_owl_docs_pins_exact_commit_when_reachable(self):
         io = FakeIO(
@@ -1721,6 +1791,86 @@ class GitServiceTest(unittest.TestCase):
         ref, path, major = services.GitService(io)._resolve_owl_docs("/wt/community")
         self.assertEqual((ref, path, major), ("master", "doc/v2/reference", "2"))
 
+    def test_resolve_owl_worktree_start_uses_exact_commit_when_locally_reachable(self):
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "2.8.4"; var __info__ = {hash: "5093c0b"};'
+                )
+            },
+            runs={"cat-file -e 5093c0b": completed()},
+        )
+        start = services.GitService(io).resolve_owl_worktree_start("/wt/community", "/owl/main")
+        self.assertEqual(start, "5093c0b")
+        [cmd] = [c for c in io.run_calls if "cat-file" in c]
+        self.assertIn("/owl/main", cmd)
+        self.assertFalse(any("fetch" in c for c in io.run_calls))  # local hit -> no network
+
+    def test_resolve_owl_worktree_start_fetches_by_sha_when_not_locally_reachable(self):
+        # not in the local object store yet, but the remote host can serve it by
+        # sha (common on GitHub) — a plain fetch pulls it in, so it's still used
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "2.8.4"; var __info__ = {hash: "5093c0b"};'
+                )
+            },
+            runs={"cat-file -e 5093c0b": completed(returncode=1, stderr="not found")},
+        )
+        start = services.GitService(io).resolve_owl_worktree_start("/wt/community", "/owl/main")
+        self.assertEqual(start, "5093c0b")
+        [cmd] = [c for c in io.run_calls if "fetch" in c]
+        self.assertIn("origin", cmd)
+        self.assertIn("5093c0b", cmd)
+
+    def test_resolve_owl_worktree_start_uses_configured_pull_remote_for_the_fetch(self):
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "2.8.4"; var __info__ = {hash: "5093c0b"};'
+                )
+            },
+            runs={"cat-file -e 5093c0b": completed(returncode=1, stderr="not found")},
+        )
+        services.GitService(io).resolve_owl_worktree_start(
+            "/wt/community", "/owl/main", pull_remote="upstream"
+        )
+        [cmd] = [c for c in io.run_calls if "fetch" in c]
+        self.assertIn("upstream", cmd)
+
+    def test_resolve_owl_worktree_start_falls_back_to_master_when_commit_unreachable(self):
+        # neither locally present nor fetchable — e.g. a hash built from a commit
+        # that was never actually pushed publicly (seen with some alpha builds)
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "3.0.0-alpha.45"; var __info__ = {hash: "cf5b97cd"};'
+                )
+            },
+            run_result=completed(returncode=1, stderr="not found"),
+        )
+        start = services.GitService(io).resolve_owl_worktree_start("/wt/community", "/owl/main")
+        self.assertEqual(start, "master")
+
+    def test_resolve_owl_worktree_start_falls_back_to_master_when_owl_js_missing(self):
+        io = FakeIO()  # no owl.js at all -> no hash to even try
+        start = services.GitService(io).resolve_owl_worktree_start("/wt/community", "/owl/main")
+        self.assertEqual(start, "master")
+        self.assertEqual(io.run_calls, [])  # never bothers with a local git check
+
+    def test_owl_local_layout_prefers_flat_when_present(self):
+        io = FakeIO(dirs={"/wt/owl/doc/reference": []})
+        self.assertEqual(services.GitService(io)._owl_local_layout("/wt/owl", "2"), "doc/reference")
+
+    def test_owl_local_layout_falls_back_to_split_when_no_flat_layout(self):
+        io = FakeIO()
+        self.assertEqual(
+            services.GitService(io)._owl_local_layout("/wt/owl", "3"), "doc/v3/owl/reference"
+        )
+        self.assertEqual(
+            services.GitService(io)._owl_local_layout("/wt/owl", "2"), "doc/v2/reference"
+        )
+
     def test_current_branch_returns_checked_out_name(self):
         io = FakeIO(runs={"branch --show-current": completed(stdout="master-thing\n")})
         self.assertEqual(services.GitService(io).current_branch("/repo"), "master-thing")
@@ -1737,10 +1887,50 @@ class GitServiceTest(unittest.TestCase):
         services.GitService(io).write_dev_context("/ctx", "/wt/community", "19.0-fix")
         self.assertIn("/ctx/.claude/CLAUDE.md", io._files)
         self.assertIn("19.0-fix", io._files["/ctx/.claude/CLAUDE.md"])
-        for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing"):
+        for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing", "odoo-memory-perf"):
             content = io._files[f"/ctx/.claude/skills/{slug}/SKILL.md"]
             self.assertIn(f"name: {slug}", content)
         self.assertNotEqual(io._files["/ctx/.claude/skills/odoo-orm/SKILL.md"], "stale")
+        self.assertIn(
+            "npx --yes memlab",
+            io._files["/ctx/.claude/skills/odoo-memory-perf/scripts/run_check.sh"],
+        )
+
+    def test_write_dev_context_detects_documentation_enterprise_and_owl_siblings(self):
+        io = FakeIO(
+            files={
+                "/wt/community/addons/web/static/lib/owl/owl.js": (
+                    'var version = "2.8.4"; var __info__ = {hash: "5093c0b"};'
+                )
+            },
+            dirs={
+                "/wt/documentation": [],
+                "/wt/enterprise": [],
+                "/wt/owl": [],
+                "/wt/owl/doc/reference": [],
+            },
+        )
+        services.GitService(io).write_dev_context("/ctx", "/wt/community", "18.0-fix")
+        claude_md = io._files["/ctx/.claude/CLAUDE.md"]
+        self.assertIn("documentation/", claude_md)
+        self.assertIn("enterprise/", claude_md)
+        self.assertIn("owl/", claude_md)
+        skill = io._files["/ctx/.claude/skills/odoo-orm/SKILL.md"]
+        self.assertIn("/wt/documentation/content/developer", skill)
+        owl_skill = io._files["/ctx/.claude/skills/odoo-frontend-owl/SKILL.md"]
+        self.assertIn("/wt/owl/doc/reference", owl_skill)
+
+    def test_write_dev_context_falls_back_to_remote_docs_without_siblings(self):
+        io = FakeIO()  # no documentation/enterprise/owl dirs at all (e.g. main-located)
+        services.GitService(io).write_dev_context("/ctx", "/wt/community", "18.0-fix")
+        claude_md = io._files["/ctx/.claude/CLAUDE.md"]
+        self.assertNotIn("documentation/", claude_md)
+        self.assertNotIn("enterprise/", claude_md)
+        self.assertNotIn("owl/", claude_md)
+        skill = io._files["/ctx/.claude/skills/odoo-orm/SKILL.md"]
+        self.assertIn("raw.githubusercontent.com/odoo/documentation", skill)
+        owl_skill = io._files["/ctx/.claude/skills/odoo-frontend-owl/SKILL.md"]
+        self.assertIn("raw.githubusercontent.com/odoo/owl", owl_skill)
 
     def test_write_odoo_conf_writes_addons_path_and_db_role(self):
         io = FakeIO()
