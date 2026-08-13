@@ -7405,6 +7405,16 @@ var TestsPlugin = class extends Plugin {
     if (line.includes("[HOOT] Test suite succeeded")) s.result = "success";
     else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
       s.result = "fail";
+    const leaks = line.match(/MemLab found (\d+) leak/);
+    if (leaks) {
+      const n = Number(leaks[1]);
+      s.result = n > 0 ? "fail" : "success";
+      this.eventLog.add(
+        n > 0 ? `memory check: ${n} leak(s) found` : "memory check: no leaks found",
+        "",
+        n > 0 ? "error" : ""
+      );
+    }
     if (s.cutOnChrome && line.includes("Terminating chrome headless with pid"))
       this._finishRun(slotId);
   }
@@ -7428,7 +7438,7 @@ var TestsPlugin = class extends Plugin {
       if (s.announced !== run.id) return;
       const stopped = run.returncode === null;
       s.status.set(
-        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : "passed"
+        stopped ? "stopped" : run.returncode ? `failed \u2014 exit ${run.returncode}` : s.result === "fail" ? "failed" : "passed"
       );
       const byExit = stopped ? "" : run.returncode ? "fail" : "success";
       this._finishRun(slotId, s.result || byExit);
@@ -7447,9 +7457,16 @@ var TestsPlugin = class extends Plugin {
       failed ? "error" : ""
     );
   }
-  // run tests against a workspace's slot (the Tests pane passes its workspace)
-  async run(tags, ws) {
-    if (!tags.trim() || !ws) return;
+  // run tests against a workspace's slot (the Tests pane passes its workspace).
+  // `memcheck` is a plain option on this SAME `tags` run, not a separate mode:
+  // it (re)installs memleak_check and chains memlab's offline heap-diff
+  // analysis after the run — memleak_check's own test file, once imported,
+  // patches ChromeBrowser so ANY test <tags> selects gets its own browser
+  // session snapshotted transparently (see build_odoo_cmd and
+  // addons/memleak_check/tests/test_memleak_check.py).
+  async run(tags, ws, memcheck = false) {
+    const target = tags.trim();
+    if (!ws || !target) return;
     this.config.workspace(ws.id)?.touchActivity();
     const slotId = slotFor(ws);
     const targetId = ws.id;
@@ -7458,8 +7475,8 @@ var TestsPlugin = class extends Plugin {
       const st = this.server.status();
       return (st.state === "running" || st.state === "starting") && st.mode === "server";
     })() : ["running", "starting"].includes(this.store.server(slotId)?.state);
-    this._pushHistory(tags);
-    s.tags = tags.trim();
+    this._pushHistory(target);
+    s.tags = memcheck ? `memcheck: ${target}` : target;
     s.cutOnChrome = s.tags.includes("web:WebSuite");
     s.result = "";
     if (up) this.eventLog.add("stopping server to run tests");
@@ -7469,11 +7486,8 @@ var TestsPlugin = class extends Plugin {
     s.pending.set(true);
     s.status.set("starting\u2026");
     try {
-      await postJSON("/api/tests/run", {
-        workspace: targetId,
-        slot: slotId,
-        overrides: { test_tags: s.tags }
-      });
+      const overrides = memcheck ? { test_tags: target, memcheck: true } : { test_tags: target };
+      await postJSON("/api/tests/run", { workspace: targetId, slot: slotId, overrides });
     } catch (e) {
       s.pending.set(false);
       s.status.set(`failed to start: ${e.message}`);
@@ -12594,6 +12608,10 @@ var TestsPane = class extends Component {
         <button t-if="this.slotId === 'main'" type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
                 title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
                 t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
+        <label class="toggle" t-att-class="{on: this.memcheck()}" t-on-click="() => this.toggleMemcheck()"
+               title="also install memleak_check and diff heap snapshots (memlab) around this run, to check for memory leaks">
+          <span class="switch"/>Memory check
+        </label>
         <button type="submit" t-att-disabled="this.tests.runActive(this.slotId) or !this.tags().trim()"><span class="play"/>Run</button>
         <button type="button" class="stop" t-att-disabled="!this.tests.runningFor(this.slotId)" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
         <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
@@ -12603,8 +12621,9 @@ var TestsPane = class extends Component {
         </div>
       </form>
       <div t-if="!this.slot.output.count() and !this.tests.runActive(this.slotId)" class="ws-empty-note dim">
-        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run.
-        The run uses this workspace's database and checkout.
+        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run. The
+        run uses this workspace's database and checkout. Tick <b>Memory check</b> to also diff
+        heap snapshots (memlab) around it.
       </div>
       <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
     </div>`;
@@ -12616,6 +12635,7 @@ var TestsPane = class extends Component {
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");
+  memcheck = signal(false);
   // copy a `goo --test-tags …` command for the current tags (single-quoted so the
   // shell doesn't mangle globs). Main slot only — the CLI runs against the ACTIVE
   // workspace, which is wrong for a worktree workspace's pane.
@@ -12641,7 +12661,10 @@ var TestsPane = class extends Component {
     return null;
   }
   run() {
-    this.tests.run(this.tags(), this.props.ws);
+    this.tests.run(this.tags(), this.props.ws, this.memcheck());
+  }
+  toggleMemcheck() {
+    this.memcheck.set(!this.memcheck());
   }
   // stopping the slot's server kills the run; the backend finalizes it and
   // resumes the server the run had interrupted

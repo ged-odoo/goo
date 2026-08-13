@@ -1739,15 +1739,38 @@ class GitServiceTest(unittest.TestCase):
         skill_md = io._files[f"{base}/SKILL.md"]
         self.assertIn("name: odoo-memory-perf", skill_md)
         self.assertIn("memlab", skill_md)
+        self.assertIn("memleak_check", skill_md)
+        # only one bundled file now — the tour is driven by the memleak_check
+        # addon's own HttpCase, not a separate memlab-launched browser
+        self.assertEqual(
+            {p for p in io._files if p.startswith(f"{base}/")},
+            {f"{base}/SKILL.md", f"{base}/scripts/run_check.sh"},
+        )
         run_check = io._files[f"{base}/scripts/run_check.sh"]
         self.assertIn("odoo-bin -c ../odoo.conf", run_check)
         self.assertIn("dropdb --if-exists", run_check)
-        self.assertIn("exec ./odoo-bin", run_check)  # pid must be odoo-bin's own, not a wrapper shell's
-        scenario = io._files[f"{base}/scripts/tour_scenario.js"]
-        self.assertIn("/dev/autologin", scenario)
-        self.assertIn("isTourReady", scenario)
-        self.assertIn("odoo.startTour", scenario)
-        self.assertIn("tour succeeded", scenario)
+        self.assertIn("-i \"memleak_check,$MODULES\"", run_check)
+        self.assertIn("--test-tags \"$TEST_TAGS\"", run_check)
+        self.assertIn("MEMCHECK_DUMP_DIR", run_check)
+        self.assertIn("memlab@latest find-leaks", run_check)
+        self.assertIn("--baseline", run_check)
+        self.assertIn("--target", run_check)
+        self.assertIn("--final", run_check)
+        self.assertIn("--work-dir", run_check)  # else the leaks.txt dump lands in a throwaway temp dir
+        self.assertIn("DUMP_DIR", run_check)
+
+    def test_create_worktree_skills_writes_bootstrap_leak_audit_skill(self):
+        io = FakeIO()
+        services.GitService(io).create_worktree_skills("/wt/demo/community", "/wt/demo", "18.0-fix")
+        base = "/wt/demo/.claude/skills/odoo-bootstrap-leak-audit"
+        self.assertEqual({p for p in io._files if p.startswith(f"{base}/")}, {f"{base}/SKILL.md"})
+        skill_md = io._files[f"{base}/SKILL.md"]
+        self.assertIn("name: odoo-bootstrap-leak-audit", skill_md)
+        self.assertIn("elementMap", skill_md)
+        self.assertIn("dispose()", skill_md)
+        self.assertIn("getOrCreateInstance", skill_md)
+        self.assertIn("Carousel", skill_md)
+        self.assertIn("odoo-memory-perf", skill_md)  # cross-references the empirical skill
 
     def test_create_worktree_skills_does_not_overwrite_existing_skills(self):
         io = FakeIO(files={"/wt/demo/.claude/skills/odoo-orm/SKILL.md": "user-edited content"})
@@ -1887,7 +1910,14 @@ class GitServiceTest(unittest.TestCase):
         services.GitService(io).write_dev_context("/ctx", "/wt/community", "19.0-fix")
         self.assertIn("/ctx/.claude/CLAUDE.md", io._files)
         self.assertIn("19.0-fix", io._files["/ctx/.claude/CLAUDE.md"])
-        for slug in ("odoo-orm", "odoo-views", "odoo-frontend-owl", "odoo-testing", "odoo-memory-perf"):
+        for slug in (
+            "odoo-orm",
+            "odoo-views",
+            "odoo-frontend-owl",
+            "odoo-testing",
+            "odoo-memory-perf",
+            "odoo-bootstrap-leak-audit",
+        ):
             content = io._files[f"/ctx/.claude/skills/{slug}/SKILL.md"]
             self.assertIn(f"name: {slug}", content)
         self.assertNotEqual(io._files["/ctx/.claude/skills/odoo-orm/SKILL.md"], "stale")
@@ -2830,7 +2860,8 @@ class VenvServiceTest(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(io.run_calls[0], ["python3", "-m", "venv", self.VENV])
         self.assertEqual(io.run_calls[1], [f"{self.VENV}/bin/pip", "install", "-r", self.REQ])
-        self.assertEqual(len(io.run_calls), 2)
+        self.assertEqual(io.run_calls[2], [f"{self.VENV}/bin/pip", "install", "websocket-client"])
+        self.assertEqual(len(io.run_calls), 3)
         self.assertEqual([kw["status"] for _, kw in events], ["start", "done"])
 
     def test_create_skips_pip_when_requirements_missing(self):
@@ -2839,7 +2870,19 @@ class VenvServiceTest(unittest.TestCase):
         ok, error = svc.create(self.VENV, self.REQ)
         self.assertTrue(ok)
         self.assertIsNone(error)
-        self.assertEqual(len(io.run_calls), 1)  # venv only, no pip install
+        # venv + the always-attempted websocket-client install, no requirements pip
+        self.assertEqual(len(io.run_calls), 2)
+        self.assertEqual(io.run_calls[1], [f"{self.VENV}/bin/pip", "install", "websocket-client"])
+
+    def test_create_ignores_websocket_client_install_failure(self):
+        io = FakeIO(
+            files={self.REQ: "odoo-stubs==1.0\n"},
+            runs={"websocket-client": completed(returncode=1, stderr="no network\n")},
+        )
+        svc = services.VenvService(io)
+        ok, error = svc.create(self.VENV, self.REQ)
+        self.assertTrue(ok)
+        self.assertIsNone(error)
 
     def test_venv_creation_failure_is_reported_and_notified(self):
         io = FakeIO(runs={"-m venv": completed(returncode=1, stderr="boom\nno space left\n")})
@@ -3077,23 +3120,39 @@ class BuildOdooCmdTest(unittest.TestCase):
     Target.demo_data): dfc6299c hardcoded it off for every start, this makes it
     per-target, defaulting on."""
 
-    def _cmd(self, demo_data=None, rust_bundler=False):
+    def _cmd(
+        self,
+        demo_data=None,
+        rust_bundler=False,
+        test_tags=None,
+        memcheck=False,
+        memleak_check_installed=False,
+    ):
         from backend import server
 
         start = {"repos": ["community"], "db": "db1"}
         if demo_data is not None:
             start["demo_data"] = demo_data
+        if test_tags is not None:
+            start["test_tags"] = test_tags
+        if memcheck:
+            start["memcheck"] = True
         config = {
             "repos": [{"id": "community", "path": "/repo/community"}],
             "start": start,
             "rust_bundler": rust_bundler,
         }
-        orig = server.DATABASE.db_initialized
+        orig_init = server.DATABASE.db_initialized
+        orig_installed = server.DATABASE.installed_modules
         server.DATABASE.db_initialized = lambda db: True  # skip the real psql probe
+        server.DATABASE.installed_modules = lambda db: (
+            {"memleak_check": "installed"} if memleak_check_installed else {}
+        )
         try:
             cmd, _db, _is_new = server.build_odoo_cmd(config)
         finally:
-            server.DATABASE.db_initialized = orig
+            server.DATABASE.db_initialized = orig_init
+            server.DATABASE.installed_modules = orig_installed
         return cmd
 
     def test_demo_data_defaults_on(self):
@@ -3108,6 +3167,64 @@ class BuildOdooCmdTest(unittest.TestCase):
     def test_rust_bundler_environment_is_opt_in(self):
         self.assertNotIn("RUST_BUNDLER=1", self._cmd())
         self.assertIn("RUST_BUNDLER=1", self._cmd(rust_bundler=True))
+
+    def test_memcheck_is_a_plain_option_on_the_classic_test_tags_run(self):
+        # no special syntax: whatever --test-tags value the classic run
+        # already uses is passed through completely unchanged
+        cmd = self._cmd(
+            test_tags="web:WebSuite.test_unit_desktop", memcheck=True,
+            memleak_check_installed=True,
+        )
+        self.assertIn("--test-tags web:WebSuite.test_unit_desktop", cmd)
+        self.assertIn("MEMCHECK_DUMP_DIR=", cmd)
+
+    def test_memcheck_skips_install_when_memleak_check_already_installed(self):
+        # crucial: once installed, memleak_check must NOT get a bare -i/-u
+        # bundled into the actual --test-tags run — that would flip Odoo's
+        # post_install test-discovery scope to just-updated modules only
+        # (registry.updated_modules), silently excluding the real target
+        # module's own tests (the regression this replaced: a memcheck run on
+        # an already-installed target module executed 0 tests)
+        cmd = self._cmd(test_tags="sale", memcheck=True, memleak_check_installed=True)
+        self.assertNotIn("-i memleak_check", cmd)
+        self.assertNotIn("-u memleak_check", cmd)
+        self.assertEqual(cmd.count("--test-tags"), 1)
+
+    def test_memcheck_bootstraps_memleak_check_in_a_prior_separate_invocation(self):
+        # not installed yet: install it via ITS OWN odoo-bin invocation first
+        # (no --test-tags there, so it can't narrow this bootstrap's own
+        # module-discovery scope), then the real --test-tags run follows,
+        # untouched by any -i/-u
+        cmd = self._cmd(test_tags="sale", memcheck=True, memleak_check_installed=False)
+        self.assertIn("-i memleak_check --stop-after-init", cmd)
+        bootstrap_end = cmd.index("--stop-after-init") + len("--stop-after-init")
+        self.assertNotIn("--test-tags", cmd[:bootstrap_end])
+        rest = cmd[bootstrap_end:]
+        self.assertIn("--test-tags sale", rest)
+        self.assertNotIn("-i memleak_check", rest)
+
+    def test_memcheck_off_does_not_touch_the_command_at_all(self):
+        cmd = self._cmd(test_tags="sale", memcheck=False)
+        self.assertNotIn("memleak_check", cmd)
+        self.assertNotIn("MEMCHECK_DUMP_DIR", cmd)
+        self.assertNotIn("memlab", cmd)
+
+    def test_memcheck_without_test_tags_is_a_no_op(self):
+        # memcheck only makes sense alongside a real test run
+        cmd = self._cmd(memcheck=True)
+        self.assertNotIn("memleak_check", cmd)
+        self.assertNotIn("MEMCHECK_DUMP_DIR", cmd)
+
+    def test_memcheck_chains_memlab_find_leaks_on_the_dumped_snapshots(self):
+        cmd = self._cmd(test_tags="sale", memcheck=True, memleak_check_installed=True)
+        self.assertIn("&& npx --yes memlab@latest find-leaks", cmd)
+        self.assertIn("--baseline", cmd)
+        self.assertIn("baseline.heapsnapshot", cmd)
+        self.assertIn("--target", cmd)
+        self.assertIn("target.heapsnapshot", cmd)
+        self.assertIn("--final", cmd)
+        self.assertIn("final.heapsnapshot", cmd)
+        self.assertIn("--work-dir", cmd)
 
     def test_venv_python_invokes_odoo_bin_via_the_dedicated_interpreter(self):
         from backend import server

@@ -2537,6 +2537,7 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
             for slug, (description, body) in skills.items()
         }
         result["odoo-memory-perf"] = self._memory_perf_skill_files()
+        result["odoo-bootstrap-leak-audit"] = self._bootstrap_leak_audit_skill_files()
         return result
 
     def _memory_perf_skill_files(self):
@@ -2549,7 +2550,7 @@ name: odoo-memory-perf
 description: 'Use when investigating a suspected memory leak or performance regression in the Odoo web client: Owl components not cleaning up, detached DOM nodes, growing listeners/subscriptions across navigation.'
 ---
 
-# Odoo memory-leak check (empirical, via memlab + an existing tour)
+# Odoo memory-leak check (empirical, via a real Odoo test + memlab)
 
 This complements a *static* code review (e.g. the `/leak-check` command, if
 configured — the known Owl3/JS leak anti-patterns: dangling listeners, `useEffect`
@@ -2559,41 +2560,82 @@ real browser, exercise a real interaction, and diff heap snapshots to see what's
 still retained afterwards. Static review tells you what looks suspicious; this
 tells you what's actually leaking.
 
-## How it works
+It's a plain **option on a normal `--test-tags` run**, not a separate tool with
+its own syntax: give it any test tag you'd already give `--test-tags` — a tour
+test, a HOOT suite, anything with a browser in it — and it diffs heap snapshots
+around whatever that test does, unmodified.
 
-[memlab](https://github.com/facebook/memlab) (Meta's open-source heap-diffing
-tool) drives a real Chrome via Puppeteer: load a URL, run an `action`, run a
-`back` that should return the page to baseline, then diff the heap snapshots
-taken before/after — anything still retained after `back()` that wasn't there at
-baseline is a real leak, printed as a retainer trace (the chain of references
-keeping it alive, which usually points straight at the missing cleanup).
+## How the two pieces split
 
-The `action` here runs an **existing Odoo tour** (a real, already-registered test
-scenario) rather than a bespoke click script — reuses real coverage instead of
-inventing new interaction code. Find one near the code you suspect:
+- **`memleak_check`** (a goo-provided Odoo addon, on the addons path already —
+  see `../odoo.conf`) doesn't drive anything itself: its own test file, once
+  Odoo's test loader imports it (which happens automatically for every
+  installed module whenever any `--test-tags` run happens at all), patches
+  `ChromeBrowser` so that **whatever other test your `--test-tags` selects**
+  gets a heap snapshot taken at three checkpoints around its own browser
+  session: right before its first navigation (after first forcing a trip to a
+  neutral screen), right after its console success signal fires, and right
+  before teardown (after forcing another trip back to that neutral screen).
+  The target test runs exactly as it always would — same
+  `self.start_tour(...)`/`self.browser_js(...)` call, same assertions — this
+  just watches from the outside.
+- **[memlab](https://github.com/facebook/memlab)** (Meta's open-source
+  heap-diffing tool) only *analyzes* those three files afterwards
+  (`memlab find-leaks --baseline --target --final`) — no browser involved on its
+  side at all. Whatever's still retained in `final` that wasn't already in
+  `baseline` is a real leak, printed as a retainer trace (the chain of references
+  keeping it alive, which usually points straight at the missing cleanup).
+
+Find a test near the code you suspect — a tour-based one is the easiest target,
+since a tour is a real, repeatable user interaction:
 
 ```bash
 grep -rn "start_tour(" community/addons/<module>/tests/ enterprise/addons/<module>/tests/
 ```
 
-Any tour name works (e.g. from `self.start_tour('/odoo', 'sale_tour')`) — pick one
-that actually exercises the component/view you're investigating.
+Any test with a browser session works, not just tours — pick one that actually
+exercises the component/view you're investigating, and use its own
+`--test-tags` selector (e.g. `web:WebSuite.test_unit_desktop`, or `:MyTestClass`,
+or just the module name if there's only one relevant test in it).
+
+No test exists yet for the interaction you want to check? Write a small one
+first (`self.start_tour(...)` with a tour registered via
+`registry.category("web_tour.tours").add(...)`) — it's reusable test coverage
+either way, not just a one-off memory-check fixture.
+
+### Fragility note
+
+The module-level `ChromeBrowser` patch (`addons/memleak_check/tests/test_memleak_check.py`,
+goo's repo) reuses `ChromeBrowser`'s private (`_`-prefixed) websocket/CDP methods
+(`_websocket_request`, `_handlers`) and reassigns `ChromeBrowser.navigate_to`/
+`_wait_code_ok` themselves — unofficial, internal API that could shift between
+Odoo versions. Verified against a recent (18.0/19.0/master-era) checkout; if it
+breaks on a much older series, the fix is almost always re-reading
+`HttpCase.browser_js`'s current body in `odoo/tests/common.py` and adjusting the
+call sequence to match.
 
 ## Usage
 
 ```bash
-.claude/skills/odoo-memory-perf/scripts/run_check.sh <tour_name>
+.claude/skills/odoo-memory-perf/scripts/run_check.sh <test_tags> <modules_to_install> [db_name]
 ```
 
-Starts a dedicated, throwaway Odoo instance (its own scratch db + port — never
-touches whatever's already running via goo), waits for it to be ready, runs the
-tour through memlab, then tears the instance + db down. Takes a minute or two;
-`npx` fetches memlab on first use (no install needed — it bundles its own
-Puppeteer).
+e.g. `run_check.sh web:WebSuite.test_unit_desktop web`. Installs `memleak_check`
++ the given module(s) into a dedicated, throwaway scratch db (never touches
+whatever's already running via goo), runs `<test_tags>` with
+`--test-tags --stop-after-init` (so it exits on its own — no server to babysit
+or port to poll), then runs memlab against the three snapshots it produced.
+Takes a minute or two; `npx` fetches memlab on first use (no install needed).
+
+Dumps land in `.claude/skills/odoo-memory-perf/dumps/memcheck_<timestamp>/`:
+`baseline.heapsnapshot`/`target.heapsnapshot`/`final.heapsnapshot` (the raw
+captures) plus, via memlab's `--work-dir`, `data/cur/leaks.txt` (the same report
+printed to the terminal) — so a run can be reviewed or attached to a PR/task
+after the fact instead of only living in terminal scrollback.
 
 ## Reading the output
 
-- **"MemLab found 0 leak(s)"** (or no leak section at all) — clean; the tour's
+- **"MemLab found 0 leak(s)"** (or no leak section at all) — clean; the
   interaction doesn't leave anything behind. This is the expected/passing result.
 - **"MemLab found N leak(s)"** with retainer traces — real leaks. Each trace is a
   reference chain, outermost first, e.g. an `[EventTarget]` or `[Window]` holding
@@ -2602,107 +2644,192 @@ Puppeteer).
   DOM subtree alive." Map the retaining object/closure name back to a component
   file, then look for the matching anti-pattern (missing `removeEventListener`,
   missing `useEffect` cleanup, an `env.bus`/service subscription never unbound in
-  `onWillUnmount`, etc.).
+  `onWillUnmount`, etc.). Same trace, either read from the terminal or from the
+  saved `leaks.txt` dump.
 
 ## Notes
 
-- Authentication is handled via goo's own `autologin` addon (already on the
-  addons path via the generated `../odoo.conf`) — no login flow to script.
-  See `scripts/tour_scenario.js` if you need to point it at a different URL/tour
-  programmatically instead of through `run_check.sh`.
-- If no tour exists near the suspected leak, it's worth writing a minimal one
-  (`registry.category("web_tour.tours").add(...)`) — it's reusable test coverage
-  either way, not just a one-off memory-check fixture.
+- goo's own Tests tab has a "Memory check" checkbox that does the exact same
+  thing against a workspace's own persistent db, for any `--test-tags` value
+  typed there — this script is the standalone/scratch-db equivalent for a
+  Claude session or the CLI.
 """
         run_check_sh = """#!/usr/bin/env bash
-# Empirical memory-leak check: starts a dedicated, throwaway Odoo instance and
-# runs an existing tour through memlab (heap snapshot diff before/after `back()`).
-# Usage: run_check.sh <tour_name> [db_name]
+# Empirical memory-leak check: runs any existing --test-tags-selectable test
+# through the memleak_check addon (dumping 3 heap snapshots around whatever
+# browser session that test creates), then hands those snapshots to memlab
+# for offline analysis. Not a special mode — <test_tags> is the exact same
+# value you'd give odoo-bin's own --test-tags.
+# Usage: run_check.sh <test_tags> <modules_to_install> [db_name]
 set -euo pipefail
 
-TOUR="${1:?usage: run_check.sh <tour_name> [db_name]}"
-DB="${2:-memcheck_$$}"
-PORT="${MEMCHECK_PORT:-18269}"
+TEST_TAGS="${1:?usage: run_check.sh <test_tags> <modules_to_install> [db_name]}"
+MODULES="${2:?usage: run_check.sh <test_tags> <modules_to_install> [db_name]}"
+DB="${3:-memcheck_$$}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # .claude/skills/odoo-memory-perf/scripts -> worktree root -> community/
 WORKTREE_ROOT="$(cd "$HERE/../../../.." && pwd)"
 COMMUNITY="$WORKTREE_ROOT/community"
 
-ODOO_PID=""
+# --work-dir persists memlab's report (by default it writes to a temp dir that's
+# gone once the run ends): <DUMP_DIR>/data/cur/leaks.txt, plus the raw
+# baseline/target/final .heapsnapshot files the ChromeBrowser patch writes here
+# directly (see test_memleak_check.py)
+DUMP_DIR="$HERE/../dumps/memcheck_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$DUMP_DIR"
+
 cleanup() {
-  [ -n "$ODOO_PID" ] && kill "$ODOO_PID" 2>/dev/null || true
   dropdb --if-exists "$DB" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-echo "starting a dedicated Odoo instance (db: $DB, port: $PORT)..."
-# `exec` replaces the subshell with odoo-bin itself, so $! below is odoo-bin's own
-# pid (not the subshell's) — otherwise `kill "$ODOO_PID"` in cleanup() might only
-# kill an already-exited wrapper shell and leave odoo-bin running
-(cd "$COMMUNITY" && exec ./odoo-bin -c ../odoo.conf -d "$DB" --http-port "$PORT" --without-demo all) &
-ODOO_PID=$!
+echo "installing memleak_check,$MODULES and running '$TEST_TAGS' (db: $DB)..."
+# --test-tags --stop-after-init runs synchronously and exits on its own — no
+# background process or port to manage, unlike a long-running server
+(
+  cd "$COMMUNITY"
+  export MEMCHECK_DUMP_DIR="$DUMP_DIR"
+  ./odoo-bin -c ../odoo.conf -d "$DB" \\
+    -i "memleak_check,$MODULES" \\
+    --test-tags "$TEST_TAGS" --test-enable --stop-after-init --without-demo all
+)
 
-until curl -sf "http://localhost:$PORT/web/login" >/dev/null 2>&1; do
-  if ! kill -0 "$ODOO_PID" 2>/dev/null; then
-    echo "odoo-bin exited before becoming ready" >&2
-    exit 1
-  fi
-  sleep 1
-done
-echo "ready - running memlab against tour '$TOUR'..."
+echo "analyzing the 3 snapshots with memlab..."
+npx --yes memlab@latest find-leaks \\
+  --baseline "$DUMP_DIR/baseline.heapsnapshot" \\
+  --target "$DUMP_DIR/target.heapsnapshot" \\
+  --final "$DUMP_DIR/final.heapsnapshot" \\
+  --work-dir "$DUMP_DIR"
 
-MEMCHECK_BASE_URL="http://localhost:$PORT" MEMCHECK_DB="$DB" MEMCHECK_TOUR="$TOUR" \\
-  npx --yes memlab@latest run --scenario "$HERE/tour_scenario.js"
-"""
-        tour_scenario_js = """// memlab scenario: runs an existing Odoo tour and reports anything still
-// retained after navigating back to a neutral screen (a real, empirical leak
-// signal). Normally invoked via run_check.sh, which sets these env vars; set
-// them yourself to point this at a different instance/tour.
-const BASE_URL = process.env.MEMCHECK_BASE_URL || "http://localhost:8069";
-const DB = process.env.MEMCHECK_DB || "";
-const TOUR = process.env.MEMCHECK_TOUR;
-if (!TOUR) throw new Error("set MEMCHECK_TOUR to the tour name to run");
-
-// autologin, same trick goo's own UI uses for its /odoo and /web/tests navbar
-// buttons (static/src/core/workspace_plugin.js's odooUrl/testsUrl)
-function autologinUrl(to) {
-  return `${BASE_URL}/dev/autologin?to=${encodeURIComponent(to)}`;
-}
-
-module.exports = {
-  url: () => autologinUrl(`/odoo?db=${DB}`),
-
-  action: async (page) => {
-    await page.waitForFunction(
-      (tour) => window.odoo && odoo.isTourReady && odoo.isTourReady(tour),
-      {},
-      TOUR,
-    );
-    const succeeded = new Promise((resolve) => {
-      const onConsole = (msg) => {
-        if (msg.text() === "tour succeeded") {
-          page.off("console", onConsole);
-          resolve();
-        }
-      };
-      page.on("console", onConsole);
-    });
-    // matches odoo/odoo/tests/common.py's HttpCase.start_tour invocation exactly
-    await page.evaluate((tour) => odoo.startTour(tour, { stepDelay: 0 }), TOUR);
-    await succeeded;
-  },
-
-  back: async (page) => {
-    await page.goto(`${BASE_URL}/odoo?db=${DB}`, { waitUntil: "networkidle0" });
-  },
-};
+echo
+echo "dump saved: $DUMP_DIR/ (*.heapsnapshot, data/cur/leaks.txt)"
 """
         return {
             "SKILL.md": skill_md,
             "scripts/run_check.sh": run_check_sh,
-            "scripts/tour_scenario.js": tour_scenario_js,
         }
+
+    def _bootstrap_leak_audit_skill_files(self):
+        """{relative_path: content} for the odoo-bootstrap-leak-audit skill — a
+        *static* grep-and-read methodology for one specific, recurring,
+        already-proven memory-leak anti-pattern in Odoo's JS: a vendored
+        Bootstrap 5 component instance created without a matching .dispose()
+        call. Complements odoo-memory-perf's *empirical* heap-diff approach:
+        this finds candidate sites by pattern-matching code; that one confirms
+        and quantifies a specific site by actually running it and diffing heap
+        snapshots. The mechanism below was verified against a real checkout's
+        vendored addons/web/static/lib/bootstrap/js/dist/{dom/data.js,
+        base-component.js} before being written up here."""
+        skill_md = """---
+name: odoo-bootstrap-leak-audit
+description: 'Use when auditing Odoo JS/Owl code (community, enterprise, or any addon) for memory leaks caused by Bootstrap 5 component instances (Carousel, Modal, Tooltip, Dropdown, etc.) never being disposed.'
+---
+
+# Bootstrap 5 component leak audit (static, grep-and-read)
+
+A specific, recurring memory-leak anti-pattern in Odoo's JS/Owl frontend,
+found and fixed multiple times already in community — worth checking any
+time new frontend code (an addon, a PR, an enterprise module) is being
+reviewed for memory leaks.
+
+## The mechanism (verified against the vendored source)
+
+Odoo vendors Bootstrap 5 at `addons/web/static/lib/bootstrap/js/dist/`.
+Every component instance — `Carousel`, `Tooltip`, `Popover`, `Modal`,
+`Dropdown`, `Collapse`, `ScrollSpy`, `Tab`, `Offcanvas`, `Toast`, `Alert`,
+`Button` — is tracked in one page-global, **non-weak** `Map` (`dom/data.js`):
+
+```js
+const elementMap = new Map();  // keyed by the DOM element the instance is attached to
+```
+
+The **only** way an entry is ever removed is calling `.dispose()` on the
+instance — internally (`base-component.js`):
+
+```js
+dispose() {
+  Data.remove(this._element, this.constructor.DATA_KEY);
+  ...
+}
+```
+
+So `new Carousel(el)`, `Modal.getOrCreateInstance(el)`, etc. — any of these —
+permanently retains `el` (and everything `el` references) in memory unless
+something later calls `.dispose()` on that instance. If the creation site is
+inside an Owl component's mount lifecycle, or a JS "Interaction" (Odoo's
+public-page interaction framework) that runs repeatedly (every mount, every
+modal/popup open, every list item added), each repetition leaks one more
+element — a compounding leak, not a one-off.
+
+Already found and fixed this way in community (context/precedent — always
+re-verify against the actual checkout being audited, since fixes land on
+separate branches/PRs and a given local worktree may or may not have them
+all yet): `addons/pos_self_order/static/src/app/utils/carousel_hook.js`
+(biggest impact — ~85% memory reduction in its own test suite),
+`addons/website/static/src/snippets/s_searchbar/search_bar.js`,
+`addons/website/static/src/interactions/image_popup.js` +
+`addons/website/static/src/snippets/s_image_gallery/gallery.js`.
+
+## How to audit
+
+1. Search for direct instantiation and the factory method, across whatever
+   scope you're auditing (one addon, all of enterprise, everything):
+
+   ```bash
+   grep -rnE "new (Carousel|Tooltip|Popover|Modal|Dropdown|Collapse|ScrollSpy|Tab|Offcanvas|Toast|Alert|Button)\\(" <path>/static/src
+   grep -rnE "\\.getOrCreateInstance\\(" <path>/static/src
+   ```
+
+2. For **each** hit, read the *whole file* (not just the instantiation line)
+   and the enclosing Owl component / Interaction / hook:
+   - Which class, and what element — a persistent one-time element (created
+     once, e.g. at module scope or a top-level ref) vs. one created/destroyed
+     repeatedly (every mount, every modal open, every row added/removed)?
+     Repeatable creation is what turns this into a real, compounding leak; a
+     genuinely one-time element still leaks, but only once.
+   - Search the same file for `.dispose()`, `onWillUnmount`, `onWillDestroy`,
+     `destroy()`, `registerCleanup` — is the instance actually disposed when
+     its owning component/interaction tears down, or when its element is
+     removed? Note: an Interaction's `this.insert(el, ...)` /
+     `registerCleanup(() => el.remove())` only removes `el` from the DOM — it
+     does **not** call `.dispose()` on any Bootstrap instance attached to it,
+     so relying on that alone is NOT a fix.
+   - Verdict: genuine leak (repeatable creation, no matching dispose) vs.
+     safe (disposed correctly, or a verified one-time element).
+
+3. Report format, ranked by confidence: file:line, class + element
+   description, dispose found (y/n, where), verdict. Only report sites
+   you've actually read the surrounding code for — don't guess from the
+   instantiation line alone.
+
+## Fix shape (from the community precedent)
+
+```js
+let carousel;
+onMounted(() => {
+  carousel = new Carousel(el);
+});
+onWillUnmount(() => {
+  carousel?.dispose();
+});
+```
+
+Same idea for a repeatedly-opened Modal/Popover/etc.: dispose it on whatever
+event signals it's done (`hidden.bs.modal`, the interaction's own teardown,
+`onWillDestroy`), not just remove its element from the DOM.
+
+## Going from static to empirical
+
+A static hit here is a *candidate*, not proof — confirm and quantify it with
+the `odoo-memory-perf` skill: find or write a tour/test that exercises the
+exact mount/open/close cycle around the suspected site, then run it through
+goo's Tests tab "Memory check" checkbox (or that skill's own `run_check.sh`)
+to diff real heap snapshots. The retained element (and the Bootstrap
+instance holding it) should show up directly in memlab's retainer trace if
+the leak is real.
+"""
+        return {"SKILL.md": skill_md}
 
     def write_dev_context(self, out_dir, community_path, branch):
         """Materialize the Odoo-dev CLAUDE.md + skills straight into <out_dir>/.claude/
@@ -3249,7 +3376,10 @@ module.exports = {
 class VenvService:
     """Build a dedicated Python venv for a worktree workspace, from its own
     requirements.txt (python3 -m venv, then pip install -r if the file is
-    present). Same notify-timed-event shape as GitService's mutations."""
+    present), plus websocket-client (best-effort — needed by Odoo's
+    ChromeBrowser for the Tests tab's memory-check option, since memleak_check
+    is available in every worktree but isn't itself an Odoo dependency). Same
+    notify-timed-event shape as GitService's mutations."""
 
     def __init__(self, io, notify=None):
         self.io = io
@@ -3286,14 +3416,20 @@ class VenvService:
             self.notify(creating, event_id=eid, status="error")
             return False, error
 
+        pip = os.path.join(vp, "bin", "pip")
+
         # a missing requirements.txt is not an error — just nothing to install
         if self.io.read_text(requirements_path) is not None:
-            pip = os.path.join(vp, "bin", "pip")
             req = os.path.expanduser(requirements_path)
             ok, error = self._pip(pip, "install", "-r", req, timeout=timeout, err="pip failed")
             if not ok:
                 self.notify(creating, event_id=eid, status="error")
                 return False, error
+
+        # best-effort: not an Odoo dependency, so it's never in requirements.txt,
+        # but memleak_check (available in every worktree) needs it for
+        # ChromeBrowser — a failure here shouldn't fail the whole venv
+        self._pip(pip, "install", "websocket-client", timeout=60, err="pip failed")
 
         self.notify(creating, event_id=eid, status="done")
         return True, None
@@ -3777,7 +3913,8 @@ def _worktree_dir(config, target):
 def build_start_config(config, workspace_id, overrides=None):
     """Assemble the launch config `build_odoo_cmd` consumes from the stored config, a
     workspace id, and optional `overrides` ({other_args?, test_tags?, install?,
-    upgrade?}). This is the one server-side builder the thin launch endpoints resolve
+    upgrade?, memcheck?}). This is the one server-side
+    builder the thin launch endpoints resolve
     `{workspace, overrides}` to. A worktree-located workspace points its repos +
     server_path at its on-disk copies (so build_odoo_cmd cd's into the worktree's
     community and runs its odoo-bin) and forwards its stable `port` as
@@ -3798,7 +3935,7 @@ def build_start_config(config, workspace_id, overrides=None):
         "other_args": overrides.get("other_args", start_cfg.get("other_args", "")),
         "demo_data": target.get("demo_data", True),
     }
-    for key in ("test_tags", "install", "upgrade"):
+    for key in ("test_tags", "install", "upgrade", "memcheck"):
         if overrides.get(key):
             start[key] = overrides[key]
     cfg = {**config, "workspace": target["id"], "start": start}

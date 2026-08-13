@@ -36,6 +36,10 @@ export class TestsPane extends Component {
         <button t-if="this.slotId === 'main'" type="button" class="tool-btn" t-att-disabled="!this.tags().trim()"
                 title="Copy a 'goo --test-tags …' command for these tags — run it on this machine (e.g. hand it to an agent) to run the test from the CLI"
                 t-on-click="() => this.copyCommand()"><t t-out="this.copyIcon"/></button>
+        <label class="toggle" t-att-class="{on: this.memcheck()}" t-on-click="() => this.toggleMemcheck()"
+               title="also install memleak_check and diff heap snapshots (memlab) around this run, to check for memory leaks">
+          <span class="switch"/>Memory check
+        </label>
         <button type="submit" t-att-disabled="this.tests.runActive(this.slotId) or !this.tags().trim()"><span class="play"/>Run</button>
         <button type="button" class="stop" t-att-disabled="!this.tests.runningFor(this.slotId)" t-on-click="() => this.stop()"><span class="ic square"/>Stop</button>
         <span t-if="this.badge" class="test-badge" t-att-class="this.badge.cls" t-out="this.badge.label"/>
@@ -45,8 +49,9 @@ export class TestsPane extends Component {
         </div>
       </form>
       <div t-if="!this.slot.output.count() and !this.tests.runActive(this.slotId)" class="ws-empty-note dim">
-        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run.
-        The run uses this workspace's database and checkout.
+        No test output yet — pick a preset or type <code>--test-tags</code>, then hit Run. The
+        run uses this workspace's database and checkout. Tick <b>Memory check</b> to also diff
+        heap snapshots (memlab) around it.
       </div>
       <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
     </div>`;
@@ -59,6 +64,7 @@ export class TestsPane extends Component {
   clearIcon = m(ICONS.clear);
   copyIcon = m(ICONS.copy);
   tags = signal("");
+  memcheck = signal(false);
 
   // copy a `goo --test-tags …` command for the current tags (single-quoted so the
   // shell doesn't mangle globs). Main slot only — the CLI runs against the ACTIVE
@@ -90,7 +96,11 @@ export class TestsPane extends Component {
   }
 
   run() {
-    this.tests.run(this.tags(), this.props.ws);
+    this.tests.run(this.tags(), this.props.ws, this.memcheck());
+  }
+
+  toggleMemcheck() {
+    this.memcheck.set(!this.memcheck());
   }
 
   // stopping the slot's server kills the run; the backend finalizes it and

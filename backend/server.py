@@ -438,10 +438,14 @@ def _filestore(body):
     return fs if isinstance(fs, str) and fs.strip() else None
 
 
-def _odoo_cmd_base(config, addons_repo_ids=None):
+def _odoo_cmd_base(config, addons_repo_ids=None, extra_env=None):
     """The invocation prefix build_odoo_cmd and build_shell_cmd share: resolve the
     repo map + community checkout, assemble the addons path (over `addons_repo_ids`,
     or every configured repo when None) and the venv/rust/odoo-bin launch prefix.
+    `extra_env` (optional {name: value}) is prefixed right before the odoo-bin
+    invocation itself, same spot as the existing RUST_BUNDLER=1 prefix — not
+    before the whole `cd ... &&` chain, where a bare env assignment wouldn't
+    scope to the actual command.
     Returns (cmd_prefix, addons_path). Raises ValueError on invalid config."""
     repo_map = {
         r["id"]: {**r, "path": os.path.expanduser(r["path"])}
@@ -485,7 +489,8 @@ def _odoo_cmd_base(config, addons_repo_ids=None):
     if config.get("venv_activate"):
         parts.append(config["venv_activate"])
     rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
-    parts.append(f"cd {community_path} && {rust}{invocation}")
+    env_prefix = "".join(f"{k}={shlex.quote(v)} " for k, v in (extra_env or {}).items())
+    parts.append(f"cd {community_path} && {rust}{env_prefix}{invocation}")
     return " && ".join(parts), addons_path
 
 
@@ -499,7 +504,36 @@ def build_odoo_cmd(config):
     if not db:
         raise ValueError("no database configured (start.db)")
 
-    cmd, addons_path = _odoo_cmd_base(config, start.get("repos", []))
+    # memory-perf check: goo's Tests tab "Memory check" checkbox is a plain
+    # option on the classic --test-tags run below, not a separate mode — it
+    # needs MEMCHECK_DUMP_DIR set on the odoo-bin invocation itself, so this
+    # is resolved before _odoo_cmd_base runs rather than as a plain cmd += after
+    memcheck = bool(start.get("memcheck") and start.get("test_tags"))
+    extra_env = None
+    dump_dir = None
+    if memcheck:
+        community_path = next(
+            (
+                os.path.expanduser(r["path"])
+                for r in config.get("repos", [])
+                if isinstance(r, dict) and r.get("id") == "community" and r.get("path")
+            ),
+            None,
+        )
+        if not community_path:
+            raise ValueError("no 'community' repo defined in repos")
+        worktree_parent = os.path.dirname(community_path)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        # same location convention as the odoo-memory-perf skill's
+        # run_check.sh, so a UI-triggered run and a Claude-triggered one land
+        # in the same place
+        dump_dir = os.path.join(
+            worktree_parent, ".claude", "skills", "odoo-memory-perf", "dumps",
+            f"memcheck_{stamp}",
+        )
+        extra_env = {"MEMCHECK_DUMP_DIR": dump_dir}
+
+    cmd, addons_path = _odoo_cmd_base(config, start.get("repos", []), extra_env=extra_env)
     db_user = config.get("db_user", "odoo")
     db_password = config.get("db_password", "odoo")
     without_demo = "false" if start.get("demo_data", True) else "all"
@@ -513,6 +547,20 @@ def build_odoo_cmd(config):
     # extras (other_args / on_create_args), mirroring the old odev behaviour
     test_tags = start.get("test_tags")
     if test_tags:
+        if memcheck and DATABASE.installed_modules(db).get("memleak_check") != "installed":
+            # memleak_check isn't installed yet: install it via a SEPARATE,
+            # prior odoo-bin invocation rather than bundling -i into this
+            # run's own --test-tags call. Odoo only scans to-install/to-upgrade
+            # modules for post_install tests the moment ANY -i/-u is active
+            # this run (loader.make_suite via registry.updated_modules) — if
+            # -i memleak_check were part of THIS invocation, this run's own
+            # target module (whatever --test-tags selects) would be silently
+            # excluded from that scan, since it's normally not itself being
+            # installed/upgraded (see the regression this replaced: a memcheck
+            # run on an already-installed target module executed 0 tests).
+            # Once installed, memleak_check stays part of every future boot's
+            # module graph on its own — no repeat install/upgrade needed.
+            cmd = f"{cmd} -i memleak_check --stop-after-init && {cmd}"
         # quote so shell globbing can't mangle hoot params, e.g.
         # /web:WebSuite[@web/core/commands] (the [..] is a bash glob).
         # --dev all turns on the dev features (access/qweb/reload/xml). NOTE: it
@@ -530,6 +578,19 @@ def build_odoo_cmd(config):
         on_create_args = start.get("on_create_args", "")
         if is_new and on_create_args:
             cmd += f" {on_create_args}"
+        if memcheck:
+            # chained as one more shell command rather than a second
+            # subprocess: the whole cmd already runs via shell=True, so
+            # memlab's offline analysis of the 3 snapshots odoo-bin just wrote
+            # runs right after, streamed into the same log the Tests tab
+            # already shows
+            cmd += (
+                f" && npx --yes memlab@latest find-leaks"
+                f" --baseline {shlex.quote(os.path.join(dump_dir, 'baseline.heapsnapshot'))}"
+                f" --target {shlex.quote(os.path.join(dump_dir, 'target.heapsnapshot'))}"
+                f" --final {shlex.quote(os.path.join(dump_dir, 'final.heapsnapshot'))}"
+                f" --work-dir {shlex.quote(dump_dir)}"
+            )
         return cmd, db, is_new
 
     # install / upgrade modules and exit

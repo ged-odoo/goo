@@ -121,6 +121,23 @@ export class TestsPlugin extends Plugin {
     if (line.includes("[HOOT] Test suite succeeded")) s.result = "success";
     else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
       s.result = "fail";
+    // memory-check mode: memlab's own "find-leaks" command never sets a
+    // non-zero exit code no matter how many leaks it finds, so its actual
+    // verdict has to come from parsing this summary line, not run.returncode
+    // (see _onRun, which now prefers s.result over a misleadingly-green exit
+    // code) — printed after odoo-bin's own test output, so it overrides any
+    // HOOT "success" already recorded above, which is the outcome we want:
+    // the test itself may have passed, but memory still leaked
+    const leaks = line.match(/MemLab found (\d+) leak/);
+    if (leaks) {
+      const n = Number(leaks[1]);
+      s.result = n > 0 ? "fail" : "success";
+      this.eventLog.add(
+        n > 0 ? `memory check: ${n} leak(s) found` : "memory check: no leaks found",
+        "",
+        n > 0 ? "error" : "",
+      );
+    }
     // for browser (WebSuite) runs the meaningful window ends when the browser is
     // torn down; everything after (thread dumps, shutdown noise) stays in the
     // server log only. Other test kinds keep streaming until the process stops.
@@ -152,8 +169,17 @@ export class TestsPlugin extends Plugin {
       // don't re-announce a stale result — matches the pre-run-model reload behavior
       if (s.announced !== run.id) return;
       const stopped = run.returncode === null;
+      // a non-zero exit always wins (the harder failure signal); otherwise
+      // prefer s.result when something (HOOT, or memlab's leak count — see
+      // _capture) already read a "fail" off the console despite a clean exit
       s.status.set(
-        stopped ? "stopped" : run.returncode ? `failed — exit ${run.returncode}` : "passed",
+        stopped
+          ? "stopped"
+          : run.returncode
+            ? `failed — exit ${run.returncode}`
+            : s.result === "fail"
+              ? "failed"
+              : "passed",
       );
       // fallback for non-browser tests (no chrome line): use the exit code if HOOT
       // didn't report an outcome
@@ -176,9 +202,16 @@ export class TestsPlugin extends Plugin {
     );
   }
 
-  // run tests against a workspace's slot (the Tests pane passes its workspace)
-  async run(tags, ws) {
-    if (!tags.trim() || !ws) return;
+  // run tests against a workspace's slot (the Tests pane passes its workspace).
+  // `memcheck` is a plain option on this SAME `tags` run, not a separate mode:
+  // it (re)installs memleak_check and chains memlab's offline heap-diff
+  // analysis after the run — memleak_check's own test file, once imported,
+  // patches ChromeBrowser so ANY test <tags> selects gets its own browser
+  // session snapshotted transparently (see build_odoo_cmd and
+  // addons/memleak_check/tests/test_memleak_check.py).
+  async run(tags, ws, memcheck = false) {
+    const target = tags.trim();
+    if (!ws || !target) return;
     this.config.workspace(ws.id)?.touchActivity();
     const slotId = slotFor(ws);
     const targetId = ws.id;
@@ -192,8 +225,8 @@ export class TestsPlugin extends Plugin {
             return (st.state === "running" || st.state === "starting") && st.mode === "server";
           })()
         : ["running", "starting"].includes(this.store.server(slotId)?.state);
-    this._pushHistory(tags);
-    s.tags = tags.trim(); // logged once the test server is actually up
+    this._pushHistory(target);
+    s.tags = memcheck ? `memcheck: ${target}` : target; // logged once the server is up
     s.cutOnChrome = s.tags.includes("web:WebSuite");
     s.result = "";
     // surface the stop as an event, but don't mirror its shutdown logs to the console
@@ -206,11 +239,8 @@ export class TestsPlugin extends Plugin {
     try {
       // the server resolves the launch config from the target + overrides, and
       // runs it on the given workspace slot
-      await postJSON("/api/tests/run", {
-        workspace: targetId,
-        slot: slotId,
-        overrides: { test_tags: s.tags },
-      });
+      const overrides = memcheck ? { test_tags: target, memcheck: true } : { test_tags: target };
+      await postJSON("/api/tests/run", { workspace: targetId, slot: slotId, overrides });
     } catch (e) {
       s.pending.set(false);
       s.status.set(`failed to start: ${e.message}`);
