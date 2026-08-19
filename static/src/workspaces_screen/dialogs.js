@@ -26,10 +26,20 @@ export function categoryOptions(config) {
   return opts;
 }
 
-// the Config string for a set of ticked repo ids, all forking the same branch
-// (the common case — a task branch of the same name across every repo it touches)
-const configFromRepos = (repoIds, branch) =>
-  repoBranchList.format(repoIds.map((repo) => ({ repo, branch })));
+// the Config string for a set of ticked repo ids. Forking fresh branches (the
+// common "new task" case): every repo gets the same new branch name, so a
+// full stomp from `branch` is correct even for repos already in `currentConfig`.
+// Attaching existing branches (bundle / remote-branch / forward-port sources,
+// `preserveExisting`): a repo's real, already-fetched branch must survive
+// toggling an unrelated repo's checkbox or editing the name — only a repo with
+// no config entry yet (the user manually ticking one beyond what was fetched)
+// gets `branch` stamped as a best-effort guess.
+const configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting = false) => {
+  const existing = preserveExisting
+    ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch]))
+    : {};
+  return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
+};
 
 // The values a template prefills into the create form (also the payload its
 // select's onChange used to produce, before the source moved to the wizard's
@@ -285,7 +295,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.name ?? "",
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
-          const updates = { config: configFromRepos(currentValues.repos || [], newName.trim()) };
+          const updates = {
+            config: configFromRepos(
+              currentValues.repos || [],
+              newName.trim(),
+              currentValues.config,
+              currentValues.createBranches === false,
+            ),
+          };
           // only string-replace db when there was a previous name to replace —
           // replaceAll("", newName) on the very first keystroke would otherwise
           // splice newName between every character
@@ -301,7 +318,12 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefillRepoIds,
         options: repoOptions,
         onChange: (repoIds, currentValues) => ({
-          config: configFromRepos(repoIds, (currentValues.name || "").trim()),
+          config: configFromRepos(
+            repoIds,
+            (currentValues.name || "").trim(),
+            currentValues.config,
+            currentValues.createBranches === false,
+          ),
         }),
       },
       {

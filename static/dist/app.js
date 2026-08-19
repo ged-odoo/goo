@@ -9022,7 +9022,10 @@ function categoryOptions(config) {
     opts.push({ value: ARCHIVED_CATEGORY, label: ARCHIVED_CATEGORY });
   return opts;
 }
-var configFromRepos = (repoIds, branch) => repoBranchList.format(repoIds.map((repo) => ({ repo, branch })));
+var configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting = false) => {
+  const existing = preserveExisting ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch])) : {};
+  return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
+};
 function templatePrefill(tpl) {
   if (!tpl) return {};
   const branch = tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
@@ -9223,7 +9226,14 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.name ?? "",
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
-          const updates = { config: configFromRepos(currentValues.repos || [], newName.trim()) };
+          const updates = {
+            config: configFromRepos(
+              currentValues.repos || [],
+              newName.trim(),
+              currentValues.config,
+              currentValues.createBranches === false
+            )
+          };
           if (oldValues.name)
             updates.db = (currentValues.db || "").replaceAll(oldValues.name, newName);
           return updates;
@@ -9236,7 +9246,12 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefillRepoIds,
         options: repoOptions,
         onChange: (repoIds, currentValues) => ({
-          config: configFromRepos(repoIds, (currentValues.name || "").trim())
+          config: configFromRepos(
+            repoIds,
+            (currentValues.name || "").trim(),
+            currentValues.config,
+            currentValues.createBranches === false
+          )
         })
       },
       {
