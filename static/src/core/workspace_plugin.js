@@ -253,6 +253,7 @@ export class WorkspacePlugin extends Plugin {
     parent = "",
     createVenv = false,
     existingBranches = false,
+    forkRepos = new Set(),
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -281,10 +282,13 @@ export class WorkspacePlugin extends Plugin {
     // existingBranches (bundle / remote branch / forward-port sources, which
     // already fetched real local branches): attach them to the worktree as-is
     // instead of forking — `-b <branch>` would fail with "already exists" since
-    // the branch is real, not a fresh name to fork from a start point.
+    // the branch is real, not a fresh name to fork from a start point. A repo in
+    // `forkRepos` overrides that per-checkout — the source never actually fetched
+    // a branch for it (e.g. a repo the runbot bundle didn't touch), so it forks
+    // fresh from startPointByRepo instead of attaching a branch that may not exist.
     const repos = checkouts
       .map(({ repo, branch }) =>
-        existingBranches
+        existingBranches && !forkRepos.has(repo)
           ? {
               repo,
               branch,

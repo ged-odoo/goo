@@ -4274,7 +4274,8 @@ var WorkspacePlugin = class extends Plugin {
     category = "",
     parent = "",
     createVenv = false,
-    existingBranches = false
+    existingBranches = false,
+    forkRepos = /* @__PURE__ */ new Set()
   }) {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
@@ -4299,7 +4300,7 @@ var WorkspacePlugin = class extends Plugin {
     const dir = this.dirPath(ws);
     ws.worktree.dir = dir;
     const repos = checkouts.map(
-      ({ repo, branch }) => existingBranches ? {
+      ({ repo, branch }) => existingBranches && !forkRepos.has(repo) ? {
         repo,
         branch,
         mainPath: g.pathByRepo[repo] || "",
@@ -9342,6 +9343,12 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   });
   if (!res) return;
   const checkouts = repoBranchList.parse(res.config.trim());
+  const startPointByRepo = Object.fromEntries(
+    (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
+  );
+  for (const c of checkouts)
+    if (!startPointByRepo[c.repo]) startPointByRepo[c.repo] = baseBranchOf(c.branch);
+  const forkRepos = /* @__PURE__ */ new Set();
   if (verifiedRepos && res.createBranches === false) {
     const unverified = checkouts.filter((c) => !verifiedRepos.has(c.repo));
     if (unverified.length) {
@@ -9349,27 +9356,14 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       const many = unverified.length > 1;
       const proceed = await dialogs.open({
         title: "Unconfirmed branch",
-        message: `${names} ${many ? "weren't" : "wasn't"} part of the fetched branches \u2014 attaching ${many ? "them" : "it"} would likely fail (the branch may not exist there). Skip ${many ? "them" : "it"} and create the workspace with the rest?`,
-        okLabel: "Skip & create",
+        message: `${names} ${many ? "weren't" : "wasn't"} part of the fetched branches \u2014 attaching ${many ? "them" : "it"} would likely fail (the branch may not exist there). Fork ${many ? "them" : "it"} fresh from ${many ? "their bases" : "its base"} (${unverified.map((c) => `${c.repo}:${startPointByRepo[c.repo]}`).join(", ")}) instead, and create the workspace?`,
+        okLabel: "Fork from base & create",
         cancelLabel: "Cancel"
       });
       if (!proceed) return;
-      const skip = new Set(unverified.map((c) => c.repo));
-      checkouts.splice(0, checkouts.length, ...checkouts.filter((c) => !skip.has(c.repo)));
-      if (!checkouts.length) {
-        dialogs.error(
-          "Workspace creation failed",
-          "no repos left after skipping the unconfirmed ones"
-        );
-        return;
-      }
+      for (const c of unverified) forkRepos.add(c.repo);
     }
   }
-  const startPointByRepo = Object.fromEntries(
-    (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
-  );
-  for (const c of checkouts)
-    if (!startPointByRepo[c.repo]) startPointByRepo[c.repo] = baseBranchOf(c.branch);
   if (res.location === "worktree") {
     await wt.createWorktree({
       name: res.name.trim(),
@@ -9384,7 +9378,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       category: res.category || "",
       parent: prefill.parent || "",
       createVenv: !!res.createVenv,
-      existingBranches: res.createBranches === false
+      existingBranches: res.createBranches === false,
+      forkRepos
     });
     return;
   }
@@ -9407,10 +9402,11 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   };
   eventLog.add(`creating workspace ${ws.name}`);
   config.updateConfig({ workspaces: [...config.config.workspaces, ws] });
-  if (res.createBranches) {
+  const toFork = res.createBranches ? checkouts : checkouts.filter((c) => forkRepos.has(c.repo));
+  if (toFork.length) {
     const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
     await code.createBranches(
-      checkouts.map((c) => ({
+      toFork.map((c) => ({
         path: pathByRepo[c.repo],
         name: c.branch,
         startPoint: startPointByRepo[c.repo],
