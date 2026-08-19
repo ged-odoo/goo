@@ -2391,21 +2391,45 @@ class GitServiceTest(unittest.TestCase):
 
     def test_fetch_remote_branch_uses_pull_remote(self):
         io = FakeIO()
-        ok, err = services.GitService(io).fetch_remote_branch(
+        ok, err, non_ff = services.GitService(io).fetch_remote_branch(
             "/r", "master-x", pull_remote="upstream"
         )
-        self.assertEqual((ok, err), (True, None))
+        self.assertEqual((ok, err, non_ff), (True, None, False))
         self.assertIn("fetch upstream master-x:master-x", " ".join(io.run_calls[-1]))
 
     def test_fetch_remote_branch_from_push_remote(self):
         # forward-port sub-workspace fetches the fw head from the dev fork, so the
         # opportunistic refs/remotes/dev/<branch> ref makes it look pushed
         io = FakeIO()
-        ok, err = services.GitService(io).fetch_remote_branch(
+        ok, err, non_ff = services.GitService(io).fetch_remote_branch(
             "/r", "master-x-548384-fw", pull_remote="dev"
         )
-        self.assertEqual((ok, err), (True, None))
+        self.assertEqual((ok, err, non_ff), (True, None, False))
         self.assertIn("fetch dev master-x-548384-fw:master-x-548384-fw", " ".join(io.run_calls[-1]))
+
+    def test_fetch_remote_branch_non_fast_forward_flagged(self):
+        io = FakeIO(
+            runs={
+                "fetch": completed(
+                    returncode=1,
+                    stderr="From github.com:odoo-dev/odoo\n"
+                    " ! [rejected]        master-x -> master-x  (non-fast-forward)\n",
+                )
+            }
+        )
+        ok, err, non_ff = services.GitService(io).fetch_remote_branch(
+            "/r", "master-x", pull_remote="dev"
+        )
+        self.assertFalse(ok)
+        self.assertTrue(non_ff)
+
+    def test_fetch_remote_branch_force_uses_plus_refspec(self):
+        io = FakeIO()
+        ok, err, non_ff = services.GitService(io).fetch_remote_branch(
+            "/r", "master-x", pull_remote="dev", force=True
+        )
+        self.assertEqual((ok, err, non_ff), (True, None, False))
+        self.assertIn("fetch dev +master-x:master-x", " ".join(io.run_calls[-1]))
 
     def test_fetch_master_uses_pull_remote(self):
         io = FakeIO()

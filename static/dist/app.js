@@ -9026,6 +9026,28 @@ var configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting = f
   const existing = preserveExisting ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch])) : {};
   return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
 };
+async function fetchRemoteBranch(dialogs, { path, branch, pull_remote }) {
+  const attempt = (force) => postJSON("/api/code/remote-branch/fetch", { path, branch, pull_remote, force });
+  try {
+    await attempt(false);
+    return { ok: true };
+  } catch (e) {
+    if (!e.data?.non_ff) return { ok: false, error: e.message };
+    const proceed = await dialogs.open({
+      title: "Branch has diverged",
+      message: `the local ${branch} has diverged from ${pull_remote || "origin"} (it was likely rebased or force-pushed) \u2014 overwrite the local copy with the remote's?`,
+      okLabel: "Overwrite",
+      cancelLabel: "Skip"
+    });
+    if (!proceed) return { ok: false, error: e.message };
+    try {
+      await attempt(true);
+      return { ok: true };
+    } catch (e2) {
+      return { ok: false, error: e2.message };
+    }
+  }
+}
 function templatePrefill(tpl) {
   if (!tpl) return {};
   const branch = tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
@@ -9147,18 +9169,13 @@ async function startNewWorkspaceWizard(plugins) {
   const results = await Promise.all(
     matches.map(async (m2) => {
       const eid = eventLog.begin(`fetching ${m2.branch} (${m2.repo.id}) from ${m2.remote}`);
-      try {
-        await postJSON("/api/code/remote-branch/fetch", {
-          path: m2.repo.path,
-          branch: m2.branch,
-          pull_remote: m2.remote
-        });
-        eventLog.finish(eid, "done");
-        return { ...m2, ok: true };
-      } catch (e) {
-        eventLog.finish(eid, "error");
-        return { ...m2, ok: false, error: e.message };
-      }
+      const r = await fetchRemoteBranch(dialogs, {
+        path: m2.repo.path,
+        branch: m2.branch,
+        pull_remote: m2.remote
+      });
+      eventLog.finish(eid, r.ok ? "done" : "error");
+      return { ...m2, ...r };
     })
   );
   const failed = results.filter((r) => !r.ok);
@@ -9189,6 +9206,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
   const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
   const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
+  const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
   const res = await dialogs.open({
     title: tpl ? `New workspace \u2014 from template "${tpl.name}"` : "New workspace",
     okLabel: "Create",
@@ -9324,6 +9342,29 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   });
   if (!res) return;
   const checkouts = repoBranchList.parse(res.config.trim());
+  if (verifiedRepos && res.createBranches === false) {
+    const unverified = checkouts.filter((c) => !verifiedRepos.has(c.repo));
+    if (unverified.length) {
+      const names = unverified.map((c) => c.repo).join(", ");
+      const many = unverified.length > 1;
+      const proceed = await dialogs.open({
+        title: "Unconfirmed branch",
+        message: `${names} ${many ? "weren't" : "wasn't"} part of the fetched branches \u2014 attaching ${many ? "them" : "it"} would likely fail (the branch may not exist there). Skip ${many ? "them" : "it"} and create the workspace with the rest?`,
+        okLabel: "Skip & create",
+        cancelLabel: "Cancel"
+      });
+      if (!proceed) return;
+      const skip = new Set(unverified.map((c) => c.repo));
+      checkouts.splice(0, checkouts.length, ...checkouts.filter((c) => !skip.has(c.repo)));
+      if (!checkouts.length) {
+        dialogs.error(
+          "Workspace creation failed",
+          "no repos left after skipping the unconfirmed ones"
+        );
+        return;
+      }
+    }
+  }
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
   );
@@ -9398,11 +9439,12 @@ async function resolvePrBranches(plugins, targets) {
         const head = await postJSON("/api/prs/head", { repo: pull.github, number: pull.number });
         const branch = head.branch;
         if (!branch) throw new Error("could not resolve the PR's head branch");
-        await postJSON("/api/code/remote-branch/fetch", {
+        const r = await fetchRemoteBranch(dialogs, {
           path: repo.path,
           branch,
           pull_remote: repo.push_remote || "dev"
         });
+        if (!r.ok) throw new Error(r.error);
         eventLog.finish(eid, "done");
         return { repo, branch, ok: true };
       } catch (e) {

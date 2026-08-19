@@ -2057,10 +2057,10 @@ def _api_code_remote_branches_search(body):
 
 @post_route("/api/code/remote-branch/fetch", "path", "branch")
 def _api_code_remote_branch_fetch(body):
-    ok, error = GIT.fetch_remote_branch(
-        body["path"], body["branch"], pull_remote=body.get("pull_remote")
+    ok, error, non_ff = GIT.fetch_remote_branch(
+        body["path"], body["branch"], pull_remote=body.get("pull_remote"), force=bool(body.get("force"))
     )
-    return (200 if ok else 400), {"ok": ok, "error": error}
+    return (200 if ok else 400), {"ok": ok, "error": error, "non_ff": non_ff}
 
 
 @post_route("/api/code/wip-commit", "path")

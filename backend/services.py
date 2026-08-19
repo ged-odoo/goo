@@ -3280,16 +3280,20 @@ the leak is real.
         )
         return (None, error) if error else (r.stdout, None)
 
-    def fetch_remote_branch(self, path, branch, pull_remote="origin"):
+    def fetch_remote_branch(self, path, branch, pull_remote="origin", force=False):
         """Fetch a remote branch and create/reset the local branch to track it
         (git fetch <pull_remote> {branch}:{branch}). Also updates the remote's
         opportunistic tracking ref (refs/remotes/<remote>/<branch>), so callers can
-        pass a fork remote to make a forward-port head look pushed. Returns (ok, error)."""
+        pass a fork remote to make a forward-port head look pushed. Without `force`,
+        a local branch that already exists and has diverged (e.g. the remote branch
+        was rebased/force-pushed since the last fetch) is rejected rather than
+        silently rewritten — flagged back as `non_ff` so a caller can ask the user
+        before retrying with force=True. Returns (ok, error, non_ff)."""
         remote = pull_remote or "origin"
-        _, error = self._git(
-            path, "fetch", remote, f"{branch}:{branch}", timeout=60, err="git fetch failed"
-        )
-        return error is None, error
+        refspec = f"{'+' if force else ''}{branch}:{branch}"
+        r, error = self._git(path, "fetch", remote, refspec, timeout=60, err="git fetch failed")
+        non_ff = bool(error) and r is not None and "non-fast-forward" in (r.stderr or "")
+        return error is None, error, non_ff
 
     def fetch_rebase(self, path, base, pull_remote="origin", repo=""):
         """Fetch the base branch from the configured pull remote and rebase the

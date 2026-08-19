@@ -41,6 +41,37 @@ const configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting =
   return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
 };
 
+// Fetch a remote branch into a local one of the same name — the shared step
+// every "attach existing branch" source (bundle, remote-branch search,
+// forward-port) starts from. A plain non-fast-forward rejection means the
+// local branch already exists here and has diverged from the remote (it was
+// rebased/force-pushed since goo last fetched it) — ask before overwriting the
+// local copy rather than just failing the whole flow outright. Returns
+// {ok, error?}.
+async function fetchRemoteBranch(dialogs, { path, branch, pull_remote }) {
+  const attempt = (force) =>
+    postJSON("/api/code/remote-branch/fetch", { path, branch, pull_remote, force });
+  try {
+    await attempt(false);
+    return { ok: true };
+  } catch (e) {
+    if (!e.data?.non_ff) return { ok: false, error: e.message };
+    const proceed = await dialogs.open({
+      title: "Branch has diverged",
+      message: `the local ${branch} has diverged from ${pull_remote || "origin"} (it was likely rebased or force-pushed) — overwrite the local copy with the remote's?`,
+      okLabel: "Overwrite",
+      cancelLabel: "Skip",
+    });
+    if (!proceed) return { ok: false, error: e.message };
+    try {
+      await attempt(true);
+      return { ok: true };
+    } catch (e2) {
+      return { ok: false, error: e2.message };
+    }
+  }
+}
+
 // The values a template prefills into the create form (also the payload its
 // select's onChange used to produce, before the source moved to the wizard's
 // first step): named after its enterprise/community branch, its checkouts as
@@ -195,18 +226,13 @@ export async function startNewWorkspaceWizard(plugins) {
   const results = await Promise.all(
     matches.map(async (m) => {
       const eid = eventLog.begin(`fetching ${m.branch} (${m.repo.id}) from ${m.remote}`);
-      try {
-        await postJSON("/api/code/remote-branch/fetch", {
-          path: m.repo.path,
-          branch: m.branch,
-          pull_remote: m.remote,
-        });
-        eventLog.finish(eid, "done");
-        return { ...m, ok: true };
-      } catch (e) {
-        eventLog.finish(eid, "error");
-        return { ...m, ok: false, error: e.message };
-      }
+      const r = await fetchRemoteBranch(dialogs, {
+        path: m.repo.path,
+        branch: m.branch,
+        pull_remote: m.remote,
+      });
+      eventLog.finish(eid, r.ok ? "done" : "error");
+      return { ...m, ...r };
     }),
   );
   const failed = results.filter((r) => !r.ok);
@@ -254,6 +280,12 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   const prefillRepoIds = prefill.config
     ? repoBranchList.parse(prefill.config).map((c) => c.repo)
     : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
+  // bundle / remote-branch / forward-port sources (createBranches: false) only
+  // fetched a branch for `prefillRepoIds` — anything the user ticks beyond that
+  // has no confirmed branch to attach; git worktree add for it fails with
+  // "invalid reference" and takes the whole creation down (see the check below,
+  // right before checkouts are used).
+  const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
   const res = await dialogs.open({
     title: tpl ? `New workspace — from template "${tpl.name}"` : "New workspace",
     okLabel: "Create",
@@ -400,6 +432,33 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   });
   if (!res) return;
   const checkouts = repoBranchList.parse(res.config.trim());
+  // a repo ticked beyond what was actually fetched (createBranches still false,
+  // e.g. "upgrade" isn't part of the bundle) has no real branch to attach — ask
+  // before sending it: attaching a nonexistent branch fails the whole creation,
+  // possibly after other repos' worktrees already landed on disk.
+  if (verifiedRepos && res.createBranches === false) {
+    const unverified = checkouts.filter((c) => !verifiedRepos.has(c.repo));
+    if (unverified.length) {
+      const names = unverified.map((c) => c.repo).join(", ");
+      const many = unverified.length > 1;
+      const proceed = await dialogs.open({
+        title: "Unconfirmed branch",
+        message: `${names} ${many ? "weren't" : "wasn't"} part of the fetched branches — attaching ${many ? "them" : "it"} would likely fail (the branch may not exist there). Skip ${many ? "them" : "it"} and create the workspace with the rest?`,
+        okLabel: "Skip & create",
+        cancelLabel: "Cancel",
+      });
+      if (!proceed) return;
+      const skip = new Set(unverified.map((c) => c.repo));
+      checkouts.splice(0, checkouts.length, ...checkouts.filter((c) => !skip.has(c.repo)));
+      if (!checkouts.length) {
+        dialogs.error(
+          "Workspace creation failed",
+          "no repos left after skipping the unconfirmed ones",
+        );
+        return;
+      }
+    }
+  }
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
   );
@@ -470,25 +529,31 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
 
 // Search for a remote branch across the repos, fetch it locally, then open the
 // create dialog prefilled with it. "Create branches" defaults off — the fetch
-// already created the local branches.
+// already created the local branches. A repo whose fetch fails (or has no
+// path) is reported and left out of the prefill entirely — never handed to
+// the create form as if it had a real local branch to attach.
 export async function createWorkspaceFromRemoteBranch(plugins) {
   const { code, dialogs } = plugins;
   const res = await dialogs.openComponent(RemoteBranchDialog);
   if (!res) return;
   const { branch, repos } = res;
   const { pathByRepo, pullRemoteByRepo } = code.groups();
+  const fetched = [];
   for (const repoId of repos) {
     const path = pathByRepo[repoId];
     if (!path) continue;
-    await postJSON("/api/code/remote-branch/fetch", {
+    const r = await fetchRemoteBranch(dialogs, {
       path,
       branch,
       pull_remote: pullRemoteByRepo[repoId],
     });
+    if (r.ok) fetched.push(repoId);
+    else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);
   }
+  if (!fetched.length) return;
   await startCreateWorkspace(plugins, {
     name: branch,
-    config: repos.map((r) => `${r}:${branch}`).join(","),
+    config: fetched.map((r) => `${r}:${branch}`).join(","),
     db: branch,
     template: "",
     createBranches: false,
@@ -529,11 +594,12 @@ async function resolvePrBranches(plugins, targets) {
         const head = await postJSON("/api/prs/head", { repo: pull.github, number: pull.number });
         const branch = head.branch;
         if (!branch) throw new Error("could not resolve the PR's head branch");
-        await postJSON("/api/code/remote-branch/fetch", {
+        const r = await fetchRemoteBranch(dialogs, {
           path: repo.path,
           branch,
           pull_remote: repo.push_remote || "dev",
         });
+        if (!r.ok) throw new Error(r.error);
         eventLog.finish(eid, "done");
         return { repo, branch, ok: true };
       } catch (e) {
