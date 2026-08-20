@@ -2274,6 +2274,26 @@ Other useful (user-level) skills:
 3. **Code review** — Use `/simplify` and `/security-review` to audit changes
 4. **Commit & push** — Use `/check-commit` to ensure your commit message is compliant
 
+## Browser & memory debugging (MCP)
+
+If the `chrome-devtools` and `memlab` MCP servers are configured (`claude mcp list`),
+prefer them over guessing at UI/memory behavior from the code alone:
+
+- **`chrome-devtools`** — drive a real Chrome against the running Odoo instance to
+  click through the UI, take snapshots/screenshots, and read console/network output.
+- **`memlab`** — analyze heap snapshots for memory leaks (pairs with `/leak-check`
+  and the `memleak_check` addon).
+
+If `chrome-devtools` fails to connect ("Could not connect to Chrome" / "Target
+closed"), it's likely pinned to a fixed `--browserUrl` expecting an
+already-running debuggable Chrome, or the sandbox here can't launch Chrome with
+its default sandbox. Reconfigure it to launch its own headless browser instead:
+`claude mcp remove chrome-devtools -s user`, then `claude mcp add chrome-devtools
+-s user -- <command from the old config> --headless --isolated
+--chromeArg=--no-sandbox --chromeArg=--disable-setuid-sandbox` (drop any
+`--browserUrl`/`--wsEndpoint` arg). Editing the MCP config only takes effect after
+Claude Code restarts.
+
 ---
 
 *This file was auto-generated. Feel free to edit it.*

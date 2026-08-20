@@ -1679,6 +1679,8 @@ class GitServiceTest(unittest.TestCase):
             "https://raw.githubusercontent.com/odoo/documentation/18.0/content/developer",
             skill,
         )
+        self.assertIn("chrome-devtools", claude_md)
+        self.assertIn("memlab", claude_md)
 
     def test_create_worktree_claude_md_omits_enterprise_when_absent(self):
         io = FakeIO()
