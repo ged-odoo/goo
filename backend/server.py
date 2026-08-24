@@ -2966,7 +2966,22 @@ def main():
     # circular import (adopt.py imports CONFIG from this module).
     from . import adopt
 
+    try:
+        # once, synchronously, before cleanup (right below) can start: its own
+        # first tick reading an empty just-booted config (before adopt's own
+        # background thread gets to it) would silently find nothing to check
+        adopt.scan_and_register()
+    except Exception as e:
+        print(f"[goo] adopt scan failed: {e}", flush=True)
     threading.Thread(target=adopt.loop, daemon=True).start()
+    # optional daily cleanup of merged worktree workspaces (see
+    # backend/cleanup.py) -- off by default (cleanup_enabled), and cleanup.py
+    # itself re-checks the setting on every tick, so this thread is harmless
+    # to always start. Imported here, not at module level, for the same
+    # reason as adopt above (cleanup.py imports CONFIG/GIT/GITHUB from here).
+    from . import cleanup
+
+    threading.Thread(target=cleanup.loop, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

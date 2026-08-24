@@ -74,6 +74,7 @@ const SETTINGS_BOOLS = [
   "workspace_categories_enabled",
   "hide_start_controls",
   "autologin_links",
+  "cleanup_enabled",
 ];
 const SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories", "reviews"];
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
@@ -109,6 +110,9 @@ export class Settings extends Model {
   // off = the /odoo, /web/tests buttons link the plain path instead of going
   // through goo's autologin route -- for people who'd rather log in themselves
   autologin_links = fields.bool();
+  // off by default -- automatically deletes merged worktree workspaces once a
+  // day (see backend/cleanup.py); opt-in since it deletes things on its own
+  cleanup_enabled = fields.bool();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();

@@ -606,6 +606,10 @@ export class ConfigScreen extends Component {
             <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
                    t-att-checked="this.config.config.autologin_links"
                    t-on-change="ev => this.config.updateConfig({ autologin_links: ev.target.checked })"/>
+            <label for="setting-cleanup-enabled" title="Once a day, automatically delete a worktree workspace once every checkout with a PR shows it merged (skipped if anything is dirty or unpushed). Branches are only ever deleted locally, never on the remote.">auto-delete merged workspaces</label>
+            <input id="setting-cleanup-enabled" type="checkbox" class="settings-check" title="Once a day, automatically delete a worktree workspace once every checkout with a PR shows it merged (skipped if anything is dirty or unpushed). Branches are only ever deleted locally, never on the remote."
+                   t-att-checked="this.config.config.cleanup_enabled"
+                   t-on-change="ev => this.config.updateConfig({ cleanup_enabled: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>

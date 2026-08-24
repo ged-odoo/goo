@@ -34,6 +34,10 @@ export const DEFAULT_CONFIG = {
   // path instead, for people who'd rather log in themselves (e.g. that addon
   // isn't installed, or just a preference)
   autologin_links: true,
+  // off by default: automatically delete a worktree workspace once every
+  // checkout with a PR shows it merged (and nothing is dirty/unpushed) — once
+  // a day (see backend/cleanup.py). Opt-in since it deletes things on its own.
+  cleanup_enabled: false,
   // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
   // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,

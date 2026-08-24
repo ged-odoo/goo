@@ -56,6 +56,10 @@ var DEFAULT_CONFIG = {
   // path instead, for people who'd rather log in themselves (e.g. that addon
   // isn't installed, or just a preference)
   autologin_links: true,
+  // off by default: automatically delete a worktree workspace once every
+  // checkout with a PR shows it merged (and nothing is dirty/unpushed) — once
+  // a day (see backend/cleanup.py). Opt-in since it deletes things on its own.
+  cleanup_enabled: false,
   // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
   // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,
@@ -3140,7 +3144,8 @@ var SETTINGS_BOOLS = [
   "rust_bundler",
   "workspace_categories_enabled",
   "hide_start_controls",
-  "autologin_links"
+  "autologin_links",
+  "cleanup_enabled"
 ];
 var SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories", "reviews"];
 var STATE_CHARS = ["active_workspace", "claude_model"];
@@ -3175,6 +3180,9 @@ var Settings = class extends Model {
   // off = the /odoo, /web/tests buttons link the plain path instead of going
   // through goo's autologin route -- for people who'd rather log in themselves
   autologin_links = fields.bool();
+  // off by default -- automatically deletes merged worktree workspaces once a
+  // day (see backend/cleanup.py); opt-in since it deletes things on its own
+  cleanup_enabled = fields.bool();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
@@ -6687,6 +6695,10 @@ var ConfigScreen = class extends Component {
             <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
                    t-att-checked="this.config.config.autologin_links"
                    t-on-change="ev => this.config.updateConfig({ autologin_links: ev.target.checked })"/>
+            <label for="setting-cleanup-enabled" title="Once a day, automatically delete a worktree workspace once every checkout with a PR shows it merged (skipped if anything is dirty or unpushed). Branches are only ever deleted locally, never on the remote.">auto-delete merged workspaces</label>
+            <input id="setting-cleanup-enabled" type="checkbox" class="settings-check" title="Once a day, automatically delete a worktree workspace once every checkout with a PR shows it merged (skipped if anything is dirty or unpushed). Branches are only ever deleted locally, never on the remote."
+                   t-att-checked="this.config.config.cleanup_enabled"
+                   t-on-change="ev => this.config.updateConfig({ cleanup_enabled: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>
