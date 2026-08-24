@@ -153,7 +153,7 @@ export class AddonsPane extends Component {
               <td class="dim" t-out="mod.repo"/>
               <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
               <td>
-                <div class="br-act">
+                <div t-if="!this.config.config.hide_start_controls" class="br-act">
                   <button class="addon-btn" t-att-disabled="this.addons.runActive(this.slotId) or mod.installable === false"
                           t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.props.ws)"
                           t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
@@ -171,6 +171,7 @@ export class AddonsPane extends Component {
 
   props = useProps({ ws: t.any() });
   addons = usePlugin(AddonsPlugin);
+  config = usePlugin(ConfigPlugin);
 
   setup() {
     // load (and reload when the workspace's db changes) while mounted
@@ -228,7 +229,7 @@ export class AssetsPane extends Component {
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
           <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
-          <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
+          <button t-if="!this.config.config.hide_start_controls" class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
                   t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
           <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
         </div>

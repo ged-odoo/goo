@@ -52,6 +52,8 @@ export class WorkspacePlugin extends Plugin {
   requestedPane = signal("");
   logs = new Map(); // targetId -> LogBuffer (per-server scrollback + live stream)
   _startEids = {}; // targetId -> pending "starting worktree server" timed-event id
+  _externalStatus = new Map(); // targetId -> { checking, running, url, error }
+  _externalStatusTick = signal(0); // bumped after a fetch so externalStatus() re-renders
 
   setup() {
     this.server.onWorktree((d) => this.applyStatus(d));
@@ -89,10 +91,17 @@ export class WorkspacePlugin extends Plugin {
     } catch {
       /* storage disabled — the in-memory selection still works */
     }
-    // only worktree workspaces have a per-server tail to prime (a main-located
-    // workspace's log is the shared main-server buffer)
-    if (id && this.isWorktree((this.config.config.workspaces || []).find((w) => w.id === id)))
+    const ws = id ? (this.config.config.workspaces || []).find((w) => w.id === id) : null;
+    if (ws && this.isWorktree(ws)) {
+      // only worktree workspaces have a per-server tail to prime (a main-located
+      // workspace's log is the shared main-server buffer)
       this._primeLogs(id);
+      // people who launch servers by hand (hide_start_controls) get a passive
+      // external-status check instead of goo's own live tracking -- refresh it
+      // on selection so the /odoo, /web/tests buttons aren't stuck disabled
+      // until a manual "Check status" click
+      if (this.config.config.hide_start_controls) this.refreshExternalStatus(ws);
+    }
   }
 
   selectOnOpen(id) {
@@ -122,10 +131,35 @@ export class WorkspacePlugin extends Plugin {
     return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt); // transient
   }
 
-  hasCommunity(tgt) {
+  hasMainRepo(tgt) {
     const rec = this.config.workspace(tgt.id);
-    if (rec) return rec.hasCommunity();
-    return (tgt.checkouts || []).some((c) => c.repo === "community"); // transient
+    if (rec) return rec.hasMainRepo();
+    const mainRepoId = this.config.config.main_repo_id || "community";
+    return (tgt.checkouts || []).some((c) => c.repo === mainRepoId); // transient
+  }
+
+  // ── external (non-goo-launched) server detection ─────────────────────────────
+  // for people who launch Odoo by hand outside of goo (see hide_start_controls):
+  // a read-only check of whether a container matching this workspace's db/branch
+  // name is already running, and at what URL. goo never starts/stops it itself.
+  externalStatus(tgt) {
+    this._externalStatusTick(); // subscribe this render to future refreshes
+    return this._externalStatus.get(tgt.id) || null;
+  }
+
+  async refreshExternalStatus(tgt) {
+    if (!tgt.db) return;
+    this._externalStatus.set(tgt.id, { checking: true });
+    this._externalStatusTick.set(this._externalStatusTick() + 1);
+    let next;
+    try {
+      const res = await postJSON("/api/workspace/external_status", { name: tgt.db });
+      next = { checking: false, running: res.running, url: res.url };
+    } catch (e) {
+      next = { checking: false, error: e.message };
+    }
+    this._externalStatus.set(tgt.id, next);
+    this._externalStatusTick.set(this._externalStatusTick() + 1);
   }
 
   // per-repo worktree descriptors for an existing worktree target (start / remove)
@@ -361,8 +395,8 @@ export class WorkspacePlugin extends Plugin {
   // at the worktree copies + the worktree's odoo-bin, from the persisted worktree.dir).
   async startServer(tgt) {
     if (this.running(tgt)) return;
-    if (!this.hasCommunity(tgt))
-      return this._error("Cannot start the server", "this workspace has no community repo");
+    if (!this.hasMainRepo(tgt))
+      return this._error("Cannot start the server", "this workspace has no main repo checkout");
     const eid = this.eventLog.begin(`starting server (${tgt.name})`);
     this.config.workspace(tgt.id)?.touchActivity();
     this._startEids[tgt.id] = eid;
@@ -506,21 +540,33 @@ export class WorkspacePlugin extends Plugin {
     if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
   }
 
-  // ── autologin URLs against the worktree server's port ("" when not running) ──
-  odooUrl(tgt) {
+  // ── autologin URLs against the worktree server ("" when not running) ──
+  // goo-managed (port() from its own live tracking) when available, else the
+  // externally-launched server's URL (see externalStatus/refreshExternalStatus
+  // — for people who launch servers by hand, hide_start_controls)
+  _baseUrl(tgt) {
     const port = this.port(tgt);
-    return port
-      ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}`
-      : "";
+    if (port) return `http://localhost:${port}/`;
+    const ext = this.externalStatus(tgt);
+    return ext?.running && ext.url ? ext.url : "";
+  }
+
+  // wraps a target path through goo's autologin route, unless autologin_links
+  // is off (then it's just the plain path — for people who'd rather log in
+  // themselves, e.g. the autologin addon isn't installed on this server)
+  _link(tgt, path) {
+    const base = this._baseUrl(tgt);
+    if (!base) return "";
+    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
+    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
+  }
+
+  odooUrl(tgt) {
+    return this._link(tgt, "/odoo?debug=assets");
   }
 
   testsUrl(tgt) {
-    const port = this.port(tgt);
-    return port
-      ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent(
-          "/web/tests?debug=assets&timeout=500000&manual=true",
-        )}`
-      : "";
+    return this._link(tgt, "/web/tests?debug=assets&timeout=500000&manual=true");
   }
 
   // thin wrapper: `return this._error(…)` deliberately returns false (callers

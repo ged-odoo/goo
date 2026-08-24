@@ -447,14 +447,15 @@ def _odoo_cmd_base(config, addons_repo_ids=None, extra_env=None):
     before the whole `cd ... &&` chain, where a bare env assignment wouldn't
     scope to the actual command.
     Returns (cmd_prefix, addons_path). Raises ValueError on invalid config."""
+    main_repo_id = config.get("main_repo_id") or "community"
     repo_map = {
         r["id"]: {**r, "path": os.path.expanduser(r["path"])}
         for r in config.get("repos", [])
         if isinstance(r, dict) and "id" in r and "path" in r
     }
-    community = repo_map.get("community")
+    community = repo_map.get(main_repo_id)
     if not community:
-        raise ValueError("no 'community' repo defined in repos")
+        raise ValueError(f"no '{main_repo_id}' repo defined in repos")
     community_path = community["path"]
 
     if addons_repo_ids is None:
@@ -464,7 +465,7 @@ def _odoo_cmd_base(config, addons_repo_ids=None, extra_env=None):
         repo = repo_map.get(repo_id)
         if not repo:
             raise ValueError(f"unknown repo '{repo_id}' in start.repos")
-        if repo_id == "community":
+        if repo_id == main_repo_id:
             addons_parts.append("addons")
         else:
             addons_parts.append(os.path.relpath(repo["path"], community_path))
@@ -1914,6 +1915,35 @@ def _api_workspace_list(body):
     return {"ok": True, "servers": WORKSPACES.status_for(body["workspaces"])}
 
 
+@post_route("/api/workspace/external_status", "name:str")
+def _api_workspace_external_status(body):
+    """Read-only: is a container serving database `name` currently running,
+    reachable at http://<container>.localhost/? goo never starts or stops this
+    container itself — this only reports on one someone else (e.g. a launcher
+    script) may have started, for people who run Odoo outside of goo's own
+    subprocess-based Start/Stop (see hide_start_controls). There's no
+    universal convention for what such a script names its container (ours
+    might be "dev", "dev1", anything), so every running container is checked
+    by its launch command instead of assuming a naming scheme. Reports
+    "not running" (rather than erroring) when docker itself isn't available —
+    hide_start_controls doesn't imply Docker specifically, just "launched
+    outside of goo"."""
+    name = body["name"]
+    try:
+        ps = effects.run(["docker", "ps", "--format", "{{.Names}}"], quiet=True, timeout=10)
+        if ps.returncode != 0:
+            return {"ok": True, "running": False, "url": None}
+        for container in ps.stdout.split():
+            cmd = effects.run(
+                ["docker", "inspect", "-f", "{{.Config.Cmd}}", container], quiet=True, timeout=10
+            )
+            if cmd.returncode == 0 and f" -d {name} " in f" {cmd.stdout.strip()} ":
+                return {"ok": True, "running": True, "url": f"http://{container}.localhost/"}
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return {"ok": True, "running": False, "url": None}
+
+
 @post_route("/api/workspace/logs", "workspace")
 def _api_workspace_logs(body):
     return {"ok": True, "lines": WORKSPACES.logs_for(body["workspace"])}
@@ -2282,7 +2312,8 @@ def _api_memory_fetch(body):
 @post_route("/api/addons", "repos:list")
 def _api_addons(body):
     db = body.get("db")
-    mods = ADDONS.modules(body["repos"])
+    main_repo_id = (CONFIG.get()["config"] or {}).get("main_repo_id") or "community"
+    mods = ADDONS.modules(body["repos"], main_repo_id)
     state = DATABASE.installed_modules(db) if db else {}
     for m in mods:
         m["state"] = state.get(m["name"])
@@ -2888,6 +2919,23 @@ def main():
         CONFIG.path = os.path.expanduser(args.config)
         # keep the CI cache beside the chosen config file
         CI.cache_path = os.path.join(os.path.dirname(CONFIG.path), "ci_merge_stats.json")
+
+    # DatabaseService/AssetsService's psql calls never pass connection info of
+    # their own -- they rely entirely on psql's defaults (a local unix socket,
+    # peer auth as the OS user). That's silently wrong for any non-local
+    # Postgres (e.g. running in Docker), so seed the standard PG* env vars from
+    # config once at startup: PGUSER/PGPASSWORD always (harmless even for peer
+    # auth), PGHOST/PGPORT only when db_host is set (empty = unchanged socket
+    # behavior). Not re-read on config changes -- restart goo after editing.
+    pg_config = (CONFIG.get()["config"] or {})
+    if pg_config.get("db_user"):
+        os.environ["PGUSER"] = pg_config["db_user"]
+    if pg_config.get("db_password"):
+        os.environ["PGPASSWORD"] = pg_config["db_password"]
+    if pg_config.get("db_host"):
+        os.environ["PGHOST"] = pg_config["db_host"]
+        if pg_config.get("db_port"):
+            os.environ["PGPORT"] = str(pg_config["db_port"])
 
     # turn on tracing before any work (incl. the one-shot --test-tags run) happens
     if args.trace:

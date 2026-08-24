@@ -3470,7 +3470,7 @@ class AddonsService:
     def __init__(self, io):
         self.io = io
 
-    def modules(self, repos):
+    def modules(self, repos, main_repo_id="community"):
         """Scan each repo {id, path} for modules with a manifest. A module name
         found in an earlier repo wins (community before enterprise, etc.)."""
         mods = []
@@ -3479,7 +3479,7 @@ class AddonsService:
             rid, path = repo.get("id"), repo.get("path")
             if not rid or not path:
                 continue
-            for root in self._roots(rid, path):
+            for root in self._roots(rid, path, main_repo_id):
                 if not self.io.is_dir(root):
                     continue
                 for name in self.io.list_dir(root):
@@ -3502,10 +3502,10 @@ class AddonsService:
         return mods
 
     @staticmethod
-    def _roots(rid, path):
+    def _roots(rid, path, main_repo_id="community"):
         """Directories that hold modules for a repo, matching the addons-path."""
         p = os.path.expanduser(path)
-        if rid == "community":
+        if rid == main_repo_id:
             return [os.path.join(p, "addons"), os.path.join(p, "odoo", "addons")]
         return [p]
 
@@ -3976,11 +3976,12 @@ def build_start_config(config, workspace_id, overrides=None):
             if isinstance(r, dict) and r.get("id")
         }
         # point repos at the worktree's on-disk copies; build_odoo_cmd derives the
-        # community path (and thus the addons-path + odoo-bin) from these
+        # main repo's path (and thus the addons-path + odoo-bin) from these
         cfg["repos"] = [
             {"id": rid, "path": f"{d}/{rid}", "github": github.get(rid, "")} for rid in repo_ids
         ]
-        cfg["server_path"] = f"{d}/community/odoo-bin"
+        main_repo_id = config.get("main_repo_id") or "community"
+        cfg["server_path"] = f"{d}/{main_repo_id}/odoo-bin"
         if target.get("port"):
             cfg["worktree_port"] = target["port"]
         # a workspace with its own venv (built from ITS OWN requirements.txt at

@@ -61,23 +61,21 @@ const SETTINGS_CHARS = [
   "worktree_dir",
   "db_user",
   "db_password",
+  "db_host",
+  "db_port",
   "filestore",
   "editor",
+  "main_repo_id",
 ];
 const SETTINGS_BOOLS = [
   "auto_open_event_log",
   "update_check",
   "rust_bundler",
   "workspace_categories_enabled",
+  "hide_start_controls",
+  "autologin_links",
 ];
-const SETTINGS_JSON = [
-  "start",
-  "tabs",
-  "links",
-  "test_presets",
-  "workspace_categories",
-  "reviews",
-];
+const SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories", "reviews"];
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
 const STATE_CHARS = ["active_workspace", "claude_model"];
 const STATE_JSON = ["test_history"];
@@ -90,12 +88,27 @@ export class Settings extends Model {
   worktree_dir = fields.char();
   db_user = fields.char();
   db_password = fields.char();
+  // empty = local unix socket (unchanged default); set both for a Postgres
+  // only reachable over TCP (e.g. running in Docker)
+  db_host = fields.char();
+  db_port = fields.char();
   filestore = fields.char();
   editor = fields.char();
+  // the repo id that holds odoo-bin (default "community", matching upstream) —
+  // configurable so a fork's own folder convention (e.g. "odoo") doesn't require
+  // patching every hardcoded "community" check
+  main_repo_id = fields.char();
   auto_open_event_log = fields.bool();
   update_check = fields.bool();
   rust_bundler = fields.bool();
   workspace_categories_enabled = fields.bool();
+  // hide the goo-managed Start/Stop controls (and the port/terminal/server-log UI
+  // that only make sense for a goo-launched process) for people who launch their
+  // servers by hand outside of goo
+  hide_start_controls = fields.bool();
+  // off = the /odoo, /web/tests buttons link the plain path instead of going
+  // through goo's autologin route -- for people who'd rather log in themselves
+  autologin_links = fields.bool();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
@@ -224,8 +237,12 @@ export class Workspace extends Model {
     return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
   }
 
-  hasCommunity() {
-    return this.checkouts().some((c) => c.repository().id === "community");
+  // does this workspace have a checkout of the configured main repo (default
+  // "community", see Settings.main_repo_id) — the one that holds odoo-bin
+  hasMainRepo() {
+    const settings = this.orm.getById(Settings, "settings");
+    const mainRepoId = settings?.main_repo_id() || "community";
+    return this.checkouts().some((c) => c.repository().id === mainRepoId);
   }
 
   // every workspace spawned from this one, at any depth, parent-before-child. The

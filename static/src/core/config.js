@@ -12,13 +12,28 @@ export const DEFAULT_CONFIG = {
   server_path: "/home/odoo/work/community/odoo-bin",
   // where per-target git worktrees are created: <worktree_dir>/<slug>/<repo>
   worktree_dir: "/home/odoo/work-trees",
+  // the repo id that holds odoo-bin — override if your checkouts don't use
+  // goo's default "community"/"enterprise" naming
+  main_repo_id: "community",
   db_user: "odoo",
   db_password: "odoo",
+  // empty = connect over the local unix socket (unchanged default behavior);
+  // set both when Postgres is only reachable over TCP (e.g. running in Docker)
+  db_host: "",
+  db_port: "",
   // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
   // keeps it in lockstep with the db on drop/rename/clone. Empty = leave it alone.
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
   editor: "code", // command used by the "Open with editor" actions
   auto_open_event_log: false, // open the event log overlay when new events arrive
+  // hide the goo-managed Start/Stop controls (port display, Terminal tab,
+  // Server-logs tab) for people who launch their servers by hand outside of goo
+  hide_start_controls: false,
+  // the /odoo and /web/tests buttons go through goo's own dev-only autologin
+  // route by default (see addons/autologin) -- turn off to link the plain
+  // path instead, for people who'd rather log in themselves (e.g. that addon
+  // isn't installed, or just a preference)
+  autologin_links: true,
   // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
   // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,

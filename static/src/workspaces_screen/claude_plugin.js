@@ -103,29 +103,30 @@ export class ClaudePlugin extends Plugin {
   // Note: removing a main-located workspace never CLAUDE.forgets its transcript
   // (only /api/workspace/remove does) — a harmless stale in-memory convo.
   _dirsFor(tgt) {
+    const mainRepoId = this.config.config.main_repo_id || "community";
     if (this.worktree.isWorktree(tgt)) {
       const repos = this.worktree.wtRepos(tgt);
-      const community = repos.find((r) => r.repo === "community");
-      if (!community) {
-        this.dialogs.error("Cannot run Claude", "this worktree has no community repo");
+      const main = repos.find((r) => r.repo === mainRepoId);
+      if (!main) {
+        this.dialogs.error("Cannot run Claude", "this worktree has no main repo checkout");
         return null;
       }
       // (the backend materializes its own ephemeral Odoo-dev .claude/ context per
       // conversation — see ClaudeManager.send in server.py — rather than relying on
       // the worktree's persisted one, so it isn't threaded through here)
       return {
-        cwd: community.worktreePath,
-        addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath),
+        cwd: main.worktreePath,
+        addDirs: repos.filter((r) => r.repo !== mainRepoId).map((r) => r.worktreePath),
       };
     }
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    const cwd = pathById["community"];
+    const cwd = pathById[mainRepoId];
     if (!cwd) {
-      this.dialogs.error("Cannot run Claude", "no community repo configured");
+      this.dialogs.error("Cannot run Claude", "no main repo configured");
       return null;
     }
     const addDirs = (tgt.checkouts || [])
-      .filter((c) => c.repo !== "community")
+      .filter((c) => c.repo !== mainRepoId)
       .map((c) => pathById[c.repo])
       .filter(Boolean);
     return { cwd, addDirs };

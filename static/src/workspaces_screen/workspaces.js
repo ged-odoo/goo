@@ -160,10 +160,25 @@ export class WorkspacesScreen extends Component {
               <!-- one primary slot: a main-located workspace that isn't loaded offers
                    Activate (check out its branches first); once loaded — and always
                    for worktrees — the slot is the Start/Stop toggle -->
-              <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
+              <t t-if="!this.config.config.hide_start_controls">
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
+                <t t-else="">
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                </t>
+              </t>
               <t t-else="">
-                <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                <!-- servers are launched by hand outside goo; this is a read-only check,
+                     goo never starts/stops this container itself -->
+                <t t-set="ext" t-value="this.wt.externalStatus(this.sel)"/>
+                <button class="pbtn ghost wt-lifecycle-btn" t-att-disabled="ext and ext.checking" t-att-title="'read-only: is a container named ' + (this.sel.db || '?') + ' running'" t-on-click="() => this.wt.refreshExternalStatus(this.sel)">
+                  <t t-if="ext and ext.checking">Checking…</t>
+                  <t t-elif="ext and ext.error">Check failed</t>
+                  <t t-elif="ext and ext.running">Running</t>
+                  <t t-elif="ext">Not running</t>
+                  <t t-else="">Check status</t>
+                </button>
+                <a t-if="ext and ext.running and ext.url" class="pbtn ghost" target="_blank" t-att-href="ext.url" t-out="ext.url"/>
               </t>
               <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
               <t t-if="ci">
@@ -186,10 +201,10 @@ export class WorkspacesScreen extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
-              <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
+              <span t-if="!this.config.config.hide_start_controls and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
                 <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                 <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -202,12 +217,12 @@ export class WorkspacesScreen extends Component {
             </div>
             <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Main</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>

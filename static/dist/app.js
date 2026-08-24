@@ -32,8 +32,15 @@ var DEFAULT_CONFIG = {
   server_path: "/home/odoo/work/community/odoo-bin",
   // where per-target git worktrees are created: <worktree_dir>/<slug>/<repo>
   worktree_dir: "/home/odoo/work-trees",
+  // the repo id that holds odoo-bin — override if your checkouts don't use
+  // goo's default "community"/"enterprise" naming
+  main_repo_id: "community",
   db_user: "odoo",
   db_password: "odoo",
+  // empty = connect over the local unix socket (unchanged default behavior);
+  // set both when Postgres is only reachable over TCP (e.g. running in Docker)
+  db_host: "",
+  db_port: "",
   // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
   // keeps it in lockstep with the db on drop/rename/clone. Empty = leave it alone.
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
@@ -41,6 +48,14 @@ var DEFAULT_CONFIG = {
   // command used by the "Open with editor" actions
   auto_open_event_log: false,
   // open the event log overlay when new events arrive
+  // hide the goo-managed Start/Stop controls (port display, Terminal tab,
+  // Server-logs tab) for people who launch their servers by hand outside of goo
+  hide_start_controls: false,
+  // the /odoo and /web/tests buttons go through goo's own dev-only autologin
+  // route by default (see addons/autologin) -- turn off to link the plain
+  // path instead, for people who'd rather log in themselves (e.g. that addon
+  // isn't installed, or just a preference)
+  autologin_links: true,
   // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
   // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,
@@ -3113,23 +3128,21 @@ var SETTINGS_CHARS = [
   "worktree_dir",
   "db_user",
   "db_password",
+  "db_host",
+  "db_port",
   "filestore",
-  "editor"
+  "editor",
+  "main_repo_id"
 ];
 var SETTINGS_BOOLS = [
   "auto_open_event_log",
   "update_check",
   "rust_bundler",
-  "workspace_categories_enabled"
+  "workspace_categories_enabled",
+  "hide_start_controls",
+  "autologin_links"
 ];
-var SETTINGS_JSON = [
-  "start",
-  "tabs",
-  "links",
-  "test_presets",
-  "workspace_categories",
-  "reviews"
-];
+var SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories", "reviews"];
 var STATE_CHARS = ["active_workspace", "claude_model"];
 var STATE_JSON = ["test_history"];
 var Settings = class extends Model {
@@ -3141,12 +3154,27 @@ var Settings = class extends Model {
   worktree_dir = fields.char();
   db_user = fields.char();
   db_password = fields.char();
+  // empty = local unix socket (unchanged default); set both for a Postgres
+  // only reachable over TCP (e.g. running in Docker)
+  db_host = fields.char();
+  db_port = fields.char();
   filestore = fields.char();
   editor = fields.char();
+  // the repo id that holds odoo-bin (default "community", matching upstream) —
+  // configurable so a fork's own folder convention (e.g. "odoo") doesn't require
+  // patching every hardcoded "community" check
+  main_repo_id = fields.char();
   auto_open_event_log = fields.bool();
   update_check = fields.bool();
   rust_bundler = fields.bool();
   workspace_categories_enabled = fields.bool();
+  // hide the goo-managed Start/Stop controls (and the port/terminal/server-log UI
+  // that only make sense for a goo-launched process) for people who launch their
+  // servers by hand outside of goo
+  hide_start_controls = fields.bool();
+  // off = the /odoo, /web/tests buttons link the plain path instead of going
+  // through goo's autologin route -- for people who'd rather log in themselves
+  autologin_links = fields.bool();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
@@ -3260,8 +3288,12 @@ var Workspace = class _Workspace extends Model {
   isWorktree() {
     return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
   }
-  hasCommunity() {
-    return this.checkouts().some((c) => c.repository().id === "community");
+  // does this workspace have a checkout of the configured main repo (default
+  // "community", see Settings.main_repo_id) — the one that holds odoo-bin
+  hasMainRepo() {
+    const settings = this.orm.getById(Settings, "settings");
+    const mainRepoId = settings?.main_repo_id() || "community";
+    return this.checkouts().some((c) => c.repository().id === mainRepoId);
   }
   // every workspace spawned from this one, at any depth, parent-before-child. The
   // subtree that travels with it — see setCategory (archiving) and, on the delete
@@ -4111,6 +4143,10 @@ var WorkspacePlugin = class extends Plugin {
   // targetId -> LogBuffer (per-server scrollback + live stream)
   _startEids = {};
   // targetId -> pending "starting worktree server" timed-event id
+  _externalStatus = /* @__PURE__ */ new Map();
+  // targetId -> { checking, running, url, error }
+  _externalStatusTick = signal(0);
+  // bumped after a fetch so externalStatus() re-renders
   setup() {
     this.server.onWorktree((d) => this.applyStatus(d));
     this.server.onLog(({ server, line }) => {
@@ -4140,8 +4176,11 @@ var WorkspacePlugin = class extends Plugin {
       else localStorage.removeItem(SELECTED_KEY);
     } catch {
     }
-    if (id && this.isWorktree((this.config.config.workspaces || []).find((w) => w.id === id)))
+    const ws = id ? (this.config.config.workspaces || []).find((w) => w.id === id) : null;
+    if (ws && this.isWorktree(ws)) {
       this._primeLogs(id);
+      if (this.config.config.hide_start_controls) this.refreshExternalStatus(ws);
+    }
   }
   selectOnOpen(id) {
     this.requestedSelection.set(id);
@@ -4166,10 +4205,33 @@ var WorkspacePlugin = class extends Plugin {
     if (rec) return rec.dirPath();
     return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt);
   }
-  hasCommunity(tgt) {
+  hasMainRepo(tgt) {
     const rec = this.config.workspace(tgt.id);
-    if (rec) return rec.hasCommunity();
-    return (tgt.checkouts || []).some((c) => c.repo === "community");
+    if (rec) return rec.hasMainRepo();
+    const mainRepoId = this.config.config.main_repo_id || "community";
+    return (tgt.checkouts || []).some((c) => c.repo === mainRepoId);
+  }
+  // ── external (non-goo-launched) server detection ─────────────────────────────
+  // for people who launch Odoo by hand outside of goo (see hide_start_controls):
+  // a read-only check of whether a container matching this workspace's db/branch
+  // name is already running, and at what URL. goo never starts/stops it itself.
+  externalStatus(tgt) {
+    this._externalStatusTick();
+    return this._externalStatus.get(tgt.id) || null;
+  }
+  async refreshExternalStatus(tgt) {
+    if (!tgt.db) return;
+    this._externalStatus.set(tgt.id, { checking: true });
+    this._externalStatusTick.set(this._externalStatusTick() + 1);
+    let next;
+    try {
+      const res = await postJSON("/api/workspace/external_status", { name: tgt.db });
+      next = { checking: false, running: res.running, url: res.url };
+    } catch (e) {
+      next = { checking: false, error: e.message };
+    }
+    this._externalStatus.set(tgt.id, next);
+    this._externalStatusTick.set(this._externalStatusTick() + 1);
   }
   // per-repo worktree descriptors for an existing worktree target (start / remove)
   wtRepos(tgt) {
@@ -4360,8 +4422,8 @@ var WorkspacePlugin = class extends Plugin {
   // at the worktree copies + the worktree's odoo-bin, from the persisted worktree.dir).
   async startServer(tgt) {
     if (this.running(tgt)) return;
-    if (!this.hasCommunity(tgt))
-      return this._error("Cannot start the server", "this workspace has no community repo");
+    if (!this.hasMainRepo(tgt))
+      return this._error("Cannot start the server", "this workspace has no main repo checkout");
     const eid = this.eventLog.begin(`starting server (${tgt.name})`);
     this.config.workspace(tgt.id)?.touchActivity();
     this._startEids[tgt.id] = eid;
@@ -4477,16 +4539,30 @@ var WorkspacePlugin = class extends Plugin {
     const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
     if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
   }
-  // ── autologin URLs against the worktree server's port ("" when not running) ──
-  odooUrl(tgt) {
+  // ── autologin URLs against the worktree server ("" when not running) ──
+  // goo-managed (port() from its own live tracking) when available, else the
+  // externally-launched server's URL (see externalStatus/refreshExternalStatus
+  // — for people who launch servers by hand, hide_start_controls)
+  _baseUrl(tgt) {
     const port = this.port(tgt);
-    return port ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}` : "";
+    if (port) return `http://localhost:${port}/`;
+    const ext = this.externalStatus(tgt);
+    return ext?.running && ext.url ? ext.url : "";
+  }
+  // wraps a target path through goo's autologin route, unless autologin_links
+  // is off (then it's just the plain path — for people who'd rather log in
+  // themselves, e.g. the autologin addon isn't installed on this server)
+  _link(tgt, path) {
+    const base = this._baseUrl(tgt);
+    if (!base) return "";
+    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
+    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
+  }
+  odooUrl(tgt) {
+    return this._link(tgt, "/odoo?debug=assets");
   }
   testsUrl(tgt) {
-    const port = this.port(tgt);
-    return port ? `http://localhost:${port}/dev/autologin?to=${encodeURIComponent(
-      "/web/tests?debug=assets&timeout=500000&manual=true"
-    )}` : "";
+    return this._link(tgt, "/web/tests?debug=assets&timeout=500000&manual=true");
   }
   // thin wrapper: `return this._error(…)` deliberately returns false (callers
   // use it to bail out of a flow with a failure result)
@@ -6541,8 +6617,11 @@ var SETTINGS_FIELDS = [
   { key: "venv_activate", name: "venv activate (optional)" },
   { key: "server_path", name: "odoo-bin path" },
   { key: "worktree_dir", name: "worktree dir" },
+  { key: "main_repo_id", name: "main repo id (odoo-bin lives here, default community)" },
   { key: "db_user", name: "database user" },
   { key: "db_password", name: "database password" },
+  { key: "db_host", name: "database host (empty = local unix socket)" },
+  { key: "db_port", name: "database port (empty = default)" },
   { key: "filestore", name: "filestore path" },
   { key: "editor", name: "editor command" }
 ];
@@ -6600,6 +6679,14 @@ var ConfigScreen = class extends Component {
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
                    t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
+            <label for="setting-hide-start-controls" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo.">hide start/stop controls</label>
+            <input id="setting-hide-start-controls" type="checkbox" class="settings-check" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo."
+                   t-att-checked="this.config.config.hide_start_controls"
+                   t-on-change="ev => this.config.updateConfig({ hide_start_controls: ev.target.checked })"/>
+            <label for="setting-autologin-links" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
+            <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
+                   t-att-checked="this.config.config.autologin_links"
+                   t-on-change="ev => this.config.updateConfig({ autologin_links: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>
@@ -6853,8 +6940,9 @@ var SPECS = {
       }
     ],
     validate(repos, config) {
-      if (!repos.find((r) => r.id === "community"))
-        return 'a "community" repository is required (odoo-bin lives there)';
+      const mainRepoId = config.main_repo_id || "community";
+      if (!repos.find((r) => r.id === mainRepoId))
+        return `a "${mainRepoId}" repository is required (odoo-bin lives there \u2014 see the "main repo id" setting above)`;
       const ids = new Set(repos.map((r) => r.id));
       for (const w of config.workspaces || []) {
         const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
@@ -10995,25 +11083,26 @@ var ClaudePlugin = class extends Plugin {
   // Note: removing a main-located workspace never CLAUDE.forgets its transcript
   // (only /api/workspace/remove does) — a harmless stale in-memory convo.
   _dirsFor(tgt) {
+    const mainRepoId = this.config.config.main_repo_id || "community";
     if (this.worktree.isWorktree(tgt)) {
       const repos = this.worktree.wtRepos(tgt);
-      const community = repos.find((r) => r.repo === "community");
-      if (!community) {
-        this.dialogs.error("Cannot run Claude", "this worktree has no community repo");
+      const main = repos.find((r) => r.repo === mainRepoId);
+      if (!main) {
+        this.dialogs.error("Cannot run Claude", "this worktree has no main repo checkout");
         return null;
       }
       return {
-        cwd: community.worktreePath,
-        addDirs: repos.filter((r) => r.repo !== "community").map((r) => r.worktreePath)
+        cwd: main.worktreePath,
+        addDirs: repos.filter((r) => r.repo !== mainRepoId).map((r) => r.worktreePath)
       };
     }
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    const cwd = pathById["community"];
+    const cwd = pathById[mainRepoId];
     if (!cwd) {
-      this.dialogs.error("Cannot run Claude", "no community repo configured");
+      this.dialogs.error("Cannot run Claude", "no main repo configured");
       return null;
     }
-    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== "community").map((c) => pathById[c.repo]).filter(Boolean);
+    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== mainRepoId).map((c) => pathById[c.repo]).filter(Boolean);
     return { cwd, addDirs };
   }
   // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
@@ -12764,7 +12853,7 @@ var AddonsPane = class extends Component {
               <td class="dim" t-out="mod.repo"/>
               <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
               <td>
-                <div class="br-act">
+                <div t-if="!this.config.config.hide_start_controls" class="br-act">
                   <button class="addon-btn" t-att-disabled="this.addons.runActive(this.slotId) or mod.installable === false"
                           t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.props.ws)"
                           t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
@@ -12781,6 +12870,7 @@ var AddonsPane = class extends Component {
     </div>`;
   props = useProps({ ws: t.any() });
   addons = usePlugin(AddonsPlugin);
+  config = usePlugin(ConfigPlugin);
   setup() {
     useEffect(() => {
       const db = this.props.ws.db;
@@ -12821,7 +12911,7 @@ var AssetsPane = class extends Component {
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
           <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
-          <button class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
+          <button t-if="!this.config.config.hide_start_controls" class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
                   t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
           <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
         </div>
@@ -13099,10 +13189,25 @@ var WorkspacesScreen = class extends Component {
               <!-- one primary slot: a main-located workspace that isn't loaded offers
                    Activate (check out its branches first); once loaded — and always
                    for worktrees — the slot is the Start/Stop toggle -->
-              <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
+              <t t-if="!this.config.config.hide_start_controls">
+                <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
+                <t t-else="">
+                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                </t>
+              </t>
               <t t-else="">
-                <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
-                <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
+                <!-- servers are launched by hand outside goo; this is a read-only check,
+                     goo never starts/stops this container itself -->
+                <t t-set="ext" t-value="this.wt.externalStatus(this.sel)"/>
+                <button class="pbtn ghost wt-lifecycle-btn" t-att-disabled="ext and ext.checking" t-att-title="'read-only: is a container named ' + (this.sel.db || '?') + ' running'" t-on-click="() => this.wt.refreshExternalStatus(this.sel)">
+                  <t t-if="ext and ext.checking">Checking…</t>
+                  <t t-elif="ext and ext.error">Check failed</t>
+                  <t t-elif="ext and ext.running">Running</t>
+                  <t t-elif="ext">Not running</t>
+                  <t t-else="">Check status</t>
+                </button>
+                <a t-if="ext and ext.running and ext.url" class="pbtn ghost" target="_blank" t-att-href="ext.url" t-out="ext.url"/>
               </t>
               <t t-set="ci" t-value="this.wsCiStatus(this.sel)"/>
               <t t-if="ci">
@@ -13125,10 +13230,10 @@ var WorkspacesScreen = class extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.isRunning" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
-              <span t-if="this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
+              <span t-if="!this.config.config.hide_start_controls and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
                 <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                 <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -13141,12 +13246,12 @@ var WorkspacesScreen = class extends Component {
             </div>
             <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Main</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
-                <button class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>

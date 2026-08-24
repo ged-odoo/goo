@@ -535,8 +535,11 @@ export const SETTINGS_FIELDS = [
   { key: "venv_activate", name: "venv activate (optional)" },
   { key: "server_path", name: "odoo-bin path" },
   { key: "worktree_dir", name: "worktree dir" },
+  { key: "main_repo_id", name: "main repo id (odoo-bin lives here, default community)" },
   { key: "db_user", name: "database user" },
   { key: "db_password", name: "database password" },
+  { key: "db_host", name: "database host (empty = local unix socket)" },
+  { key: "db_port", name: "database port (empty = default)" },
   { key: "filestore", name: "filestore path" },
   { key: "editor", name: "editor command" },
 ];
@@ -595,6 +598,14 @@ export class ConfigScreen extends Component {
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
                    t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
+            <label for="setting-hide-start-controls" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo.">hide start/stop controls</label>
+            <input id="setting-hide-start-controls" type="checkbox" class="settings-check" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo."
+                   t-att-checked="this.config.config.hide_start_controls"
+                   t-on-change="ev => this.config.updateConfig({ hide_start_controls: ev.target.checked })"/>
+            <label for="setting-autologin-links" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
+            <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
+                   t-att-checked="this.config.config.autologin_links"
+                   t-on-change="ev => this.config.updateConfig({ autologin_links: ev.target.checked })"/>
           </div>
         </div>
         <TabsEditor/>
@@ -871,8 +882,9 @@ export const SPECS = {
       },
     ],
     validate(repos, config) {
-      if (!repos.find((r) => r.id === "community"))
-        return 'a "community" repository is required (odoo-bin lives there)';
+      const mainRepoId = config.main_repo_id || "community";
+      if (!repos.find((r) => r.id === mainRepoId))
+        return `a "${mainRepoId}" repository is required (odoo-bin lives there — see the "main repo id" setting above)`;
       const ids = new Set(repos.map((r) => r.id));
       for (const w of config.workspaces || []) {
         const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
