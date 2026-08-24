@@ -2960,6 +2960,13 @@ def main():
     atexit.register(CLAUDE.shutdown)
     # check whether goo's checkout is behind origin/master — at startup, then hourly
     threading.Thread(target=goo_update_loop, daemon=True).start()
+    # auto-register any worktree_dir subdirectory holding a configured repo's
+    # checkout that isn't a workspace yet (see backend/adopt.py) — at startup,
+    # then every minute. Imported here, not at module level, to avoid a
+    # circular import (adopt.py imports CONFIG from this module).
+    from . import adopt
+
+    threading.Thread(target=adopt.loop, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
