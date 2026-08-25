@@ -4354,7 +4354,7 @@ var WorkspacePlugin = class extends Plugin {
   // the next stable port) and select it.
   // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
   //         baseId?, on_create_args?, demo_data?, favorite?, parent?, createVenv?,
-  //         existingBranches? }
+  //         forkRepos? }
   async createWorktree({
     name,
     dbName,
@@ -4368,7 +4368,6 @@ var WorkspacePlugin = class extends Plugin {
     category = "",
     parent = "",
     createVenv = false,
-    existingBranches = false,
     forkRepos = /* @__PURE__ */ new Set()
   }) {
     if (!checkouts || !checkouts.length)
@@ -4394,16 +4393,16 @@ var WorkspacePlugin = class extends Plugin {
     const dir = this.dirPath(ws);
     ws.worktree.dir = dir;
     const repos = checkouts.map(
-      ({ repo, branch }) => existingBranches && !forkRepos.has(repo) ? {
+      ({ repo, branch }) => forkRepos.has(repo) ? {
         repo,
-        branch,
+        newBranch: branch,
+        startPoint: startPointByRepo[repo],
         mainPath: g.pathByRepo[repo] || "",
         pull_remote: g.pullRemoteByRepo[repo],
         worktreePath: `${dir}/${repo}`
       } : {
         repo,
-        newBranch: branch,
-        startPoint: startPointByRepo[repo],
+        branch,
         mainPath: g.pathByRepo[repo] || "",
         pull_remote: g.pullRemoteByRepo[repo],
         worktreePath: `${dir}/${repo}`
@@ -9371,6 +9370,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const tpl = templates.find((t2) => t2.id === prefill.template) || null;
   const existing = config.config.workspaces || [];
   const dbNames = new Set(db.databases().map((d) => d.name));
+  code.loadBranches();
+  const hasLocalBranch = (repo, branch) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
   const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
   const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
@@ -9384,8 +9385,6 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       if (existing.some((w) => w.name === name))
         return `a workspace named "${name}" already exists`;
       if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if (v.location === "worktree" && !tpl && v.createBranches !== false)
-        return "a worktree workspace needs a template, or an existing-branches source (bundle/remote branch) \u2014 go back and pick one";
       if ((v.cloneDb || "") && !(v.db || "").trim())
         return "set a database name to clone the selected database into";
       if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
@@ -9445,7 +9444,50 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         type: "text",
         label: "Config",
         value: prefill.config ?? (prefill.name ? configFromRepos(prefillRepoIds, prefill.name.trim()) : ""),
-        placeholder: "community:master,enterprise:master"
+        placeholder: "community:master,enterprise:master",
+        // per-repo "will attach / will fork" preview, live off real local git
+        // state — the same ground truth forkRepos is computed from below, so
+        // this always matches what Create will actually do
+        hint: (values) => {
+          const checkouts2 = repoBranchList.parse((values.config || "").trim());
+          if (!checkouts2.length) return null;
+          return checkouts2.map(
+            (c) => hasLocalBranch(c.repo, c.branch) ? `${c.repo}: attach existing "${c.branch}"` : `${c.repo}: fork new from ${baseBranchOf(c.branch)}`
+          ).join(" \xB7 ");
+        }
+      },
+      {
+        key: "branchSearch",
+        type: "action",
+        label: "Search local/remote branches\u2026",
+        run: async (values) => {
+          const res2 = await dialogs.openComponent(RemoteBranchDialog, { repoIds: values.repos });
+          if (!res2) return null;
+          const { pathByRepo, pullRemoteByRepo } = code.groups();
+          const toFetch = res2.repos.filter((r) => !hasLocalBranch(r, res2.branch) && pathByRepo[r]);
+          const fetchedNow = [];
+          for (const repoId of toFetch) {
+            const r = await fetchRemoteBranch(dialogs, {
+              path: pathByRepo[repoId],
+              branch: res2.branch,
+              pull_remote: pullRemoteByRepo[repoId]
+            });
+            if (r.ok) fetchedNow.push(repoId);
+            else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);
+          }
+          if (fetchedNow.length) await code.refreshBranches(new Set(fetchedNow));
+          const repos = [.../* @__PURE__ */ new Set([...values.repos, ...res2.repos])];
+          const currentByRepo = Object.fromEntries(
+            repoBranchList.parse(values.config || "").map((c) => [c.repo, c.branch])
+          );
+          const config2 = repoBranchList.format(
+            repos.map((repo) => ({
+              repo,
+              branch: res2.repos.includes(repo) ? res2.branch : currentByRepo[repo] ?? res2.branch
+            }))
+          );
+          return { name: res2.branch, repos, config: config2 };
+        }
       },
       {
         key: "db",
@@ -9492,11 +9534,13 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         key: "createBranches",
         type: "checkbox",
         label: "Create branches",
-        // true (the default, e.g. from a template): fork fresh branches. false
+        // true (the default, e.g. from a template): per repo, fork fresh unless
+        // that exact branch already exists locally (then attach it instead —
+        // see the hasLocalBranch-based forkRepos computation below). false
         // (bundle / remote branch / forward-port prefills): the checkouts are
-        // already-existing local branches from an earlier fetch — a main-located
-        // workspace just adopts them as-is (no git), a worktree one attaches them
-        // instead of forking (see startPointByRepo/existingBranches below)
+        // already-existing local branches from an earlier fetch — attach them
+        // as-is, except any the source didn't actually confirm (see
+        // "Unconfirmed branch" below), which still fork from their base.
         value: prefill.createBranches ?? true
       },
       { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
@@ -9516,7 +9560,9 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   for (const c of checkouts)
     if (!startPointByRepo[c.repo]) startPointByRepo[c.repo] = baseBranchOf(c.branch);
   const forkRepos = /* @__PURE__ */ new Set();
-  if (verifiedRepos && res.createBranches === false) {
+  if (res.createBranches) {
+    for (const c of checkouts) if (!hasLocalBranch(c.repo, c.branch)) forkRepos.add(c.repo);
+  } else if (verifiedRepos) {
     const unverified = checkouts.filter((c) => !verifiedRepos.has(c.repo));
     if (unverified.length) {
       const names = unverified.map((c) => c.repo).join(", ");
@@ -9545,7 +9591,6 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       category: res.category || "",
       parent: prefill.parent || "",
       createVenv: !!res.createVenv,
-      existingBranches: res.createBranches === false,
       forkRepos
     });
     return;
@@ -9569,7 +9614,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   };
   eventLog.add(`creating workspace ${ws.name}`);
   config.updateConfig({ workspaces: [...config.config.workspaces, ws] });
-  const toFork = res.createBranches ? checkouts : checkouts.filter((c) => forkRepos.has(c.repo));
+  const toFork = checkouts.filter((c) => forkRepos.has(c.repo));
   if (toFork.length) {
     const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
     await code.createBranches(

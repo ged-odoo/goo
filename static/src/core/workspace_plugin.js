@@ -272,7 +272,7 @@ export class WorkspacePlugin extends Plugin {
   // the next stable port) and select it.
   // spec: { name, dbName, cloneSource, checkouts: [{repo, branch}], startPointByRepo,
   //         baseId?, on_create_args?, demo_data?, favorite?, parent?, createVenv?,
-  //         existingBranches? }
+  //         forkRepos? }
   async createWorktree({
     name,
     dbName,
@@ -286,7 +286,6 @@ export class WorkspacePlugin extends Plugin {
     category = "",
     parent = "",
     createVenv = false,
-    existingBranches = false,
     forkRepos = new Set(),
   }) {
     if (!checkouts || !checkouts.length)
@@ -313,27 +312,25 @@ export class WorkspacePlugin extends Plugin {
     // workspace so a later rename can't orphan the checkout git is about to create.
     const dir = this.dirPath(ws);
     ws.worktree.dir = dir;
-    // existingBranches (bundle / remote branch / forward-port sources, which
-    // already fetched real local branches): attach them to the worktree as-is
-    // instead of forking — `-b <branch>` would fail with "already exists" since
-    // the branch is real, not a fresh name to fork from a start point. A repo in
-    // `forkRepos` overrides that per-checkout — the source never actually fetched
-    // a branch for it (e.g. a repo the runbot bundle didn't touch), so it forks
-    // fresh from startPointByRepo instead of attaching a branch that may not exist.
+    // a checkout NOT in forkRepos already has a real local branch (the caller
+    // determined this from actual git state, or from an earlier fetch) — attach
+    // it as-is; `-b <branch>` would fail with "already exists" since the branch
+    // is real, not a fresh name to fork from a start point. Everything in
+    // forkRepos forks fresh from startPointByRepo instead.
     const repos = checkouts
       .map(({ repo, branch }) =>
-        existingBranches && !forkRepos.has(repo)
+        forkRepos.has(repo)
           ? {
               repo,
-              branch,
+              newBranch: branch,
+              startPoint: startPointByRepo[repo],
               mainPath: g.pathByRepo[repo] || "",
               pull_remote: g.pullRemoteByRepo[repo],
               worktreePath: `${dir}/${repo}`,
             }
           : {
               repo,
-              newBranch: branch,
-              startPoint: startPointByRepo[repo],
+              branch,
               mainPath: g.pathByRepo[repo] || "",
               pull_remote: g.pullRemoteByRepo[repo],
               worktreePath: `${dir}/${repo}`,
