@@ -4044,6 +4044,12 @@ tr.active td.brg-commit {
   color: var(--l-text-dim);
   flex-shrink: 0;
 }
+/* a field's live, secondary line under its own input (e.g. the create-workspace
+   form's "will attach / will fork" preview) */
+.dialog-field-hint {
+  font-size: 11.5px;
+  color: var(--l-text-dim);
+}
 
 /* ─── event log (floating overlay panel) ─── */
 /* ──────────── Terminal panel ──────────── */

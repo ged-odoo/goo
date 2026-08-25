@@ -99,14 +99,21 @@ class DialogContainer extends Component {
 
 // A form/message modal. Spec: { title, message?, okLabel?, cancelLabel?, cls?,
 // validate?(values) => errorString, fields: [{ key, type: "text"|"textarea"|
-// "checkbox"|"select"|"check-select"|"repo-checks", label, value, placeholder?,
-// rows?, options?, onChange?, default? }] }. A "check-select" is a checkbox with
-// an inline select that shows only when ticked; its value is "" (off) or the
-// chosen option, seeded from default(values) on tick. A "repo-checks" is a list
-// of checkboxes (one per `options` entry); its value is the array of ticked
-// option values. A "textarea" is a multi-line text field (Enter inserts a
-// newline rather than submitting, unlike "text"; `rows` sets its height, default
-// 6). validate() runs
+// "checkbox"|"select"|"check-select"|"repo-checks"|"action", label, value,
+// placeholder?, rows?, options?, onChange?, default?, hint?, run? }] }. A
+// "check-select" is a checkbox with an inline select that shows only when
+// ticked; its value is "" (off) or the chosen option, seeded from
+// default(values) on tick. A "repo-checks" is a list of checkboxes (one per
+// `options` entry); its value is the array of ticked option values. A
+// "textarea" is a multi-line text field (Enter inserts a newline rather than
+// submitting, unlike "text"; `rows` sets its height, default 6). An "action"
+// field has no value of its own — it renders `label` as a button that calls
+// `run(values)`; a truthy resolved result is merged into the form's values
+// (like onChange), a null/undefined result (e.g. a nested dialog cancelled)
+// leaves the form untouched. Any field can also set `hint: (values) => string
+// | null` — a line rendered under the field, recomputed on every change (e.g.
+// to surface a live "this already exists" note next to a text field).
+// validate() runs
 // live: a non-empty result disables the OK button (and, once the user has edited a
 // field, shows the message), so an invalid form can't be submitted. cancelLabel:
 // null hides the Discard button (e.g. for a plain message/alert). Closes itself by
@@ -157,10 +164,14 @@ export class Dialog extends Component {
               <label t-out="f.label"/>
               <textarea t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-att-rows="f.rows || 6" t-on-input="(ev) => this.setVal(f.key, ev.target.value)"/>
             </t>
+            <t t-elif="f.type === 'action'">
+              <button class="pbtn" t-att-disabled="this.actionBusy() === f.key" t-on-click="() => this.runAction(f)" t-out="this.actionBusy() === f.key ? '…' : f.label"/>
+            </t>
             <t t-else="">
               <label t-out="f.label"/>
               <input type="text" t-att-value="this.values()[f.key]" t-att-placeholder="f.placeholder || ''" t-on-input="(ev) => this.setVal(f.key, ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
             </t>
+            <div t-if="f.hint and f.hint(this.values())" class="dialog-field-hint" t-out="f.hint(this.values())"/>
           </div>
         </div>
         <div class="dialog-foot">
@@ -174,6 +185,7 @@ export class Dialog extends Component {
   props = useProps({ spec: t.any(), done: t.function() });
   values = signal({});
   touched = signal(false); // has the user edited a field? (gates the inline error)
+  actionBusy = signal(null); // key of the "action" field currently running, else null
 
   get spec() {
     return this.props.spec;
@@ -188,8 +200,10 @@ export class Dialog extends Component {
 
   setup() {
     const vals = {};
-    for (const f of this.spec.fields || [])
+    for (const f of this.spec.fields || []) {
+      if (f.type === "action") continue; // no value of its own
       vals[f.key] = f.value ?? (f.type === "checkbox" ? false : f.type === "repo-checks" ? [] : "");
+    }
     this.values.set(vals);
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
@@ -237,6 +251,23 @@ export class Dialog extends Component {
     const current = this.values()[field.key] || [];
     const next = checked ? [...current, value] : current.filter((v) => v !== value);
     this.setVal(field.key, next);
+  }
+
+  // an "action" field's button runs `field.run(values)`; a returned object is
+  // merged into the form's values (same as onChange's partial-update
+  // convention), null/undefined (e.g. a nested dialog was cancelled) leaves
+  // the form untouched.
+  async runAction(field) {
+    this.actionBusy.set(field.key);
+    try {
+      const updates = await field.run(this.values());
+      if (updates) {
+        this.values.set({ ...this.values(), ...updates });
+        this.touched.set(true);
+      }
+    } finally {
+      this.actionBusy.set(null);
+    }
   }
 
   onKey(ev) {
