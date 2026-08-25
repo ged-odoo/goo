@@ -5293,23 +5293,27 @@ var RemoteBranchDialog = class extends Component {
   static template = xml`
     <div class="dialog-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog rbd" t-on-click.stop="() => {}">
-        <h2 class="dialog-title">Workspace from remote branch</h2>
+        <h2 class="dialog-title">Search branches</h2>
         <div class="dialog-body">
           <div class="dialog-field">
             <label>Branch name</label>
             <input type="text" class="rbd-input" t-ref="this.inputEl"
-                   placeholder="type to search across all repos…"
+                   placeholder="type to search local + remote…"
                    t-on-input="(ev) => this.onInput(ev.target.value)"
                    t-on-keydown="(ev) => this.onKey(ev)"/>
           </div>
           <div class="rbd-results">
-            <div t-if="this.loading()" class="rbd-status">Searching…</div>
+            <div t-if="this.searching()" class="rbd-status">Searching remote…</div>
             <div t-elif="this.searched() and !this.rows().length" class="rbd-status">No matching branches found.</div>
             <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
                  class="rbd-row" t-att-class="{selected: this.sel() === r.branch}"
                  t-on-click="() => this.sel.set(r.branch)">
               <span class="rbd-branch" t-out="r.branch"/>
-              <span class="rbd-repos" t-out="r.repos.join(', ')"/>
+              <span class="rbd-repos">
+                <t t-foreach="r.repos" t-as="rr" t-key="rr.id">
+                  <span class="rbd-repo-tag" t-att-class="rr.local ? 'local' : 'remote'" t-out="rr.id"/>
+                </t>
+              </span>
             </div>
           </div>
         </div>
@@ -5319,14 +5323,17 @@ var RemoteBranchDialog = class extends Component {
         </div>
       </div>
     </div>`;
-  props = useProps({ done: t.function() });
+  props = useProps({ done: t.function(), repoIds: t.any().optional() });
   config = usePlugin(ConfigPlugin);
-  loading = signal(false);
+  code = usePlugin(CodePlugin);
+  searching = signal(false);
+  // the remote (network) half only — local is instant
   searched = signal(false);
   rows = signal([]);
   sel = signal("");
   inputEl = signal.ref(HTMLElement);
   _timer = null;
+  _query = "";
   setup() {
     onMounted(() => this.inputEl()?.focus());
     const onKey = (e) => {
@@ -5341,20 +5348,39 @@ var RemoteBranchDialog = class extends Component {
   done(result) {
     this.props.done(result);
   }
+  get repoIds() {
+    return this.props.repoIds ? new Set(this.props.repoIds) : null;
+  }
   onInput(val) {
     this.sel.set("");
     clearTimeout(this._timer);
-    if (!val.trim()) {
-      this.loading.set(false);
+    this._query = val.trim();
+    if (!this._query) {
+      this.searching.set(false);
       this.searched.set(false);
       this.rows.set([]);
       return;
     }
-    this.loading.set(true);
-    this._timer = setTimeout(() => this._search(val.trim()), 300);
+    this._searchLocal(this._query);
+    this.searching.set(true);
+    this._timer = setTimeout(() => this._searchRemote(this._query), 300);
   }
-  async _search(query) {
-    const repos = this.config.config.repos.filter((r) => r.github).map((r) => ({ id: r.id, github: r.github }));
+  // local branches, from the same {branch, rows: [{repo, ...}]} groups the
+  // Branches screen already holds in memory — no network round-trip
+  _searchLocal(query) {
+    const ids = this.repoIds;
+    const byBranch = /* @__PURE__ */ new Map();
+    for (const g of this.code.groups().list) {
+      if (!g.branch.includes(query)) continue;
+      const repos = g.rows.filter((r) => !ids || ids.has(r.repo)).map((r) => ({ id: r.repo, local: true }));
+      if (repos.length) byBranch.set(g.branch, repos);
+    }
+    this.rows.set([...byBranch.entries()].map(([branch, repos]) => ({ branch, repos })));
+    this.searched.set(true);
+  }
+  async _searchRemote(query) {
+    const ids = this.repoIds;
+    const repos = this.config.config.repos.filter((r) => r.github && (!ids || ids.has(r.id))).map((r) => ({ id: r.id, github: r.github }));
     try {
       const res = await fetch("/api/code/remote-branches/search", {
         method: "POST",
@@ -5362,17 +5388,34 @@ var RemoteBranchDialog = class extends Component {
         body: JSON.stringify({ repos, query })
       });
       const data = await res.json();
-      if (!data.ok) return;
-      const byBranch = {};
+      if (query !== this._query || !data.ok) return;
+      const byBranch = /* @__PURE__ */ new Map();
       for (const { repo, branch } of data.results) {
-        if (!byBranch[branch]) byBranch[branch] = [];
-        byBranch[branch].push(repo);
+        if (!byBranch.has(branch)) byBranch.set(branch, /* @__PURE__ */ new Set());
+        byBranch.get(branch).add(repo);
       }
-      this.rows.set(Object.entries(byBranch).map(([branch, repos2]) => ({ branch, repos: repos2 })));
+      this._mergeRemote(byBranch);
     } finally {
-      this.loading.set(false);
-      this.searched.set(true);
+      if (query === this._query) this.searching.set(false);
     }
+  }
+  // merge the remote results into whatever `_searchLocal` already produced,
+  // tagging each repo local/remote so a repo found in both shows once (as local)
+  _mergeRemote(remoteByBranch) {
+    const merged = new Map(
+      this.rows().map((r) => [r.branch, new Map(r.repos.map((x) => [x.id, x.local]))])
+    );
+    for (const [branch, repos] of remoteByBranch) {
+      if (!merged.has(branch)) merged.set(branch, /* @__PURE__ */ new Map());
+      for (const repo of repos)
+        if (!merged.get(branch).has(repo)) merged.get(branch).set(repo, false);
+    }
+    this.rows.set(
+      [...merged.entries()].map(([branch, repoMap]) => ({
+        branch,
+        repos: [...repoMap.entries()].map(([id, local]) => ({ id, local }))
+      }))
+    );
   }
   onKey(ev) {
     if (ev.key === "Enter" && this.sel()) this.ok();
@@ -5380,7 +5423,7 @@ var RemoteBranchDialog = class extends Component {
   ok() {
     if (!this.sel()) return;
     const branch = this.sel();
-    const repos = this.rows().find((r) => r.branch === branch)?.repos || [];
+    const repos = (this.rows().find((r) => r.branch === branch)?.repos || []).map((r) => r.id);
     this.done({ branch, repos });
   }
 };

@@ -4043,6 +4043,17 @@ tr.active td.brg-commit {
   font-size: 11px;
   color: var(--l-text-dim);
   flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+}
+.rbd-repo-tag {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--l-panel);
+}
+.rbd-repo-tag.local {
+  color: var(--l-green);
+  background: var(--l-green-bg);
 }
 /* a field's live, secondary line under its own input (e.g. the create-workspace
    form's "will attach / will fork" preview) */
