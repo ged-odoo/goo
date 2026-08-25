@@ -13423,6 +13423,14 @@ var WorkspacesScreen = class extends Component {
               </div>
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">
+                  <span class="dim">Location</span>
+                  <span t-out="this.sel.location === 'worktree' ? 'Own worktree + port' : 'Main checkout'"/>
+                  <t t-if="this.sel.worktree?.dir">
+                    <span class="dim">Path</span>
+                    <span class="ws-details-path" t-out="this.sel.worktree.dir"/>
+                  </t>
+                  <span class="dim">Checkouts</span>
+                  <span t-out="this.checkoutsLabel(this.sel)"/>
                   <span class="dim">Created</span>
                   <span t-out="this.fmtWhen(this.sel.created_at)"/>
                   <span class="dim">Last activity</span>
@@ -13961,6 +13969,9 @@ var WorkspacesScreen = class extends Component {
   }
   branchOf(ws) {
     return ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch || "";
+  }
+  checkoutsLabel(ws) {
+    return repoBranchList.format(ws.checkouts || []);
   }
   // Details tab timestamps: absolute local date-time + relative ("2 days ago")
   fmtWhen(ts) {

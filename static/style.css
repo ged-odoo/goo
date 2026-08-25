@@ -3624,6 +3624,11 @@ tr.active td.brg-commit {
   gap: 6px 18px;
   font-size: 13px;
 }
+.ws-details-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
 .ws-notes-label {
   margin-top: 8px;
   font-size: 13px;
