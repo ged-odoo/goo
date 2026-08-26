@@ -4194,4 +4194,18 @@ def build_start_config(config, workspace_id, overrides=None):
         if (target.get("worktree") or {}).get("venv"):
             cfg["venv_activate"] = f"source {d}/.venv/bin/activate"
             cfg["venv_python"] = f"{d}/.venv/bin/python"
+        # launch_mode="docker" (server.py build_docker_cmd) needs the worktree's
+        # own root dir (for its single bind mount — repos' host paths above
+        # aren't otherwise usable, they're only ever cd'd into) and the main
+        # repo's checked-out branch (image resolution — see
+        # resolve_docker_image). docker_container is NOT set here: it's a
+        # "dev"/"dev1"/"dev2" pooled slot picked live at start time
+        # (DockerInfraService.next_container_slot), not a per-workspace value.
+        # Harmless to always set docker_worktree_dir/docker_branch: a
+        # non-docker launch just ignores these extra cfg keys.
+        cfg["docker_worktree_dir"] = d
+        main_checkout = next(
+            (c for c in target.get("checkouts") or [] if c.get("repo") == main_repo_id), None
+        )
+        cfg["docker_branch"] = (main_checkout or {}).get("branch", "")
     return cfg

@@ -633,6 +633,86 @@ def build_odoo_cmd(config):
     return cmd, db, is_new
 
 
+# fixed in-container mount point for goo's own addons (autologin, …) — GOO_DIR
+# is goo's own checkout, not per-workspace, so it's bind-mounted read-only at
+# a stable path rather than living under the worktree mount like the repos do
+_DOCKER_GOO_ADDONS = "/goo-addons"
+
+
+def build_docker_cmd(config, image):
+    """Build the `docker run` shell command from a client config + the already-
+    resolved image tag (WorkspaceManager.start resolves/builds it via
+    DockerInfraService.ensure_image before calling this — pulling/building an
+    image can take minutes and must never happen under WorkspaceManager's
+    lock). Shares odoo-bin's own argument tail with build_odoo_cmd via
+    _odoo_bin_invocation — only the invocation prefix differs (a `docker run`
+    container instead of a local `cd ... && odoo-bin` subprocess).
+
+    Returns (cmd, db, is_new_db). Raises ValueError on invalid config.
+    """
+    start = config.get("start") or {}
+    db = start.get("db")
+    if not db:
+        raise ValueError("no database configured (start.db)")
+    if start.get("memcheck"):
+        # MEMCHECK_DUMP_DIR/the memlab post-analysis both read/write a HOST
+        # path today (see build_odoo_cmd) — not yet wired to a matching
+        # in-container mount, so fail clearly instead of writing nowhere
+        raise ValueError("memory-perf checks aren't supported in Docker launch mode yet")
+
+    main_repo_id = config.get("main_repo_id") or "community"
+    addons_repo_ids = list(start.get("repos") or [])
+    if not addons_repo_ids:
+        raise ValueError("no repos selected in start.repos")
+    if main_repo_id not in addons_repo_ids:
+        raise ValueError(f"'{main_repo_id}' (main_repo_id) must be one of start.repos")
+    host_dir = config.get("docker_worktree_dir")
+    if not host_dir:
+        raise ValueError("no worktree directory resolved for this Docker workspace")
+    container = config.get("docker_container")
+    if not container:
+        raise ValueError("no container name resolved for this Docker workspace")
+
+    # every repo mounts as a direct child of the worktree root — build_start_config's
+    # worktree branch already gives every repo the uniform HOST path <dir>/<repo_id>,
+    # so the in-container equivalent is just <mount_path>/<repo_id> regardless of the
+    # actual host path, the same way _odoo_cmd_base derives addons_path from relative
+    # positions rather than absolute ones
+    mount_path = (config.get("docker_mount_path") or "/src").rstrip("/")
+    addons_path = (
+        ",".join("addons" if rid == main_repo_id else rid for rid in addons_repo_ids)
+        + f",{_DOCKER_GOO_ADDONS}"
+    )
+
+    network = config.get("docker_network") or "goo_odoo"
+    pg_container = config.get("docker_postgres_container") or "goo-postgres"
+    filestore_host = os.path.expanduser(config.get("filestore") or "")
+    filestore_mount = config.get("docker_filestore_mount") or (
+        "/home/odoo_user/.local/share/Odoo/filestore"
+    )
+    user_flag = (
+        f"--user {shlex.quote(config['docker_container_user'])} "
+        if config.get("docker_container_user")
+        else ""
+    )
+    extra_args = config.get("docker_extra_run_args") or ""
+    if extra_args:
+        extra_args += " "
+
+    run = (
+        f"docker run --rm -it --network {shlex.quote(network)} --name {shlex.quote(container)} "
+        f"-e HOST={shlex.quote(pg_container)} "
+        f"-v {shlex.quote(host_dir)}:{shlex.quote(mount_path)} "
+        f"-v {shlex.quote(ADDONS_DIR)}:{shlex.quote(_DOCKER_GOO_ADDONS)}:ro "
+    )
+    if filestore_host:
+        run += f"-v {shlex.quote(filestore_host)}:{shlex.quote(filestore_mount)} "
+    run += f"{user_flag}{extra_args}{shlex.quote(image)} python3 {mount_path}/{main_repo_id}/odoo-bin"
+
+    cmd, is_new = _odoo_bin_invocation(config, run, db, addons_path, None)
+    return cmd, db, is_new
+
+
 def warn_if_rust_bundler_missing(config, bus, context=""):
     """goo auto-installs the rust_bundler addon in every database it launches, but
     the speedup only happens when the rust_bundler config key is on AND Goo's
@@ -765,6 +845,11 @@ class _Entry:
         self.returncode = None
         self.port = None  # None for "main" (odoo default); the bound http port otherwise
         self.gport = None
+        # launch_mode="docker": the container name (see build_docker_cmd) — set
+        # while running so stop() can issue an authoritative `docker stop` (the
+        # local `docker run` client's own process/signal handling isn't a
+        # reliable way to stop the remote container, see WorkspaceManager.stop)
+        self.docker_container = None
         # one-shot Run occupying the slot (test/install/upgrade) — None for a plain
         # server or when stopped; kept as the last finished snapshot until superseded.
         # resume-after: the config of the server interrupted to run the one-shot.
@@ -848,6 +933,7 @@ class WorkspaceManager:
                 workspace=entry.id,
                 db=entry.db,
                 port=entry.port,
+                docker_container=entry.docker_container,
             )
         )
         del snap["exists"]
@@ -921,12 +1007,39 @@ class WorkspaceManager:
         if not wsid:
             return False, "missing workspace"
         main = wsid == "main"
+        is_docker = not main and config.get("launch_mode") == "docker"
         # build the command before taking the lock — it runs a psql probe
-        # (db_initialized) that must never stall the other workspaces
-        try:
-            cmd, db, is_new = build_odoo_cmd(config)
-        except ValueError as e:
-            return False, f"invalid_config: {e}"
+        # (db_initialized) that must never stall the other workspaces; the
+        # docker-mode ensure_*/image build/pull below can take minutes, for the
+        # exact same reason
+        if is_docker:
+            net_ok, net_err = DOCKER_INFRA.ensure_network(config.get("docker_network") or "goo_odoo")
+            if not net_ok:
+                return False, f"docker network: {net_err}"
+            pg_ok, pg_err = DOCKER_INFRA.ensure_postgres(config)
+            if not pg_ok:
+                return False, f"docker postgres: {pg_err}"
+            nginx_ok, nginx_err = DOCKER_INFRA.ensure_nginx(config)
+            if not nginx_ok:
+                return False, f"docker nginx: {nginx_err}"
+            image, img_err = DOCKER_INFRA.ensure_image(config, config.get("docker_branch") or "")
+            if img_err:
+                return False, f"docker image: {img_err}"
+            # a "dev"/"dev1"/"dev2" pooled slot, picked fresh every start (not
+            # a fixed name per workspace) — see next_container_slot
+            container = DOCKER_INFRA.next_container_slot()
+            if not container:
+                return False, "docker: no free dev slot found"
+            config = {**config, "docker_container": container}
+            try:
+                cmd, db, is_new = build_docker_cmd(config, image)
+            except ValueError as e:
+                return False, f"invalid_config: {e}"
+        else:
+            try:
+                cmd, db, is_new = build_odoo_cmd(config)
+            except ValueError as e:
+                return False, f"invalid_config: {e}"
         with self.lock:
             entry = self.entries.get(wsid)
             if entry is None:
@@ -952,9 +1065,13 @@ class WorkspaceManager:
                 else "server"
             )
             entry.started_at = time.time()
-            if main:
+            if main or is_docker:
+                # docker mode has no OS port to allocate either — the container
+                # binds its own default 8069/8072 inside the network namespace,
+                # reached only through nginx (docker_container.localhost)
                 entry.port = None
                 entry.gport = None
+                entry.docker_container = config.get("docker_container") if is_docker else None
                 full_cmd = cmd
             else:
                 wanted = config.get("worktree_port")
@@ -969,6 +1086,7 @@ class WorkspaceManager:
                     port = free_port()
                 entry.port = port
                 entry.gport = free_port()
+                entry.docker_container = None
                 full_cmd = f"{cmd} --http-port {port} --gevent-port {entry.gport}"
             entry.cmd = full_cmd
             # a plain server clears any active run and is remembered so a later run can
@@ -1059,6 +1177,7 @@ class WorkspaceManager:
             process = entry.process
             reader = entry.reader_thread
             port = entry.port
+            docker_container = entry.docker_container
             if was_active:
                 entry.state = "stopping"
 
@@ -1083,6 +1202,17 @@ class WorkspaceManager:
             if main:
                 if port_busy(ODOO_PORT):
                     kill_port(ODOO_PORT)
+            elif docker_container:
+                # terminate_process signaled the local `docker run` client —
+                # Docker's --sig-proxy default forwards a graceful SIGTERM into
+                # the container, but a killed/hung client doesn't reliably stop
+                # the REMOTE container (it isn't a child process of it). `docker
+                # stop` is the authoritative signal, and — since the container
+                # was started with --rm — also removes it on success.
+                try:
+                    effects.run(["docker", "stop", "-t", "10", docker_container], quiet=True, timeout=20)
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
             elif port:
                 kill_port(port)
             if reader:
@@ -1591,6 +1721,13 @@ CONFIG = services.ConfigStore(effects, CONFIG_PATH, notify=BUS.publish_config)
 # CI dashboard: per-day mergebot merge stats. Its immutable-completed-day cache
 # lives next to config.json (outside GOO_DIR, so the self-updater never touches it).
 CI = services.CiService(effects, os.path.join(os.path.dirname(CONFIG_PATH), "ci_merge_stats.json"))
+
+# launch_mode="docker" global services (network/Postgres/nginx) + per-image
+# resolution. The generated nginx.conf lives next to config.json too, same
+# reasoning as CI's cache path above.
+DOCKER_INFRA = services.DockerInfraService(
+    effects, os.path.join(os.path.dirname(CONFIG_PATH), "docker", "nginx.conf")
+)
 
 
 def _autoreload_repos():
@@ -2934,8 +3071,11 @@ def main():
     # loaded/cached yet at startup.
     if args.config:
         CONFIG.path = os.path.expanduser(args.config)
-        # keep the CI cache beside the chosen config file
+        # keep the CI cache and generated nginx.conf beside the chosen config file
         CI.cache_path = os.path.join(os.path.dirname(CONFIG.path), "ci_merge_stats.json")
+        DOCKER_INFRA.nginx_conf_path = os.path.join(
+            os.path.dirname(CONFIG.path), "docker", "nginx.conf"
+        )
 
     # DatabaseService/AssetsService's psql calls never pass connection info of
     # their own -- they rely entirely on psql's defaults (a local unix socket,
@@ -2949,7 +3089,14 @@ def main():
         os.environ["PGUSER"] = pg_config["db_user"]
     if pg_config.get("db_password"):
         os.environ["PGPASSWORD"] = pg_config["db_password"]
-    if pg_config.get("db_host"):
+    if pg_config.get("launch_mode") == "docker":
+        # goo's own Postgres container, published on docker_postgres_port —
+        # db_host/db_port are hidden/unused in this mode (see config_screen/
+        # config.js's SETTINGS_FIELDS `modes`), derived here instead so they
+        # can't drift out of sync with a separately-edited db_host/db_port
+        os.environ["PGHOST"] = "127.0.0.1"
+        os.environ["PGPORT"] = str(pg_config.get("docker_postgres_port") or "5433")
+    elif pg_config.get("db_host"):
         os.environ["PGHOST"] = pg_config["db_host"]
         if pg_config.get("db_port"):
             os.environ["PGPORT"] = str(pg_config["db_port"])

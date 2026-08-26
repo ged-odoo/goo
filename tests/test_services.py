@@ -3140,6 +3140,23 @@ class WorkspaceResolutionTest(unittest.TestCase):
         )
         self.assertNotIn("/c/odoo-bin", cmd)  # never the global community repo's own
 
+    def test_worktree_workspace_gets_docker_fields(self):
+        # launch_mode="docker" needs the worktree root dir and the main repo's
+        # checked-out branch (image resolution). docker_container is NOT set
+        # here -- it's a "dev"/"dev1"/"dev2" pooled slot picked live at start
+        # time (DockerInfraService.next_container_slot), not derived from the
+        # workspace at all
+        cfg = services.build_start_config(self.CFG, "ww1")
+        self.assertEqual(cfg["docker_worktree_dir"], "/wt/feature-x")
+        self.assertNotIn("docker_container", cfg)
+        self.assertEqual(cfg["docker_branch"], "feat")
+
+    def test_plain_workspace_has_no_docker_fields(self):
+        cfg = services.build_start_config(self.CFG, "w1")
+        self.assertNotIn("docker_worktree_dir", cfg)
+        self.assertNotIn("docker_container", cfg)
+        self.assertNotIn("docker_branch", cfg)
+
 
 class BuildOdooCmdTest(unittest.TestCase):
     """--without-demo mirrors the target's demo_data flag (config_models.js
@@ -3293,6 +3310,84 @@ class BuildOdooCmdTest(unittest.TestCase):
         )
 
 
+class BuildDockerCmdTest(unittest.TestCase):
+    """build_docker_cmd shares _odoo_bin_invocation's argument tail with
+    build_odoo_cmd (see BuildOdooCmdTest) — these tests cover what's genuinely
+    different: the `docker run` invocation prefix itself."""
+
+    def _cmd(self, **extra_config):
+        from backend import server
+
+        config = {
+            "start": {"repos": ["community", "enterprise"], "db": "db1"},
+            "main_repo_id": "community",
+            "docker_worktree_dir": "/wt/feature-x",
+            "docker_container": "feature-x",
+            "docker_network": "goo_odoo",
+            "docker_postgres_container": "goo-postgres",
+            "docker_mount_path": "/src",
+            **extra_config,
+        }
+        orig = server.DATABASE.db_initialized
+        server.DATABASE.db_initialized = lambda db: True
+        try:
+            return server.build_docker_cmd(config, "goo-odoo-noble:latest")
+        finally:
+            server.DATABASE.db_initialized = orig
+
+    def test_basic_shape(self):
+        from backend import server
+
+        cmd, db, _is_new = self._cmd()
+        self.assertEqual(db, "db1")
+        self.assertIn("docker run --rm -it --network goo_odoo --name feature-x", cmd)
+        self.assertIn("-e HOST=goo-postgres", cmd)
+        self.assertIn("-v /wt/feature-x:/src", cmd)
+        self.assertIn(f"-v {server.ADDONS_DIR}:/goo-addons:ro", cmd)
+        self.assertIn("goo-odoo-noble:latest python3 /src/community/odoo-bin", cmd)
+        # addons path: main repo → "addons", others → their repo id, goo's own last
+        self.assertIn("--addons-path addons,enterprise,/goo-addons", cmd)
+        # no filestore configured → no filestore mount
+        self.assertNotIn("filestore", cmd)
+
+    def test_filestore_mount_included_when_configured(self):
+        cmd, _db, _is_new = self._cmd(
+            filestore="/home/me/filestore", docker_filestore_mount="/odoo/filestore"
+        )
+        self.assertIn("-v /home/me/filestore:/odoo/filestore", cmd)
+
+    def test_container_user_and_extra_args_passthrough(self):
+        cmd, _db, _is_new = self._cmd(
+            docker_container_user="1000:1000", docker_extra_run_args="--memory=4g"
+        )
+        self.assertIn("--user 1000:1000", cmd)
+        self.assertIn("--memory=4g", cmd)
+        # both land before the image, after the mounts
+        self.assertLess(cmd.index("--user"), cmd.index("goo-odoo-noble:latest"))
+
+    def test_raises_without_db(self):
+        with self.assertRaises(ValueError):
+            self._cmd(start={"repos": ["community"], "db": ""})
+
+    def test_raises_without_main_repo_in_start_repos(self):
+        with self.assertRaises(ValueError):
+            self._cmd(start={"repos": ["enterprise"], "db": "db1"})
+
+    def test_raises_without_docker_worktree_dir(self):
+        with self.assertRaises(ValueError):
+            self._cmd(docker_worktree_dir="")
+
+    def test_raises_without_docker_container(self):
+        with self.assertRaises(ValueError):
+            self._cmd(docker_container="")
+
+    def test_raises_on_memcheck(self):
+        # not yet supported in Docker mode (see build_docker_cmd) — must fail
+        # clearly rather than crash on a None dump_dir
+        with self.assertRaises(ValueError):
+            self._cmd(start={"repos": ["community"], "db": "db1", "test_tags": "sale", "memcheck": True})
+
+
 class RustBundlerWarningTest(unittest.TestCase):
     def test_missing_or_stale_fork_warns_only_when_enabled(self):
         from backend import server
@@ -3352,6 +3447,7 @@ class ServerSnapshotTest(unittest.TestCase):
         "odoo_version",
         "enterprise",
         "exists",
+        "docker_container",
     }
 
     def test_asdict_always_has_every_key(self):

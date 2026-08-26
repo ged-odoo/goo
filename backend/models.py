@@ -90,6 +90,10 @@ class ServerSnapshot:
     enterprise: bool | None = None
     # worktree-only, client-facing: checkout present on disk (bootstrap; None for main)
     exists: bool | None = None
+    # launch_mode "docker" only: the live "dev"/"dev1"/"dev2" slot this run
+    # picked (see DockerInfraService.next_container_slot) — not persisted
+    # anywhere, so the client reads it here to build the nginx URL
+    docker_container: str | None = None
 
 
 @dataclass
