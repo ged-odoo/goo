@@ -495,50 +495,24 @@ def _odoo_cmd_base(config, addons_repo_ids=None, extra_env=None):
     return " && ".join(parts), addons_path
 
 
-def build_odoo_cmd(config):
-    """Build the odoo-bin shell command from a client config.
-
-    Returns (cmd, db, is_new_db). Raises ValueError on invalid config.
-    """
+def _odoo_bin_invocation(config, prefix, db, addons_path, dump_dir=None):
+    """The odoo-bin argument tail — db/addons-path/demo, then whichever of
+    test-tags / install-upgrade / plain-server mode `start` selects — appended
+    onto `prefix` (the invocation up to and including the odoo-bin path itself:
+    a local `cd ... && odoo-bin` chain today, or a `docker run ... image
+    python3 .../odoo-bin` container invocation for Docker launch mode). Shared
+    between build_odoo_cmd and its Docker-mode counterpart — the arguments
+    odoo-bin itself receives are identical either way; only `prefix` differs.
+    `dump_dir` is the memcheck dump directory build_odoo_cmd already resolved
+    (also threaded into `prefix`'s MEMCHECK_DUMP_DIR env var), reused here for
+    the post-run memlab analysis paths.
+    Returns (cmd, is_new_db)."""
     start = config.get("start") or {}
-    db = start.get("db")
-    if not db:
-        raise ValueError("no database configured (start.db)")
-
-    # memory-perf check: goo's Tests tab "Memory check" checkbox is a plain
-    # option on the classic --test-tags run below, not a separate mode — it
-    # needs MEMCHECK_DUMP_DIR set on the odoo-bin invocation itself, so this
-    # is resolved before _odoo_cmd_base runs rather than as a plain cmd += after
     memcheck = bool(start.get("memcheck") and start.get("test_tags"))
-    extra_env = None
-    dump_dir = None
-    if memcheck:
-        community_path = next(
-            (
-                os.path.expanduser(r["path"])
-                for r in config.get("repos", [])
-                if isinstance(r, dict) and r.get("id") == "community" and r.get("path")
-            ),
-            None,
-        )
-        if not community_path:
-            raise ValueError("no 'community' repo defined in repos")
-        worktree_parent = os.path.dirname(community_path)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        # same location convention as the odoo-memory-perf skill's
-        # run_check.sh, so a UI-triggered run and a Claude-triggered one land
-        # in the same place
-        dump_dir = os.path.join(
-            worktree_parent, ".claude", "skills", "odoo-memory-perf", "dumps",
-            f"memcheck_{stamp}",
-        )
-        extra_env = {"MEMCHECK_DUMP_DIR": dump_dir}
-
-    cmd, addons_path = _odoo_cmd_base(config, start.get("repos", []), extra_env=extra_env)
     db_user = config.get("db_user", "odoo")
     db_password = config.get("db_password", "odoo")
     without_demo = "false" if start.get("demo_data", True) else "all"
-    cmd += (
+    cmd = prefix + (
         f" -r {db_user} -w {db_password} -d {db} "
         f"--database {db} --no-database-list --without-demo {without_demo} "
         f"--addons-path {addons_path}"
@@ -592,7 +566,7 @@ def build_odoo_cmd(config):
                 f" --final {shlex.quote(os.path.join(dump_dir, 'final.heapsnapshot'))}"
                 f" --work-dir {shlex.quote(dump_dir)}"
             )
-        return cmd, db, is_new
+        return cmd, is_new
 
     # install / upgrade modules and exit
     install, upgrade = start.get("install"), start.get("upgrade")
@@ -602,7 +576,7 @@ def build_odoo_cmd(config):
         if upgrade:
             cmd += f" -u {upgrade}"
         cmd += " --stop-after-init"
-        return cmd, db, False
+        return cmd, False
 
     other_args = start.get("other_args", "")
     if other_args:
@@ -612,6 +586,50 @@ def build_odoo_cmd(config):
     on_create_args = start.get("on_create_args", "")
     if is_new and on_create_args:
         cmd += f" {on_create_args}"
+    return cmd, is_new
+
+
+def build_odoo_cmd(config):
+    """Build the odoo-bin shell command from a client config.
+
+    Returns (cmd, db, is_new_db). Raises ValueError on invalid config.
+    """
+    start = config.get("start") or {}
+    db = start.get("db")
+    if not db:
+        raise ValueError("no database configured (start.db)")
+
+    # memory-perf check: goo's Tests tab "Memory check" checkbox is a plain
+    # option on the classic --test-tags run below, not a separate mode — it
+    # needs MEMCHECK_DUMP_DIR set on the odoo-bin invocation itself, so this
+    # is resolved before _odoo_cmd_base runs rather than as a plain cmd += after
+    memcheck = bool(start.get("memcheck") and start.get("test_tags"))
+    extra_env = None
+    dump_dir = None
+    if memcheck:
+        community_path = next(
+            (
+                os.path.expanduser(r["path"])
+                for r in config.get("repos", [])
+                if isinstance(r, dict) and r.get("id") == "community" and r.get("path")
+            ),
+            None,
+        )
+        if not community_path:
+            raise ValueError("no 'community' repo defined in repos")
+        worktree_parent = os.path.dirname(community_path)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        # same location convention as the odoo-memory-perf skill's
+        # run_check.sh, so a UI-triggered run and a Claude-triggered one land
+        # in the same place
+        dump_dir = os.path.join(
+            worktree_parent, ".claude", "skills", "odoo-memory-perf", "dumps",
+            f"memcheck_{stamp}",
+        )
+        extra_env = {"MEMCHECK_DUMP_DIR": dump_dir}
+
+    prefix, addons_path = _odoo_cmd_base(config, start.get("repos", []), extra_env=extra_env)
+    cmd, is_new = _odoo_bin_invocation(config, prefix, db, addons_path, dump_dir)
     return cmd, db, is_new
 
 

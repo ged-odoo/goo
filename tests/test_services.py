@@ -3278,6 +3278,20 @@ class BuildOdooCmdTest(unittest.TestCase):
         self.assertIn("&& /repo/community/odoo-bin", self._cmd())
         self.assertNotIn("bin/python /repo/community/odoo-bin", self._cmd())
 
+    def test_full_command_shape_is_pinned(self):
+        # a golden/exact-string regression pin (the other tests here only check
+        # substrings) — guards _odoo_bin_invocation's split from build_odoo_cmd
+        # (the prefix/argument-tail refactor for Docker launch mode) against any
+        # accidental reordering or stray whitespace in the assembled command
+        from backend import server
+
+        self.assertEqual(
+            self._cmd(),
+            "cd /repo/community && /repo/community/odoo-bin -r odoo -w odoo -d db1 "
+            "--database db1 --no-database-list --without-demo false "
+            "--addons-path addons," + server.ADDONS_DIR,
+        )
+
 
 class RustBundlerWarningTest(unittest.TestCase):
     def test_missing_or_stale_fork_warns_only_when_enabled(self):
