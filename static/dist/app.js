@@ -10841,13 +10841,18 @@ var TerminalDialog = class extends Component {
   static template = xml`
     <div class="term-panel" t-ref="this.drag.handle">
       <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
+        <span class="term-panel-title" t-att-title="this.label" t-out="this.label"/>
         <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
       </div>
       <div class="term-panel-body" t-ref="this.container"/>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
-  props = useProps({ done: t.function(), path: t.string(), label: t.string() });
+  props = useProps({
+    done: t.function(),
+    path: t.string().optional(),
+    workspace: t.string().optional(),
+    label: t.string()
+  });
   container = signal.ref(HTMLElement);
   _dispose = null;
   setup() {
@@ -10856,7 +10861,7 @@ var TerminalDialog = class extends Component {
       const el = this.container();
       if (!el) return;
       let live = true;
-      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+      const url = this.props.workspace ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}` : `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
       attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
       return () => {
         live = false;
@@ -13671,7 +13676,12 @@ var WorkspacesScreen = class extends Component {
               <t t-if="this.config.config.launch_mode !== 'external'">
                 <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
                 <t t-else="">
-                  <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                  <t t-if="!this.isLive(this.sel)">
+                    <div class="wt-start-group">
+                      <button class="pbtn primary wt-lifecycle-btn wt-start-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
+                      <button class="pbtn primary wt-start-caret" t-att-disabled="!this.canStart(this.sel) or this.activating" title="start options" t-on-click.stop="(ev) => this.openStartMenu(ev, this.sel)">▾</button>
+                    </div>
+                  </t>
                   <button t-else="" class="pbtn stop wt-lifecycle-btn" t-on-click="() => this.stop(this.sel)"><span class="ic square"/>Stop</button>
                 </t>
               </t>
@@ -14552,6 +14562,54 @@ var WorkspacesScreen = class extends Component {
   }
   stop(ws) {
     return this.isWt(ws) ? this.wt.stopServer(ws) : this.server.stop();
+  }
+  // the small caret next to Start: alternatives to a plain start — drop the
+  // database first (a fresh install, matching whatever Start args/on_create_args
+  // are configured), or open an odoo-bin shell REPL against this workspace
+  // without starting the server at all
+  openStartMenu(ev, ws) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const actions = [
+      { label: "Open shell", onClick: () => this.openShell(ws) },
+      {
+        label: "Drop database & start",
+        danger: true,
+        disabled: !this.dbExists(ws),
+        title: this.dbExists(ws) ? `drop "${ws.db}" then start fresh` : `no database "${ws.db}" to drop`,
+        onClick: () => this.startWithDrop(ws)
+      }
+    ];
+    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+  }
+  // an interactive odoo-bin shell REPL popup for this workspace's db/addons —
+  // independent of whether its server is running (its own process/container,
+  // same TerminalDialog + /api/shell as the Code tab's per-repo terminal)
+  openShell(ws) {
+    this.config.workspace(ws.id)?.touchActivity();
+    this.dialogs.openComponent(TerminalDialog, { workspace: ws.id, label: `${ws.name} shell` });
+  }
+  // Start, but drop the database first — a fresh install from this workspace's
+  // Start args, matching what a normal Start would do against a never-initialized
+  // db (see _odoo_bin_invocation's on_create_args / is_new handling)
+  async startWithDrop(ws) {
+    if (!this.canStart(ws) || !this.dbExists(ws)) return;
+    const res = await this.dialogs.open({
+      title: `Drop "${ws.db}" and start?`,
+      message: "This permanently deletes the database, then starts a fresh install. This cannot be undone.",
+      okLabel: "Drop & start"
+    });
+    if (!res) return;
+    const error = await this.db.drop(ws.db);
+    if (error) {
+      await this.dialogs.open({
+        title: "Drop failed",
+        message: error,
+        okLabel: "OK",
+        cancelLabel: null
+      });
+      return;
+    }
+    await this.start(ws);
   }
   openTerminalPane(ws) {
     this.pane.set("terminal");

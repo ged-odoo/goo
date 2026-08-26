@@ -5077,6 +5077,22 @@ a.commit-detail-hash svg {
   padding-top: 4px;
   padding-bottom: 4px;
 }
+/* the Start button + its dropdown caret (shell / drop-and-start): a no-gap
+   group so the two visually merge into one pill, independent of the
+   surrounding row's own gap between its other controls */
+.wt-start-group {
+  display: flex;
+}
+.wt-start-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.wt-start-caret {
+  margin-left: -1px;
+  padding: 4px 8px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
 .wt-head-meta {
   flex: 0 1 auto;
   min-width: 0;

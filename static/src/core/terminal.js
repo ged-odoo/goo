@@ -146,23 +146,30 @@ export class TerminalPanel extends Component {
 }
 
 // ─────────────────────────── Terminal dialog ───────────────────────────
-// A draggable, resizable floating terminal running bash in a given directory
-// (opened from the workspace Code tab). Backed by /api/shell, so it works
-// regardless of the Odoo server; shares the term-panel chrome + useDragResize
-// with the server-tab TerminalPanel.
+// A draggable, resizable floating terminal (opened from the workspace Code tab,
+// or — via `workspace` instead of `path` — the Shell popup on a workspace's Start
+// dropdown, running that workspace's own `odoo-bin shell` REPL). Backed by
+// /api/shell, so it works regardless of the Odoo server; shares the term-panel
+// chrome + useDragResize with the server-tab TerminalPanel.
 
 export class TerminalDialog extends Component {
   static template = xml`
     <div class="term-panel" t-ref="this.drag.handle">
       <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title" t-att-title="this.props.path" t-out="this.label"/>
+        <span class="term-panel-title" t-att-title="this.label" t-out="this.label"/>
         <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
       </div>
       <div class="term-panel-body" t-ref="this.container"/>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
 
-  props = useProps({ done: t.function(), path: t.string(), label: t.string() });
+  props = useProps({
+    done: t.function(),
+    path: t.string().optional(),
+    workspace: t.string().optional(),
+    label: t.string(),
+  });
+
   container = signal.ref(HTMLElement);
   _dispose = null;
 
@@ -172,7 +179,9 @@ export class TerminalDialog extends Component {
       const el = this.container();
       if (!el) return;
       let live = true;
-      const url = `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+      const url = this.props.workspace
+        ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}`
+        : `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
       attachXterm(el, url, true).then((dispose) => (live ? (this._dispose = dispose) : dispose()));
       return () => {
         live = false;
