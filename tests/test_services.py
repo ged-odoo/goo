@@ -3341,12 +3341,20 @@ class BuildDockerCmdTest(unittest.TestCase):
         cmd, db, _is_new = self._cmd()
         self.assertEqual(db, "db1")
         self.assertIn("docker run --rm -it --network goo_odoo --name feature-x", cmd)
+        # --workdir is docker's equivalent of build_odoo_cmd's `cd {community_path}
+        # &&` — without it, relative addons-path entries resolve against the
+        # image's own WORKDIR instead of the checkout (caught by actually running
+        # this command against a real container, not just string assertions)
+        self.assertIn("--workdir /src/community", cmd)
         self.assertIn("-e HOST=goo-postgres", cmd)
         self.assertIn("-v /wt/feature-x:/src", cmd)
         self.assertIn(f"-v {server.ADDONS_DIR}:/goo-addons:ro", cmd)
         self.assertIn("goo-odoo-noble:latest python3 /src/community/odoo-bin", cmd)
-        # addons path: main repo → "addons", others → their repo id, goo's own last
-        self.assertIn("--addons-path addons,enterprise,/goo-addons", cmd)
+        # addons path: main repo → "addons" (a subdir of the workdir), every other
+        # repo → "../<repo_id>" (a SIBLING of the workdir, matching the sibling
+        # layout build_start_config's worktree branch actually gives every repo
+        # host-side — a bare "enterprise" would resolve one level too deep)
+        self.assertIn("--addons-path addons,../enterprise,/goo-addons", cmd)
         # no filestore configured → no filestore mount
         self.assertNotIn("filestore", cmd)
 

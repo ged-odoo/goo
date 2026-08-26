@@ -673,14 +673,17 @@ def build_docker_cmd(config, image):
     if not container:
         raise ValueError("no container name resolved for this Docker workspace")
 
-    # every repo mounts as a direct child of the worktree root — build_start_config's
+    # every repo mounts as a direct SIBLING of the main repo — build_start_config's
     # worktree branch already gives every repo the uniform HOST path <dir>/<repo_id>,
     # so the in-container equivalent is just <mount_path>/<repo_id> regardless of the
-    # actual host path, the same way _odoo_cmd_base derives addons_path from relative
-    # positions rather than absolute ones
+    # actual host path. --workdir below is <mount_path>/<main_repo_id> (mirroring
+    # build_odoo_cmd's `cd {community_path}`), so a sibling repo's addons_path entry
+    # must climb back out one level first — "../enterprise", not bare "enterprise" —
+    # exactly what _odoo_cmd_base's real os.path.relpath(repo path, community path)
+    # would compute for this same sibling layout.
     mount_path = (config.get("docker_mount_path") or "/src").rstrip("/")
     addons_path = (
-        ",".join("addons" if rid == main_repo_id else rid for rid in addons_repo_ids)
+        ",".join("addons" if rid == main_repo_id else f"../{rid}" for rid in addons_repo_ids)
         + f",{_DOCKER_GOO_ADDONS}"
     )
 
@@ -699,8 +702,13 @@ def build_docker_cmd(config, image):
     if extra_args:
         extra_args += " "
 
+    # --workdir is docker's own equivalent of build_odoo_cmd's `cd {community_path}
+    # &&` — without it, addons_path's relative entries ("addons", "enterprise")
+    # resolve against the image's own default WORKDIR (or /), not the checkout,
+    # exactly the same way a local odoo-bin invocation would break without its cd
     run = (
         f"docker run --rm -it --network {shlex.quote(network)} --name {shlex.quote(container)} "
+        f"--workdir {shlex.quote(f'{mount_path}/{main_repo_id}')} "
         f"-e HOST={shlex.quote(pg_container)} "
         f"-v {shlex.quote(host_dir)}:{shlex.quote(mount_path)} "
         f"-v {shlex.quote(ADDONS_DIR)}:{shlex.quote(_DOCKER_GOO_ADDONS)}:ro "
