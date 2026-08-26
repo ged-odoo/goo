@@ -271,7 +271,7 @@ export class WorkspacesScreen extends Component {
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">
                   <span class="dim">Location</span>
-                  <span t-out="this.sel.location === 'worktree' ? 'Own worktree + port' : 'Main checkout'"/>
+                  <span t-out="this.locationLabel(this.sel)"/>
                   <t t-if="this.sel.worktree?.dir">
                     <span class="dim">Path</span>
                     <span class="ws-details-path" t-out="this.sel.worktree.dir"/>
@@ -998,6 +998,15 @@ export class WorkspacesScreen extends Component {
     return this.stateOf(ws) !== "stopped" ? 8069 : null;
   }
 
+  // the Details tab's Location field — "+ port" only when goo would actually
+  // manage one (hide_start_controls means an externally-launched server owns
+  // its own port goo has no say in, same guard as the wt-head-port badge above)
+  locationLabel(ws) {
+    if (ws.location !== "worktree") return "Main checkout";
+    const port = this.config.config.hide_start_controls ? null : this.portOf(ws);
+    return port ? `Own worktree · port ${port}` : "Own worktree";
+  }
+
   dotClass(ws) {
     return "wt-dot-" + this.stateOf(ws);
   }
@@ -1253,9 +1262,18 @@ export class WorkspacesScreen extends Component {
 
   async dropDb(ws) {
     if (!this.canDropDb(ws)) return;
+    // goo's own "in use" guard (canDropDb → isLive) only ever sees ITS OWN
+    // subprocess — under hide_start_controls a server launched by hand (Docker)
+    // never registers there, so check for one directly before the confirm
+    let message = "This permanently deletes the database. This cannot be undone.";
+    if (this.config.config.hide_start_controls) {
+      const ext = await this.wt.checkDbInUse(ws.db);
+      if (ext?.running)
+        message = `An external server appears to be running against "${ws.db}" right now${ext.url ? ` (${ext.url})` : ""}. Dropping it may break that running instance. ${message}`;
+    }
     const res = await this.dialogs.open({
       title: `Drop "${ws.db}"?`,
-      message: "This permanently deletes the database. This cannot be undone.",
+      message,
       okLabel: "Drop",
     });
     if (!res) return;

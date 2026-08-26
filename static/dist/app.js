@@ -4265,6 +4265,21 @@ var WorkspacePlugin = class extends Plugin {
     this._externalStatus.set(tgt.id, next);
     this._externalStatusTick.set(this._externalStatusTick() + 1);
   }
+  // one-shot external-container check for a bare db name, independent of any
+  // workspace target — used to warn before a destructive db op (drop/rename)
+  // when hide_start_controls is on: goo's own "active db" tracking (server.status().db)
+  // is permanently empty in that mode (it only ever reflects goo's own subprocess),
+  // so it can't tell a db an external container is actively serving from an unused
+  // one. Returns null (never blocks the caller) on a failed check.
+  async checkDbInUse(dbName) {
+    if (!dbName) return null;
+    try {
+      const res = await postJSON("/api/workspace/external_status", { name: dbName });
+      return { running: !!res.running, url: res.url || "" };
+    } catch {
+      return null;
+    }
+  }
   // per-repo worktree descriptors for an existing worktree target (start / remove)
   wtRepos(tgt) {
     const g = this.code.groups();
@@ -6688,8 +6703,10 @@ var LinksEditor = class extends Component {
   }
 };
 var SETTINGS_FIELDS = [
-  { key: "venv_activate", name: "venv activate (optional)" },
-  { key: "server_path", name: "odoo-bin path" },
+  // only read while building the odoo-bin command goo launches itself
+  // (backend/server.py) — unused when "hide start/stop controls" is on
+  { key: "venv_activate", name: "venv activate (optional)", launchOnly: true },
+  { key: "server_path", name: "odoo-bin path", launchOnly: true },
   { key: "worktree_dir", name: "worktree dir" },
   { key: "main_repo_id", name: "main repo id (odoo-bin lives here, default community)" },
   { key: "db_user", name: "database user" },
@@ -6717,8 +6734,9 @@ var ConfigScreen = class extends Component {
           <h2 class="subtitle">Odoo settings</h2>
           <div class="settings-grid" data-form-type="other">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
-              <label t-att-for="'setting-' + f.key" t-out="f.name"/>
-              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
+              <label t-att-for="'setting-' + f.key" t-att-class="{dim: this.deadUnderDocker(f)}"
+                     t-att-title="this.deadUnderDocker(f) ? 'only used when goo launches Odoo itself — unused while \'hide start/stop controls\' is on' : ''" t-out="f.name"/>
+              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" t-att-class="{dim: this.deadUnderDocker(f)}" autocomplete="off" t-att-value="this.settings()[f.key]"
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
@@ -6735,7 +6753,7 @@ var ConfigScreen = class extends Component {
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
-            <label for="setting-rust-bundler" title="Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.">rust bundler</label>
+            <label for="setting-rust-bundler" t-att-class="{dim: this.config.config.hide_start_controls}" t-att-title="this.config.config.hide_start_controls ? 'only takes effect when goo launches Odoo itself — unused while \'hide start/stop controls\' is on (the Build button below still works)' : 'Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo\'s native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.'">rust bundler</label>
             <div class="rust-bundler-control">
               <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Use Goo's native asset bundler on the next Odoo restart. Untick it for the Python bundler."
                      t-att-checked="this.config.config.rust_bundler"
@@ -6878,6 +6896,9 @@ var ConfigScreen = class extends Component {
   }
   setSetting(key, val) {
     this.settings.set({ ...this.settings(), [key]: val });
+  }
+  deadUnderDocker(f) {
+    return !!f.launchOnly && !!this.config.config.hide_start_controls;
   }
   saveSettings() {
     const patch = {};
@@ -7296,6 +7317,8 @@ var DatabasesScreen = class extends Component {
     </section>`;
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  wt = usePlugin(WorkspacePlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   selected = signal(/* @__PURE__ */ new Set());
@@ -7379,13 +7402,27 @@ var DatabasesScreen = class extends Component {
   get selectedCount() {
     return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
   }
+  // under hide_start_controls goo has no live tracking of externally-launched
+  // servers — `d.active`/canDropDb only ever sees goo's OWN subprocess (always
+  // "not active" in that mode), so a db an external container is actively
+  // serving would otherwise look perfectly safe to drop/rename. Spot-check right
+  // before the destructive op instead of eagerly polling docker for every row.
+  async _externalUseWarning(names) {
+    if (!this.config.config.hide_start_controls) return "";
+    const results = await Promise.all(names.map((n) => this.wt.checkDbInUse(n)));
+    const inUse = names.filter((_, i) => results[i]?.running);
+    if (!inUse.length) return "";
+    const many = inUse.length > 1;
+    return ` An external server appears to be running against ${many ? "these databases" : `"${inUse[0]}"`} right now \u2014 this may break ${many ? "them" : "it"}.`;
+  }
   async dropSelected() {
     const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
     if (!dbs.length) return;
     const n = dbs.length;
+    const warning = await this._externalUseWarning(dbs.map((d) => d.name));
     const res = await this.dialogs.open({
       title: `Drop ${n} database${n === 1 ? "" : "s"}?`,
-      message: "This permanently deletes the selected databases. This cannot be undone.",
+      message: `This permanently deletes the selected databases. This cannot be undone.${warning}`,
       okLabel: "Drop"
     });
     if (!res) return;
@@ -7394,9 +7431,10 @@ var DatabasesScreen = class extends Component {
   }
   // confirm via the dialog, then drop; report any failure in a dialog too
   async dropDb(d) {
+    const warning = await this._externalUseWarning([d.name]);
     const res = await this.dialogs.open({
       title: `Drop "${d.name}"?`,
-      message: "This permanently deletes the database. This cannot be undone.",
+      message: `This permanently deletes the database. This cannot be undone.${warning}`,
       okLabel: "Drop"
     });
     if (!res) return;
@@ -7449,8 +7487,10 @@ var DatabasesScreen = class extends Component {
   }
   // ask for a new name, then rename; report any failure in a dialog
   async renameDb(d) {
+    const warning = await this._externalUseWarning([d.name]);
     const res = await this.dialogs.open({
       title: `Rename "${d.name}"`,
+      message: warning,
       fields: [
         {
           key: "name",
@@ -9401,7 +9441,13 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: "main",
         options: [
           { value: "main", label: "Main checkout (one loaded at a time)" },
-          { value: "worktree", label: "Own worktree + port (runs concurrently)" }
+          {
+            value: "worktree",
+            // "+ port" only promises something goo actually manages — under
+            // hide_start_controls an externally-launched server owns its own
+            // port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
+            label: config.config.hide_start_controls ? "Own worktree (runs concurrently)" : "Own worktree + port (runs concurrently)"
+          }
         ]
       },
       {
@@ -9496,13 +9542,17 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.db ?? "",
         placeholder: "database name"
       },
-      {
-        key: "args",
-        type: "text",
-        label: "Start args",
-        value: prefill.args ?? "",
-        placeholder: "-i sale_management"
-      },
+      // Start args only ever reach backend/server.py's odoo-bin launch command —
+      // unused when goo never launches the server itself (hide_start_controls)
+      ...config.config.hide_start_controls ? [] : [
+        {
+          key: "args",
+          type: "text",
+          label: "Start args",
+          value: prefill.args ?? "",
+          placeholder: "-i sale_management"
+        }
+      ],
       ...config.config.workspace_categories_enabled ? [
         {
           key: "category",
@@ -9524,12 +9574,16 @@ async function startCreateWorkspace(plugins, prefill = {}) {
           return dbOptions[0]?.value || "";
         }
       },
-      {
-        key: "demoData",
-        type: "checkbox",
-        label: "Demo data",
-        value: prefill.demoData ?? true
-      },
+      // same story as Start args: only feeds the --without-demo flag on goo's own
+      // launch (backend/server.py) — unused under hide_start_controls
+      ...config.config.hide_start_controls ? [] : [
+        {
+          key: "demoData",
+          type: "checkbox",
+          label: "Demo data",
+          value: prefill.demoData ?? true
+        }
+      ],
       {
         key: "createBranches",
         type: "checkbox",
@@ -9544,12 +9598,17 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.createBranches ?? true
       },
       { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
-      {
-        key: "createVenv",
-        type: "checkbox",
-        label: "Create venv from requirements.txt (worktree)",
-        value: prefill.createVenv ?? false
-      }
+      // the venv is only ever consulted at launch by goo's own subprocess
+      // (workspace_plugin.js createWorktree) — a Docker container brings its own
+      // Python env, so this is unused under hide_start_controls
+      ...config.config.hide_start_controls ? [] : [
+        {
+          key: "createVenv",
+          type: "checkbox",
+          label: "Create venv from requirements.txt (worktree)",
+          value: prefill.createVenv ?? false
+        }
+      ]
     ]
   });
   if (!res) return;
@@ -13424,7 +13483,7 @@ var WorkspacesScreen = class extends Component {
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">
                   <span class="dim">Location</span>
-                  <span t-out="this.sel.location === 'worktree' ? 'Own worktree + port' : 'Main checkout'"/>
+                  <span t-out="this.locationLabel(this.sel)"/>
                   <t t-if="this.sel.worktree?.dir">
                     <span class="dim">Path</span>
                     <span class="ws-details-path" t-out="this.sel.worktree.dir"/>
@@ -14032,6 +14091,14 @@ var WorkspacesScreen = class extends Component {
     if (this.isWt(ws)) return this.wt.port(ws) || ws.port || null;
     return this.stateOf(ws) !== "stopped" ? 8069 : null;
   }
+  // the Details tab's Location field — "+ port" only when goo would actually
+  // manage one (hide_start_controls means an externally-launched server owns
+  // its own port goo has no say in, same guard as the wt-head-port badge above)
+  locationLabel(ws) {
+    if (ws.location !== "worktree") return "Main checkout";
+    const port = this.config.config.hide_start_controls ? null : this.portOf(ws);
+    return port ? `Own worktree \xB7 port ${port}` : "Own worktree";
+  }
   dotClass(ws) {
     return "wt-dot-" + this.stateOf(ws);
   }
@@ -14234,9 +14301,15 @@ var WorkspacesScreen = class extends Component {
   }
   async dropDb(ws) {
     if (!this.canDropDb(ws)) return;
+    let message = "This permanently deletes the database. This cannot be undone.";
+    if (this.config.config.hide_start_controls) {
+      const ext = await this.wt.checkDbInUse(ws.db);
+      if (ext?.running)
+        message = `An external server appears to be running against "${ws.db}" right now${ext.url ? ` (${ext.url})` : ""}. Dropping it may break that running instance. ${message}`;
+    }
     const res = await this.dialogs.open({
       title: `Drop "${ws.db}"?`,
-      message: "This permanently deletes the database. This cannot be undone.",
+      message,
       okLabel: "Drop"
     });
     if (!res) return;
@@ -14387,7 +14460,10 @@ var Topbar = class extends Component {
           <div class="nt-sep"/>
           <button class="nt-item nt-all" t-on-click="() => this.router.go('workspaces')">All workspaces →</button>
         </div>
-        <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
+        <!-- servers launched by hand outside goo (hide_start_controls) have no
+             goo-managed Start/Stop to toggle here — clicking it would launch a
+             second, competing odoo-bin against whatever's already running -->
+        <button t-if="!this.config.config.hide_start_controls" class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
         <t t-foreach="this.routes" t-as="r" t-key="r_index">

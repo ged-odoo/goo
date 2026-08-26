@@ -3432,6 +3432,11 @@ tr.active td.brg-commit {
   outline: none;
   border-color: var(--l-accent-line);
 }
+/* only used building the odoo-bin command goo launches itself — muted while
+   "hide start/stop controls" is on, since nothing reads them in that mode */
+.settings-grid .edit-input.dim {
+  color: var(--l-text-faint);
+}
 
 .rust-bundler-control {
   display: flex;

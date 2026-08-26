@@ -532,8 +532,10 @@ export class LinksEditor extends Component {
 // scalar config fields editable in the Config tab's Settings block
 
 export const SETTINGS_FIELDS = [
-  { key: "venv_activate", name: "venv activate (optional)" },
-  { key: "server_path", name: "odoo-bin path" },
+  // only read while building the odoo-bin command goo launches itself
+  // (backend/server.py) — unused when "hide start/stop controls" is on
+  { key: "venv_activate", name: "venv activate (optional)", launchOnly: true },
+  { key: "server_path", name: "odoo-bin path", launchOnly: true },
   { key: "worktree_dir", name: "worktree dir" },
   { key: "main_repo_id", name: "main repo id (odoo-bin lives here, default community)" },
   { key: "db_user", name: "database user" },
@@ -562,8 +564,9 @@ export class ConfigScreen extends Component {
           <h2 class="subtitle">Odoo settings</h2>
           <div class="settings-grid" data-form-type="other">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
-              <label t-att-for="'setting-' + f.key" t-out="f.name"/>
-              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
+              <label t-att-for="'setting-' + f.key" t-att-class="{dim: this.deadUnderDocker(f)}"
+                     t-att-title="this.deadUnderDocker(f) ? 'only used when goo launches Odoo itself — unused while \'hide start/stop controls\' is on' : ''" t-out="f.name"/>
+              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" t-att-class="{dim: this.deadUnderDocker(f)}" autocomplete="off" t-att-value="this.settings()[f.key]"
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
@@ -580,7 +583,7 @@ export class ConfigScreen extends Component {
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
-            <label for="setting-rust-bundler" title="Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.">rust bundler</label>
+            <label for="setting-rust-bundler" t-att-class="{dim: this.config.config.hide_start_controls}" t-att-title="this.config.config.hide_start_controls ? 'only takes effect when goo launches Odoo itself — unused while \'hide start/stop controls\' is on (the Build button below still works)' : 'Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo\'s native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.'">rust bundler</label>
             <div class="rust-bundler-control">
               <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Use Goo's native asset bundler on the next Odoo restart. Untick it for the Python bundler."
                      t-att-checked="this.config.config.rust_bundler"
@@ -730,6 +733,10 @@ export class ConfigScreen extends Component {
 
   setSetting(key, val) {
     this.settings.set({ ...this.settings(), [key]: val });
+  }
+
+  deadUnderDocker(f) {
+    return !!f.launchOnly && !!this.config.config.hide_start_controls;
   }
 
   saveSettings() {

@@ -2,6 +2,8 @@ import { Component, computed, usePlugin, signal, xml } from "@odoo/owl";
 import { formatBytes, timeAgo } from "../core/utils.js";
 import { DatabasePlugin } from "../core/database_plugin.js";
 import { DialogPlugin } from "../core/dialog_plugin.js";
+import { ConfigPlugin } from "../core/config_plugin.js";
+import { WorkspacePlugin } from "../core/workspace_plugin.js";
 import { ICONS, appBus, m } from "../core/common.js";
 import { Panel } from "../core/panel.js";
 
@@ -65,6 +67,8 @@ export class DatabasesScreen extends Component {
 
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
+  config = usePlugin(ConfigPlugin);
+  wt = usePlugin(WorkspacePlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
   selected = signal(new Set()); // database names ticked for batch actions
@@ -159,13 +163,28 @@ export class DatabasesScreen extends Component {
     return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
   }
 
+  // under hide_start_controls goo has no live tracking of externally-launched
+  // servers — `d.active`/canDropDb only ever sees goo's OWN subprocess (always
+  // "not active" in that mode), so a db an external container is actively
+  // serving would otherwise look perfectly safe to drop/rename. Spot-check right
+  // before the destructive op instead of eagerly polling docker for every row.
+  async _externalUseWarning(names) {
+    if (!this.config.config.hide_start_controls) return "";
+    const results = await Promise.all(names.map((n) => this.wt.checkDbInUse(n)));
+    const inUse = names.filter((_, i) => results[i]?.running);
+    if (!inUse.length) return "";
+    const many = inUse.length > 1;
+    return ` An external server appears to be running against ${many ? "these databases" : `"${inUse[0]}"`} right now — this may break ${many ? "them" : "it"}.`;
+  }
+
   async dropSelected() {
     const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
     if (!dbs.length) return;
     const n = dbs.length;
+    const warning = await this._externalUseWarning(dbs.map((d) => d.name));
     const res = await this.dialogs.open({
       title: `Drop ${n} database${n === 1 ? "" : "s"}?`,
-      message: "This permanently deletes the selected databases. This cannot be undone.",
+      message: `This permanently deletes the selected databases. This cannot be undone.${warning}`,
       okLabel: "Drop",
     });
     if (!res) return;
@@ -175,9 +194,10 @@ export class DatabasesScreen extends Component {
 
   // confirm via the dialog, then drop; report any failure in a dialog too
   async dropDb(d) {
+    const warning = await this._externalUseWarning([d.name]);
     const res = await this.dialogs.open({
       title: `Drop "${d.name}"?`,
-      message: "This permanently deletes the database. This cannot be undone.",
+      message: `This permanently deletes the database. This cannot be undone.${warning}`,
       okLabel: "Drop",
     });
     if (!res) return;
@@ -237,8 +257,10 @@ export class DatabasesScreen extends Component {
 
   // ask for a new name, then rename; report any failure in a dialog
   async renameDb(d) {
+    const warning = await this._externalUseWarning([d.name]);
     const res = await this.dialogs.open({
       title: `Rename "${d.name}"`,
+      message: warning,
       fields: [
         {
           key: "name",

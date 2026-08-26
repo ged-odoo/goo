@@ -322,7 +322,15 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: "main",
         options: [
           { value: "main", label: "Main checkout (one loaded at a time)" },
-          { value: "worktree", label: "Own worktree + port (runs concurrently)" },
+          {
+            value: "worktree",
+            // "+ port" only promises something goo actually manages — under
+            // hide_start_controls an externally-launched server owns its own
+            // port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
+            label: config.config.hide_start_controls
+              ? "Own worktree (runs concurrently)"
+              : "Own worktree + port (runs concurrently)",
+          },
         ],
       },
       {
@@ -428,13 +436,19 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.db ?? "",
         placeholder: "database name",
       },
-      {
-        key: "args",
-        type: "text",
-        label: "Start args",
-        value: prefill.args ?? "",
-        placeholder: "-i sale_management",
-      },
+      // Start args only ever reach backend/server.py's odoo-bin launch command —
+      // unused when goo never launches the server itself (hide_start_controls)
+      ...(config.config.hide_start_controls
+        ? []
+        : [
+            {
+              key: "args",
+              type: "text",
+              label: "Start args",
+              value: prefill.args ?? "",
+              placeholder: "-i sale_management",
+            },
+          ]),
       ...(config.config.workspace_categories_enabled
         ? [
             {
@@ -458,12 +472,18 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
           return dbOptions[0]?.value || "";
         },
       },
-      {
-        key: "demoData",
-        type: "checkbox",
-        label: "Demo data",
-        value: prefill.demoData ?? true,
-      },
+      // same story as Start args: only feeds the --without-demo flag on goo's own
+      // launch (backend/server.py) — unused under hide_start_controls
+      ...(config.config.hide_start_controls
+        ? []
+        : [
+            {
+              key: "demoData",
+              type: "checkbox",
+              label: "Demo data",
+              value: prefill.demoData ?? true,
+            },
+          ]),
       {
         key: "createBranches",
         type: "checkbox",
@@ -478,12 +498,19 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.createBranches ?? true,
       },
       { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
-      {
-        key: "createVenv",
-        type: "checkbox",
-        label: "Create venv from requirements.txt (worktree)",
-        value: prefill.createVenv ?? false,
-      },
+      // the venv is only ever consulted at launch by goo's own subprocess
+      // (workspace_plugin.js createWorktree) — a Docker container brings its own
+      // Python env, so this is unused under hide_start_controls
+      ...(config.config.hide_start_controls
+        ? []
+        : [
+            {
+              key: "createVenv",
+              type: "checkbox",
+              label: "Create venv from requirements.txt (worktree)",
+              value: prefill.createVenv ?? false,
+            },
+          ]),
     ],
   });
   if (!res) return;

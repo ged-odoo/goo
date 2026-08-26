@@ -65,7 +65,10 @@ export class Topbar extends Component {
           <div class="nt-sep"/>
           <button class="nt-item nt-all" t-on-click="() => this.router.go('workspaces')">All workspaces →</button>
         </div>
-        <button class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
+        <!-- servers launched by hand outside goo (hide_start_controls) have no
+             goo-managed Start/Stop to toggle here — clicking it would launch a
+             second, competing odoo-bin against whatever's already running -->
+        <button t-if="!this.config.config.hide_start_controls" class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
         <t t-foreach="this.routes" t-as="r" t-key="r_index">

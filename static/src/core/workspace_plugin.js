@@ -162,6 +162,22 @@ export class WorkspacePlugin extends Plugin {
     this._externalStatusTick.set(this._externalStatusTick() + 1);
   }
 
+  // one-shot external-container check for a bare db name, independent of any
+  // workspace target — used to warn before a destructive db op (drop/rename)
+  // when hide_start_controls is on: goo's own "active db" tracking (server.status().db)
+  // is permanently empty in that mode (it only ever reflects goo's own subprocess),
+  // so it can't tell a db an external container is actively serving from an unused
+  // one. Returns null (never blocks the caller) on a failed check.
+  async checkDbInUse(dbName) {
+    if (!dbName) return null;
+    try {
+      const res = await postJSON("/api/workspace/external_status", { name: dbName });
+      return { running: !!res.running, url: res.url || "" };
+    } catch {
+      return null;
+    }
+  }
+
   // per-repo worktree descriptors for an existing worktree target (start / remove)
   wtRepos(tgt) {
     const g = this.code.groups();
