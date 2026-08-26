@@ -3633,5 +3633,166 @@ class PortIsFreeTest(unittest.TestCase):
         self.assertTrue(server.port_is_free(port))  # released → bindable again
 
 
+class ResolveDockerImageTest(unittest.TestCase):
+    JAMMY = {"id": "jammy", "versions": ["16.0", "17.0"], "image": "jammy:latest"}
+    NOBLE = {
+        "id": "noble",
+        "versions": ["18.0", "saas-18", "19.0", "saas-19", "master"],
+        "image": "noble:latest",
+        "is_default": True,
+    }
+
+    def test_prefix_match_wins(self):
+        row = services.resolve_docker_image("16.0-fix-jpp", [self.JAMMY, self.NOBLE])
+        self.assertEqual(row["id"], "jammy")
+
+    def test_falls_back_to_default_when_nothing_matches(self):
+        row = services.resolve_docker_image("master-feature-jpp", [self.JAMMY, self.NOBLE])
+        self.assertEqual(row["id"], "noble")
+
+    def test_none_when_no_match_and_no_default(self):
+        row = services.resolve_docker_image("16.0-fix-jpp", [{"id": "x", "versions": ["17.0"]}])
+        self.assertIsNone(row)
+
+    def test_empty_list_is_none(self):
+        self.assertIsNone(services.resolve_docker_image("master-x-jpp", []))
+
+
+class DockerInfraServiceTest(unittest.TestCase):
+    CONFIG = {
+        "docker_network": "goo_odoo",
+        "docker_postgres_container": "goo-postgres",
+        "docker_postgres_image": "postgres:16",
+        "docker_postgres_port": "5433",
+        "docker_postgres_volume": "goo-postgres-data",
+        "docker_nginx_container": "goo-nginx",
+        "docker_nginx_image": "nginx:alpine",
+        "docker_nginx_port": "80",
+        "db_user": "odoo",
+        "db_password": "odoo",
+        "docker_images": [
+            {"id": "jammy", "versions": ["16.0"], "dockerfile_path": "~/docker/jammy.Dockerfile"},
+        ],
+    }
+
+    def _svc(self, **kwargs):
+        io = FakeIO(**kwargs)
+        return services.DockerInfraService(io, "/cfg/docker/nginx.conf"), io
+
+    def test_ensure_network_skips_create_when_already_present(self):
+        svc, io = self._svc(runs={"network inspect goo_odoo": completed(returncode=0)})
+        ok, err = svc.ensure_network("goo_odoo")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertFalse(any("network create" in " ".join(c) for c in io.run_calls))
+
+    def test_ensure_network_creates_when_missing(self):
+        svc, io = self._svc(
+            runs={
+                "network inspect goo_odoo": completed(returncode=1),
+                "network create goo_odoo": completed(returncode=0),
+            }
+        )
+        ok, err = svc.ensure_network("goo_odoo")
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+
+    def test_ensure_postgres_noop_when_running(self):
+        svc, io = self._svc(runs={"docker inspect -f": completed(stdout="true\n")})
+        ok, err = svc.ensure_postgres(self.CONFIG)
+        self.assertTrue(ok)
+        self.assertFalse(any("docker run" in " ".join(c) for c in io.run_calls))
+
+    def test_ensure_postgres_starts_stopped_container(self):
+        svc, io = self._svc(
+            runs={
+                "docker inspect -f": completed(stdout="false\n"),
+                "docker start goo-postgres": completed(returncode=0),
+            }
+        )
+        ok, err = svc.ensure_postgres(self.CONFIG)
+        self.assertTrue(ok)
+        self.assertTrue(any(c[:2] == ["docker", "start"] for c in io.run_calls))
+
+    def test_ensure_postgres_creates_when_missing(self):
+        svc, io = self._svc(runs={"docker inspect -f": completed(returncode=1)})
+        ok, err = svc.ensure_postgres(self.CONFIG)
+        self.assertTrue(ok)
+        run_cmd = next(c for c in io.run_calls if c[:2] == ["docker", "run"])
+        joined = " ".join(run_cmd)
+        self.assertIn("--name goo-postgres", joined)
+        self.assertIn("--network goo_odoo", joined)
+        self.assertIn("POSTGRES_USER=odoo", joined)
+        self.assertIn("POSTGRES_PASSWORD=odoo", joined)
+        self.assertIn("127.0.0.1:5433:5432", joined)
+        self.assertIn("goo-postgres-data:/var/lib/postgresql/data", joined)
+        self.assertIn("postgres:16", run_cmd)
+
+    def test_ensure_nginx_writes_config_and_creates_when_missing(self):
+        svc, io = self._svc(runs={"docker inspect -f": completed(returncode=1)})
+        ok, err = svc.ensure_nginx(self.CONFIG)
+        self.assertTrue(ok)
+        self.assertIn("/cfg/docker/nginx.conf", io._files)
+        self.assertIn("resolver 127.0.0.11", io._files["/cfg/docker/nginx.conf"])
+        run_cmd = next(c for c in io.run_calls if c[:2] == ["docker", "run"])
+        joined = " ".join(run_cmd)
+        self.assertIn("--name goo-nginx", joined)
+        self.assertIn("80:80", joined)
+        self.assertIn("/cfg/docker/nginx.conf:/etc/nginx/nginx.conf:ro", joined)
+
+    def test_ensure_nginx_noop_when_running(self):
+        svc, io = self._svc(runs={"docker inspect -f": completed(stdout="true\n")})
+        ok, err = svc.ensure_nginx(self.CONFIG)
+        self.assertTrue(ok)
+        self.assertFalse(any("docker run" in " ".join(c) for c in io.run_calls))
+
+    def test_ensure_image_returns_existing_tag_without_building(self):
+        svc, io = self._svc(runs={"image inspect": completed(returncode=0)})
+        tag, err = svc.ensure_image(self.CONFIG, "16.0-fix-jpp")
+        # CONFIG's jammy row has no literal `image` — the tag is derived from its id
+        self.assertEqual(tag, "goo-jammy")
+        self.assertIsNone(err)
+        self.assertFalse(any("docker build" in " ".join(c) for c in io.run_calls))
+
+    def test_ensure_image_builds_when_tag_missing_locally(self):
+        svc, io = self._svc(
+            runs={
+                "image inspect": completed(returncode=1),
+                "docker build": completed(returncode=0),
+            }
+        )
+        tag, err = svc.ensure_image(self.CONFIG, "16.0-fix-jpp")
+        self.assertIsNone(err)
+        self.assertTrue(any(c[:2] == ["docker", "build"] for c in io.run_calls))
+
+    def test_ensure_image_errors_without_a_matching_row(self):
+        svc, io = self._svc()
+        tag, err = svc.ensure_image({"docker_images": []}, "16.0-fix-jpp")
+        self.assertIsNone(tag)
+        self.assertIn("no Docker image configured", err)
+
+    def test_ensure_image_errors_when_missing_and_no_dockerfile(self):
+        svc, io = self._svc(runs={"image inspect": completed(returncode=1)})
+        config = {"docker_images": [{"id": "x", "versions": ["16.0"], "image": "prebuilt:tag"}]}
+        tag, err = svc.ensure_image(config, "16.0-fix-jpp")
+        self.assertIsNone(tag)
+        self.assertIn("isn't built locally", err)
+
+    def test_next_container_slot_picks_plain_dev_when_free(self):
+        svc, io = self._svc(runs={"container inspect dev": completed(returncode=1)})
+        self.assertEqual(svc.next_container_slot(), "dev")
+
+    def test_next_container_slot_skips_taken_slots(self):
+        # substring matching (FakeIO) can't tell "dev" from "dev1"/"dev2" apart
+        # here, so match on the exact inspected name instead
+        class IO(FakeIO):
+            def run(self, cmd, **kwargs):
+                self.run_calls.append(cmd)
+                return completed(returncode=0 if cmd[-1] in ("dev", "dev1") else 1)
+
+        svc = services.DockerInfraService(IO(), "/cfg/docker/nginx.conf")
+        self.assertEqual(svc.next_container_slot(), "dev2")
+
+
 if __name__ == "__main__":
     unittest.main()
