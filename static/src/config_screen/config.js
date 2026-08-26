@@ -531,18 +531,56 @@ export class LinksEditor extends Component {
 
 // scalar config fields editable in the Config tab's Settings block
 
+// `modes`: which launch_mode(s) a field is actually read under — drives which
+// rows show in the Odoo settings block (see ConfigScreen.settingsFields).
+// Absent `modes` = shown regardless of launch_mode (e.g. editor, below).
 export const SETTINGS_FIELDS = [
-  // only read while building the odoo-bin command goo launches itself
-  // (backend/server.py) — unused when "hide start/stop controls" is on
-  { key: "venv_activate", name: "venv activate (optional)", launchOnly: true },
-  { key: "server_path", name: "odoo-bin path", launchOnly: true },
-  { key: "worktree_dir", name: "worktree dir" },
-  { key: "main_repo_id", name: "main repo id (odoo-bin lives here, default community)" },
-  { key: "db_user", name: "database user" },
-  { key: "db_password", name: "database password" },
-  { key: "db_host", name: "database host (empty = local unix socket)" },
-  { key: "db_port", name: "database port (empty = default)" },
-  { key: "filestore", name: "filestore path" },
+  // local-only: only read building the odoo-bin command for a plain local
+  // subprocess launch (backend/server.py build_odoo_cmd) — a Docker image
+  // supplies its own env/interpreter, and "external" doesn't launch anything
+  { key: "venv_activate", name: "venv activate (optional)", modes: ["local"] },
+  { key: "server_path", name: "odoo-bin path", modes: ["local"] },
+  // shared between local and docker (docker bind-mounts this same host dir /
+  // needs to know which checkout holds odoo-bin)
+  { key: "worktree_dir", name: "worktree dir", modes: ["local", "docker"] },
+  {
+    key: "main_repo_id",
+    name: "main repo id (odoo-bin lives here, default community)",
+    modes: ["local", "docker"],
+  },
+  // db_user/db_password/filestore are genuinely shared across every mode — the
+  // Databases screen's psql access needs them regardless of how Odoo itself is
+  // launched, and docker mode provisions its Postgres container's own
+  // POSTGRES_USER/PASSWORD from these same two values (see docker_postgres_*)
+  { key: "db_user", name: "database user", modes: ["local", "docker", "external"] },
+  { key: "db_password", name: "database password", modes: ["local", "docker", "external"] },
+  // db_host/db_port are meaningless in docker mode — goo's own Postgres
+  // container is reached via docker_postgres_port instead (derived, not a
+  // separate value to keep in sync — see build_docker_cmd/PGHOST/PGPORT)
+  {
+    key: "db_host",
+    name: "database host (empty = local unix socket)",
+    modes: ["local", "external"],
+  },
+  { key: "db_port", name: "database port (empty = default)", modes: ["local", "external"] },
+  { key: "filestore", name: "filestore path", modes: ["local", "docker", "external"] },
+  // docker-only: goo's own Docker-managed global services + per-workspace container
+  { key: "docker_network", name: "Docker network", modes: ["docker"] },
+  { key: "docker_postgres_image", name: "Postgres image", modes: ["docker"] },
+  { key: "docker_postgres_container", name: "Postgres container name", modes: ["docker"] },
+  { key: "docker_postgres_port", name: "Postgres host port", modes: ["docker"] },
+  { key: "docker_postgres_volume", name: "Postgres data volume", modes: ["docker"] },
+  { key: "docker_nginx_image", name: "nginx image", modes: ["docker"] },
+  { key: "docker_nginx_container", name: "nginx container name", modes: ["docker"] },
+  {
+    key: "docker_nginx_port",
+    name: "nginx host port (routes <workspace>.localhost)",
+    modes: ["docker"],
+  },
+  { key: "docker_mount_path", name: "in-container mount path", modes: ["docker"] },
+  { key: "docker_filestore_mount", name: "in-container filestore path", modes: ["docker"] },
+  { key: "docker_container_user", name: "container user (optional)", modes: ["docker"] },
+  { key: "docker_extra_run_args", name: "extra docker run args (optional)", modes: ["docker"] },
   { key: "editor", name: "editor command" },
 ];
 
@@ -561,12 +599,31 @@ export class ConfigScreen extends Component {
       </Panel>
       <div class="content">
         <div class="config-block">
+          <h2 class="subtitle">Launch mode</h2>
+          <div class="launch-mode-picker">
+            <label class="launch-mode-option" t-att-class="{selected: this.config.config.launch_mode === 'local'}">
+              <input type="radio" name="launch-mode" value="local" t-att-checked="this.config.config.launch_mode === 'local'" t-on-change="() => this.setLaunchMode('local')"/>
+              <span class="launch-mode-title">Run in machine</span>
+              <span class="launch-mode-hint dim">goo launches odoo-bin as a local subprocess</span>
+            </label>
+            <label class="launch-mode-option" t-att-class="{selected: this.config.config.launch_mode === 'docker'}">
+              <input type="radio" name="launch-mode" value="docker" t-att-checked="this.config.config.launch_mode === 'docker'" t-on-change="() => this.setLaunchMode('docker')"/>
+              <span class="launch-mode-title">Docker</span>
+              <span class="launch-mode-hint dim">goo launches Odoo in a Docker container it manages itself</span>
+            </label>
+            <label class="launch-mode-option" t-att-class="{selected: this.config.config.launch_mode === 'external'}">
+              <input type="radio" name="launch-mode" value="external" t-att-checked="this.config.config.launch_mode === 'external'" t-on-change="() => this.setLaunchMode('external')"/>
+              <span class="launch-mode-title">External</span>
+              <span class="launch-mode-hint dim">goo doesn't launch or stop Odoo — a passive status check only</span>
+            </label>
+          </div>
+        </div>
+        <div class="config-block">
           <h2 class="subtitle">Odoo settings</h2>
           <div class="settings-grid" data-form-type="other">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
-              <label t-att-for="'setting-' + f.key" t-att-class="{dim: this.deadUnderDocker(f)}"
-                     t-att-title="this.deadUnderDocker(f) ? 'only used when goo launches Odoo itself — unused while \'hide start/stop controls\' is on' : ''" t-out="f.name"/>
-              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" t-att-class="{dim: this.deadUnderDocker(f)}" autocomplete="off" t-att-value="this.settings()[f.key]"
+              <label t-att-for="'setting-' + f.key" t-out="f.name"/>
+              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
@@ -583,7 +640,7 @@ export class ConfigScreen extends Component {
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
-            <label for="setting-rust-bundler" t-att-class="{dim: this.config.config.hide_start_controls}" t-att-title="this.config.config.hide_start_controls ? 'only takes effect when goo launches Odoo itself — unused while \'hide start/stop controls\' is on (the Build button below still works)' : 'Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo\'s native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.'">rust bundler</label>
+            <label for="setting-rust-bundler" t-att-class="{dim: this.config.config.launch_mode !== 'local'}" t-att-title="this.config.config.launch_mode !== 'local' ? 'only takes effect for a local subprocess launch — unused in Docker/External mode (the Build button below still works)' : 'Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo\'s native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.'">rust bundler</label>
             <div class="rust-bundler-control">
               <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Use Goo's native asset bundler on the next Odoo restart. Untick it for the Python bundler."
                      t-att-checked="this.config.config.rust_bundler"
@@ -601,10 +658,6 @@ export class ConfigScreen extends Component {
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
                    t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
-            <label for="setting-hide-start-controls" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo.">hide start/stop controls</label>
-            <input id="setting-hide-start-controls" type="checkbox" class="settings-check" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo."
-                   t-att-checked="this.config.config.hide_start_controls"
-                   t-on-change="ev => this.config.updateConfig({ hide_start_controls: ev.target.checked })"/>
             <label for="setting-autologin-links" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
             <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
                    t-att-checked="this.config.config.autologin_links"
@@ -617,6 +670,7 @@ export class ConfigScreen extends Component {
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
+        <ListEditor t-if="this.config.config.launch_mode === 'docker'" kind="'docker_images'"/>
         <ListEditor kind="'templates'"/>
         <ListEditor kind="'categories'"/>
         <ListEditor kind="'testPresets'"/>
@@ -651,8 +705,17 @@ export class ConfigScreen extends Component {
   backupMsg = signal("");
   rustBuilding = signal(false);
   rustStatus = signal({ checking: true });
-  settingsFields = SETTINGS_FIELDS.filter((f) => f.key !== "editor"); // editor lives in Miscellaneous
   settings = signal(this._loadSettings());
+
+  // editor lives in Miscellaneous, not this grid; the rest are filtered to the
+  // active launch_mode (a field with no `modes` — none left today besides
+  // editor — would show in every mode)
+  get settingsFields() {
+    const mode = this.config.config.launch_mode;
+    return SETTINGS_FIELDS.filter(
+      (f) => f.key !== "editor" && (!f.modes || f.modes.includes(mode)),
+    );
+  }
 
   setup() {
     onMounted(() => this.checkRustBundler());
@@ -735,8 +798,8 @@ export class ConfigScreen extends Component {
     this.settings.set({ ...this.settings(), [key]: val });
   }
 
-  deadUnderDocker(f) {
-    return !!f.launchOnly && !!this.config.config.hide_start_controls;
+  setLaunchMode(mode) {
+    this.config.updateConfig({ launch_mode: mode });
   }
 
   saveSettings() {
@@ -901,6 +964,70 @@ export const SPECS = {
         const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by workspace "${w.name}"`;
       }
+      return null;
+    },
+  },
+  docker_images: {
+    key: "docker_images",
+    title: "Docker images",
+    itemName: "image",
+    card: true,
+    carry: ["id"],
+    prepare(item) {
+      if (!item.id) item.id = newWorkspaceId(); // a freshly added row
+    },
+    fields: [
+      {
+        key: "label",
+        name: "label",
+        placeholder: "jammy (16.0/17.0)",
+        className: "w-name",
+      },
+      {
+        key: "versions",
+        name: "version prefixes",
+        placeholder: "16.0,17.0",
+        className: "w-flex",
+        format: (v) => (v || []).join(","),
+        parse: (s) =>
+          s
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean),
+        title:
+          "branch prefixes matched against the workspace's main-repo branch, e.g. 16.0,17.0,saas-18",
+      },
+      {
+        key: "dockerfile_path",
+        name: "Dockerfile path",
+        placeholder: "~/dev/docker/jammy.Dockerfile",
+        className: "w-flex",
+        optional: true,
+        row: 2,
+        title: "built on demand when the image tag below isn't found locally",
+      },
+      {
+        key: "image",
+        name: "image tag",
+        placeholder: "goo-odoo-jammy:latest",
+        className: "w-flex",
+        optional: true,
+        row: 2,
+        title: "prebuilt tag to run as-is; leave blank to build from the Dockerfile path",
+      },
+      {
+        key: "is_default",
+        name: "default",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title: "used when no version prefix matches the workspace's branch",
+      },
+    ],
+    validate(items) {
+      const defaults = items.filter((i) => i.is_default);
+      if (defaults.length > 1) return "only one Docker image may be marked default";
+      if (items.length && !defaults.length) return "one Docker image must be marked default";
       return null;
     },
   },

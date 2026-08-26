@@ -26,9 +26,29 @@ export const DEFAULT_CONFIG = {
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
   editor: "code", // command used by the "Open with editor" actions
   auto_open_event_log: false, // open the event log overlay when new events arrive
-  // hide the goo-managed Start/Stop controls (port display, Terminal tab,
-  // Server-logs tab) for people who launch their servers by hand outside of goo
-  hide_start_controls: false,
+  // how goo launches Odoo: "local" (a plain odoo-bin subprocess, the fields
+  // above), "docker" (goo runs the container itself — see the docker_* fields
+  // below), or "external" (goo neither launches nor stops Odoo — the Start/Stop
+  // controls, port display, Terminal tab and Server-logs tab all stay hidden;
+  // a passive status check only, for people who launch their servers by hand)
+  launch_mode: "local",
+  // ── docker_*: only read when launch_mode is "docker" ──────────────────────
+  docker_network: "goo_odoo", // the Docker network every goo-managed container joins
+  docker_postgres_image: "postgres:16",
+  docker_postgres_container: "goo-postgres", // also the DNS name odoo containers use as --db_host
+  docker_postgres_port: "5433", // host-published (not 5432, to avoid clashing with a local install)
+  docker_postgres_volume: "goo-postgres-data", // a named volume, not a bind mount
+  docker_nginx_image: "nginx:alpine",
+  docker_nginx_container: "goo-nginx",
+  docker_nginx_port: "80", // host-published; each container gets <slug>.localhost via nginx
+  docker_mount_path: "/src", // in-container mount point for the worktree
+  docker_filestore_mount: "/home/odoo_user/.local/share/Odoo/filestore",
+  docker_container_user: "", // optional --user passthrough
+  docker_extra_run_args: "", // optional raw passthrough appended to `docker run`
+  // version → image mapping: [{id, label, versions: [prefixes], dockerfile_path?,
+  // image?, is_default}] — the workspace's main-repo branch is matched against
+  // each row's `versions` prefixes (first match wins), else the is_default row
+  docker_images: [],
   // the /odoo and /web/tests buttons go through goo's own dev-only autologin
   // route by default (see addons/autologin) -- turn off to link the plain
   // path instead, for people who'd rather log in themselves (e.g. that addon

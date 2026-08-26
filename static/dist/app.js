@@ -48,9 +48,37 @@ var DEFAULT_CONFIG = {
   // command used by the "Open with editor" actions
   auto_open_event_log: false,
   // open the event log overlay when new events arrive
-  // hide the goo-managed Start/Stop controls (port display, Terminal tab,
-  // Server-logs tab) for people who launch their servers by hand outside of goo
-  hide_start_controls: false,
+  // how goo launches Odoo: "local" (a plain odoo-bin subprocess, the fields
+  // above), "docker" (goo runs the container itself — see the docker_* fields
+  // below), or "external" (goo neither launches nor stops Odoo — the Start/Stop
+  // controls, port display, Terminal tab and Server-logs tab all stay hidden;
+  // a passive status check only, for people who launch their servers by hand)
+  launch_mode: "local",
+  // ── docker_*: only read when launch_mode is "docker" ──────────────────────
+  docker_network: "goo_odoo",
+  // the Docker network every goo-managed container joins
+  docker_postgres_image: "postgres:16",
+  docker_postgres_container: "goo-postgres",
+  // also the DNS name odoo containers use as --db_host
+  docker_postgres_port: "5433",
+  // host-published (not 5432, to avoid clashing with a local install)
+  docker_postgres_volume: "goo-postgres-data",
+  // a named volume, not a bind mount
+  docker_nginx_image: "nginx:alpine",
+  docker_nginx_container: "goo-nginx",
+  docker_nginx_port: "80",
+  // host-published; each container gets <slug>.localhost via nginx
+  docker_mount_path: "/src",
+  // in-container mount point for the worktree
+  docker_filestore_mount: "/home/odoo_user/.local/share/Odoo/filestore",
+  docker_container_user: "",
+  // optional --user passthrough
+  docker_extra_run_args: "",
+  // optional raw passthrough appended to `docker run`
+  // version → image mapping: [{id, label, versions: [prefixes], dockerfile_path?,
+  // image?, is_default}] — the workspace's main-repo branch is matched against
+  // each row's `versions` prefixes (first match wins), else the is_default row
+  docker_images: [],
   // the /odoo and /web/tests buttons go through goo's own dev-only autologin
   // route by default (see addons/autologin) -- turn off to link the plain
   // path instead, for people who'd rather log in themselves (e.g. that addon
@@ -3177,18 +3205,38 @@ var SETTINGS_CHARS = [
   "db_port",
   "filestore",
   "editor",
-  "main_repo_id"
+  "main_repo_id",
+  "launch_mode",
+  "docker_network",
+  "docker_postgres_image",
+  "docker_postgres_container",
+  "docker_postgres_port",
+  "docker_postgres_volume",
+  "docker_nginx_image",
+  "docker_nginx_container",
+  "docker_nginx_port",
+  "docker_mount_path",
+  "docker_filestore_mount",
+  "docker_container_user",
+  "docker_extra_run_args"
 ];
 var SETTINGS_BOOLS = [
   "auto_open_event_log",
   "update_check",
   "rust_bundler",
   "workspace_categories_enabled",
-  "hide_start_controls",
   "autologin_links",
   "cleanup_enabled"
 ];
-var SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories", "reviews"];
+var SETTINGS_JSON = [
+  "start",
+  "tabs",
+  "links",
+  "test_presets",
+  "workspace_categories",
+  "reviews",
+  "docker_images"
+];
 var STATE_CHARS = ["active_workspace", "claude_model"];
 var STATE_JSON = ["test_history"];
 var Settings = class extends Model {
@@ -3214,16 +3262,31 @@ var Settings = class extends Model {
   update_check = fields.bool();
   rust_bundler = fields.bool();
   workspace_categories_enabled = fields.bool();
-  // hide the goo-managed Start/Stop controls (and the port/terminal/server-log UI
-  // that only make sense for a goo-launched process) for people who launch their
-  // servers by hand outside of goo
-  hide_start_controls = fields.bool();
   // off = the /odoo, /web/tests buttons link the plain path instead of going
   // through goo's autologin route -- for people who'd rather log in themselves
   autologin_links = fields.bool();
   // off by default -- automatically deletes merged worktree workspaces once a
   // day (see backend/cleanup.py); opt-in since it deletes things on its own
   cleanup_enabled = fields.bool();
+  // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.js).
+  // Replaces the old hide_start_controls boolean (migrated in toModels below);
+  // "docker"/"local" both get goo's own Start/Stop/logs/terminal, "external" hides them.
+  launch_mode = fields.char();
+  // ── docker_*: only read/shown when launch_mode is "docker" ────────────────
+  docker_network = fields.char();
+  docker_postgres_image = fields.char();
+  docker_postgres_container = fields.char();
+  docker_postgres_port = fields.char();
+  docker_postgres_volume = fields.char();
+  docker_nginx_image = fields.char();
+  docker_nginx_container = fields.char();
+  docker_nginx_port = fields.char();
+  docker_mount_path = fields.char();
+  docker_filestore_mount = fields.char();
+  docker_container_user = fields.char();
+  docker_extra_run_args = fields.char();
+  docker_images = fields.json();
+  // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
@@ -3527,12 +3590,16 @@ function toModels(orm, config = {}, state = {}) {
   const settings = { id: "settings" };
   for (const k of SETTINGS_CHARS) settings[k] = config[k] ?? "";
   for (const k of SETTINGS_BOOLS) settings[k] = !!config[k];
+  if (!settings.launch_mode) {
+    settings.launch_mode = config.hide_start_controls ? "external" : "local";
+  }
   settings.start = config.start ?? {};
   settings.tabs = config.tabs ?? [];
   settings.links = config.links ?? [];
   settings.test_presets = config.test_presets ?? [];
   settings.workspace_categories = config.workspace_categories ?? [];
   settings.reviews = config.reviews ?? [];
+  settings.docker_images = config.docker_images ?? [];
   orm.create(Settings, settings);
   for (const r of config.repos || []) createRepo(orm, r);
   for (const w of config.workspaces || []) createWorkspace(orm, w);
@@ -3623,6 +3690,7 @@ function toConfig(orm) {
     out.test_presets = s.test_presets() ?? [];
     out.workspace_categories = s.workspace_categories() ?? [];
     out.reviews = s.reviews() ?? [];
+    out.docker_images = s.docker_images() ?? [];
   }
   out.repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
   out.workspaces = orm.records(Workspace).map((w) => ({
@@ -4228,7 +4296,7 @@ var WorkspacePlugin = class extends Plugin {
     const ws = id ? (this.config.config.workspaces || []).find((w) => w.id === id) : null;
     if (ws && this.isWorktree(ws)) {
       this._primeLogs(id);
-      if (this.config.config.hide_start_controls) this.refreshExternalStatus(ws);
+      if (this.config.config.launch_mode === "external") this.refreshExternalStatus(ws);
     }
   }
   selectOnOpen(id) {
@@ -4261,7 +4329,7 @@ var WorkspacePlugin = class extends Plugin {
     return (tgt.checkouts || []).some((c) => c.repo === mainRepoId);
   }
   // ── external (non-goo-launched) server detection ─────────────────────────────
-  // for people who launch Odoo by hand outside of goo (see hide_start_controls):
+  // for people who launch Odoo by hand outside of goo (launch_mode "external"):
   // a read-only check of whether a container matching this workspace's db/branch
   // name is already running, and at what URL. goo never starts/stops it itself.
   externalStatus(tgt) {
@@ -4284,10 +4352,11 @@ var WorkspacePlugin = class extends Plugin {
   }
   // one-shot external-container check for a bare db name, independent of any
   // workspace target — used to warn before a destructive db op (drop/rename)
-  // when hide_start_controls is on: goo's own "active db" tracking (server.status().db)
-  // is permanently empty in that mode (it only ever reflects goo's own subprocess),
-  // so it can't tell a db an external container is actively serving from an unused
-  // one. Returns null (never blocks the caller) on a failed check.
+  // when launch_mode is "external": goo's own "active db" tracking
+  // (server.status().db) is permanently empty in that mode (it only ever
+  // reflects goo's own subprocess/container), so it can't tell a db an external
+  // container is actively serving from an unused one. Returns null (never
+  // blocks the caller) on a failed check.
   async checkDbInUse(dbName) {
     if (!dbName) return null;
     try {
@@ -4603,14 +4672,29 @@ var WorkspacePlugin = class extends Plugin {
     if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
   }
   // ── autologin URLs against the worktree server ("" when not running) ──
-  // goo-managed (port() from its own live tracking) when available, else the
-  // externally-launched server's URL (see externalStatus/refreshExternalStatus
-  // — for people who launch servers by hand, hide_start_controls)
+  // three-way by launch_mode: goo-managed port (local, from its own live
+  // tracking) when available, goo-managed container (docker, routed through
+  // nginx by container name — see dockerUrl below), else the externally-
+  // launched server's URL (see externalStatus/refreshExternalStatus, for
+  // launch_mode "external")
   _baseUrl(tgt) {
+    if (this.config.config.launch_mode === "docker") {
+      return this.running(tgt) ? this.dockerUrl(tgt) : "";
+    }
     const port = this.port(tgt);
     if (port) return `http://localhost:${port}/`;
     const ext = this.externalStatus(tgt);
     return ext?.running && ext.url ? ext.url : "";
+  }
+  // the nginx-routed URL for a docker-launched worktree: <container>.localhost,
+  // where <container> is the live "dev"/"dev1"/"dev2" slot this run picked
+  // (backend's next_container_slot — a pooled slot, not a fixed per-workspace
+  // name, so it's read from live server state, never persisted/recomputed)
+  dockerUrl(tgt) {
+    const slug = this.state(tgt).docker_container;
+    if (!slug) return "";
+    const port = this.config.config.docker_nginx_port;
+    return `http://${slug}.localhost${port && port !== "80" ? ":" + port : ""}/`;
   }
   // wraps a target path through goo's autologin route, unless autologin_links
   // is off (then it's just the plain path — for people who'd rather log in
@@ -6727,17 +6811,52 @@ var LinksEditor = class extends Component {
   }
 };
 var SETTINGS_FIELDS = [
-  // only read while building the odoo-bin command goo launches itself
-  // (backend/server.py) — unused when "hide start/stop controls" is on
-  { key: "venv_activate", name: "venv activate (optional)", launchOnly: true },
-  { key: "server_path", name: "odoo-bin path", launchOnly: true },
-  { key: "worktree_dir", name: "worktree dir" },
-  { key: "main_repo_id", name: "main repo id (odoo-bin lives here, default community)" },
-  { key: "db_user", name: "database user" },
-  { key: "db_password", name: "database password" },
-  { key: "db_host", name: "database host (empty = local unix socket)" },
-  { key: "db_port", name: "database port (empty = default)" },
-  { key: "filestore", name: "filestore path" },
+  // local-only: only read building the odoo-bin command for a plain local
+  // subprocess launch (backend/server.py build_odoo_cmd) — a Docker image
+  // supplies its own env/interpreter, and "external" doesn't launch anything
+  { key: "venv_activate", name: "venv activate (optional)", modes: ["local"] },
+  { key: "server_path", name: "odoo-bin path", modes: ["local"] },
+  // shared between local and docker (docker bind-mounts this same host dir /
+  // needs to know which checkout holds odoo-bin)
+  { key: "worktree_dir", name: "worktree dir", modes: ["local", "docker"] },
+  {
+    key: "main_repo_id",
+    name: "main repo id (odoo-bin lives here, default community)",
+    modes: ["local", "docker"]
+  },
+  // db_user/db_password/filestore are genuinely shared across every mode — the
+  // Databases screen's psql access needs them regardless of how Odoo itself is
+  // launched, and docker mode provisions its Postgres container's own
+  // POSTGRES_USER/PASSWORD from these same two values (see docker_postgres_*)
+  { key: "db_user", name: "database user", modes: ["local", "docker", "external"] },
+  { key: "db_password", name: "database password", modes: ["local", "docker", "external"] },
+  // db_host/db_port are meaningless in docker mode — goo's own Postgres
+  // container is reached via docker_postgres_port instead (derived, not a
+  // separate value to keep in sync — see build_docker_cmd/PGHOST/PGPORT)
+  {
+    key: "db_host",
+    name: "database host (empty = local unix socket)",
+    modes: ["local", "external"]
+  },
+  { key: "db_port", name: "database port (empty = default)", modes: ["local", "external"] },
+  { key: "filestore", name: "filestore path", modes: ["local", "docker", "external"] },
+  // docker-only: goo's own Docker-managed global services + per-workspace container
+  { key: "docker_network", name: "Docker network", modes: ["docker"] },
+  { key: "docker_postgres_image", name: "Postgres image", modes: ["docker"] },
+  { key: "docker_postgres_container", name: "Postgres container name", modes: ["docker"] },
+  { key: "docker_postgres_port", name: "Postgres host port", modes: ["docker"] },
+  { key: "docker_postgres_volume", name: "Postgres data volume", modes: ["docker"] },
+  { key: "docker_nginx_image", name: "nginx image", modes: ["docker"] },
+  { key: "docker_nginx_container", name: "nginx container name", modes: ["docker"] },
+  {
+    key: "docker_nginx_port",
+    name: "nginx host port (routes <workspace>.localhost)",
+    modes: ["docker"]
+  },
+  { key: "docker_mount_path", name: "in-container mount path", modes: ["docker"] },
+  { key: "docker_filestore_mount", name: "in-container filestore path", modes: ["docker"] },
+  { key: "docker_container_user", name: "container user (optional)", modes: ["docker"] },
+  { key: "docker_extra_run_args", name: "extra docker run args (optional)", modes: ["docker"] },
   { key: "editor", name: "editor command" }
 ];
 var ConfigScreen = class extends Component {
@@ -6755,12 +6874,31 @@ var ConfigScreen = class extends Component {
       </Panel>
       <div class="content">
         <div class="config-block">
+          <h2 class="subtitle">Launch mode</h2>
+          <div class="launch-mode-picker">
+            <label class="launch-mode-option" t-att-class="{selected: this.config.config.launch_mode === 'local'}">
+              <input type="radio" name="launch-mode" value="local" t-att-checked="this.config.config.launch_mode === 'local'" t-on-change="() => this.setLaunchMode('local')"/>
+              <span class="launch-mode-title">Run in machine</span>
+              <span class="launch-mode-hint dim">goo launches odoo-bin as a local subprocess</span>
+            </label>
+            <label class="launch-mode-option" t-att-class="{selected: this.config.config.launch_mode === 'docker'}">
+              <input type="radio" name="launch-mode" value="docker" t-att-checked="this.config.config.launch_mode === 'docker'" t-on-change="() => this.setLaunchMode('docker')"/>
+              <span class="launch-mode-title">Docker</span>
+              <span class="launch-mode-hint dim">goo launches Odoo in a Docker container it manages itself</span>
+            </label>
+            <label class="launch-mode-option" t-att-class="{selected: this.config.config.launch_mode === 'external'}">
+              <input type="radio" name="launch-mode" value="external" t-att-checked="this.config.config.launch_mode === 'external'" t-on-change="() => this.setLaunchMode('external')"/>
+              <span class="launch-mode-title">External</span>
+              <span class="launch-mode-hint dim">goo doesn't launch or stop Odoo — a passive status check only</span>
+            </label>
+          </div>
+        </div>
+        <div class="config-block">
           <h2 class="subtitle">Odoo settings</h2>
           <div class="settings-grid" data-form-type="other">
             <t t-foreach="this.settingsFields" t-as="f" t-key="f.key">
-              <label t-att-for="'setting-' + f.key" t-att-class="{dim: this.deadUnderDocker(f)}"
-                     t-att-title="this.deadUnderDocker(f) ? 'only used when goo launches Odoo itself — unused while \'hide start/stop controls\' is on' : ''" t-out="f.name"/>
-              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" t-att-class="{dim: this.deadUnderDocker(f)}" autocomplete="off" t-att-value="this.settings()[f.key]"
+              <label t-att-for="'setting-' + f.key" t-out="f.name"/>
+              <input t-att-id="'setting-' + f.key" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
@@ -6777,7 +6915,7 @@ var ConfigScreen = class extends Component {
             <input id="setting-auto-open-event-log" type="checkbox" class="settings-check" title="When enabled, the event log overlay opens automatically whenever a new event arrives (and stays open)."
                    t-att-checked="this.config.config.auto_open_event_log"
                    t-on-change="ev => this.config.updateConfig({ auto_open_event_log: ev.target.checked })"/>
-            <label for="setting-rust-bundler" t-att-class="{dim: this.config.config.hide_start_controls}" t-att-title="this.config.config.hide_start_controls ? 'only takes effect when goo launches Odoo itself — unused while \'hide start/stop controls\' is on (the Build button below still works)' : 'Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo\'s native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.'">rust bundler</label>
+            <label for="setting-rust-bundler" t-att-class="{dim: this.config.config.launch_mode !== 'local'}" t-att-title="this.config.config.launch_mode !== 'local' ? 'only takes effect for a local subprocess launch — unused in Docker/External mode (the Build button below still works)' : 'Launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo\'s native extension. Installation and activation are independent; activation takes effect on the next Odoo restart.'">rust bundler</label>
             <div class="rust-bundler-control">
               <input id="setting-rust-bundler" type="checkbox" class="settings-check" title="Use Goo's native asset bundler on the next Odoo restart. Untick it for the Python bundler."
                      t-att-checked="this.config.config.rust_bundler"
@@ -6795,10 +6933,6 @@ var ConfigScreen = class extends Component {
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
                    t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
-            <label for="setting-hide-start-controls" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo.">hide start/stop controls</label>
-            <input id="setting-hide-start-controls" type="checkbox" class="settings-check" title="Hide the Start/Stop button, port display, Terminal tab, and Server-logs tab in the Workspaces screen — for people who launch their Odoo servers by hand outside of goo."
-                   t-att-checked="this.config.config.hide_start_controls"
-                   t-on-change="ev => this.config.updateConfig({ hide_start_controls: ev.target.checked })"/>
             <label for="setting-autologin-links" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
             <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
                    t-att-checked="this.config.config.autologin_links"
@@ -6811,6 +6945,7 @@ var ConfigScreen = class extends Component {
         </div>
         <TabsEditor/>
         <ListEditor kind="'repos'"/>
+        <ListEditor t-if="this.config.config.launch_mode === 'docker'" kind="'docker_images'"/>
         <ListEditor kind="'templates'"/>
         <ListEditor kind="'categories'"/>
         <ListEditor kind="'testPresets'"/>
@@ -6845,9 +6980,16 @@ var ConfigScreen = class extends Component {
   backupMsg = signal("");
   rustBuilding = signal(false);
   rustStatus = signal({ checking: true });
-  settingsFields = SETTINGS_FIELDS.filter((f) => f.key !== "editor");
-  // editor lives in Miscellaneous
   settings = signal(this._loadSettings());
+  // editor lives in Miscellaneous, not this grid; the rest are filtered to the
+  // active launch_mode (a field with no `modes` — none left today besides
+  // editor — would show in every mode)
+  get settingsFields() {
+    const mode = this.config.config.launch_mode;
+    return SETTINGS_FIELDS.filter(
+      (f) => f.key !== "editor" && (!f.modes || f.modes.includes(mode))
+    );
+  }
   setup() {
     onMounted(() => this.checkRustBundler());
   }
@@ -6921,8 +7063,8 @@ var ConfigScreen = class extends Component {
   setSetting(key, val) {
     this.settings.set({ ...this.settings(), [key]: val });
   }
-  deadUnderDocker(f) {
-    return !!f.launchOnly && !!this.config.config.hide_start_controls;
+  setLaunchMode(mode) {
+    this.config.updateConfig({ launch_mode: mode });
   }
   saveSettings() {
     const patch = {};
@@ -7071,6 +7213,65 @@ var SPECS = {
         const used = (w.checkouts || []).find((c) => !ids.has(c.repo));
         if (used) return `repository "${used.repo}" is still used by workspace "${w.name}"`;
       }
+      return null;
+    }
+  },
+  docker_images: {
+    key: "docker_images",
+    title: "Docker images",
+    itemName: "image",
+    card: true,
+    carry: ["id"],
+    prepare(item) {
+      if (!item.id) item.id = newWorkspaceId();
+    },
+    fields: [
+      {
+        key: "label",
+        name: "label",
+        placeholder: "jammy (16.0/17.0)",
+        className: "w-name"
+      },
+      {
+        key: "versions",
+        name: "version prefixes",
+        placeholder: "16.0,17.0",
+        className: "w-flex",
+        format: (v) => (v || []).join(","),
+        parse: (s) => s.split(",").map((x) => x.trim()).filter(Boolean),
+        title: "branch prefixes matched against the workspace's main-repo branch, e.g. 16.0,17.0,saas-18"
+      },
+      {
+        key: "dockerfile_path",
+        name: "Dockerfile path",
+        placeholder: "~/dev/docker/jammy.Dockerfile",
+        className: "w-flex",
+        optional: true,
+        row: 2,
+        title: "built on demand when the image tag below isn't found locally"
+      },
+      {
+        key: "image",
+        name: "image tag",
+        placeholder: "goo-odoo-jammy:latest",
+        className: "w-flex",
+        optional: true,
+        row: 2,
+        title: "prebuilt tag to run as-is; leave blank to build from the Dockerfile path"
+      },
+      {
+        key: "is_default",
+        name: "default",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title: "used when no version prefix matches the workspace's branch"
+      }
+    ],
+    validate(items) {
+      const defaults = items.filter((i) => i.is_default);
+      if (defaults.length > 1) return "only one Docker image may be marked default";
+      if (items.length && !defaults.length) return "one Docker image must be marked default";
       return null;
     }
   },
@@ -7426,13 +7627,13 @@ var DatabasesScreen = class extends Component {
   get selectedCount() {
     return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
   }
-  // under hide_start_controls goo has no live tracking of externally-launched
-  // servers — `d.active`/canDropDb only ever sees goo's OWN subprocess (always
-  // "not active" in that mode), so a db an external container is actively
+  // under launch_mode "external" goo has no live tracking of externally-launched
+  // servers — `d.active`/canDropDb only ever sees goo's OWN subprocess/container
+  // (always "not active" in that mode), so a db an external container is actively
   // serving would otherwise look perfectly safe to drop/rename. Spot-check right
   // before the destructive op instead of eagerly polling docker for every row.
   async _externalUseWarning(names) {
-    if (!this.config.config.hide_start_controls) return "";
+    if (this.config.config.launch_mode !== "external") return "";
     const results = await Promise.all(names.map((n) => this.wt.checkDbInUse(n)));
     const inUse = names.filter((_, i) => results[i]?.running);
     if (!inUse.length) return "";
@@ -9467,10 +9668,11 @@ async function startCreateWorkspace(plugins, prefill = {}) {
           { value: "main", label: "Main checkout (one loaded at a time)" },
           {
             value: "worktree",
-            // "+ port" only promises something goo actually manages — under
-            // hide_start_controls an externally-launched server owns its own
-            // port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
-            label: config.config.hide_start_controls ? "Own worktree (runs concurrently)" : "Own worktree + port (runs concurrently)"
+            // "+ port" only promises something goo actually manages — a "local"
+            // launch is the only mode where goo allocates a TCP port itself;
+            // "docker" routes by container name (no port), "external" owns its
+            // own port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
+            label: config.config.launch_mode === "local" ? "Own worktree + port (runs concurrently)" : "Own worktree (runs concurrently)"
           }
         ]
       },
@@ -9566,9 +9768,10 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.db ?? "",
         placeholder: "database name"
       },
-      // Start args only ever reach backend/server.py's odoo-bin launch command —
-      // unused when goo never launches the server itself (hide_start_controls)
-      ...config.config.hide_start_controls ? [] : [
+      // Start args reach odoo-bin's own argument list regardless of how goo
+      // launches it (local subprocess or Docker) — unused only when goo never
+      // launches the server itself (launch_mode "external")
+      ...config.config.launch_mode === "external" ? [] : [
         {
           key: "args",
           type: "text",
@@ -9598,9 +9801,9 @@ async function startCreateWorkspace(plugins, prefill = {}) {
           return dbOptions[0]?.value || "";
         }
       },
-      // same story as Start args: only feeds the --without-demo flag on goo's own
-      // launch (backend/server.py) — unused under hide_start_controls
-      ...config.config.hide_start_controls ? [] : [
+      // same story as Start args: feeds --without-demo regardless of local vs.
+      // docker launch — unused only under launch_mode "external"
+      ...config.config.launch_mode === "external" ? [] : [
         {
           key: "demoData",
           type: "checkbox",
@@ -9622,17 +9825,17 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.createBranches ?? true
       },
       { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
-      // the venv is only ever consulted at launch by goo's own subprocess
+      // the venv is only ever consulted at launch by goo's own LOCAL subprocess
       // (workspace_plugin.js createWorktree) — a Docker container brings its own
-      // Python env, so this is unused under hide_start_controls
-      ...config.config.hide_start_controls ? [] : [
+      // Python env, so this is local-mode-only, unlike Start args/Demo data above
+      ...config.config.launch_mode === "local" ? [
         {
           key: "createVenv",
           type: "checkbox",
           label: "Create venv from requirements.txt (worktree)",
           value: prefill.createVenv ?? false
         }
-      ]
+      ] : []
     ]
   });
   if (!res) return;
@@ -13069,7 +13272,7 @@ var AddonsPane = class extends Component {
               <td class="dim" t-out="mod.repo"/>
               <td><span class="addon-state" t-att-class="this.stateClass(mod)" t-out="mod.state || 'not installed'"/></td>
               <td>
-                <div t-if="!this.config.config.hide_start_controls" class="br-act">
+                <div t-if="this.config.config.launch_mode !== 'external'" class="br-act">
                   <button class="addon-btn" t-att-disabled="this.addons.runActive(this.slotId) or mod.installable === false"
                           t-on-click="() => this.addons.run(mod.state === 'installed' ? 'upgrade' : 'install', mod.name, this.props.ws)"
                           t-out="mod.state === 'installed' ? 'Upgrade' : 'Install'"/>
@@ -13127,7 +13330,9 @@ var AssetsPane = class extends Component {
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showCss()" t-on-change="() => this.showCss.set(!this.showCss())"/>css</label>
           <label class="assets-chk"><input type="checkbox" t-att-checked="this.showOther()" t-on-change="() => this.showOther.set(!this.showOther())"/>other</label>
           <button class="pbtn" title="reload the bundle list" t-on-click="() => this.assets.load(true)"><span class="restart"/></button>
-          <button t-if="!this.config.config.hide_start_controls" class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
+          <!-- build_shell_cmd (unlike build_odoo_cmd) is local-only — no Docker
+               variant yet, so this stays local-mode-only, not "any goo-managed mode" -->
+          <button t-if="this.config.config.launch_mode === 'local'" class="pbtn" t-att-disabled="this.assets.generating()" title="pregenerate all bundles (odoo-bin shell, this workspace's checkout)"
                   t-on-click="() => this.generate()" t-out="this.assets.generating() ? 'Generating…' : 'Generate'"/>
           <span class="dim ws-sec-meta ws-pane-count" t-out="this.meta"/>
         </div>
@@ -13405,7 +13610,7 @@ var WorkspacesScreen = class extends Component {
               <!-- one primary slot: a main-located workspace that isn't loaded offers
                    Activate (check out its branches first); once loaded — and always
                    for worktrees — the slot is the Start/Stop toggle -->
-              <t t-if="!this.config.config.hide_start_controls">
+              <t t-if="this.config.config.launch_mode !== 'external'">
                 <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
                 <t t-else="">
                   <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
@@ -13449,7 +13654,7 @@ var WorkspacesScreen = class extends Component {
               <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
-              <span t-if="!this.config.config.hide_start_controls and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
+              <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
                 <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                 <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -13462,12 +13667,12 @@ var WorkspacesScreen = class extends Component {
             </div>
             <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Main</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
@@ -14125,11 +14330,12 @@ var WorkspacesScreen = class extends Component {
     return this.stateOf(ws) !== "stopped" ? 8069 : null;
   }
   // the Details tab's Location field — "+ port" only when goo would actually
-  // manage one (hide_start_controls means an externally-launched server owns
-  // its own port goo has no say in, same guard as the wt-head-port badge above)
+  // manage one: "local" is the only mode goo allocates a TCP port in (same
+  // guard as the wt-head-port badge above); "docker" routes by container name,
+  // "external" owns its own port goo has no say in.
   locationLabel(ws) {
     if (ws.location !== "worktree") return "Main checkout";
-    const port = this.config.config.hide_start_controls ? null : this.portOf(ws);
+    const port = this.config.config.launch_mode === "local" ? this.portOf(ws) : null;
     return port ? `Own worktree \xB7 port ${port}` : "Own worktree";
   }
   dotClass(ws) {
@@ -14335,7 +14541,7 @@ var WorkspacesScreen = class extends Component {
   async dropDb(ws) {
     if (!this.canDropDb(ws)) return;
     let message = "This permanently deletes the database. This cannot be undone.";
-    if (this.config.config.hide_start_controls) {
+    if (this.config.config.launch_mode === "external") {
       const ext = await this.wt.checkDbInUse(ws.db);
       if (ext?.running)
         message = `An external server appears to be running against "${ws.db}" right now${ext.url ? ` (${ext.url})` : ""}. Dropping it may break that running instance. ${message}`;
@@ -14493,10 +14699,10 @@ var Topbar = class extends Component {
           <div class="nt-sep"/>
           <button class="nt-item nt-all" t-on-click="() => this.router.go('workspaces')">All workspaces →</button>
         </div>
-        <!-- servers launched by hand outside goo (hide_start_controls) have no
+        <!-- servers launched by hand outside goo (launch_mode "external") have no
              goo-managed Start/Stop to toggle here — clicking it would launch a
              second, competing odoo-bin against whatever's already running -->
-        <button t-if="!this.config.config.hide_start_controls" class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
+        <button t-if="this.config.config.launch_mode !== 'external'" class="nt-toggle" t-att-class="this.toggle.cls" t-att-disabled="this.toggle.disabled" t-att-title="this.toggle.title" t-on-click="() => this.onToggle()" t-out="this.toggle.label"/>
       </div>
       <div class="top-right">
         <t t-foreach="this.routes" t-as="r" t-key="r_index">

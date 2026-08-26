@@ -1938,14 +1938,13 @@ def _api_workspace_external_status(body):
     """Read-only: is a container serving database `name` currently running,
     reachable at http://<container>.localhost/? goo never starts or stops this
     container itself — this only reports on one someone else (e.g. a launcher
-    script) may have started, for people who run Odoo outside of goo's own
-    subprocess-based Start/Stop (see hide_start_controls). There's no
-    universal convention for what such a script names its container (ours
-    might be "dev", "dev1", anything), so every running container is checked
-    by its launch command instead of assuming a naming scheme. Reports
-    "not running" (rather than erroring) when docker itself isn't available —
-    hide_start_controls doesn't imply Docker specifically, just "launched
-    outside of goo"."""
+    script) may have started, for launch_mode="external" workspaces (goo's own
+    subprocess/Docker Start/Stop is unused there). There's no universal
+    convention for what such a script names its container (ours might be
+    "dev", "dev1", anything), so every running container is checked by its
+    launch command instead of assuming a naming scheme. Reports "not running"
+    (rather than erroring) when docker itself isn't available — "external"
+    doesn't imply Docker specifically, just "launched outside of goo"."""
     name = body["name"]
     try:
         ps = effects.run(["docker", "ps", "--format", "{{.Names}}"], quiet=True, timeout=10)

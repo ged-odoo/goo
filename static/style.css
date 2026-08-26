@@ -3445,10 +3445,40 @@ tr.active td.brg-commit {
   outline: none;
   border-color: var(--l-accent-line);
 }
-/* only used building the odoo-bin command goo launches itself — muted while
-   "hide start/stop controls" is on, since nothing reads them in that mode */
-.settings-grid .edit-input.dim {
-  color: var(--l-text-faint);
+/* launch-mode picker (Config screen, above Odoo settings) — same card-radio
+   look as the new-workspace wizard's source picker (.ws-wiz-option) */
+.launch-mode-picker {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.launch-mode-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 200px;
+  padding: 12px 14px;
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: 0.12s;
+}
+.launch-mode-option:hover {
+  background: var(--l-hover);
+}
+.launch-mode-option.selected {
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
+.launch-mode-option input[type="radio"] {
+  accent-color: var(--l-accent);
+}
+.launch-mode-title {
+  font-weight: 600;
+  color: var(--l-text);
+}
+.launch-mode-hint {
+  font-size: 12px;
 }
 
 .rust-bundler-control {

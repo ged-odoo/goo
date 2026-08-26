@@ -160,7 +160,7 @@ export class WorkspacesScreen extends Component {
               <!-- one primary slot: a main-located workspace that isn't loaded offers
                    Activate (check out its branches first); once loaded — and always
                    for worktrees — the slot is the Start/Stop toggle -->
-              <t t-if="!this.config.config.hide_start_controls">
+              <t t-if="this.config.config.launch_mode !== 'external'">
                 <button t-if="!this.isWt(this.sel) and !this.isLoaded(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canActivate(this.sel) or this.activating" t-att-title="this.activateTitle(this.sel)" t-on-click="() => this.activate(this.sel)"><span t-if="this.activating" class="ws-refresh-spin"/><t t-out="this.activating ? 'Activating…' : 'Activate'"/></button>
                 <t t-else="">
                   <button t-if="!this.isLive(this.sel)" class="pbtn primary wt-lifecycle-btn" t-att-disabled="!this.canStart(this.sel) or this.activating" t-att-title="this.startTitle(this.sel)" t-on-click="() => this.start(this.sel)"><span class="play"/><t t-out="this.startLabel"/></button>
@@ -204,7 +204,7 @@ export class WorkspacesScreen extends Component {
               <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
-              <span t-if="!this.config.config.hide_start_controls and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
+              <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
                 <button class="dash-kebab" t-att-class="{open: this.menuOpen()}" title="more actions" t-on-click.stop="() => this.menuOpen.set(!this.menuOpen())"><t t-out="this.kebabIcon"/></button>
                 <div t-if="this.menuOpen()" class="dash-menu" t-on-click.stop="">
@@ -217,12 +217,12 @@ export class WorkspacesScreen extends Component {
             </div>
             <div class="wt-tabs">
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'code'}" t-on-click="() => this.pane.set('code')"><t t-out="this.icons.code"/>Main</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'log'}" t-on-click="() => this.pane.set('log')"><t t-out="this.icons.journal"/>Server logs</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'tests'}" t-on-click="() => this.pane.set('tests')"><t t-out="this.icons.tests"/>Tests</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'addons'}" t-on-click="() => this.pane.set('addons')"><t t-out="this.icons.addons"/>Addons</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
-                <button t-if="!this.config.config.hide_start_controls" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
@@ -999,11 +999,12 @@ export class WorkspacesScreen extends Component {
   }
 
   // the Details tab's Location field — "+ port" only when goo would actually
-  // manage one (hide_start_controls means an externally-launched server owns
-  // its own port goo has no say in, same guard as the wt-head-port badge above)
+  // manage one: "local" is the only mode goo allocates a TCP port in (same
+  // guard as the wt-head-port badge above); "docker" routes by container name,
+  // "external" owns its own port goo has no say in.
   locationLabel(ws) {
     if (ws.location !== "worktree") return "Main checkout";
-    const port = this.config.config.hide_start_controls ? null : this.portOf(ws);
+    const port = this.config.config.launch_mode === "local" ? this.portOf(ws) : null;
     return port ? `Own worktree · port ${port}` : "Own worktree";
   }
 
@@ -1263,10 +1264,10 @@ export class WorkspacesScreen extends Component {
   async dropDb(ws) {
     if (!this.canDropDb(ws)) return;
     // goo's own "in use" guard (canDropDb → isLive) only ever sees ITS OWN
-    // subprocess — under hide_start_controls a server launched by hand (Docker)
-    // never registers there, so check for one directly before the confirm
+    // subprocess/container — under launch_mode "external" a server launched by
+    // hand never registers there, so check for one directly before the confirm
     let message = "This permanently deletes the database. This cannot be undone.";
-    if (this.config.config.hide_start_controls) {
+    if (this.config.config.launch_mode === "external") {
       const ext = await this.wt.checkDbInUse(ws.db);
       if (ext?.running)
         message = `An external server appears to be running against "${ws.db}" right now${ext.url ? ` (${ext.url})` : ""}. Dropping it may break that running instance. ${message}`;

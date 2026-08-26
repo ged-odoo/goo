@@ -66,17 +66,37 @@ const SETTINGS_CHARS = [
   "filestore",
   "editor",
   "main_repo_id",
+  "launch_mode",
+  "docker_network",
+  "docker_postgres_image",
+  "docker_postgres_container",
+  "docker_postgres_port",
+  "docker_postgres_volume",
+  "docker_nginx_image",
+  "docker_nginx_container",
+  "docker_nginx_port",
+  "docker_mount_path",
+  "docker_filestore_mount",
+  "docker_container_user",
+  "docker_extra_run_args",
 ];
 const SETTINGS_BOOLS = [
   "auto_open_event_log",
   "update_check",
   "rust_bundler",
   "workspace_categories_enabled",
-  "hide_start_controls",
   "autologin_links",
   "cleanup_enabled",
 ];
-const SETTINGS_JSON = ["start", "tabs", "links", "test_presets", "workspace_categories", "reviews"];
+const SETTINGS_JSON = [
+  "start",
+  "tabs",
+  "links",
+  "test_presets",
+  "workspace_categories",
+  "reviews",
+  "docker_images",
+];
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
 const STATE_CHARS = ["active_workspace", "claude_model"];
 const STATE_JSON = ["test_history"];
@@ -103,16 +123,30 @@ export class Settings extends Model {
   update_check = fields.bool();
   rust_bundler = fields.bool();
   workspace_categories_enabled = fields.bool();
-  // hide the goo-managed Start/Stop controls (and the port/terminal/server-log UI
-  // that only make sense for a goo-launched process) for people who launch their
-  // servers by hand outside of goo
-  hide_start_controls = fields.bool();
   // off = the /odoo, /web/tests buttons link the plain path instead of going
   // through goo's autologin route -- for people who'd rather log in themselves
   autologin_links = fields.bool();
   // off by default -- automatically deletes merged worktree workspaces once a
   // day (see backend/cleanup.py); opt-in since it deletes things on its own
   cleanup_enabled = fields.bool();
+  // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.js).
+  // Replaces the old hide_start_controls boolean (migrated in toModels below);
+  // "docker"/"local" both get goo's own Start/Stop/logs/terminal, "external" hides them.
+  launch_mode = fields.char();
+  // ── docker_*: only read/shown when launch_mode is "docker" ────────────────
+  docker_network = fields.char();
+  docker_postgres_image = fields.char();
+  docker_postgres_container = fields.char();
+  docker_postgres_port = fields.char();
+  docker_postgres_volume = fields.char();
+  docker_nginx_image = fields.char();
+  docker_nginx_container = fields.char();
+  docker_nginx_port = fields.char();
+  docker_mount_path = fields.char();
+  docker_filestore_mount = fields.char();
+  docker_container_user = fields.char();
+  docker_extra_run_args = fields.char();
+  docker_images = fields.json(); // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
@@ -479,12 +513,19 @@ export function toModels(orm, config = {}, state = {}) {
   const settings = { id: "settings" };
   for (const k of SETTINGS_CHARS) settings[k] = config[k] ?? "";
   for (const k of SETTINGS_BOOLS) settings[k] = !!config[k];
+  // one-time migration: hide_start_controls (boolean) → launch_mode (3-way).
+  // hide_start_controls is no longer a stored field at all — this is its only
+  // remaining use, a migration input read straight off the raw incoming blob.
+  if (!settings.launch_mode) {
+    settings.launch_mode = config.hide_start_controls ? "external" : "local";
+  }
   settings.start = config.start ?? {};
   settings.tabs = config.tabs ?? [];
   settings.links = config.links ?? [];
   settings.test_presets = config.test_presets ?? [];
   settings.workspace_categories = config.workspace_categories ?? [];
   settings.reviews = config.reviews ?? [];
+  settings.docker_images = config.docker_images ?? [];
   orm.create(Settings, settings);
 
   for (const r of config.repos || []) createRepo(orm, r);
@@ -597,6 +638,7 @@ export function toConfig(orm) {
     out.test_presets = s.test_presets() ?? [];
     out.workspace_categories = s.workspace_categories() ?? [];
     out.reviews = s.reviews() ?? [];
+    out.docker_images = s.docker_images() ?? [];
   }
   out.repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
   out.workspaces = orm.records(Workspace).map((w) => ({

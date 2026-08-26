@@ -163,13 +163,13 @@ export class DatabasesScreen extends Component {
     return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
   }
 
-  // under hide_start_controls goo has no live tracking of externally-launched
-  // servers — `d.active`/canDropDb only ever sees goo's OWN subprocess (always
-  // "not active" in that mode), so a db an external container is actively
+  // under launch_mode "external" goo has no live tracking of externally-launched
+  // servers — `d.active`/canDropDb only ever sees goo's OWN subprocess/container
+  // (always "not active" in that mode), so a db an external container is actively
   // serving would otherwise look perfectly safe to drop/rename. Spot-check right
   // before the destructive op instead of eagerly polling docker for every row.
   async _externalUseWarning(names) {
-    if (!this.config.config.hide_start_controls) return "";
+    if (this.config.config.launch_mode !== "external") return "";
     const results = await Promise.all(names.map((n) => this.wt.checkDbInUse(n)));
     const inUse = names.filter((_, i) => results[i]?.running);
     if (!inUse.length) return "";

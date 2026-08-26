@@ -324,12 +324,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
           { value: "main", label: "Main checkout (one loaded at a time)" },
           {
             value: "worktree",
-            // "+ port" only promises something goo actually manages — under
-            // hide_start_controls an externally-launched server owns its own
-            // port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
-            label: config.config.hide_start_controls
-              ? "Own worktree (runs concurrently)"
-              : "Own worktree + port (runs concurrently)",
+            // "+ port" only promises something goo actually manages — a "local"
+            // launch is the only mode where goo allocates a TCP port itself;
+            // "docker" routes by container name (no port), "external" owns its
+            // own port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
+            label:
+              config.config.launch_mode === "local"
+                ? "Own worktree + port (runs concurrently)"
+                : "Own worktree (runs concurrently)",
           },
         ],
       },
@@ -436,9 +438,10 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.db ?? "",
         placeholder: "database name",
       },
-      // Start args only ever reach backend/server.py's odoo-bin launch command —
-      // unused when goo never launches the server itself (hide_start_controls)
-      ...(config.config.hide_start_controls
+      // Start args reach odoo-bin's own argument list regardless of how goo
+      // launches it (local subprocess or Docker) — unused only when goo never
+      // launches the server itself (launch_mode "external")
+      ...(config.config.launch_mode === "external"
         ? []
         : [
             {
@@ -472,9 +475,9 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
           return dbOptions[0]?.value || "";
         },
       },
-      // same story as Start args: only feeds the --without-demo flag on goo's own
-      // launch (backend/server.py) — unused under hide_start_controls
-      ...(config.config.hide_start_controls
+      // same story as Start args: feeds --without-demo regardless of local vs.
+      // docker launch — unused only under launch_mode "external"
+      ...(config.config.launch_mode === "external"
         ? []
         : [
             {
@@ -498,19 +501,19 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.createBranches ?? true,
       },
       { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
-      // the venv is only ever consulted at launch by goo's own subprocess
+      // the venv is only ever consulted at launch by goo's own LOCAL subprocess
       // (workspace_plugin.js createWorktree) — a Docker container brings its own
-      // Python env, so this is unused under hide_start_controls
-      ...(config.config.hide_start_controls
-        ? []
-        : [
+      // Python env, so this is local-mode-only, unlike Start args/Demo data above
+      ...(config.config.launch_mode === "local"
+        ? [
             {
               key: "createVenv",
               type: "checkbox",
               label: "Create venv from requirements.txt (worktree)",
               value: prefill.createVenv ?? false,
             },
-          ]),
+          ]
+        : []),
     ],
   });
   if (!res) return;

@@ -96,11 +96,11 @@ export class WorkspacePlugin extends Plugin {
       // only worktree workspaces have a per-server tail to prime (a main-located
       // workspace's log is the shared main-server buffer)
       this._primeLogs(id);
-      // people who launch servers by hand (hide_start_controls) get a passive
+      // people who launch servers by hand (launch_mode "external") get a passive
       // external-status check instead of goo's own live tracking -- refresh it
       // on selection so the /odoo, /web/tests buttons aren't stuck disabled
       // until a manual "Check status" click
-      if (this.config.config.hide_start_controls) this.refreshExternalStatus(ws);
+      if (this.config.config.launch_mode === "external") this.refreshExternalStatus(ws);
     }
   }
 
@@ -139,7 +139,7 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // ── external (non-goo-launched) server detection ─────────────────────────────
-  // for people who launch Odoo by hand outside of goo (see hide_start_controls):
+  // for people who launch Odoo by hand outside of goo (launch_mode "external"):
   // a read-only check of whether a container matching this workspace's db/branch
   // name is already running, and at what URL. goo never starts/stops it itself.
   externalStatus(tgt) {
@@ -164,10 +164,11 @@ export class WorkspacePlugin extends Plugin {
 
   // one-shot external-container check for a bare db name, independent of any
   // workspace target — used to warn before a destructive db op (drop/rename)
-  // when hide_start_controls is on: goo's own "active db" tracking (server.status().db)
-  // is permanently empty in that mode (it only ever reflects goo's own subprocess),
-  // so it can't tell a db an external container is actively serving from an unused
-  // one. Returns null (never blocks the caller) on a failed check.
+  // when launch_mode is "external": goo's own "active db" tracking
+  // (server.status().db) is permanently empty in that mode (it only ever
+  // reflects goo's own subprocess/container), so it can't tell a db an external
+  // container is actively serving from an unused one. Returns null (never
+  // blocks the caller) on a failed check.
   async checkDbInUse(dbName) {
     if (!dbName) return null;
     try {
@@ -328,6 +329,9 @@ export class WorkspacePlugin extends Plugin {
     // workspace so a later rename can't orphan the checkout git is about to create.
     const dir = this.dirPath(ws);
     ws.worktree.dir = dir;
+    // no equivalent freezing for a Docker container name (launch_mode
+    // "docker"): that's a "dev"/"dev1"/"dev2" pooled slot picked live at
+    // each Start (see dockerUrl below), not a per-workspace value
     // a checkout NOT in forkRepos already has a real local branch (the caller
     // determined this from actual git state, or from an earlier fetch) — attach
     // it as-is; `-b <branch>` would fail with "already exists" since the branch
@@ -554,14 +558,30 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // ── autologin URLs against the worktree server ("" when not running) ──
-  // goo-managed (port() from its own live tracking) when available, else the
-  // externally-launched server's URL (see externalStatus/refreshExternalStatus
-  // — for people who launch servers by hand, hide_start_controls)
+  // three-way by launch_mode: goo-managed port (local, from its own live
+  // tracking) when available, goo-managed container (docker, routed through
+  // nginx by container name — see dockerUrl below), else the externally-
+  // launched server's URL (see externalStatus/refreshExternalStatus, for
+  // launch_mode "external")
   _baseUrl(tgt) {
+    if (this.config.config.launch_mode === "docker") {
+      return this.running(tgt) ? this.dockerUrl(tgt) : "";
+    }
     const port = this.port(tgt);
     if (port) return `http://localhost:${port}/`;
     const ext = this.externalStatus(tgt);
     return ext?.running && ext.url ? ext.url : "";
+  }
+
+  // the nginx-routed URL for a docker-launched worktree: <container>.localhost,
+  // where <container> is the live "dev"/"dev1"/"dev2" slot this run picked
+  // (backend's next_container_slot — a pooled slot, not a fixed per-workspace
+  // name, so it's read from live server state, never persisted/recomputed)
+  dockerUrl(tgt) {
+    const slug = this.state(tgt).docker_container;
+    if (!slug) return "";
+    const port = this.config.config.docker_nginx_port;
+    return `http://${slug}.localhost${port && port !== "80" ? ":" + port : ""}/`;
   }
 
   // wraps a target path through goo's autologin route, unless autologin_links
