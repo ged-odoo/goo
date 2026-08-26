@@ -714,6 +714,20 @@ def build_docker_cmd(config, image):
     )
     if filestore_host:
         run += f"-v {shlex.quote(filestore_host)}:{shlex.quote(filestore_mount)} "
+    if config.get("docker_headed_browser"):
+        # --shm-size: Chrome's default /dev/shm (64MB) is too small and crashes
+        # under real page load, headed or not. --privileged: the image's own
+        # iptables install (network-restriction during tests) needs it to
+        # actually do anything. Both apply whenever this is on, regardless of
+        # DISPLAY — a headless-over-SSH Chrome test still benefits from them.
+        run += "--privileged --shm-size=1g "
+        # DISPLAY + the X11 socket is what actually makes a headed Chrome
+        # (watch=True, a debugged tour) render on THIS desktop instead of
+        # nowhere — skipped outright with no DISPLAY to forward (this session
+        # has no X server, so there's nothing meaningful to mount in).
+        display = os.environ.get("DISPLAY")
+        if display:
+            run += f"-e DISPLAY={shlex.quote(display)} -v /tmp/.X11-unix:/tmp/.X11-unix:rw "
     # odoo-bin needs an EXPLICIT --db_host/--db_port here, unlike build_odoo_cmd's
     # local invocation, which gets away with none at all: a local subprocess
     # inherits goo's own process env (PGHOST/PGPORT, seeded once at startup — see
@@ -729,9 +743,17 @@ def build_docker_cmd(config, image):
     # comment: "no idea why, but necessary since" a specific odoo-bin change) —
     # confirmed live: nginx's DNS resolution to the container succeeds, but the
     # TCP connect is refused without this.
+    # --db-filter: goo-postgres hosts every docker-mode workspace's database
+    # together (same as a shared local Postgres would) — --no-database-list
+    # below only hides the picker, --db-filter actually scopes this instance to
+    # its own db. --limit-time-cpu/--limit-time-real: disabled outright, so a
+    # request paused at a breakpoint doesn't get killed by Odoo's own worker
+    # watchdog mid-debug — always-safe for a dev server, never wanted in prod.
     run += (
         f"{user_flag}{extra_args}{shlex.quote(image)} python3 {mount_path}/{main_repo_id}/odoo-bin "
-        f"--db_host {shlex.quote(pg_container)} --db_port 5432 --http-interface 0.0.0.0"
+        f"--db_host {shlex.quote(pg_container)} --db_port 5432 --http-interface 0.0.0.0 "
+        f"--db-filter {shlex.quote('^' + db + '$')} "
+        f"--limit-time-cpu 9999999999 --limit-time-real 9999999999"
     )
 
     cmd, is_new = _odoo_bin_invocation(config, run, db, addons_path, None)

@@ -88,6 +88,7 @@ const SETTINGS_BOOLS = [
   "workspace_categories_enabled",
   "autologin_links",
   "cleanup_enabled",
+  "docker_headed_browser",
 ];
 const SETTINGS_JSON = [
   "start",
@@ -147,6 +148,9 @@ export class Settings extends Model {
   docker_filestore_mount = fields.char();
   docker_container_user = fields.char();
   docker_extra_run_args = fields.char();
+  // forwards the host's X11 display + a larger --shm-size + --privileged, so a
+  // headed browser (watch=True, a debugged tour) renders on the host desktop
+  docker_headed_browser = fields.bool();
   docker_images = fields.json(); // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
   // "main" or "worktree" — the create-workspace dialog's Location default
   default_workspace_location = fields.char();

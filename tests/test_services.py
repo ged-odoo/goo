@@ -3382,6 +3382,39 @@ class BuildDockerCmdTest(unittest.TestCase):
         self.assertIn("--addons-path addons,../enterprise,/goo-addons", cmd)
         # no filestore configured → no filestore mount
         self.assertNotIn("filestore", cmd)
+        # goo-postgres hosts every docker-mode workspace's db together — scope
+        # this instance to its own, and never let a paused breakpoint get
+        # killed by odoo's own worker time limits
+        self.assertIn("--db-filter '^db1$'", cmd)  # shlex-quoted: $/^ need shell-escaping
+        self.assertIn("--limit-time-cpu 9999999999 --limit-time-real 9999999999", cmd)
+        # headed-browser off by default — none of its flags/mounts appear
+        self.assertNotIn("--privileged", cmd)
+        self.assertNotIn("--shm-size", cmd)
+        self.assertNotIn("DISPLAY", cmd)
+
+    def test_headed_browser_off_by_default_even_with_a_display(self):
+        with unittest.mock.patch.dict("os.environ", {"DISPLAY": ":1"}):
+            cmd, _db, _is_new = self._cmd()
+        self.assertNotIn("--privileged", cmd)
+        self.assertNotIn("DISPLAY", cmd)
+
+    def test_headed_browser_with_display_forwards_x11(self):
+        with unittest.mock.patch.dict("os.environ", {"DISPLAY": ":1"}):
+            cmd, _db, _is_new = self._cmd(docker_headed_browser=True)
+        self.assertIn("--privileged", cmd)
+        self.assertIn("--shm-size=1g", cmd)
+        self.assertIn("-e DISPLAY=:1", cmd)
+        self.assertIn("-v /tmp/.X11-unix:/tmp/.X11-unix:rw", cmd)
+
+    def test_headed_browser_without_a_display_skips_x11_but_keeps_the_rest(self):
+        # --privileged/--shm-size still help a headless-over-SSH browser test;
+        # there's just no X server to mount a socket for
+        with unittest.mock.patch.dict("os.environ", {}, clear=True):
+            cmd, _db, _is_new = self._cmd(docker_headed_browser=True)
+        self.assertIn("--privileged", cmd)
+        self.assertIn("--shm-size=1g", cmd)
+        self.assertNotIn("DISPLAY", cmd)
+        self.assertNotIn("X11-unix", cmd)
 
     def test_filestore_mount_included_when_configured(self):
         cmd, _db, _is_new = self._cmd(

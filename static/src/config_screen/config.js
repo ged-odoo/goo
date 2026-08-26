@@ -627,6 +627,12 @@ export class ConfigScreen extends Component {
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
             </t>
+            <t t-if="this.config.config.launch_mode === 'docker'">
+              <label for="setting-docker-headed-browser" title="Forwards the host's X11 display into the container (plus a larger --shm-size and --privileged, both Chrome needs for browser tests) so a headed browser — watch=True, a debugged tour — renders directly on this desktop. No effect without a real X server to forward to (e.g. a headless host).">headed browser (tour debugging)</label>
+              <input id="setting-docker-headed-browser" type="checkbox" class="settings-check" title="Forwards the host's X11 display into the container (plus a larger --shm-size and --privileged, both Chrome needs for browser tests) so a headed browser — watch=True, a debugged tour — renders directly on this desktop. No effect without a real X server to forward to (e.g. a headless host)."
+                     t-att-checked="this.config.config.docker_headed_browser"
+                     t-on-change="ev => this.config.updateConfig({ docker_headed_browser: ev.target.checked })"/>
+            </t>
           </div>
         </div>
         <div class="config-block">

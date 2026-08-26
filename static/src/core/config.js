@@ -45,6 +45,12 @@ export const DEFAULT_CONFIG = {
   docker_filestore_mount: "/home/odoo_user/.local/share/Odoo/filestore",
   docker_container_user: "", // optional --user passthrough
   docker_extra_run_args: "", // optional raw passthrough appended to `docker run`
+  // off by default: forwards the host's X11 display into the container (+ a
+  // larger --shm-size and --privileged, both Chrome needs for tour/browser_js
+  // tests) so a headed browser (watch=True, a debugged tour) renders directly
+  // on the host desktop — no VNC. Only meaningful with a real X server to
+  // forward (a headless CI-style host gets no benefit from turning this on).
+  docker_headed_browser: false,
   // version → image mapping: [{id, label, versions: [prefixes], dockerfile_path?,
   // image?, is_default}] — the workspace's main-repo branch is matched against
   // each row's `versions` prefixes (first match wins), else the is_default row

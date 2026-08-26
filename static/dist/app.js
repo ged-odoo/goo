@@ -75,6 +75,12 @@ var DEFAULT_CONFIG = {
   // optional --user passthrough
   docker_extra_run_args: "",
   // optional raw passthrough appended to `docker run`
+  // off by default: forwards the host's X11 display into the container (+ a
+  // larger --shm-size and --privileged, both Chrome needs for tour/browser_js
+  // tests) so a headed browser (watch=True, a debugged tour) renders directly
+  // on the host desktop — no VNC. Only meaningful with a real X server to
+  // forward (a headless CI-style host gets no benefit from turning this on).
+  docker_headed_browser: false,
   // version → image mapping: [{id, label, versions: [prefixes], dockerfile_path?,
   // image?, is_default}] — the workspace's main-repo branch is matched against
   // each row's `versions` prefixes (first match wins), else the is_default row
@@ -3231,7 +3237,8 @@ var SETTINGS_BOOLS = [
   "rust_bundler",
   "workspace_categories_enabled",
   "autologin_links",
-  "cleanup_enabled"
+  "cleanup_enabled",
+  "docker_headed_browser"
 ];
 var SETTINGS_JSON = [
   "start",
@@ -3290,6 +3297,9 @@ var Settings = class extends Model {
   docker_filestore_mount = fields.char();
   docker_container_user = fields.char();
   docker_extra_run_args = fields.char();
+  // forwards the host's X11 display + a larger --shm-size + --privileged, so a
+  // headed browser (watch=True, a debugged tour) renders on the host desktop
+  docker_headed_browser = fields.bool();
   docker_images = fields.json();
   // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
   // "main" or "worktree" — the create-workspace dialog's Location default
@@ -6908,6 +6918,12 @@ var ConfigScreen = class extends Component {
               <input t-att-id="'setting-' + f.key" type="text" class="edit-input" autocomplete="off" t-att-value="this.settings()[f.key]"
                      t-on-input="ev => this.setSetting(f.key, ev.target.value)"
                      t-on-change="() => this.saveSettings()"/>
+            </t>
+            <t t-if="this.config.config.launch_mode === 'docker'">
+              <label for="setting-docker-headed-browser" title="Forwards the host's X11 display into the container (plus a larger --shm-size and --privileged, both Chrome needs for browser tests) so a headed browser — watch=True, a debugged tour — renders directly on this desktop. No effect without a real X server to forward to (e.g. a headless host).">headed browser (tour debugging)</label>
+              <input id="setting-docker-headed-browser" type="checkbox" class="settings-check" title="Forwards the host's X11 display into the container (plus a larger --shm-size and --privileged, both Chrome needs for browser tests) so a headed browser — watch=True, a debugged tour — renders directly on this desktop. No effect without a real X server to forward to (e.g. a headless host)."
+                     t-att-checked="this.config.config.docker_headed_browser"
+                     t-on-change="ev => this.config.updateConfig({ docker_headed_browser: ev.target.checked })"/>
             </t>
           </div>
         </div>
