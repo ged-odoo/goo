@@ -183,7 +183,12 @@ export class StorePlugin extends Plugin {
   // composite-keyed WorktreeRepoStatus counterpart to repoStatusList()'s
   // bare-id RepoStatus rows. null if not fetched yet (CodePlugin.loadWorktreeBranches).
   worktreeRepoStatus(workspaceId, repoId) {
-    const rec = this.orm.getById(WorktreeRepoStatus, `${workspaceId}:${repoId}`);
+    // _live (not getById): the row doesn't exist yet on first render, before
+    // loadWorktreeBranches' fetch lands — getById's plain-object lookup (see
+    // Table.datapoints) establishes no subscription on a miss, so the caller
+    // never re-renders once the row is created; records()/activeRecords is a
+    // real reactive signal chain, so this correctly re-renders when it lands.
+    const rec = this._live(WorktreeRepoStatus, `${workspaceId}:${repoId}`);
     if (!rec) return null;
     return {
       current: rec.current(),
@@ -282,7 +287,7 @@ export class StorePlugin extends Plugin {
 
   // drop a branch from a repo's snapshot after a local delete, without a refetch
   dropBranch(repoId, name) {
-    const rec = this.orm.getById(RepoStatus, repoId);
+    const rec = this._live(RepoStatus, repoId);
     if (rec) rec.branches.set((rec.branches() || []).filter((b) => b.name !== name));
   }
 
@@ -312,19 +317,23 @@ export class StorePlugin extends Plugin {
   // "main" snapshot carries every field.
   mergeServer(snap) {
     if (!snap || !snap.id) return;
-    const rec = this.orm.getById(OdooServer, snap.id);
+    const rec = this._live(OdooServer, snap.id);
     if (rec) rec.data.set({ ...rec.data(), ...snap });
     else this.orm.create(OdooServer, { id: snap.id, data: { ...snap } });
   }
 
   // forget a server record (a worktree removed from config)
   dropServer(id) {
-    const rec = this.orm.getById(OdooServer, id);
+    const rec = this._live(OdooServer, id);
     if (rec) this.orm.delete(rec);
   }
 
+  // _live (not getById) — see worktreeRepoStatus above: a workspace's server
+  // record doesn't exist until its first SSE "server" snapshot lands, and a
+  // render that reads it as null on a miss otherwise never re-renders once it
+  // does (drives every Start/Stop button, state dot and "isLive" guard).
   server(id) {
-    const rec = this.orm.getById(OdooServer, id);
+    const rec = this._live(OdooServer, id);
     return rec ? rec.data() : null;
   }
 
@@ -345,7 +354,7 @@ export class StorePlugin extends Plugin {
   // fold one run snapshot into its Run record, keyed by run id (SSE "run": running → done/failed)
   mergeRun(snap) {
     if (!snap || !snap.id) return;
-    const rec = this.orm.getById(Run, snap.id);
+    const rec = this._live(Run, snap.id);
     if (rec) rec.data.set({ ...rec.data(), ...snap });
     else this.orm.create(Run, { id: snap.id, data: { ...snap } });
   }
@@ -386,10 +395,15 @@ export class StorePlugin extends Plugin {
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
       // a worktree's checkout lives in ITS OWN directory (its branch can't also
       // be checked out in the main repo), so its live state comes from the
-      // composite-keyed WorktreeRepoStatus row, not the main checkout's RepoStatus
+      // composite-keyed WorktreeRepoStatus row, not the main checkout's RepoStatus.
+      // _live (not getById): see worktreeRepoStatus above — the row/repo commonly
+      // doesn't exist yet on first render, and getById's plain-object lookup can't
+      // pick up its later creation, so the checkout badges (behind/ahead, rebase,
+      // "up to date") stay stuck until some unrelated re-render happens to refresh
+      // them (e.g. reselecting the workspace).
       const rec = isWt
-        ? this.orm.getById(WorktreeRepoStatus, `${tgt.id}:${repo}`)
-        : this.orm.getById(RepoStatus, repo);
+        ? this._live(WorktreeRepoStatus, `${tgt.id}:${repo}`)
+        : this._live(RepoStatus, repo);
       const current = rec ? rec.current() : undefined;
       return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });

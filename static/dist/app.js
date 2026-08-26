@@ -1362,7 +1362,7 @@ var StorePlugin = class extends Plugin {
   // composite-keyed WorktreeRepoStatus counterpart to repoStatusList()'s
   // bare-id RepoStatus rows. null if not fetched yet (CodePlugin.loadWorktreeBranches).
   worktreeRepoStatus(workspaceId, repoId) {
-    const rec = this.orm.getById(WorktreeRepoStatus, `${workspaceId}:${repoId}`);
+    const rec = this._live(WorktreeRepoStatus, `${workspaceId}:${repoId}`);
     if (!rec) return null;
     return {
       current: rec.current(),
@@ -1455,7 +1455,7 @@ var StorePlugin = class extends Plugin {
   // ── optimistic local edits (no server round-trip) ─────────────────────────────
   // drop a branch from a repo's snapshot after a local delete, without a refetch
   dropBranch(repoId, name) {
-    const rec = this.orm.getById(RepoStatus, repoId);
+    const rec = this._live(RepoStatus, repoId);
     if (rec) rec.branches.set((rec.branches() || []).filter((b) => b.name !== name));
   }
   // mark a PR closed in the view after closing it, without a refetch
@@ -1481,17 +1481,21 @@ var StorePlugin = class extends Plugin {
   // "main" snapshot carries every field.
   mergeServer(snap) {
     if (!snap || !snap.id) return;
-    const rec = this.orm.getById(OdooServer, snap.id);
+    const rec = this._live(OdooServer, snap.id);
     if (rec) rec.data.set({ ...rec.data(), ...snap });
     else this.orm.create(OdooServer, { id: snap.id, data: { ...snap } });
   }
   // forget a server record (a worktree removed from config)
   dropServer(id) {
-    const rec = this.orm.getById(OdooServer, id);
+    const rec = this._live(OdooServer, id);
     if (rec) this.orm.delete(rec);
   }
+  // _live (not getById) — see worktreeRepoStatus above: a workspace's server
+  // record doesn't exist until its first SSE "server" snapshot lands, and a
+  // render that reads it as null on a miss otherwise never re-renders once it
+  // does (drives every Start/Stop button, state dot and "isLive" guard).
   server(id) {
-    const rec = this.orm.getById(OdooServer, id);
+    const rec = this._live(OdooServer, id);
     return rec ? rec.data() : null;
   }
   // the server backing a target: the main process when it's running this target,
@@ -1506,7 +1510,7 @@ var StorePlugin = class extends Plugin {
   // fold one run snapshot into its Run record, keyed by run id (SSE "run": running → done/failed)
   mergeRun(snap) {
     if (!snap || !snap.id) return;
-    const rec = this.orm.getById(Run, snap.id);
+    const rec = this._live(Run, snap.id);
     if (rec) rec.data.set({ ...rec.data(), ...snap });
     else this.orm.create(Run, { id: snap.id, data: { ...snap } });
   }
@@ -1541,7 +1545,7 @@ var StorePlugin = class extends Plugin {
   workspaceView(tgt) {
     const isWt = tgt.location === "worktree";
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
-      const rec = isWt ? this.orm.getById(WorktreeRepoStatus, `${tgt.id}:${repo}`) : this.orm.getById(RepoStatus, repo);
+      const rec = isWt ? this._live(WorktreeRepoStatus, `${tgt.id}:${repo}`) : this._live(RepoStatus, repo);
       const current = rec ? rec.current() : void 0;
       return { repo, branch, current, matches: current === branch, dirty: !!(rec && rec.dirty()) };
     });
