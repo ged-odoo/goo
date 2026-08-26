@@ -3346,7 +3346,14 @@ class BuildDockerCmdTest(unittest.TestCase):
         # image's own WORKDIR instead of the checkout (caught by actually running
         # this command against a real container, not just string assertions)
         self.assertIn("--workdir /src/community", cmd)
-        self.assertIn("-e HOST=goo-postgres", cmd)
+        # docker run does not propagate the host's env into the container (unlike
+        # a local subprocess, which inherits goo's own PGHOST/PGPORT) — odoo-bin
+        # needs the connection info as explicit CLI flags instead
+        self.assertIn("--db_host goo-postgres --db_port 5432", cmd)
+        # odoo-bin's default HTTP bind is loopback-only, invisible to nginx
+        # reaching in from its own container (confirmed live: DNS resolves,
+        # TCP connect refused, without this flag)
+        self.assertIn("--http-interface 0.0.0.0", cmd)
         self.assertIn("-v /wt/feature-x:/src", cmd)
         self.assertIn(f"-v {server.ADDONS_DIR}:/goo-addons:ro", cmd)
         self.assertIn("goo-odoo-noble:latest python3 /src/community/odoo-bin", cmd)

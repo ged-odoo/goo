@@ -709,13 +709,30 @@ def build_docker_cmd(config, image):
     run = (
         f"docker run --rm -it --network {shlex.quote(network)} --name {shlex.quote(container)} "
         f"--workdir {shlex.quote(f'{mount_path}/{main_repo_id}')} "
-        f"-e HOST={shlex.quote(pg_container)} "
         f"-v {shlex.quote(host_dir)}:{shlex.quote(mount_path)} "
         f"-v {shlex.quote(ADDONS_DIR)}:{shlex.quote(_DOCKER_GOO_ADDONS)}:ro "
     )
     if filestore_host:
         run += f"-v {shlex.quote(filestore_host)}:{shlex.quote(filestore_mount)} "
-    run += f"{user_flag}{extra_args}{shlex.quote(image)} python3 {mount_path}/{main_repo_id}/odoo-bin"
+    # odoo-bin needs an EXPLICIT --db_host/--db_port here, unlike build_odoo_cmd's
+    # local invocation, which gets away with none at all: a local subprocess
+    # inherits goo's own process env (PGHOST/PGPORT, seeded once at startup — see
+    # main()), but `docker run` does NOT propagate the host's environment into the
+    # container, so psycopg2 would otherwise fall back to a local unix socket that
+    # doesn't exist in there. Always port 5432 — that's postgres's fixed
+    # in-container port; docker_postgres_port is only the host-published one,
+    # irrelevant for container-to-container traffic on the shared network.
+    # --http-interface 0.0.0.0: odoo-bin's default HTTP bind is loopback-only,
+    # invisible to nginx reaching in from its own container over the bridge
+    # network (unlike local mode, where the browser's "localhost" IS that same
+    # loopback). oe.fish needs this exact flag for the same reason (its own
+    # comment: "no idea why, but necessary since" a specific odoo-bin change) —
+    # confirmed live: nginx's DNS resolution to the container succeeds, but the
+    # TCP connect is refused without this.
+    run += (
+        f"{user_flag}{extra_args}{shlex.quote(image)} python3 {mount_path}/{main_repo_id}/odoo-bin "
+        f"--db_host {shlex.quote(pg_container)} --db_port 5432 --http-interface 0.0.0.0"
+    )
 
     cmd, is_new = _odoo_bin_invocation(config, run, db, addons_path, None)
     return cmd, db, is_new
