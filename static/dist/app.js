@@ -44,6 +44,10 @@ var DEFAULT_CONFIG = {
   // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
   // keeps it in lockstep with the db on drop/rename/clone. Empty = leave it alone.
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
+  // odoo-bin's --log-level, applied to every launch (server, test, install,
+  // upgrade). Empty = odoo's own default (info) — unchanged behavior for
+  // anyone who hasn't set this.
+  log_level: "",
   editor: "code",
   // command used by the "Open with editor" actions
   auto_open_event_log: false,
@@ -219,6 +223,10 @@ var BASE_BRANCH_RE = /^(master|\d+\.\d+|saas-\d+\.\d+)$/;
 var ARCHIVED_CATEGORY = "archived";
 function baseBranchOf(branch) {
   return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
+}
+function defaultDemoData(branch) {
+  const base = baseBranchOf(branch);
+  return base !== "master" && !/^(19\.0|saas-19)/.test(base);
 }
 
 // static/src/core/presets.js
@@ -3214,6 +3222,7 @@ var SETTINGS_CHARS = [
   "db_host",
   "db_port",
   "filestore",
+  "log_level",
   "editor",
   "main_repo_id",
   "launch_mode",
@@ -3265,6 +3274,7 @@ var Settings = class extends Model {
   db_host = fields.char();
   db_port = fields.char();
   filestore = fields.char();
+  log_level = fields.char();
   editor = fields.char();
   // the repo id that holds odoo-bin (default "community", matching upstream) —
   // configurable so a fork's own folder convention (e.g. "odoo") doesn't require
@@ -6857,6 +6867,9 @@ var SETTINGS_FIELDS = [
   },
   { key: "db_port", name: "database port (empty = default)", modes: ["local", "external"] },
   { key: "filestore", name: "filestore path", modes: ["local", "docker", "external"] },
+  // applied to every odoo-bin launch (server, test, install, upgrade) — goo
+  // itself never launches anything in "external" mode
+  { key: "log_level", name: "log level (empty = odoo's own default)", modes: ["local", "docker"] },
   // docker-only: goo's own Docker-managed global services + per-workspace container
   { key: "docker_network", name: "Docker network", modes: ["docker"] },
   { key: "docker_postgres_image", name: "Postgres image", modes: ["docker"] },
@@ -9713,14 +9726,16 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.name ?? "",
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
+          const forkingFresh = currentValues.createBranches !== false;
           const updates = {
             config: configFromRepos(
               currentValues.repos || [],
               newName.trim(),
               currentValues.config,
-              currentValues.createBranches === false
+              !forkingFresh
             )
           };
+          if (forkingFresh) updates.demoData = defaultDemoData(newName.trim());
           const trimmed = newName.trim();
           if (!currentValues.db || currentValues.db === oldValues.name) {
             updates.db = trimmed;
@@ -9842,7 +9857,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
           key: "demoData",
           type: "checkbox",
           label: "Demo data",
-          value: prefill.demoData ?? true
+          value: prefill.demoData ?? defaultDemoData(prefill.name || "")
         }
       ],
       {

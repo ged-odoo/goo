@@ -4,7 +4,12 @@
 // canonical `workspaces` key (full records spread — the legacy `targets` view
 // drops the stable ports).
 
-import { ARCHIVED_CATEGORY, BASE_BRANCH_RE, baseBranchOf } from "../core/config.js";
+import {
+  ARCHIVED_CATEGORY,
+  BASE_BRANCH_RE,
+  baseBranchOf,
+  defaultDemoData,
+} from "../core/config.js";
 import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 import { postJSON, repoBranchList, descendantWorkspaces } from "../core/utils.js";
@@ -342,14 +347,19 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         value: prefill.name ?? "",
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
+          const forkingFresh = currentValues.createBranches !== false;
           const updates = {
             config: configFromRepos(
               currentValues.repos || [],
               newName.trim(),
               currentValues.config,
-              currentValues.createBranches === false,
+              !forkingFresh,
             ),
           };
+          // only stomp demoData while forking a fresh branch (same gating as
+          // config above) — attaching to an existing/remote branch shouldn't
+          // silently flip a checkbox the user didn't touch
+          if (forkingFresh) updates.demoData = defaultDemoData(newName.trim());
           // db stays in lockstep with name as it's typed (a blank db otherwise
           // sails through Create silently, then fails Start with "no database
           // configured") — full stomp while db is still empty or still exactly
@@ -496,7 +506,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
               key: "demoData",
               type: "checkbox",
               label: "Demo data",
-              value: prefill.demoData ?? true,
+              value: prefill.demoData ?? defaultDemoData(prefill.name || ""),
             },
           ]),
       {

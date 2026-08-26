@@ -202,3 +202,10 @@ export const ARCHIVED_CATEGORY = "archived";
 export function baseBranchOf(branch) {
   return (/^(saas-\d+\.\d+|\d+\.\d+|master)/.exec(branch) || ["", "master"])[1];
 }
+
+// mirrors upstream Odoo's own default flip on master/19.0+ (demo data off
+// there; on for every earlier series, 16.0 through saas-18.x)
+export function defaultDemoData(branch) {
+  const base = baseBranchOf(branch);
+  return base !== "master" && !/^(19\.0|saas-19)/.test(base);
+}
