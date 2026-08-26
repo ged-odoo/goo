@@ -15,6 +15,12 @@ import time
 from .server import CONFIG
 
 SCAN_INTERVAL = 60
+# a directory younger than this is left alone — it may be mid-creation by goo's
+# own worktree-creation flow (git worktree add lands first; the workspace's
+# config record follows after a debounce + network round-trip), not a genuine
+# hand-made orphan yet. Comfortably longer than that gap, far shorter than
+# SCAN_INTERVAL's own cadence.
+ADOPT_GRACE_SECONDS = 120
 
 
 def _current_branch(path):
@@ -45,6 +51,19 @@ def scan_and_register():
         return
 
     existing_ids = {w.get("id") for w in (config.get("workspaces") or [])}
+    # the authoritative "is this directory already a workspace" check: a
+    # worktree's `worktree.dir` is frozen at creation and is what actually owns
+    # the checkout, so compare paths, not names. A workspace's *id* (e.g.
+    # "wt-<slug>", see WorkspacePlugin._newId) deliberately does NOT match its
+    # directory name (worktreeSlug prefers the human-readable *name*, so
+    # oe.fish/nginx can route by branch name) — comparing `name in existing_ids`
+    # alone treated every fresh worktree as unknown and adopted a live duplicate
+    # of it moments after goo's own creation flow made it (a real, observed bug).
+    existing_dirs = {
+        os.path.normpath(os.path.expanduser(w["worktree"]["dir"]))
+        for w in (config.get("workspaces") or [])
+        if w.get("worktree", {}).get("dir")
+    }
     # never adopt whatever directory holds a configured repo's own main
     # checkout (e.g. worktree_dir/master, which holds .../master/odoo)
     main_dirs = {
@@ -58,8 +77,15 @@ def scan_and_register():
         if name in existing_ids:
             continue
         ws_dir = os.path.join(worktree_dir, name)
+        if os.path.normpath(ws_dir) in existing_dirs:
+            continue
         if ws_dir in main_dirs or not os.path.isdir(ws_dir):
             continue
+        try:
+            if time.time() - os.path.getmtime(ws_dir) < ADOPT_GRACE_SECONDS:
+                continue  # too fresh — likely still being registered by goo itself
+        except OSError:
+            pass
         checkouts = []
         for rid in repo_ids:
             branch = _current_branch(os.path.join(ws_dir, rid))
