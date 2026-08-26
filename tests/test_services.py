@@ -3188,6 +3188,7 @@ class BuildOdooCmdTest(unittest.TestCase):
         test_tags=None,
         memcheck=False,
         memleak_check_installed=False,
+        log_level=None,
     ):
         from backend import server
 
@@ -3203,6 +3204,8 @@ class BuildOdooCmdTest(unittest.TestCase):
             "start": start,
             "rust_bundler": rust_bundler,
         }
+        if log_level is not None:
+            config["log_level"] = log_level
         orig_init = server.DATABASE.db_initialized
         orig_installed = server.DATABASE.installed_modules
         server.DATABASE.db_initialized = lambda db: True  # skip the real psql probe
@@ -3312,6 +3315,12 @@ class BuildOdooCmdTest(unittest.TestCase):
     def test_without_venv_python_odoo_bin_runs_directly(self):
         self.assertIn("&& /repo/community/odoo-bin", self._cmd())
         self.assertNotIn("bin/python /repo/community/odoo-bin", self._cmd())
+
+    def test_log_level_unset_by_default(self):
+        self.assertNotIn("--log-level", self._cmd())
+
+    def test_log_level_applied_when_set(self):
+        self.assertIn("--log-level warn", self._cmd(log_level="warn"))
 
     def test_full_command_shape_is_pinned(self):
         # a golden/exact-string regression pin (the other tests here only check

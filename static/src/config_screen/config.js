@@ -564,6 +564,9 @@ export const SETTINGS_FIELDS = [
   },
   { key: "db_port", name: "database port (empty = default)", modes: ["local", "external"] },
   { key: "filestore", name: "filestore path", modes: ["local", "docker", "external"] },
+  // applied to every odoo-bin launch (server, test, install, upgrade) — goo
+  // itself never launches anything in "external" mode
+  { key: "log_level", name: "log level (empty = odoo's own default)", modes: ["local", "docker"] },
   // docker-only: goo's own Docker-managed global services + per-workspace container
   { key: "docker_network", name: "Docker network", modes: ["docker"] },
   { key: "docker_postgres_image", name: "Postgres image", modes: ["docker"] },

@@ -64,6 +64,7 @@ const SETTINGS_CHARS = [
   "db_host",
   "db_port",
   "filestore",
+  "log_level",
   "editor",
   "main_repo_id",
   "launch_mode",
@@ -116,6 +117,7 @@ export class Settings extends Model {
   db_host = fields.char();
   db_port = fields.char();
   filestore = fields.char();
+  log_level = fields.char();
   editor = fields.char();
   // the repo id that holds odoo-bin (default "community", matching upstream) —
   // configurable so a fork's own folder convention (e.g. "odoo") doesn't require

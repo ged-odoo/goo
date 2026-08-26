@@ -517,6 +517,8 @@ def _odoo_bin_invocation(config, prefix, db, addons_path, dump_dir=None):
         f"--database {db} --no-database-list --without-demo {without_demo} "
         f"--addons-path {addons_path}"
     )
+    if config.get("log_level"):
+        cmd += f" --log-level {shlex.quote(config['log_level'])}"
 
     # test mode: run the given --test-tags and exit, skipping the server-only
     # extras (other_args / on_create_args), mirroring the old odev behaviour

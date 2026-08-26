@@ -24,6 +24,10 @@ export const DEFAULT_CONFIG = {
   // Odoo's filestore root; a db's attachments live in <filestore>/<dbname>. goo
   // keeps it in lockstep with the db on drop/rename/clone. Empty = leave it alone.
   filestore: "/home/odoo/.local/share/Odoo/filestore/",
+  // odoo-bin's --log-level, applied to every launch (server, test, install,
+  // upgrade). Empty = odoo's own default (info) — unchanged behavior for
+  // anyone who hasn't set this.
+  log_level: "",
   editor: "code", // command used by the "Open with editor" actions
   auto_open_event_log: false, // open the event log overlay when new events arrive
   // how goo launches Odoo: "local" (a plain odoo-bin subprocess, the fields
