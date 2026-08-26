@@ -641,6 +641,61 @@ def build_odoo_cmd(config):
 _DOCKER_GOO_ADDONS = "/goo-addons"
 
 
+def _docker_run_prefix(config, container=None):
+    """The `docker run` setup shared by build_docker_cmd (a workspace's own
+    server) and build_docker_shell_cmd (a one-off odoo-bin shell REPL): repo
+    validation, network, mounts, addons-path. `container` is omitted for the
+    shell variant (--rm, no fixed name, so it can run alongside an
+    already-started server of the same workspace instead of colliding with it).
+
+    Returns (run_prefix_ending_after_the_mounts, mount_path, main_repo_id,
+    addons_path). Raises ValueError on invalid config."""
+    main_repo_id = config.get("main_repo_id") or "community"
+    addons_repo_ids = list((config.get("start") or {}).get("repos") or [])
+    if not addons_repo_ids:
+        raise ValueError("no repos selected in start.repos")
+    if main_repo_id not in addons_repo_ids:
+        raise ValueError(f"'{main_repo_id}' (main_repo_id) must be one of start.repos")
+    host_dir = config.get("docker_worktree_dir")
+    if not host_dir:
+        raise ValueError("no worktree directory resolved for this Docker workspace")
+
+    # every repo mounts as a direct SIBLING of the main repo — build_start_config's
+    # worktree branch already gives every repo the uniform HOST path <dir>/<repo_id>,
+    # so the in-container equivalent is just <mount_path>/<repo_id> regardless of the
+    # actual host path. --workdir below is <mount_path>/<main_repo_id> (mirroring
+    # build_odoo_cmd's `cd {community_path}`), so a sibling repo's addons_path entry
+    # must climb back out one level first — "../enterprise", not bare "enterprise" —
+    # exactly what _odoo_cmd_base's real os.path.relpath(repo path, community path)
+    # would compute for this same sibling layout.
+    mount_path = (config.get("docker_mount_path") or "/src").rstrip("/")
+    addons_path = (
+        ",".join("addons" if rid == main_repo_id else f"../{rid}" for rid in addons_repo_ids)
+        + f",{_DOCKER_GOO_ADDONS}"
+    )
+
+    network = config.get("docker_network") or "goo_odoo"
+    filestore_host = os.path.expanduser(config.get("filestore") or "")
+    filestore_mount = config.get("docker_filestore_mount") or (
+        "/home/odoo_user/.local/share/Odoo/filestore"
+    )
+    name_flag = f"--name {shlex.quote(container)} " if container else ""
+
+    # --workdir is docker's own equivalent of build_odoo_cmd's `cd {community_path}
+    # &&` — without it, addons_path's relative entries ("addons", "enterprise")
+    # resolve against the image's own default WORKDIR (or /), not the checkout,
+    # exactly the same way a local odoo-bin invocation would break without its cd
+    run = (
+        f"docker run --rm -it --network {shlex.quote(network)} {name_flag}"
+        f"--workdir {shlex.quote(f'{mount_path}/{main_repo_id}')} "
+        f"-v {shlex.quote(host_dir)}:{shlex.quote(mount_path)} "
+        f"-v {shlex.quote(ADDONS_DIR)}:{shlex.quote(_DOCKER_GOO_ADDONS)}:ro "
+    )
+    if filestore_host:
+        run += f"-v {shlex.quote(filestore_host)}:{shlex.quote(filestore_mount)} "
+    return run, mount_path, main_repo_id, addons_path
+
+
 def build_docker_cmd(config, image):
     """Build the `docker run` shell command from a client config + the already-
     resolved image tag (WorkspaceManager.start resolves/builds it via
@@ -661,40 +716,12 @@ def build_docker_cmd(config, image):
         # path today (see build_odoo_cmd) — not yet wired to a matching
         # in-container mount, so fail clearly instead of writing nowhere
         raise ValueError("memory-perf checks aren't supported in Docker launch mode yet")
-
-    main_repo_id = config.get("main_repo_id") or "community"
-    addons_repo_ids = list(start.get("repos") or [])
-    if not addons_repo_ids:
-        raise ValueError("no repos selected in start.repos")
-    if main_repo_id not in addons_repo_ids:
-        raise ValueError(f"'{main_repo_id}' (main_repo_id) must be one of start.repos")
-    host_dir = config.get("docker_worktree_dir")
-    if not host_dir:
-        raise ValueError("no worktree directory resolved for this Docker workspace")
     container = config.get("docker_container")
     if not container:
         raise ValueError("no container name resolved for this Docker workspace")
 
-    # every repo mounts as a direct SIBLING of the main repo — build_start_config's
-    # worktree branch already gives every repo the uniform HOST path <dir>/<repo_id>,
-    # so the in-container equivalent is just <mount_path>/<repo_id> regardless of the
-    # actual host path. --workdir below is <mount_path>/<main_repo_id> (mirroring
-    # build_odoo_cmd's `cd {community_path}`), so a sibling repo's addons_path entry
-    # must climb back out one level first — "../enterprise", not bare "enterprise" —
-    # exactly what _odoo_cmd_base's real os.path.relpath(repo path, community path)
-    # would compute for this same sibling layout.
-    mount_path = (config.get("docker_mount_path") or "/src").rstrip("/")
-    addons_path = (
-        ",".join("addons" if rid == main_repo_id else f"../{rid}" for rid in addons_repo_ids)
-        + f",{_DOCKER_GOO_ADDONS}"
-    )
-
-    network = config.get("docker_network") or "goo_odoo"
+    run, mount_path, main_repo_id, addons_path = _docker_run_prefix(config, container)
     pg_container = config.get("docker_postgres_container") or "goo-postgres"
-    filestore_host = os.path.expanduser(config.get("filestore") or "")
-    filestore_mount = config.get("docker_filestore_mount") or (
-        "/home/odoo_user/.local/share/Odoo/filestore"
-    )
     user_flag = (
         f"--user {shlex.quote(config['docker_container_user'])} "
         if config.get("docker_container_user")
@@ -704,18 +731,6 @@ def build_docker_cmd(config, image):
     if extra_args:
         extra_args += " "
 
-    # --workdir is docker's own equivalent of build_odoo_cmd's `cd {community_path}
-    # &&` — without it, addons_path's relative entries ("addons", "enterprise")
-    # resolve against the image's own default WORKDIR (or /), not the checkout,
-    # exactly the same way a local odoo-bin invocation would break without its cd
-    run = (
-        f"docker run --rm -it --network {shlex.quote(network)} --name {shlex.quote(container)} "
-        f"--workdir {shlex.quote(f'{mount_path}/{main_repo_id}')} "
-        f"-v {shlex.quote(host_dir)}:{shlex.quote(mount_path)} "
-        f"-v {shlex.quote(ADDONS_DIR)}:{shlex.quote(_DOCKER_GOO_ADDONS)}:ro "
-    )
-    if filestore_host:
-        run += f"-v {shlex.quote(filestore_host)}:{shlex.quote(filestore_mount)} "
     if config.get("docker_headed_browser"):
         # --shm-size: Chrome's default /dev/shm (64MB) is too small and crashes
         # under real page load, headed or not. --privileged: the image's own
@@ -760,6 +775,37 @@ def build_docker_cmd(config, image):
 
     cmd, is_new = _odoo_bin_invocation(config, run, db, addons_path, None)
     return cmd, db, is_new
+
+
+def build_docker_shell_cmd(config, db, image):
+    """Build a one-off `docker run --rm -it ... odoo-bin shell -d <db>` command:
+    an interactive Python REPL against a Docker-mode workspace's database,
+    independent of whether the workspace's own server container is running (no
+    --name, so it never collides with one). Mirrors build_docker_cmd's
+    mounts/addons-path, minus the server-only flags (headed browser,
+    --db-filter, --limit-time-*, --http-interface). Raises ValueError on
+    invalid config/db name."""
+    if not services._valid_db_name(db):
+        raise ValueError("invalid database name")
+    run, mount_path, main_repo_id, addons_path = _docker_run_prefix(config)
+    pg_container = config.get("docker_postgres_container") or "goo-postgres"
+    db_user = config.get("db_user", "odoo")
+    db_password = config.get("db_password", "odoo")
+    user_flag = (
+        f"--user {shlex.quote(config['docker_container_user'])} "
+        if config.get("docker_container_user")
+        else ""
+    )
+    extra_args = config.get("docker_extra_run_args") or ""
+    if extra_args:
+        extra_args += " "
+    run += (
+        f"{user_flag}{extra_args}{shlex.quote(image)} python3 {mount_path}/{main_repo_id}/odoo-bin shell "
+        f"-d {db} -r {db_user} -w {db_password} --no-http --no-database-list "
+        f"--addons-path {addons_path} --db_host {shlex.quote(pg_container)} --db_port 5432 "
+        f"--log-level=warn"
+    )
+    return run
 
 
 def warn_if_rust_bundler_missing(config, bus, context=""):
@@ -2825,15 +2871,55 @@ class Handler(BaseHTTPRequestHandler):
             q.put(None)  # stop the sender thread
 
     def _handle_shell(self):
-        """Upgrade to WebSocket and proxy an interactive bash shell running in
-        the requested directory. One shell process per connection, killed on
-        disconnect. Independent of the Odoo server PTY."""
+        """Upgrade to WebSocket and proxy an interactive shell process. Two
+        modes: ?cwd=<path> for a plain bash in that directory (the Code tab's
+        TerminalDialog), or ?workspace=<id> for that workspace's `odoo-bin
+        shell` REPL (its own db/addons-path, Docker-mode included — the goo
+        Shell popup). One process per connection, killed on disconnect.
+        Independent of the Odoo server PTY."""
         if not self._origin_ok():
             return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        cwd = os.path.expanduser((qs.get("cwd") or [""])[0])
-        if not cwd or not os.path.isdir(cwd):
-            return self._send_json(400, {"ok": False, "error": "invalid cwd"})
+        wsid = (qs.get("workspace") or [""])[0]
+        if wsid:
+            base_cfg = CONFIG.get().get("config") or {}
+            cfg = services.build_start_config(base_cfg, wsid)
+            if cfg is None:
+                return self._send_json(404, {"ok": False, "error": "unknown workspace"})
+            db = (cfg.get("start") or {}).get("db")
+            if not db:
+                return self._send_json(
+                    400, {"ok": False, "error": "workspace has no database configured"}
+                )
+            try:
+                if cfg.get("launch_mode") == "docker":
+                    net_ok, net_err = DOCKER_INFRA.ensure_network(
+                        cfg.get("docker_network") or "goo_odoo"
+                    )
+                    if not net_ok:
+                        return self._send_json(400, {"ok": False, "error": f"docker network: {net_err}"})
+                    pg_ok, pg_err = DOCKER_INFRA.ensure_postgres(cfg)
+                    if not pg_ok:
+                        return self._send_json(
+                            400, {"ok": False, "error": f"docker postgres: {pg_err}"}
+                        )
+                    image, img_err = DOCKER_INFRA.ensure_image(cfg, cfg.get("docker_branch") or "")
+                    if img_err:
+                        return self._send_json(400, {"ok": False, "error": f"docker image: {img_err}"})
+                    shell_cmd = build_docker_shell_cmd(cfg, db, image)
+                else:
+                    shell_cmd = build_shell_cmd(cfg, db)
+            except ValueError as e:
+                return self._send_json(400, {"ok": False, "error": str(e)})
+            cwd = None  # shell_cmd already cd's (local) / mounts (docker) on its own
+            argv = ["/bin/bash", "-c", shell_cmd]
+            trace_label = f"odoo-bin shell ({wsid})"
+        else:
+            cwd = os.path.expanduser((qs.get("cwd") or [""])[0])
+            if not cwd or not os.path.isdir(cwd):
+                return self._send_json(400, {"ok": False, "error": "invalid cwd"})
+            argv = ["/bin/bash", "-i"]
+            trace_label = f"/bin/bash -i (cwd: {cwd})"
         key = self.headers.get("Sec-WebSocket-Key", "")
         if not key:
             return self._send_json(400, {"ok": False, "error": "missing WS key"})
@@ -2852,9 +2938,9 @@ class Handler(BaseHTTPRequestHandler):
             os.setsid()
             fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)  # pty becomes controlling tty
 
-        effects.trace("run", f"/bin/bash -i (cwd: {cwd})")
+        effects.trace("run", trace_label)
         proc = subprocess.Popen(
-            ["/bin/bash", "-i"],
+            argv,
             cwd=cwd,
             stdin=slave_fd,
             stdout=slave_fd,

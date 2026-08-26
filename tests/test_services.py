@@ -3463,6 +3463,65 @@ class BuildDockerCmdTest(unittest.TestCase):
             self._cmd(start={"repos": ["community"], "db": "db1", "test_tags": "sale", "memcheck": True})
 
 
+class BuildDockerShellCmdTest(unittest.TestCase):
+    """build_docker_shell_cmd shares _docker_run_prefix's mounts/network setup
+    with build_docker_cmd (see BuildDockerCmdTest) — these tests cover what's
+    genuinely different: no --name (runs alongside an already-started server),
+    and the odoo-bin `shell` tail instead of the server flags."""
+
+    def _cmd(self, db="db1", **extra_config):
+        from backend import server
+
+        config = {
+            "start": {"repos": ["community", "enterprise"], "db": db},
+            "main_repo_id": "community",
+            "docker_worktree_dir": "/wt/feature-x",
+            "docker_network": "goo_odoo",
+            "docker_postgres_container": "goo-postgres",
+            "docker_mount_path": "/src",
+            **extra_config,
+        }
+        return server.build_docker_shell_cmd(config, db, "goo-odoo-noble:latest")
+
+    def test_basic_shape(self):
+        cmd = self._cmd()
+        self.assertIn("docker run --rm -it --network goo_odoo", cmd)
+        # no --name: a standalone container, independent of (and never
+        # colliding with) the workspace's own running server container
+        self.assertNotIn("--name", cmd)
+        self.assertIn("--workdir /src/community", cmd)
+        self.assertIn("-v /wt/feature-x:/src", cmd)
+        self.assertIn("--addons-path addons,../enterprise,/goo-addons", cmd)
+        self.assertIn(
+            "goo-odoo-noble:latest python3 /src/community/odoo-bin shell "
+            "-d db1 -r odoo -w odoo --no-http --no-database-list",
+            cmd,
+        )
+        self.assertIn("--db_host goo-postgres --db_port 5432", cmd)
+        self.assertIn("--log-level=warn", cmd)
+        # server-only flags don't belong on a one-off REPL
+        self.assertNotIn("--http-interface", cmd)
+        self.assertNotIn("--db-filter", cmd)
+        self.assertNotIn("--limit-time", cmd)
+
+    def test_container_user_and_extra_args_passthrough(self):
+        cmd = self._cmd(docker_container_user="1000:1000", docker_extra_run_args="--memory=4g")
+        self.assertIn("--user 1000:1000", cmd)
+        self.assertIn("--memory=4g", cmd)
+
+    def test_raises_on_invalid_db_name(self):
+        with self.assertRaises(ValueError):
+            self._cmd(db="; rm -rf /")
+
+    def test_raises_without_docker_worktree_dir(self):
+        with self.assertRaises(ValueError):
+            self._cmd(docker_worktree_dir="")
+
+    def test_raises_without_main_repo_in_start_repos(self):
+        with self.assertRaises(ValueError):
+            self._cmd(start={"repos": ["enterprise"], "db": "db1"})
+
+
 class RustBundlerWarningTest(unittest.TestCase):
     def test_missing_or_stale_fork_warns_only_when_enabled(self):
         from backend import server
