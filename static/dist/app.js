@@ -2291,13 +2291,25 @@ var CodePlugin = class extends Plugin {
     const pushGithubByRepo = Object.fromEntries(
       this.branchRepos().map((r) => [r.id, r.pushGithub || null])
     );
-    const prIndex = {};
+    const prsByBranch = {};
     for (const repo of this.prRepos()) {
-      for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
+      for (const pr of repo.prs) {
+        const key = branchKey(repo.id, pr.branch);
+        (prsByBranch[key] ??= []).push(pr);
+      }
     }
     const headPrs = this.headPrs();
     for (const [key, pr] of Object.entries(headPrs)) {
-      if (pr && !prIndex[key]) prIndex[key] = pr;
+      if (pr && !prsByBranch[key]) prsByBranch[key] = [pr];
+    }
+    const prIndex = {};
+    const prsIndex = {};
+    for (const [key, list] of Object.entries(prsByBranch)) {
+      const sorted = list.slice().sort(
+        (a, b) => (b.state === "open") - (a.state === "open") || (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)
+      );
+      prsIndex[key] = sorted;
+      prIndex[key] = sorted[0];
     }
     const map = /* @__PURE__ */ new Map();
     for (const repo of this.branchRepos()) {
@@ -2319,6 +2331,7 @@ var CodePlugin = class extends Plugin {
       pushRemoteByRepo,
       pushGithubByRepo,
       prIndex,
+      prsIndex,
       errors: this.prRepos().filter((r) => r.error),
       list: [...map.entries()].map(([branch, rows]) => {
         let activity = 0;
@@ -5585,17 +5598,20 @@ var PrCell = class extends Component {
   props = useProps({ row: t.any(), screen: t.any() });
   static template = xml`
     <span class="brg-pr">
-      <t t-if="this.pr">
-        <a class="pr-link" target="_blank" t-att-href="this.pr.url" t-out="'#' + this.pr.number"/>
-        <span class="pr-state" t-att-class="this.state" t-out="this.state"/>
+      <t t-if="this.prs.length">
+        <span t-foreach="this.prs" t-as="pr" t-key="pr.github + '#' + pr.number" class="pr-pill">
+          <a class="pr-link" target="_blank" t-att-href="pr.url" t-out="'#' + pr.number"/>
+          <span class="pr-state" t-att-class="this.stateOf(pr)" t-out="this.stateOf(pr)"/>
+        </span>
       </t>
       <span t-else="" class="brg-dash">—</span>
     </span>`;
-  get pr() {
-    return this.props.row.pr;
+  get prs() {
+    const row = this.props.row;
+    return row.prs || (row.pr ? [row.pr] : []);
   }
-  get state() {
-    return this.pr.draft && this.pr.state === "open" ? "draft" : this.pr.state;
+  stateOf(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 };
 var MergebotCell = class extends Component {
@@ -5712,7 +5728,7 @@ var BranchesScreen = class extends Component {
   // branch is checked out in any repo. A branch's PR rides its local row (prIndex
   // join); authored PRs with no local branch anywhere become PR-only rows.
   groups = computed(() => {
-    const { prIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
+    const { prIndex, prsIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
     const byBranch = /* @__PURE__ */ new Map();
@@ -5728,7 +5744,8 @@ var BranchesScreen = class extends Component {
       if (repoFilter && repo.id !== repoFilter) continue;
       for (const b of repo.branches) {
         const pr = prIndex[`${repo.id}:${b.name}`];
-        const hay = `${b.name} ${repo.id}` + (pr ? ` ${pr.title} #${pr.number}` : "");
+        const prs = prsIndex[`${repo.id}:${b.name}`] || (pr ? [pr] : []);
+        const hay = `${b.name} ${repo.id}` + prs.map((p) => ` ${p.title} #${p.number}`).join("");
         if (q && !hay.toLowerCase().includes(q)) continue;
         push(b.name, {
           kind: "local",
@@ -5746,7 +5763,10 @@ var BranchesScreen = class extends Component {
           dirty: b.name === repo.current && repo.dirty,
           repoDirty: repo.dirty,
           // the repo's working tree (its current branch)
-          pr
+          pr,
+          // the principal PR — open if any, else most recently updated — used for actions
+          prs
+          // every PR on this branch (open + closed), open/latest first — for display
         });
       }
     }
@@ -11810,9 +11830,11 @@ var CodePane = class extends Component {
           </div>
           <div class="ws-co-badges">
             <t t-if="!this.isBaseBranch(r.branch)">
-              <t t-if="r.pr">
-                <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-                <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
+              <t t-if="r.prs.length">
+                <span t-foreach="r.prs" t-as="pr" t-key="pr.github + '#' + pr.number" class="pr-pill">
+                  <a class="pr-link" t-att-href="pr.url" target="_blank" t-out="'#' + pr.number"/>
+                  <span class="pr-state" t-att-class="this.prState(pr)" t-out="this.prState(pr)"/>
+                </span>
               </t>
               <t t-else="">
                 <span class="dim">no pull request</span>
@@ -11953,6 +11975,7 @@ var CodePane = class extends Component {
       const current = b.current || "";
       const github = groups.githubByRepo[r.id] || "";
       const pr = groups.prIndex[`${r.id}:${current}`] || null;
+      const prs = groups.prsIndex[`${r.id}:${current}`] || (pr ? [pr] : []);
       return {
         id: r.id,
         current,
@@ -11972,6 +11995,9 @@ var CodePane = class extends Component {
         pull_remote: groups.pullRemoteByRepo[r.id] || "origin",
         push_remote: groups.pushRemoteByRepo[r.id] || "dev",
         pr,
+        // the principal PR — open if any, else most recently updated — used for actions
+        prs,
+        // every PR on this branch (open + closed), open/latest first — for display
         // a work branch that's pushed and PR-less can have a PR opened for it
         canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
       };
@@ -12256,7 +12282,7 @@ var CodePane = class extends Component {
     const wsId = this.wsId;
     const gitByRepo = isWt ? null : new Map(this.code.branchRepos().map((r) => [r.id, r]));
     const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
-    const prIndex = this.code.groups().prIndex;
+    const { prIndex, prsIndex } = this.code.groups();
     return (view.checkouts || []).map((c) => {
       const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo.get(c.repo);
       const b = (git?.branches || []).find((x) => x.name === c.branch);
@@ -12277,6 +12303,9 @@ var CodePane = class extends Component {
         sha: b?.sha || "",
         when: b?.date ? timeAgo(b.date) : "",
         pr: prIndex[branchKey(c.repo, c.branch)] || null,
+        // principal — open if any, else latest
+        prs: prsIndex[branchKey(c.repo, c.branch)] || [],
+        // every PR on this branch — for display
         github: entry?.github || "",
         path: entry?.path || "",
         push_remote: entry?.push_remote || "dev",

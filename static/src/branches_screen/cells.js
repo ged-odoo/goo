@@ -33,24 +33,28 @@ export class RepoCell extends Component {
   }
 }
 
-// PR: "#number" link + state badge, or a dash for local branches without a PR.
+// PR: "#number" link + state badge per PR on this branch (a branch can carry a
+// closed PR and its open successor at once), or a dash when there's none.
 export class PrCell extends Component {
   props = useProps({ row: t.any(), screen: t.any() });
   static template = xml`
     <span class="brg-pr">
-      <t t-if="this.pr">
-        <a class="pr-link" target="_blank" t-att-href="this.pr.url" t-out="'#' + this.pr.number"/>
-        <span class="pr-state" t-att-class="this.state" t-out="this.state"/>
+      <t t-if="this.prs.length">
+        <span t-foreach="this.prs" t-as="pr" t-key="pr.github + '#' + pr.number" class="pr-pill">
+          <a class="pr-link" target="_blank" t-att-href="pr.url" t-out="'#' + pr.number"/>
+          <span class="pr-state" t-att-class="this.stateOf(pr)" t-out="this.stateOf(pr)"/>
+        </span>
       </t>
       <span t-else="" class="brg-dash">—</span>
     </span>`;
 
-  get pr() {
-    return this.props.row.pr;
+  get prs() {
+    const row = this.props.row;
+    return row.prs || (row.pr ? [row.pr] : []);
   }
 
-  get state() {
-    return this.pr.draft && this.pr.state === "open" ? "draft" : this.pr.state;
+  stateOf(pr) {
+    return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 }
 

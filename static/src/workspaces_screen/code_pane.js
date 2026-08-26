@@ -75,9 +75,11 @@ export class CodePane extends Component {
           </div>
           <div class="ws-co-badges">
             <t t-if="!this.isBaseBranch(r.branch)">
-              <t t-if="r.pr">
-                <a class="pr-link" t-att-href="r.pr.url" target="_blank" t-out="'#' + r.pr.number"/>
-                <span class="pr-state" t-att-class="this.prState(r.pr)" t-out="this.prState(r.pr)"/>
+              <t t-if="r.prs.length">
+                <span t-foreach="r.prs" t-as="pr" t-key="pr.github + '#' + pr.number" class="pr-pill">
+                  <a class="pr-link" t-att-href="pr.url" target="_blank" t-out="'#' + pr.number"/>
+                  <span class="pr-state" t-att-class="this.prState(pr)" t-out="this.prState(pr)"/>
+                </span>
               </t>
               <t t-else="">
                 <span class="dim">no pull request</span>
@@ -220,6 +222,7 @@ export class CodePane extends Component {
         const current = b.current || "";
         const github = groups.githubByRepo[r.id] || "";
         const pr = groups.prIndex[`${r.id}:${current}`] || null;
+        const prs = groups.prsIndex[`${r.id}:${current}`] || (pr ? [pr] : []);
         return {
           id: r.id,
           current,
@@ -235,7 +238,8 @@ export class CodePane extends Component {
           path: isWt ? `${wtDir}/${r.id}` : groups.pathByRepo[r.id] || "",
           pull_remote: groups.pullRemoteByRepo[r.id] || "origin",
           push_remote: groups.pushRemoteByRepo[r.id] || "dev",
-          pr,
+          pr, // the principal PR — open if any, else most recently updated — used for actions
+          prs, // every PR on this branch (open + closed), open/latest first — for display
           // a work branch that's pushed and PR-less can have a PR opened for it
           canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
         };
@@ -567,7 +571,7 @@ export class CodePane extends Component {
     // wouldn't reflect a commit just made in the worktree until its own next rescan
     const gitByRepo = isWt ? null : new Map(this.code.branchRepos().map((r) => [r.id, r]));
     const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
-    const prIndex = this.code.groups().prIndex;
+    const { prIndex, prsIndex } = this.code.groups();
     return (view.checkouts || []).map((c) => {
       const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo.get(c.repo);
       const b = (git?.branches || []).find((x) => x.name === c.branch);
@@ -585,7 +589,8 @@ export class CodePane extends Component {
         subject: b?.subject || "",
         sha: b?.sha || "",
         when: b?.date ? timeAgo(b.date) : "",
-        pr: prIndex[branchKey(c.repo, c.branch)] || null,
+        pr: prIndex[branchKey(c.repo, c.branch)] || null, // principal — open if any, else latest
+        prs: prsIndex[branchKey(c.repo, c.branch)] || [], // every PR on this branch — for display
         github: entry?.github || "",
         path: entry?.path || "",
         push_remote: entry?.push_remote || "dev",

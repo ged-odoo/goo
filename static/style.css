@@ -2758,10 +2758,9 @@ tr.active td.brg-commit {
 .brg-pr {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   min-width: 0;
-}
-.brg-pr .pr-state {
-  margin-left: 6px;
 }
 .brg-dash {
   color: var(--l-text-faint);
@@ -2872,6 +2871,20 @@ tr.active td.brg-commit {
 .pr-state.draft {
   color: var(--l-text-dim);
   background: oklch(0.5 0.01 264 / 0.12);
+}
+/* groups a PR's #number with its status as one visual unit — needed once a
+   branch can list more than one PR side by side (see PrCell / ws-co-badges) */
+.pr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--l-line);
+  border-radius: 999px;
+  background: var(--l-card);
+}
+.pr-pill .pr-state {
+  margin-left: 0;
 }
 .runbot-inline {
   display: inline-flex;
@@ -5256,7 +5269,7 @@ a.commit-detail-hash svg {
 }
 .ws-co-card {
   display: grid;
-  grid-template-columns: minmax(320px, 580px) minmax(160px, 1fr) 28px;
+  grid-template-columns: minmax(280px, 420px) minmax(220px, 1fr) 28px;
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -5312,7 +5325,7 @@ a.commit-detail-hash svg {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   min-width: 0;
 }
 .ws-pr-create {

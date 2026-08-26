@@ -96,7 +96,7 @@ export class BranchesScreen extends Component {
   // branch is checked out in any repo. A branch's PR rides its local row (prIndex
   // join); authored PRs with no local branch anywhere become PR-only rows.
   groups = computed(() => {
-    const { prIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
+    const { prIndex, prsIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
     const byBranch = new Map();
@@ -114,7 +114,9 @@ export class BranchesScreen extends Component {
       if (repoFilter && repo.id !== repoFilter) continue;
       for (const b of repo.branches) {
         const pr = prIndex[`${repo.id}:${b.name}`];
-        const hay = `${b.name} ${repo.id}` + (pr ? ` ${pr.title} #${pr.number}` : "");
+        const prs = prsIndex[`${repo.id}:${b.name}`] || (pr ? [pr] : []);
+        const hay =
+          `${b.name} ${repo.id}` + prs.map((p) => ` ${p.title} #${p.number}`).join("");
         if (q && !hay.toLowerCase().includes(q)) continue;
         push(b.name, {
           kind: "local",
@@ -131,7 +133,8 @@ export class BranchesScreen extends Component {
           active: b.name === repo.current,
           dirty: b.name === repo.current && repo.dirty,
           repoDirty: repo.dirty, // the repo's working tree (its current branch)
-          pr,
+          pr, // the principal PR — open if any, else most recently updated — used for actions
+          prs, // every PR on this branch (open + closed), open/latest first — for display
         });
       }
     }

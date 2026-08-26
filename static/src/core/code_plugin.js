@@ -448,14 +448,35 @@ export class CodePlugin extends Plugin {
     const pushGithubByRepo = Object.fromEntries(
       this.branchRepos().map((r) => [r.id, r.pushGithub || null]),
     );
-    const prIndex = {};
+    // a branch can carry more than one authored PR (e.g. a closed one followed by
+    // a fresh one on the same head ref) — collect every PR per branch key, then
+    // derive prIndex as the PRINCIPAL one (open — there can be only one — else the
+    // most recently updated) so every existing "single PR" action/badge site keeps
+    // working unchanged. prsIndex exposes the full list for display.
+    const prsByBranch = {};
     for (const repo of this.prRepos()) {
-      for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
+      for (const pr of repo.prs) {
+        const key = branchKey(repo.id, pr.branch);
+        (prsByBranch[key] ??= []).push(pr);
+      }
     }
     // supplement with head-ref lookups, but never shadow an authored PR
     const headPrs = this.headPrs();
     for (const [key, pr] of Object.entries(headPrs)) {
-      if (pr && !prIndex[key]) prIndex[key] = pr;
+      if (pr && !prsByBranch[key]) prsByBranch[key] = [pr];
+    }
+    const prIndex = {};
+    const prsIndex = {};
+    for (const [key, list] of Object.entries(prsByBranch)) {
+      const sorted = list
+        .slice()
+        .sort(
+          (a, b) =>
+            (b.state === "open") - (a.state === "open") ||
+            (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0),
+        );
+      prsIndex[key] = sorted;
+      prIndex[key] = sorted[0];
     }
     const map = new Map();
     for (const repo of this.branchRepos()) {
@@ -477,6 +498,7 @@ export class CodePlugin extends Plugin {
       pushRemoteByRepo,
       pushGithubByRepo,
       prIndex,
+      prsIndex,
       errors: this.prRepos().filter((r) => r.error),
       list: [...map.entries()]
         .map(([branch, rows]) => {
