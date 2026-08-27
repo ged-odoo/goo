@@ -4156,7 +4156,12 @@ def build_start_config(config, workspace_id, overrides=None):
     repo_ids = [c["repo"] for c in (target.get("checkouts") or []) if c.get("repo")]
     start = {
         "repos": repo_ids,
-        "db": target.get("db"),
+        # a workspace created with no explicit database (the field was left
+        # blank) still needs a valid one to start against — fall back to the
+        # workspace's own name, sanitized the same way its worktree folder name
+        # is (_worktree_slug), rather than hard-failing with "no database
+        # configured" on every start
+        "db": target.get("db") or _worktree_slug(target),
         "on_create_args": target.get("on_create_args") or "",
         "other_args": overrides.get("other_args", start_cfg.get("other_args", "")),
         "demo_data": target.get("demo_data", True),

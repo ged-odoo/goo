@@ -3157,6 +3157,24 @@ class WorkspaceResolutionTest(unittest.TestCase):
         self.assertNotIn("docker_container", cfg)
         self.assertNotIn("docker_branch", cfg)
 
+    def test_missing_db_falls_back_to_workspace_name_slug(self):
+        # a workspace created with a blank Database field must still start,
+        # rather than hard-failing with "no database configured" — falls back
+        # to the workspace's own name, sanitized the same way as a worktree
+        # folder name
+        cfg_no_db = {
+            **self.CFG,
+            "workspaces": [
+                {**w, "db": ""} if w["id"] == "ww1" else w for w in self.CFG["workspaces"]
+            ],
+        }
+        cfg = services.build_start_config(cfg_no_db, "ww1")
+        self.assertEqual(cfg["start"]["db"], "feature-x")
+
+    def test_explicit_db_is_never_overridden(self):
+        cfg = services.build_start_config(self.CFG, "ww1")
+        self.assertEqual(cfg["start"]["db"], "wwdb")
+
 
 class BuildOdooCmdTest(unittest.TestCase):
     """--without-demo mirrors the target's demo_data flag (config_models.js

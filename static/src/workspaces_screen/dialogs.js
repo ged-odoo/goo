@@ -350,11 +350,23 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
               currentValues.createBranches === false,
             ),
           };
-          // only string-replace db when there was a previous name to replace —
-          // replaceAll("", newName) on the very first keystroke would otherwise
-          // splice newName between every character
-          if (oldValues.name)
-            updates.db = (currentValues.db || "").replaceAll(oldValues.name, newName);
+          // db stays in lockstep with name as it's typed (a blank db otherwise
+          // sails through Create silently, then fails Start with "no database
+          // configured") — full stomp while db is still empty or still exactly
+          // tracking the previous name (including the very first keystroke, an
+          // empty-to-empty match); once the user diverges db by hand, later
+          // name edits only best-effort replaceAll the old name within it,
+          // never overwriting a deliberately different value
+          const trimmed = newName.trim();
+          if (!currentValues.db || currentValues.db === oldValues.name) {
+            updates.db = trimmed;
+          } else if (oldValues.name) {
+            // db already diverged from name by hand — only best-effort replace
+            // the old name substring within it, and only when there IS an old
+            // name to replace (replaceAll("", newName) on nothing would
+            // otherwise splice newName between every character of db)
+            updates.db = currentValues.db.replaceAll(oldValues.name, newName);
+          }
           return updates;
         },
       },
@@ -435,7 +447,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         key: "db",
         type: "text",
         label: "Database",
-        value: prefill.db ?? "",
+        value: prefill.db ?? prefill.name ?? "",
         placeholder: "database name",
       },
       // Start args reach odoo-bin's own argument list regardless of how goo

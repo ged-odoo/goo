@@ -9691,8 +9691,12 @@ async function startCreateWorkspace(plugins, prefill = {}) {
               currentValues.createBranches === false
             )
           };
-          if (oldValues.name)
-            updates.db = (currentValues.db || "").replaceAll(oldValues.name, newName);
+          const trimmed = newName.trim();
+          if (!currentValues.db || currentValues.db === oldValues.name) {
+            updates.db = trimmed;
+          } else if (oldValues.name) {
+            updates.db = currentValues.db.replaceAll(oldValues.name, newName);
+          }
           return updates;
         }
       },
@@ -9765,7 +9769,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         key: "db",
         type: "text",
         label: "Database",
-        value: prefill.db ?? "",
+        value: prefill.db ?? prefill.name ?? "",
         placeholder: "database name"
       },
       // Start args reach odoo-bin's own argument list regardless of how goo
