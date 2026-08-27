@@ -88,6 +88,10 @@ var DEFAULT_CONFIG = {
   // checkout with a PR shows it merged (and nothing is dirty/unpushed) — once
   // a day (see backend/cleanup.py). Opt-in since it deletes things on its own.
   cleanup_enabled: false,
+  // the create-workspace dialog's Location field default: "main" (one loaded
+  // at a time) or "worktree" (its own checkout, runs concurrently). Only the
+  // dialog's own initial value — never overwrites what the user picks there.
+  default_workspace_location: "main",
   // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
   // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,
@@ -1779,7 +1783,7 @@ var Dialog = class extends Component {
         <h2 class="dialog-title" t-out="this.spec.title"/>
         <div class="dialog-body" data-form-type="other">
           <p t-if="this.spec.message" class="dialog-msg" t-out="this.spec.message"/>
-          <div t-foreach="this.spec.fields || []" t-as="f" t-key="f.key" class="dialog-field">
+          <div t-foreach="this.spec.fields || []" t-as="f" t-key="f.key" class="dialog-field" t-if="!f.visible || f.visible(this.values())">
             <label t-if="f.type === 'checkbox'" class="edit-check">
               <input type="checkbox" t-att-checked="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.checked)"/>
               <t t-out="f.label"/>
@@ -3218,7 +3222,8 @@ var SETTINGS_CHARS = [
   "docker_mount_path",
   "docker_filestore_mount",
   "docker_container_user",
-  "docker_extra_run_args"
+  "docker_extra_run_args",
+  "default_workspace_location"
 ];
 var SETTINGS_BOOLS = [
   "auto_open_event_log",
@@ -3287,6 +3292,8 @@ var Settings = class extends Model {
   docker_extra_run_args = fields.char();
   docker_images = fields.json();
   // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
+  // "main" or "worktree" — the create-workspace dialog's Location default
+  default_workspace_location = fields.char();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
@@ -6929,6 +6936,13 @@ var ConfigScreen = class extends Component {
             <input id="setting-update-check" type="checkbox" class="settings-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off."
                    t-att-checked="this.config.config.update_check !== false"
                    t-on-change="ev => this.config.updateConfig({ update_check: ev.target.checked })"/>
+            <label for="setting-default-ws-location" title="The create-workspace dialog's Location field default — 'main' (one loaded at a time) or 'worktree' (its own checkout, runs concurrently). Only sets the dialog's initial value; never overrides what you pick there.">default workspace location</label>
+            <select id="setting-default-ws-location" class="edit-input"
+                    t-att-value="this.config.config.default_workspace_location || 'main'"
+                    t-on-change="ev => this.config.updateConfig({ default_workspace_location: ev.target.value })">
+              <option value="main" t-att-selected="(this.config.config.default_workspace_location || 'main') === 'main'">Main checkout</option>
+              <option value="worktree" t-att-selected="this.config.config.default_workspace_location === 'worktree'">Own worktree</option>
+            </select>
             <label for="setting-ws-categories" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog.">enable workspace categories</label>
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
@@ -9663,7 +9677,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         key: "location",
         type: "select",
         label: "Location",
-        value: "main",
+        value: prefill.location ?? (config.config.default_workspace_location || "main"),
         options: [
           { value: "main", label: "Main checkout (one loaded at a time)" },
           {
@@ -9824,7 +9838,16 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         // "Unconfirmed branch" below), which still fork from their base.
         value: prefill.createBranches ?? true
       },
-      { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
+      {
+        key: "activate",
+        type: "checkbox",
+        label: "Activate it (main)",
+        value: true,
+        // only meaningful for a main-located workspace (one loaded at a
+        // time) — a worktree runs concurrently from its own checkout, no
+        // activation step involved
+        visible: (v) => v.location !== "worktree"
+      },
       // the venv is only ever consulted at launch by goo's own LOCAL subprocess
       // (workspace_plugin.js createWorktree) — a Docker container brings its own
       // Python env, so this is local-mode-only, unlike Start args/Demo data above

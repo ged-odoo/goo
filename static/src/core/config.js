@@ -58,6 +58,10 @@ export const DEFAULT_CONFIG = {
   // checkout with a PR shows it merged (and nothing is dirty/unpushed) — once
   // a day (see backend/cleanup.py). Opt-in since it deletes things on its own.
   cleanup_enabled: false,
+  // the create-workspace dialog's Location field default: "main" (one loaded
+  // at a time) or "worktree" (its own checkout, runs concurrently). Only the
+  // dialog's own initial value — never overwrites what the user picks there.
+  default_workspace_location: "main",
   // launch Odoo with RUST_BUNDLER=1 so the rust_bundler addon uses Goo's in-tree
   // native extension (installed explicitly from the Configuration screen)
   rust_bundler: false,

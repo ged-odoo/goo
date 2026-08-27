@@ -100,8 +100,8 @@ class DialogContainer extends Component {
 // A form/message modal. Spec: { title, message?, okLabel?, cancelLabel?, cls?,
 // validate?(values) => errorString, fields: [{ key, type: "text"|"textarea"|
 // "checkbox"|"select"|"check-select"|"repo-checks"|"action", label, value,
-// placeholder?, rows?, options?, onChange?, default?, hint?, run? }] }. A
-// "check-select" is a checkbox with an inline select that shows only when
+// placeholder?, rows?, options?, onChange?, default?, hint?, visible?, run? }] }.
+// A "check-select" is a checkbox with an inline select that shows only when
 // ticked; its value is "" (off) or the chosen option, seeded from
 // default(values) on tick. A "repo-checks" is a list of checkboxes (one per
 // `options` entry); its value is the array of ticked option values. A
@@ -112,7 +112,11 @@ class DialogContainer extends Component {
 // (like onChange), a null/undefined result (e.g. a nested dialog cancelled)
 // leaves the form untouched. Any field can also set `hint: (values) => string
 // | null` — a line rendered under the field, recomputed on every change (e.g.
-// to surface a live "this already exists" note next to a text field).
+// to surface a live "this already exists" note next to a text field) — and
+// `visible: (values) => boolean` to hide it entirely based on another
+// field's live value (e.g. an option that only makes sense for one choice of
+// a select elsewhere in the form); a hidden field's own value stays whatever
+// it last was, untouched, ready to reappear if `visible` flips back.
 // validate() runs
 // live: a non-empty result disables the OK button (and, once the user has edited a
 // field, shows the message), so an invalid form can't be submitted. cancelLabel:
@@ -126,7 +130,7 @@ export class Dialog extends Component {
         <h2 class="dialog-title" t-out="this.spec.title"/>
         <div class="dialog-body" data-form-type="other">
           <p t-if="this.spec.message" class="dialog-msg" t-out="this.spec.message"/>
-          <div t-foreach="this.spec.fields || []" t-as="f" t-key="f.key" class="dialog-field">
+          <div t-foreach="this.spec.fields || []" t-as="f" t-key="f.key" class="dialog-field" t-if="!f.visible || f.visible(this.values())">
             <label t-if="f.type === 'checkbox'" class="edit-check">
               <input type="checkbox" t-att-checked="this.values()[f.key]" t-on-change="(ev) => this.setVal(f.key, ev.target.checked)"/>
               <t t-out="f.label"/>

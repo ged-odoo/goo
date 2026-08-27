@@ -319,7 +319,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         key: "location",
         type: "select",
         label: "Location",
-        value: "main",
+        value: prefill.location ?? (config.config.default_workspace_location || "main"),
         options: [
           { value: "main", label: "Main checkout (one loaded at a time)" },
           {
@@ -500,7 +500,16 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         // "Unconfirmed branch" below), which still fork from their base.
         value: prefill.createBranches ?? true,
       },
-      { key: "activate", type: "checkbox", label: "Activate it (main)", value: true },
+      {
+        key: "activate",
+        type: "checkbox",
+        label: "Activate it (main)",
+        value: true,
+        // only meaningful for a main-located workspace (one loaded at a
+        // time) — a worktree runs concurrently from its own checkout, no
+        // activation step involved
+        visible: (v) => v.location !== "worktree",
+      },
       // the venv is only ever consulted at launch by goo's own LOCAL subprocess
       // (workspace_plugin.js createWorktree) — a Docker container brings its own
       // Python env, so this is local-mode-only, unlike Start args/Demo data above

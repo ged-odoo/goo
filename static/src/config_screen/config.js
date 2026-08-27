@@ -654,6 +654,13 @@ export class ConfigScreen extends Component {
             <input id="setting-update-check" type="checkbox" class="settings-check" title="Automatically check for goo updates (git fetch of origin/master at startup and then hourly) to surface the navbar update badge. The 'Check for update' button above always works, even when this is off."
                    t-att-checked="this.config.config.update_check !== false"
                    t-on-change="ev => this.config.updateConfig({ update_check: ev.target.checked })"/>
+            <label for="setting-default-ws-location" title="The create-workspace dialog's Location field default — 'main' (one loaded at a time) or 'worktree' (its own checkout, runs concurrently). Only sets the dialog's initial value; never overrides what you pick there.">default workspace location</label>
+            <select id="setting-default-ws-location" class="edit-input"
+                    t-att-value="this.config.config.default_workspace_location || 'main'"
+                    t-on-change="ev => this.config.updateConfig({ default_workspace_location: ev.target.value })">
+              <option value="main" t-att-selected="(this.config.config.default_workspace_location || 'main') === 'main'">Main checkout</option>
+              <option value="worktree" t-att-selected="this.config.config.default_workspace_location === 'worktree'">Own worktree</option>
+            </select>
             <label for="setting-ws-categories" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog.">enable workspace categories</label>
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"

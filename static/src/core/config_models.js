@@ -79,6 +79,7 @@ const SETTINGS_CHARS = [
   "docker_filestore_mount",
   "docker_container_user",
   "docker_extra_run_args",
+  "default_workspace_location",
 ];
 const SETTINGS_BOOLS = [
   "auto_open_event_log",
@@ -147,6 +148,8 @@ export class Settings extends Model {
   docker_container_user = fields.char();
   docker_extra_run_args = fields.char();
   docker_images = fields.json(); // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
+  // "main" or "worktree" — the create-workspace dialog's Location default
+  default_workspace_location = fields.char();
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
