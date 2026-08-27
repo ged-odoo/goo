@@ -9,12 +9,20 @@ it by hand is an explicit request.
 
 Deletes a workspace's worktrees, local branches, database, and filestore once
 every checkout that has a PR shows it merged (skipped entirely if no checkout
-has a PR yet — work in progress), and only if no worktree has uncommitted or
-unpushed changes. Branches are deleted locally only, never on the remote —
+has a PR yet — work in progress), and only if no worktree has uncommitted
+changes. "Merged" checks mergebot's own state first (a mergebot-merged PR
+routinely shows GitHub state "closed", not "merged" — mergebot integrates by
+its own rebase/squash and just closes the PR via the API), falling back to
+GitHub's PR state for a repo mergebot doesn't track. A PR that's closed
+without merging is still not a blocker if it was empty (0 changed files) —
+Odoo's multi-repo bundle workflow opens one per touched repo even when a repo
+ends up needing nothing, and that PR just gets closed rather than merged
+(see _pr_is_empty). Branches are deleted locally only, never on the remote —
 recoverable from there if this ever gets something wrong.
 """
 
 import argparse
+import json
 import logging
 import logging.handlers
 import os
@@ -23,7 +31,7 @@ import sys
 import time
 
 from . import effects
-from .server import CONFIG, GIT, GITHUB
+from .server import CONFIG, GIT, GITHUB, MERGEBOT
 
 STATE_DIR = os.path.expanduser("~/.local/state/goo")
 LOG_PATH = os.path.join(STATE_DIR, "cleanup.log")
@@ -52,11 +60,34 @@ def _notify(summary):
         pass
 
 
+def _pr_is_empty(github, number):
+    """True if a PR never had any actual changes (0 changed files). Odoo's
+    multi-repo bundle workflow opens a PR per touched repo even when a repo
+    ends up needing no changes there — that empty PR gets closed rather than
+    merged, since there was nothing to merge. An empty closed PR isn't a real
+    blocker: there's no code in it a `merged` state would otherwise be
+    protecting, so it's treated the same as that checkout having no PR at
+    all. False (stay conservative — treat as a real, blocking PR) if this
+    can't be confirmed."""
+    r = effects.run(
+        ["gh", "pr", "view", str(number), "--repo", github, "--json", "changedFiles"],
+        quiet=True,
+        timeout=15,
+    )
+    if r.returncode != 0:
+        return False
+    try:
+        return json.loads(r.stdout).get("changedFiles") == 0
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
 def _merge_gate(ws, repo_map):
     """(ok, reason): ok is True only once every checkout with a PR is merged
     (a checkout with no PR at all is ignored — e.g. a repo this change never
-    touched); False (with the reason) if nothing has a PR yet, or anything
-    that does isn't merged."""
+    touched, and so is one whose PR was closed empty — see _pr_is_empty);
+    False (with the reason) if nothing has a PR yet, or anything that does
+    isn't merged."""
     pairs = []
     for c in ws.get("checkouts", []):
         repo = repo_map.get(c.get("repo"))
@@ -67,21 +98,42 @@ def _merge_gate(ws, repo_map):
         return False, "no repo/github info for its checkouts"
     prs = GITHUB.prs_for_branches(pairs)
     pr_by_key = {(pr["github"], pr["branch"]): pr for pr in prs}
+    # mergebot integrates a PR's commits itself (its own rebase/squash, run
+    # outside GitHub's merge button) and then just closes the PR via the API —
+    # so a mergebot-merged PR routinely reports GitHub state "closed", never
+    # "merged". Mergebot's own page is the authoritative "was this actually
+    # merged" signal; GitHub's state is only a fallback for a PR on a repo
+    # mergebot doesn't track.
+    mb_states, _details, _fps, _unsupported = MERGEBOT.statuses(
+        [{"github": pr["github"], "number": pr["number"]} for pr in prs]
+    )
     has_any_pr = False
     for p in pairs:
         pr = pr_by_key.get((p["github"], p["branch"]))
         if not pr:
             continue
         has_any_pr = True
-        if pr["state"] != "merged":
-            return False, f"{p['branch']} ({p['github']}) PR is {pr['state']}, not merged"
+        mb_state = mb_states.get(f"{pr['github']}#{pr['number']}")
+        merged = mb_state == "merged" if mb_state else pr["state"] == "merged"
+        if merged:
+            continue
+        if _pr_is_empty(pr["github"], pr["number"]):
+            continue
+        state = mb_state or pr["state"]
+        return False, f"{p['branch']} ({p['github']}) PR is {state}, not merged"
     if not has_any_pr:
         return False, "no PR yet (WIP)"
     return True, "every checkout with a PR is merged"
 
 
 def _safety_guard(ws, repo_map):
-    """None if clean; else a reason string to skip on."""
+    """None if clean; else a reason string to skip on. Only checks for
+    uncommitted work — NOT "is HEAD reachable from a remote ref"
+    (git_service.branches' head_pushed): _merge_gate already confirmed the PR
+    merged before this runs, and mergebot integrates by rebase/squash, so the
+    local branch's own commits are expected to never match anything reachable
+    upstream even freshly fetched. Treating that mismatch as "unpushed" would
+    permanently block cleanup on every mergebot-merged branch."""
     repos = []
     for c in ws.get("checkouts", []):
         repo = repo_map.get(c.get("repo"))
@@ -99,8 +151,6 @@ def _safety_guard(ws, repo_map):
             return f"{entry['id']}: {entry['error']}"
         if entry.get("dirty"):
             return f"{entry['id']}: uncommitted changes"
-        if not entry.get("head_pushed"):
-            return f"{entry['id']}: unpushed commits"
     return None
 
 
