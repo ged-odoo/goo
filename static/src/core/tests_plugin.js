@@ -11,7 +11,7 @@ import { EventLogPlugin } from "./event_log_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON } from "./utils.js";
 
-import { Plugin, usePlugin, useEffect, signal } from "@odoo/owl";
+import { Plugin, usePlugin, useEffect, signal, markRaw } from "@odoo/owl";
 
 const HISTORY_MAX = 10;
 
@@ -29,7 +29,13 @@ export class TestsPlugin extends Plugin {
   eventLog = usePlugin(EventLogPlugin);
   history = signal(this._readHistory()); // last test tags run, most recent first (global)
   _failSeq = 0; // monotonic id source for failure-row anchors (global, never reset)
-  _slots = new Map(); // slotId -> per-slot run/console state
+  // slotId -> per-slot run/console state. Raw (not deep-reactive): the Tests pane
+  // reads this via a getter evaluated during render, and the reactive Map proxy
+  // notifies the very key it just read when a new slot is lazily inserted below —
+  // a write-during-render that sends the component into a render loop (fields
+  // that must be reactive — status, pending, the LogBuffer's own signals — stay
+  // signals regardless; only the Map's own key-membership tracking is dropped).
+  _slots = markRaw(new Map());
 
   // the per-slot state record, lazily created
   slot(id = "main") {

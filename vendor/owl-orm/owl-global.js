@@ -17,6 +17,7 @@ export const Scope = owl.Scope;
 export const signal = owl.signal;
 export const computed = owl.computed;
 export const untrack = owl.untrack;
+export const markRaw = owl.markRaw;
 
 // app: components + templating
 export const Component = owl.Component;

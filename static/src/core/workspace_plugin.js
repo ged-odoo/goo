@@ -19,7 +19,7 @@ import { DialogPlugin } from "./dialog_plugin.js";
 import { LogBuffer } from "./log_buffer.js";
 import { postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.js";
 
-import { Plugin, usePlugin, signal } from "@odoo/owl";
+import { Plugin, usePlugin, signal, markRaw } from "@odoo/owl";
 
 // the last selected workspace, remembered per browser so the Workspaces screen
 // reopens (and a page refresh lands) on what you were last working on. A browser
@@ -50,7 +50,13 @@ export class WorkspacePlugin extends Plugin {
   // one-shot: a detail pane the Workspaces screen should open on its next render
   // (set by the event log's [jump] — survives the screen not being mounted yet)
   requestedPane = signal("");
-  logs = new Map(); // targetId -> LogBuffer (per-server scrollback + live stream)
+  // targetId -> LogBuffer (per-server scrollback + live stream). Raw: logBuffer()
+  // lazily inserts on first access and is called straight from a template
+  // (workspaces.js's Server-log LogConsole), so a reactive Map would notify the
+  // very key it just read on that first insert — a write-during-render that
+  // sends the component into a render loop (see tests_plugin.js's _slots for the
+  // fuller explanation; LogBuffer's own signals stay reactive regardless).
+  logs = markRaw(new Map());
   _startEids = {}; // targetId -> pending "starting worktree server" timed-event id
   _externalStatus = new Map(); // targetId -> { checking, running, url, error }
   _externalStatusTick = signal(0); // bumped after a fetch so externalStatus() re-renders

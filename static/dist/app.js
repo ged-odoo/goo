@@ -5,6 +5,7 @@ var Scope = owl.Scope;
 var signal = owl.signal;
 var computed = owl.computed;
 var untrack = owl.untrack;
+var markRaw = owl.markRaw;
 var Component = owl.Component;
 var xml = owl.xml;
 var markup = owl.markup;
@@ -4283,8 +4284,13 @@ var WorkspacePlugin = class extends Plugin {
   // one-shot: a detail pane the Workspaces screen should open on its next render
   // (set by the event log's [jump] — survives the screen not being mounted yet)
   requestedPane = signal("");
-  logs = /* @__PURE__ */ new Map();
-  // targetId -> LogBuffer (per-server scrollback + live stream)
+  // targetId -> LogBuffer (per-server scrollback + live stream). Raw: logBuffer()
+  // lazily inserts on first access and is called straight from a template
+  // (workspaces.js's Server-log LogConsole), so a reactive Map would notify the
+  // very key it just read on that first insert — a write-during-render that
+  // sends the component into a render loop (see tests_plugin.js's _slots for the
+  // fuller explanation; LogBuffer's own signals stay reactive regardless).
+  logs = markRaw(/* @__PURE__ */ new Map());
   _startEids = {};
   // targetId -> pending "starting worktree server" timed-event id
   _externalStatus = /* @__PURE__ */ new Map();
@@ -7803,8 +7809,13 @@ var TestsPlugin = class extends Plugin {
   // last test tags run, most recent first (global)
   _failSeq = 0;
   // monotonic id source for failure-row anchors (global, never reset)
-  _slots = /* @__PURE__ */ new Map();
-  // slotId -> per-slot run/console state
+  // slotId -> per-slot run/console state. Raw (not deep-reactive): the Tests pane
+  // reads this via a getter evaluated during render, and the reactive Map proxy
+  // notifies the very key it just read when a new slot is lazily inserted below —
+  // a write-during-render that sends the component into a render loop (fields
+  // that must be reactive — status, pending, the LogBuffer's own signals — stay
+  // signals regardless; only the Map's own key-membership tracking is dropped).
+  _slots = markRaw(/* @__PURE__ */ new Map());
   // the per-slot state record, lazily created
   slot(id = "main") {
     if (!this._slots.has(id)) {
