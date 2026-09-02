@@ -1774,6 +1774,23 @@ class GitServiceTest(unittest.TestCase):
         self.assertIn("Carousel", skill_md)
         self.assertIn("odoo-memory-perf", skill_md)  # cross-references the empirical skill
 
+    def test_create_worktree_skills_writes_leak_bisect_skill_and_script(self):
+        io = FakeIO()
+        services.GitService(io).create_worktree_skills("/wt/demo/community", "/wt/demo", "18.0-fix")
+        base = "/wt/demo/.claude/skills/odoo-leak-bisect"
+        self.assertEqual(
+            {p for p in io._files if p.startswith(f"{base}/")},
+            {f"{base}/SKILL.md", f"{base}/scripts/heapcheck_cdp.py"},
+        )
+        skill_md = io._files[f"{base}/SKILL.md"]
+        self.assertIn("name: odoo-leak-bisect", skill_md)
+        self.assertIn("MEMINFO", skill_md)
+        self.assertIn("runbot", skill_md)
+        self.assertIn("heapcheck_cdp.py", skill_md)
+        script = io._files[f"{base}/scripts/heapcheck_cdp.py"]
+        self.assertIn("HeapProfiler.collectGarbage", script)
+        self.assertIn("[HOOT] Test suite succeeded", script)
+
     def test_create_worktree_skills_does_not_overwrite_existing_skills(self):
         io = FakeIO(files={"/wt/demo/.claude/skills/odoo-orm/SKILL.md": "user-edited content"})
         services.GitService(io).create_worktree_skills("/wt/demo/community", "/wt/demo", "18.0-fix")
@@ -1919,6 +1936,7 @@ class GitServiceTest(unittest.TestCase):
             "odoo-testing",
             "odoo-memory-perf",
             "odoo-bootstrap-leak-audit",
+            "odoo-leak-bisect",
         ):
             content = io._files[f"/ctx/.claude/skills/{slug}/SKILL.md"]
             self.assertIn(f"name: {slug}", content)

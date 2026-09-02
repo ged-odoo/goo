@@ -2558,6 +2558,7 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         }
         result["odoo-memory-perf"] = self._memory_perf_skill_files()
         result["odoo-bootstrap-leak-audit"] = self._bootstrap_leak_audit_skill_files()
+        result["odoo-leak-bisect"] = self._leak_bisect_skill_files()
         return result
 
     def _memory_perf_skill_files(self):
@@ -2850,6 +2851,487 @@ instance holding it) should show up directly in memlab's retainer trace if
 the leak is real.
 """
         return {"SKILL.md": skill_md}
+
+    def _leak_bisect_skill_files(self):
+        """{relative_path: content} for the odoo-leak-bisect skill — a from-scratch
+        methodology for bisecting a JS memory leak reported on CI/runbot down to the
+        introducing commit, for when neither the goo `memleak_check` addon nor a
+        `chrome-devtools` MCP connection is available (a bare/sandboxed checkout):
+        reads runbot's own hoot `[MEMINFO]` log lines first, then (if a local repro
+        is needed) drives headless Chrome over raw CDP via the bundled
+        `heapcheck_cdp.py` to reproduce the same per-suite memory curve locally.
+        Complements odoo-memory-perf (which needs the addon + a live goo workspace)
+        and odoo-bootstrap-leak-audit (a different, unrelated leak pattern)."""
+        skill_md = r'''---
+name: odoo-leak-bisect
+description: 'Use when a memory leak was reported on CI/runbot (a batch is flagged, an earlier one wasn''t) and needs to be bisected down to the introducing commit and root-caused — especially when the goo `memleak_check` addon and the `chrome-devtools` MCP aren''t available locally (a bare/sandboxed checkout), so the usual `/leak-check` + `odoo-memory-perf` empirical path can''t be used directly.'
+---
+
+# Bisecting a JS memory leak from a runbot report
+
+Methodology for going from *"batch N leaks, batch M (earlier) didn't"* to a
+proven, empirically-verified fix — without the goo `memleak_check` addon or a
+`chrome-devtools` MCP connection, both of which `odoo-memory-perf` normally
+relies on. Everything here was built from scratch in one investigation and
+works with nothing but a Postgres instance, a checked-out repo, Python, and
+`google-chrome` on PATH.
+
+The core idea throughout: hoot's own JS test runner can log a `[MEMINFO]`
+line per test suite (heap size, right after a forced GC) — that's exactly
+what runbot's own logs already contain, and exactly what this skill's script
+reproduces locally without needing the addon or the extra Chrome flag that
+real `[MEMINFO]` needs (`--js-flags=--expose-gc`, which was observed to stall
+the renderer mid-suite under memory pressure — see Pitfalls). A per-suite
+memory curve, diffed between two commits, tells you *where* memory starts
+diverging — which models/components the accumulating objects belong to —
+long before you need a heap snapshot retainer trace.
+
+## 1. Read the CI logs first — no local repro needed yet
+
+If the user can point to a leaking runbot build and a prior clean one, their
+`start_qunit_only.txt` logs (`http://<runbotXXX>.odoo.com/runbot/static/build/<id>-<branch>/logs/start_qunit_only.txt`)
+already contain the full `[MEMINFO] <suite> (after GC) - used: <bytes> - total: <bytes> - tests: <n>`
+sequence for that exact CI run. Download both, and diff them suite-by-suite
+(same order, deterministic):
+
+```python
+import re
+def parse(path):
+    out, order = {}, []
+    for line in open(path):
+        m = re.search(r'\[MEMINFO\] (\S+) \(after GC\) - used: (\d+) - total: (\d+)', line)
+        if m:
+            name, used = m.group(1), int(m.group(2))
+            if name not in out: order.append(name)
+            out[name] = used
+    return out, order
+leak, _ = parse("leak_log.txt")
+clean, order = parse("clean_log.txt")
+prev_gap = 0
+for name in order:
+    if name not in leak: continue
+    gap = leak[name] - clean[name]
+    print(f"{name:50s} leak={leak[name]/1e6:7.1f}MB clean={clean[name]/1e6:7.1f}MB gap={gap/1e6:+7.1f}MB d={gap-prev_gap:+7.1f}MB")
+    prev_gap = gap
+```
+
+The **first suite where the gap opens** (and stays open — a real leak never
+comes back down) tells you which addon/component to suspect, well before
+touching git history. In the case this skill was built from, the gap opened
+exactly at the suites exercising `Message`/`discuss.channel` fields that a
+single commit had converted to a different reactivity primitive — a strong
+enough signal to go straight to `git log --oneline <good>..<bad> -- addons/<suspect>`
+and read diffs, rather than bisecting blindly across the whole range.
+
+## 2. Narrow the git range with static reading
+
+`git log --oneline <good_sha>..<bad_sha> -- addons/<suspect_module>` — filter
+to the module the log analysis pointed at. Read every candidate commit's
+diff. A JS reactivity refactor (converting stored/computed fields to a
+different primitive, changing when/how effects are disposed) is a much more
+plausible leak source than a pure-Python fix, a test-only change, or a
+one-line UI tweak — most candidate commits can usually be ruled out by
+reading alone. Pick the most plausible one as the primary suspect and note
+its **direct parent commit** — comparing adjacent commits (one commit of
+diff) is what makes the empirical confirmation in step 5 unambiguous; a
+wide-range comparison (e.g. against the last known-good release) risks
+attributing the leak to the wrong one of several changes.
+
+## 3. Set up a local empirical harness
+
+Needed once per investigation; ~15 minutes:
+
+**Get real seed data.** A synthetic/empty db under-exercises the JS (few
+messages, few threads). If CI publishes a full-DB dump for the batch (a
+runbot `..._all.zip`, `dump.sql` + `filestore/`), use it:
+
+```bash
+curl -fsSL -o build.zip "<the batch's ..._all.zip logs URL>"
+unzip -oq build.zip filestore/ dump.sql -d dump/
+createdb leakbuild_base
+psql -d leakbuild_base -f dump/dump.sql   # a handful of GIST-index errors on
+                                            # unrelated fuzzy-search indexes are
+                                            # harmless noise, not a red flag
+```
+Then for each test db (one per commit under test), `createdb -T
+leakbuild_base <name>` and symlink its filestore dir at
+`~/.local/share/Odoo/filestore/<name>` to the extracted `dump/filestore`
+(cheap — no per-db copy needed, the content is identical).
+
+**Purge the JS test bundle cache.** The dump's `ir_attachment` rows for
+`web.assets_unit_tests(_setup)?.min.(js|css)` point at filestore hashes that
+the exported zip does *not* always actually contain (CI regenerates/GCs
+these; the SQL dump and the filestore export weren't taken byte-consistent
+for this specific bundle). If left in place, Odoo serves a **stale,
+zero-content bundle in a plain 200 response** — no error anywhere, just a
+JS page that loads, logs nothing, and hangs forever waiting for a signal
+that will never come. Symptom to watch for: baseline heap usage far smaller
+than a healthy run's (a broken/empty bundle idles at ~10MB; a real one is
+~60-70MB even before any test starts) and zero HTTP requests for 5+ minutes.
+Fix: delete the stale rows so Odoo regenerates them fresh on first request —
+do this on the base db (or per test db, cheap either way):
+
+```sql
+delete from ir_attachment where name ilike '%assets_unit_tests%';
+```
+
+**Worktrees, one per commit under test:**
+```bash
+git worktree add <scratch>/wt/<label> <commit_sha>
+cat > <scratch>/wt/<label>/odoo.conf <<EOF
+[options]
+addons_path = <scratch>/wt/<label>/addons,<path-to-enterprise>
+db_user = odoo
+db_password = odoo
+EOF
+python3 odoo-bin -c odoo.conf -d <db_for_this_label> --http-port <port> --dev all --max-cron-threads 0 --logfile <scratch>/logs_<label>.log
+```
+A missing venv only needs `psycopg2-binary` (not `psycopg2` — avoids a
+`libpq-dev` build dependency), `requests`, `websockets`; skip `python-ldap`
+(needs system SASL/LDAP headers, irrelevant to a JS-only investigation — just
+mark `auth_ldap` `uninstalled` in the db if a CRITICAL import error names it).
+If other CRITICAL import errors name specific missing packages (a manifest's
+`external_dependencies.python` entry not actually installed — `pyjwt`,
+`phonenumbers`, `dbfread`, `paramiko`, `google-auth` are common ones in a full
+"all modules" db), `pip install` them; they're all pure-Python or have
+prebuilt wheels, no system headers needed.
+
+## 4. Drive the browser and capture per-suite MEMINFO — `scripts/heapcheck_cdp.py`
+
+This is the piece that replaces both `memleak_check` (not on the addons path
+here) and `chrome-devtools` MCP (no running/attachable Chrome to connect to):
+it launches its own headless Chrome via subprocess, drives it over raw CDP,
+and logs a synthetic `[MEMINFO-CDP] <suite> - used: ... - total: ...` line at
+every suite boundary using `HeapProfiler.collectGarbage` +
+`Runtime.getHeapUsage` — the same shape as real `[MEMINFO]`, diffable the
+same way as step 1, but generated locally without the addon or the
+`--expose-gc` flag (see Pitfalls for why that flag was dropped).
+
+```bash
+# compute the hoot suite-id filter for one module (stable across nearby commits,
+# recompute per-worktree if the module list itself might have changed):
+cd <worktree>/community && python3 odoo-bin shell -c odoo.conf -d <db> --no-http <<'PY'
+import sys; sys.path.insert(0, "addons/web/tests")
+from test_js import HootCommon
+class Fake(HootCommon):
+    def __init__(self, env):
+        self.env = env; self._test_params = []
+h = Fake(env)
+bundle = h._get_addons_from_asset_bundle('web.assets_unit_tests')
+print("FILTER:", h._get_hoot_filters(bundle, ['mail', 'im_livechat']))  # module names to scope to
+PY
+
+# then, per commit under test:
+python3 scripts/heapcheck_cdp.py <http_port> <db_name> <label> <out_dir> "<filter from above>"
+```
+
+Outputs `<label>_baseline.heapsnapshot`, `<label>_target.heapsnapshot`,
+`<label>_result.json`, and `<label>_meminfo.txt` (the per-suite lines) in
+`<out_dir>`. Run it for the suspect commit and its direct parent (in
+parallel, different ports/db — they're fully independent), then diff
+`*_meminfo.txt` exactly as in step 1. This reproduces the CI-level signal
+precisely enough that, on the case this skill was built from, the gap opened
+at the exact same suite locally as it had on runbot, and grew to the same
+order of magnitude by the end of the block (single-commit diff: ~130MB → a
+few GB by the last suite, entirely attributable to that one commit).
+
+### Reading the result
+
+- **Gap opens and stays open, growing suite after suite, never returning to
+  baseline**: a real leak, and the suite where it *first* opens is the one
+  whose fixtures/components to inspect.
+- **Gap opens then closes again** (or is proportional to test count only):
+  probably just more objects legitimately alive during that suite, not
+  retained after — churn, not a leak.
+- **Total heap stays within roughly 2x of the parent's throughout**: clean.
+
+## 5. Verify a fix the same way
+
+Third worktree, same commit as the suspect, patch applied on top (`git diff`
+from the main worktree → `git apply` in the throwaway one is enough — no
+need to commit anything there). Re-run `heapcheck_cdp.py` against it and
+diff against both the unfixed suspect and the parent: a correct fix lands
+within noise of the parent's numbers, not just "better than before." This is
+what actually proves the fix, as opposed to a plausible-sounding source-code
+argument for why it *should* work.
+
+## Pitfalls hit along the way (all solved, keep the fixes)
+
+- **Login via a transplanted cookie is flaky.** Doing `POST
+  /web/session/authenticate` via a separate HTTP client and then CDP
+  `Network.setCookie`-ing the returned `session_id` onto the browser races
+  Odoo's own session-rotation-on-login: the next navigation can still carry
+  the *pre-login* cookie and bounce back to `/web/login`, hanging forever
+  (indistinguishable from the stale-bundle symptom above — check both).
+  Fix (already in the script): navigate to `/web/login` first, authenticate
+  via a same-origin `fetch()` run through `Runtime.evaluate` from *inside*
+  that page (so the browser's own cookie jar commits it), `await
+  asyncio.sleep(1)` after, *then* navigate to the actual test URL.
+- **`--js-flags=--expose-gc`** (needed for hoot's own real `[MEMINFO]`
+  logging, see `module_set.hoot.js`'s `__gcAndLogMemory`) was observed to
+  stall the renderer indefinitely under sustained test-suite memory
+  pressure — CPU flatlines, no crash, no timeout, just silence. The
+  script's own `HeapProfiler.collectGarbage` CDP call is a stable
+  substitute and needs no special launch flag.
+- **A second CDP client attached to a busy tab to grab an ad-hoc heap
+  snapshot** (rather than waiting for the script's own scheduled
+  baseline/target) can stall for a very long time — `HeapProfiler.
+  takeHeapSnapshot` competes with the page's own running JS for the single
+  main thread. `Debugger.pause` first (then `Debugger.resume` after)
+  makes this reliable; still expect real wall-clock time proportional to
+  heap size (a ~300MB heap's `.heapsnapshot` took a few minutes; multi-GB
+  took much longer and is usually not worth waiting for — the per-suite
+  MEMINFO curve alone is normally enough to act on).
+- **Multi-statement backgrounded shell commands can silently no-op.** A
+  background launch chaining `pkill ...; rm -f ...; python3 script.py ...`
+  was repeatedly observed to produce *no* new process and *no* error,
+  leaving the previous run's stale log file in place (same birth
+  timestamp, easy to miss). Always verify a relaunch actually started a
+  new PID (`pgrep -af <script>`) and that the log file's birth time is
+  fresh, don't trust the launch command's own reported exit status alone;
+  when in doubt, run the single launch command with nothing chained in
+  front of it.
+- **Ephemeral session directories don't survive a session
+  interruption.** Everything under the session's own scratch path
+  (worktrees, downloaded dumps, `.heapsnapshot` files) is gone if the
+  harness restarts; only what was written inside the actual git worktree
+  (a committed or uncommitted file change, or a script saved under
+  `.claude/skills/`) survives. Save the reusable script into a skill (as
+  this one does) rather than only the scratch dir, and be ready to redo
+  the DB/worktree setup (step 3) from scratch — it's ~15 minutes of
+  mostly-scripted work, not a re-investigation.
+'''
+        heapcheck_cdp_py = r'''#!/usr/bin/env python3
+"""Standalone empirical mail-hoot-suite leak check via raw CDP.
+
+Mirrors odoo/tests/common.py ChromeBrowser: waits for the exact console.log
+text "[HOOT] Test suite succeeded" via Runtime.consoleAPICalled, then reads
+heap usage via HeapProfiler.collectGarbage + Runtime.getHeapUsage (same calls
+ChromeBrowser._handle_console itself makes on success). Also grabs full heap
+snapshots before/after for later inspection with memlab if useful.
+"""
+import asyncio
+import json
+import re
+import subprocess
+import sys
+import time
+import uuid
+
+ENDED_RE = re.compile(r'"([^"]+)" ended')
+
+import requests
+import websockets
+
+PORT = int(sys.argv[1])
+DB = sys.argv[2]
+LABEL = sys.argv[3]
+OUT_DIR = sys.argv[4]
+FILTER = sys.argv[5] if len(sys.argv) > 5 else ""
+CDP_PORT = int(sys.argv[6]) if len(sys.argv) > 6 else 9300 + PORT % 100
+BASE = f"http://127.0.0.1:{PORT}"
+SUCCESS = "[HOOT] Test suite succeeded"
+
+
+async def cdp_call(ws, mid_box, method, params=None):
+    mid_box[0] += 1
+    mid = mid_box[0]
+    await ws.send(json.dumps({"id": mid, "method": method, "params": params or {}}))
+    while True:
+        raw = await ws.recv()
+        msg = json.loads(raw)
+        if msg.get("id") == mid:
+            return msg
+
+
+def fmt_arg(a):
+    if "value" in a:
+        return str(a["value"])
+    return a.get("description", "")
+
+
+async def main():
+    user_data_dir = f"/tmp/chrome-profile-{LABEL}-{uuid.uuid4().hex[:8]}"
+    chrome = subprocess.Popen(
+        [
+            "google-chrome", "--headless=new", "--no-sandbox", "--disable-gpu",
+            "--disable-dev-shm-usage",
+            f"--remote-debugging-port={CDP_PORT}",
+            f"--user-data-dir={user_data_dir}", "about:blank",
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(60):
+            try:
+                r = requests.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=1)
+                if r.ok:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        else:
+            raise RuntimeError("chrome CDP never came up")
+
+        r = requests.put(f"http://127.0.0.1:{CDP_PORT}/json/new?about:blank", timeout=10)
+        tab = r.json()
+        ws_url = tab["webSocketDebuggerUrl"]
+
+        async with websockets.connect(ws_url, max_size=None) as ws:
+            mid = [0]
+            await cdp_call(ws, mid, "Network.enable")
+            await cdp_call(ws, mid, "Page.enable")
+            await cdp_call(ws, mid, "Runtime.enable")
+            await cdp_call(ws, mid, "HeapProfiler.enable")
+
+            # Log in from inside the page itself (same-origin fetch) instead of
+            # transplanting a session_id cookie captured via a separate `requests`
+            # call: Odoo rotates the session id around login, so a cookie grabbed
+            # a moment earlier can already be stale by the time it's injected,
+            # silently bouncing the next navigation to /web/login.
+            print(f"[{LABEL}] logging in...", flush=True)
+            await cdp_call(ws, mid, "Page.navigate", {"url": f"{BASE}/web/login"})
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                msg = json.loads(raw)
+                if msg.get("method") == "Page.loadEventFired":
+                    break
+            login_res = await cdp_call(ws, mid, "Runtime.evaluate", {
+                "expression": (
+                    "fetch('/web/session/authenticate', {method: 'POST', credentials: 'same-origin', "
+                    "headers: {'Content-Type': 'application/json'}, "
+                    "body: JSON.stringify({jsonrpc: '2.0', method: 'call', params: "
+                    f"{{db: '{DB}', login: 'admin', password: 'admin'}}}})"
+                    "}).then(r => r.json()).then(d => JSON.stringify(d))"
+                ),
+                "awaitPromise": True,
+                "returnByValue": True,
+            })
+            login_value = login_res.get("result", {}).get("result", {}).get("value", "")
+            if '"error"' in login_value:
+                raise RuntimeError(f"authenticate failed: {login_value[:300]}")
+            print(f"[{LABEL}] logged in", flush=True)
+            # The authenticate POST resolves once the response body is read,
+            # but the browser's own cookie jar has been observed to commit
+            # the new (rotated) session cookie slightly after that: a
+            # Page.navigate fired immediately after can still race and use
+            # the pre-login cookie, landing back on the login page. Give it
+            # a moment to settle.
+            await asyncio.sleep(1)
+
+            async def get_heap():
+                await cdp_call(ws, mid, "HeapProfiler.collectGarbage")
+                res = await cdp_call(ws, mid, "Runtime.getHeapUsage")
+                return res["result"]
+
+            async def snapshot(path):
+                chunks = []
+                mid[0] += 1
+                take_id = mid[0]
+                await ws.send(json.dumps({"id": take_id, "method": "HeapProfiler.takeHeapSnapshot", "params": {}}))
+                while True:
+                    raw = await ws.recv()
+                    msg = json.loads(raw)
+                    if msg.get("method") == "HeapProfiler.addHeapSnapshotChunk":
+                        chunks.append(msg["params"]["chunk"])
+                    elif msg.get("id") == take_id:
+                        break
+                with open(path, "w") as f:
+                    f.write("".join(chunks))
+                print(f"[{LABEL}] wrote {path} ({sum(len(c) for c in chunks)} bytes)", flush=True)
+
+            test_url = (
+                f"{BASE}/web/tests?headless&loglevel=2&preset=desktop"
+                f"&timeout=15000{FILTER}"
+            )
+            print(f"[{LABEL}] navigating to {test_url}", flush=True)
+            await cdp_call(ws, mid, "Page.navigate", {"url": test_url})
+
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                msg = json.loads(raw)
+                if msg.get("method") == "Page.loadEventFired":
+                    break
+
+            print(f"[{LABEL}] page loaded, settling before baseline...", flush=True)
+            await asyncio.sleep(3)
+
+            baseline = await get_heap()
+            print(f"[{LABEL}] baseline heap: {baseline}", flush=True)
+            await snapshot(f"{OUT_DIR}/{LABEL}_baseline.heapsnapshot")
+
+            print(f"[{LABEL}] waiting for '{SUCCESS}' console signal...", flush=True)
+            deadline = time.time() + 3600
+            status = None
+            had_failure = False
+            meminfo_lines = []
+            while time.time() < deadline:
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                msg = json.loads(raw)
+                if msg.get("method") != "Runtime.consoleAPICalled":
+                    continue
+                params = msg["params"]
+                text = " ".join(fmt_arg(a) for a in params.get("args", []))
+                if params.get("type") == "error":
+                    had_failure = True
+                    print(f"[{LABEL}] console.error: {text[:300]}", flush=True)
+                if text == SUCCESS:
+                    status = "success"
+                    break
+                if text.startswith("Some tests failed"):
+                    status = "failed"
+                    print(f"[{LABEL}] {text[:200]}", flush=True)
+                    break
+                if "[MEMINFO]" in text:
+                    meminfo_lines.append(text)
+                    print(f"[{LABEL}] {text}", flush=True)
+                elif "[HOOT]" in text and ("ended" in text or "Passed" in text or "Failed" in text):
+                    print(f"[{LABEL}] {text[:200]}", flush=True)
+                    m = ENDED_RE.search(text)
+                    if m:
+                        suite = m.group(1)
+                        h = await get_heap()
+                        line = f"[MEMINFO-CDP] {suite} (after GC) - used: {h['usedSize']} - total: {h['totalSize']}"
+                        meminfo_lines.append(line)
+                        print(f"[{LABEL}] {line}", flush=True)
+
+            print(f"[{LABEL}] done waiting, status={status} had_failure={had_failure}", flush=True)
+            await asyncio.sleep(2)
+
+            target = await get_heap()
+            print(f"[{LABEL}] target heap: {target}", flush=True)
+            await snapshot(f"{OUT_DIR}/{LABEL}_target.heapsnapshot")
+
+            with open(f"{OUT_DIR}/{LABEL}_result.json", "w") as f:
+                json.dump({
+                    "label": LABEL, "baseline": baseline, "target": target,
+                    "status": status, "had_failure": had_failure,
+                }, f, indent=2)
+            with open(f"{OUT_DIR}/{LABEL}_meminfo.txt", "w") as f:
+                f.write("\n".join(meminfo_lines))
+    finally:
+        chrome.terminate()
+        try:
+            chrome.wait(timeout=10)
+        except Exception:
+            chrome.kill()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception:
+        import traceback
+        print(f"[{LABEL}] FATAL:", flush=True)
+        traceback.print_exc()
+        raise
+'''
+        return {
+            "SKILL.md": skill_md,
+            "scripts/heapcheck_cdp.py": heapcheck_cdp_py,
+        }
 
     def write_dev_context(self, out_dir, community_path, branch):
         """Materialize the Odoo-dev CLAUDE.md + skills straight into <out_dir>/.claude/
