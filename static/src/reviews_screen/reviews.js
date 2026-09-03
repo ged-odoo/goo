@@ -490,12 +490,27 @@ export class ReviewsScreen extends Component {
   }
 
   // open the task's saved review markdown in a floating side panel, straight from
-  // disk (ClaudePlugin.fetchReviewText) — a quick read that doesn't navigate away
+  // disk (ClaudePlugin.fetchReview) — a quick read that doesn't navigate away
   // from this screen the way reviewGroup's "open the Claude tab" does.
   openReviewPanel(branch) {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws) return;
-    this.dialogs.openComponent(ReviewPanel, { workspaceId: ws.id, label: `Review · ${branch}` });
+    this.dialogs.openComponent(ReviewPanel, {
+      workspaceId: ws.id,
+      label: `Review · ${branch}`,
+      onReviewAgain: () => this._rerunReview(branch),
+    });
+  }
+
+  // start a fresh review turn for a task that already has one saved — unlike
+  // _runReviewIfNeeded (which only starts one from the "none" state), this always
+  // runs, so it's the only path that can add a second-or-later version to a
+  // review's history. Called from the review panel's "Review again" button; a
+  // no-op while one is already running.
+  async _rerunReview(branch) {
+    const ws = this.reviewWorkspaceFor(branch);
+    if (!ws || this.claude.running(ws.id)) return;
+    await runClaudeReview(this._dialogPlugins(), ws);
   }
 
   // how many tasks are fully merged (base PR(s) + every forward port) — drives

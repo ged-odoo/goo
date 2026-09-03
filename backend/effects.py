@@ -129,6 +129,16 @@ def read_text(path):
         return None
 
 
+def mtime(path):
+    """A file's last-modified time, as epoch seconds — or None if it can't be
+    stat'd."""
+    trace("stat", path)
+    try:
+        return os.stat(os.path.expanduser(path)).st_mtime
+    except OSError:
+        return None
+
+
 def read_json_file(path):
     """Read a JSON data file. Returns (data, error); a missing file is not an error
     — it returns (None, None) so the caller can create it on first use."""

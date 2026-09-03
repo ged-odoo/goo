@@ -115,17 +115,27 @@ export class ClaudePlugin extends Plugin {
     }
   }
 
-  // the raw persisted review markdown for <id> (backend's ClaudeManager.review_text),
-  // straight from disk regardless of in-memory conversation state — used by the
-  // Reviews screen's "open review" panel. Always re-fetched (no once-guard like
-  // prime()), since this is opened on demand rather than primed for every visible
-  // task.
-  async fetchReviewText(id) {
+  // the persisted review markdown for <id> at <version> (backend's
+  // ClaudeManager.review_text), plus that version's number, every version number
+  // saved for <id> (oldest first), and that version's file mtime (epoch seconds, or
+  // null) — straight from disk regardless of in-memory conversation state, used by
+  // the Reviews screen's review panel (including its version pager and "reviewed
+  // on" date). `version` omitted (or no longer on disk) falls back to the latest.
+  // Always re-fetched (no once-guard like prime()), since this is opened on demand
+  // rather than primed for every visible task.
+  async fetchReview(id, version) {
     try {
-      const res = await postJSON("/api/workspace/claude/review", { workspace: id });
-      return res.text || "";
+      const body = { workspace: id };
+      if (version != null) body.version = version;
+      const res = await postJSON("/api/workspace/claude/review", body);
+      return {
+        text: res.text || "",
+        version: res.version ?? null,
+        versions: res.versions || [],
+        created: res.created ?? null,
+      };
     } catch {
-      return "";
+      return { text: "", version: null, versions: [], created: null };
     }
   }
 

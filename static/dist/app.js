@@ -5063,6 +5063,8 @@ var ICONS = {
   sort: `<svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="14" y2="6"/><line x1="4" y1="12" x2="11" y2="12"/><line x1="4" y1="18" x2="8" y2="18"/><line x1="18" y1="5" x2="18" y2="19"/><polyline points="15 16 18 19 21 16"/></svg>`,
   kebab: `<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></svg>`,
   chevron: `<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>`,
+  chevronLeft: `<svg viewBox="0 0 24 24"><polyline points="15 6 9 12 15 18"/></svg>`,
+  chevronRight: `<svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>`,
   check: `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`,
   push: `<svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>`,
   play: `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>`,
@@ -9637,17 +9639,27 @@ var ClaudePlugin = class extends Plugin {
     } catch {
     }
   }
-  // the raw persisted review markdown for <id> (backend's ClaudeManager.review_text),
-  // straight from disk regardless of in-memory conversation state — used by the
-  // Reviews screen's "open review" panel. Always re-fetched (no once-guard like
-  // prime()), since this is opened on demand rather than primed for every visible
-  // task.
-  async fetchReviewText(id) {
+  // the persisted review markdown for <id> at <version> (backend's
+  // ClaudeManager.review_text), plus that version's number, every version number
+  // saved for <id> (oldest first), and that version's file mtime (epoch seconds, or
+  // null) — straight from disk regardless of in-memory conversation state, used by
+  // the Reviews screen's review panel (including its version pager and "reviewed
+  // on" date). `version` omitted (or no longer on disk) falls back to the latest.
+  // Always re-fetched (no once-guard like prime()), since this is opened on demand
+  // rather than primed for every visible task.
+  async fetchReview(id, version) {
     try {
-      const res = await postJSON("/api/workspace/claude/review", { workspace: id });
-      return res.text || "";
+      const body = { workspace: id };
+      if (version != null) body.version = version;
+      const res = await postJSON("/api/workspace/claude/review", body);
+      return {
+        text: res.text || "",
+        version: res.version ?? null,
+        versions: res.versions || [],
+        created: res.created ?? null
+      };
     } catch {
-      return "";
+      return { text: "", version: null, versions: [], created: null };
     }
   }
   // where Claude works for <tgt>: a worktree workspace's own checkout copies, or —
@@ -9846,18 +9858,43 @@ var ReviewPanel = class extends Component {
       <div class="review-panel-body">
         <div t-if="this.loading()" class="commits-empty">loading…</div>
         <div t-elif="!this.text()" class="commits-empty">no review saved for this task yet</div>
-        <div t-else="" class="review-panel-text md-content" t-out="this.html()"/>
+        <t t-else="">
+          <div t-if="this.createdLabel()" class="review-panel-meta dim">Reviewed <t t-out="this.createdLabel()"/></div>
+          <div t-if="this.running()" class="review-panel-working"><span class="spin"/>Claude is reviewing again…</div>
+          <div class="review-panel-text md-content" t-out="this.html()"/>
+        </t>
       </div>
       <div class="review-panel-foot">
-        <button class="pbtn primary" t-on-click="() => this.continueToChat()">Continue to chat with claude</button>
+        <div t-if="this.versions().length > 1" class="review-panel-pager">
+          <button class="pbtn rp-pager-prev" title="older" t-att-disabled="!this.hasPrev()" t-on-click="() => this.prevVersion()"><t t-out="this.prevIcon"/></button>
+          <span class="review-panel-pager-label" t-out="this.pagerLabel()"/>
+          <button class="pbtn rp-pager-next" title="newer" t-att-disabled="!this.hasNext()" t-on-click="() => this.nextVersion()"><t t-out="this.nextIcon"/></button>
+        </div>
+        <div class="review-panel-foot-actions">
+          <button class="pbtn" t-att-disabled="this.running()" t-on-click="() => this.reviewAgain()">
+            <t t-if="this.running()">Reviewing…</t>
+            <t t-else="">Review again</t>
+          </button>
+          <button class="pbtn primary" t-on-click="() => this.continueToChat()">Continue to chat with claude</button>
+        </div>
       </div>
       <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
     </div>`;
-  props = useProps({ done: t.function(), workspaceId: t.string(), label: t.string() });
+  props = useProps({
+    done: t.function(),
+    workspaceId: t.string(),
+    label: t.string(),
+    onReviewAgain: t.function()
+  });
   claude = usePlugin(ClaudePlugin);
   wt = usePlugin(WorkspacePlugin);
   router = usePlugin(RouterPlugin);
+  prevIcon = m(ICONS.chevronLeft);
+  nextIcon = m(ICONS.chevronRight);
   text = signal("");
+  version = signal(null);
+  versions = signal([]);
+  created = signal(null);
   loading = signal(true);
   setup() {
     this.drag = useDragResize({
@@ -9869,19 +9906,41 @@ var ReviewPanel = class extends Component {
       })
     });
     onMounted(() => this.load());
+    let wasRunning = false;
+    useEffect(() => {
+      const running = this.running();
+      if (wasRunning && !running) this.load();
+      wasRunning = running;
+    });
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
     };
     document.addEventListener("keydown", onKey);
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
   }
-  async load() {
+  async load(version) {
     this.loading.set(true);
     try {
-      this.text.set(await this.claude.fetchReviewText(this.props.workspaceId));
+      const res = await this.claude.fetchReview(this.props.workspaceId, version);
+      this.text.set(res.text);
+      this.version.set(res.version);
+      this.versions.set(res.versions);
+      this.created.set(res.created);
     } finally {
       this.loading.set(false);
     }
+  }
+  // <version>'s "created" epoch seconds (the .md file's mtime on disk — see
+  // backend/server.py's ClaudeManager.review_text), as a locale date/time string —
+  // "" if unknown. Mainly useful once there's more than one version to tell apart,
+  // but shown for a single review too.
+  createdLabel() {
+    const c = this.created();
+    if (!c) return "";
+    return new Date(c * 1e3).toLocaleString(void 0, {
+      dateStyle: "medium",
+      timeStyle: "short"
+    });
   }
   // rendered once per text change, not cached — reviews are short enough that
   // re-parsing on every render is a non-issue, and a signal-backed getter would
@@ -9889,9 +9948,9 @@ var ReviewPanel = class extends Component {
   html() {
     return markup(mdToHtml(this.text()));
   }
-  // Claude's own merge-readiness guess (0-100), parsed straight from the saved
-  // review text — same "Score: N/100" convention as the group-header badge
-  // (ClaudePlugin.reviewScore), just read off this panel's own fetched text
+  // Claude's own merge-readiness guess (0-100), parsed straight from the currently
+  // shown version's text — same "Score: N/100" convention as the group-header
+  // badge (ClaudePlugin.reviewScore), just read off this panel's own fetched text
   // instead of the live conversation.
   score() {
     return parseReviewScore(this.text());
@@ -9899,12 +9958,41 @@ var ReviewPanel = class extends Component {
   scoreClass() {
     return reviewScoreClass(this.score());
   }
+  running() {
+    return this.claude.running(this.props.workspaceId);
+  }
+  _pagerIndex() {
+    return this.versions().indexOf(this.version());
+  }
+  hasPrev() {
+    return this._pagerIndex() > 0;
+  }
+  hasNext() {
+    const i = this._pagerIndex();
+    return i >= 0 && i < this.versions().length - 1;
+  }
+  pagerLabel() {
+    const i = this._pagerIndex();
+    return i < 0 ? "" : `${i + 1}/${this.versions().length}`;
+  }
+  prevVersion() {
+    const i = this._pagerIndex();
+    if (i > 0) this.load(this.versions()[i - 1]);
+  }
+  nextVersion() {
+    const i = this._pagerIndex();
+    if (i >= 0 && i < this.versions().length - 1) this.load(this.versions()[i + 1]);
+  }
+  async reviewAgain() {
+    if (this.running()) return;
+    await this.props.onReviewAgain();
+  }
   done(result) {
     this.props.done(result);
   }
   // jump to the workspace's own Claude tab for the full transcript (tool calls,
-  // the original prompt, etc.) — this panel only ever shows the saved review
-  // text itself. Closes the panel first since the dialog container stays
+  // the original prompt, etc.) — this panel only ever shows one saved review
+  // version's text. Closes the panel first since the dialog container stays
   // mounted across screen navigation and would otherwise keep floating there.
   continueToChat() {
     this.wt.selectOnOpen(this.props.workspaceId);
@@ -11239,12 +11327,26 @@ var ReviewsScreen = class extends Component {
     await this._startReview(rows);
   }
   // open the task's saved review markdown in a floating side panel, straight from
-  // disk (ClaudePlugin.fetchReviewText) — a quick read that doesn't navigate away
+  // disk (ClaudePlugin.fetchReview) — a quick read that doesn't navigate away
   // from this screen the way reviewGroup's "open the Claude tab" does.
   openReviewPanel(branch) {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws) return;
-    this.dialogs.openComponent(ReviewPanel, { workspaceId: ws.id, label: `Review \xB7 ${branch}` });
+    this.dialogs.openComponent(ReviewPanel, {
+      workspaceId: ws.id,
+      label: `Review \xB7 ${branch}`,
+      onReviewAgain: () => this._rerunReview(branch)
+    });
+  }
+  // start a fresh review turn for a task that already has one saved — unlike
+  // _runReviewIfNeeded (which only starts one from the "none" state), this always
+  // runs, so it's the only path that can add a second-or-later version to a
+  // review's history. Called from the review panel's "Review again" button; a
+  // no-op while one is already running.
+  async _rerunReview(branch) {
+    const ws = this.reviewWorkspaceFor(branch);
+    if (!ws || this.claude.running(ws.id)) return;
+    await runClaudeReview(this._dialogPlugins(), ws);
   }
   // how many tasks are fully merged (base PR(s) + every forward port) — drives
   // the top bar's "Untrack all merged" button, both its visibility and count.

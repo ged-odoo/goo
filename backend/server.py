@@ -1750,7 +1750,8 @@ class ClaudeManager:
     def _persist_review(self, target):
         """If this turn was started with review=True (see send()), save its assistant
         text to disk as markdown — so it's still there after a goo restart, when this
-        in-memory transcript is gone. Overwrites any earlier review for this target."""
+        in-memory transcript is gone. Written as a new numbered version alongside any
+        earlier reviews for this target (see _review_versions), never overwriting."""
         with self.lock:
             e = self.convos.get(target)
             if not e or not e.get("review"):
@@ -1766,7 +1767,9 @@ class ClaudeManager:
             it["text"].strip() for it in turn if it.get("role") == "assistant" and it.get("text")
         ).strip()
         if text:
-            effects.write_text(_review_path(target), text)
+            versions = _review_versions(target)
+            next_version = versions[-1] + 1 if versions else 1
+            effects.write_text(_review_path(target, next_version), text)
 
     def stop(self, target):
         """Interrupt a running Claude turn (idempotent)."""
@@ -1789,36 +1792,50 @@ class ClaudeManager:
 
     def history_for(self, target):
         """The transcript + live state for one target, to re-prime the chat on load.
-        Falls back to the on-disk persisted review (see send()/_persist_review) when
-        memory holds nothing and no turn is running — e.g. right after a goo restart,
-        the usual case this covers, since the in-memory transcript doesn't survive
-        one."""
+        Falls back to the on-disk persisted review's latest version (see
+        send()/_persist_review) when memory holds nothing and no turn is running —
+        e.g. right after a goo restart, the usual case this covers, since the
+        in-memory transcript doesn't survive one."""
         with self.lock:
             e = self.convos.get(target)
             state = e["state"] if e else "idle"
             items = list(e["history"]) if e else []
         if not items and state != "running":
-            persisted = effects.read_text(_review_path(target))
+            persisted = self.review_text(target)["text"]
             if persisted:
                 items = [{"role": "assistant", "text": persisted}]
         return {"items": items, "state": state}
 
-    def review_text(self, target):
-        """The raw persisted review markdown for <target> (see _persist_review), or ""
-        if none was ever saved. Straight from disk regardless of the in-memory
+    def review_text(self, target, version=None):
+        """The persisted review markdown for <target> at <version> (see
+        _persist_review) as {text, version, versions, created}: which version number
+        that is, every version number on disk (oldest first), and that version's
+        file mtime (epoch seconds, or None) — "" / None / [] / None if none was ever
+        saved. <version> defaults (or falls back, if it names a version that no
+        longer exists) to the latest. Straight from disk regardless of the in-memory
         conversation state — unlike history_for's fallback, this is for a UI that
-        wants just the finished review text, not a chat transcript to re-prime."""
-        return effects.read_text(_review_path(target)) or ""
+        wants one finished review's text, not a chat transcript to re-prime."""
+        versions = _review_versions(target)
+        if not versions:
+            return {"text": "", "version": None, "versions": [], "created": None}
+        v = version if version in versions else versions[-1]
+        path = _review_path(target, v)
+        return {
+            "text": effects.read_text(path) or "",
+            "version": v,
+            "versions": versions,
+            "created": effects.mtime(path),
+        }
 
     def forget(self, target):
-        """Drop a workspace's conversation (its worktree was removed) and any review
-        persisted for it."""
+        """Drop a workspace's conversation (its worktree was removed) and every review
+        version persisted for it."""
         self.stop(target)
         with self.lock:
             e = self.convos.pop(target, None)
         if e and e.get("ctx_dir"):
             effects.remove_tree(e["ctx_dir"])
-        effects.remove_file(_review_path(target))
+        effects.remove_tree(_review_dir(target))
 
     def shutdown(self):
         """Stop every running turn (goo exit / restart), and clean up every
@@ -1890,18 +1907,31 @@ DOCKER_INFRA = services.DockerInfraService(
 # reasoning as CI/DOCKER_INFRA above.
 REVIEW_PROMPT_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "review_prompt.md")
 
-# Persisted Claude review results: one markdown file per workspace, so a finished
-# review survives a goo restart (ClaudeManager's transcript below is in-memory
-# only). Lives next to config.json, same reasoning as REVIEW_PROMPT_PATH above.
+# Persisted Claude review results: one directory of numbered markdown versions per
+# workspace (<id>/1.md, 2.md, …), so every past review survives a goo restart
+# (ClaudeManager's transcript below is in-memory only) and a re-review never loses
+# the one before it. Lives next to config.json, same reasoning as REVIEW_PROMPT_PATH
+# above.
 REVIEWS_DIR = os.path.join(os.path.dirname(CONFIG_PATH), "reviews")
 
 
-def _review_path(target):
-    """The on-disk file holding <target>'s latest review. Workspace ids are already
-    filesystem-safe slugs (see WorkspacePlugin._newId in the frontend), but sanitize
-    defensively since this builds a path from client-supplied data."""
+def _review_dir(target):
+    """The directory holding every persisted review version for <target>. Workspace
+    ids are already filesystem-safe slugs (see WorkspacePlugin._newId in the
+    frontend), but sanitize defensively since this builds a path from
+    client-supplied data."""
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", target).strip("-.") or "workspace"
-    return os.path.join(REVIEWS_DIR, f"{safe}.md")
+    return os.path.join(REVIEWS_DIR, safe)
+
+
+def _review_versions(target):
+    """Every persisted version number for <target>, oldest first."""
+    matches = (re.fullmatch(r"(\d+)\.md", name) for name in effects.list_dir(_review_dir(target)))
+    return sorted(int(m.group(1)) for m in matches if m)
+
+
+def _review_path(target, version):
+    return os.path.join(_review_dir(target), f"{version}.md")
 
 
 DEFAULT_REVIEW_PROMPT = (
@@ -2331,7 +2361,7 @@ def _api_workspace_claude_history(body):
 
 @post_route("/api/workspace/claude/review", "workspace")
 def _api_workspace_claude_review(body):
-    return {"ok": True, "text": CLAUDE.review_text(body["workspace"])}
+    return {"ok": True, **CLAUDE.review_text(body["workspace"], body.get("version"))}
 
 
 @post_route("/api/review-prompt")
