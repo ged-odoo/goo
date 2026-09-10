@@ -106,6 +106,43 @@ async function fetchPrHead(dialogs, { path, github, number, branch }) {
   );
 }
 
+// Bring an EXISTING review workspace's checkouts up to date with their tracked PRs'
+// current heads before re-running a review — "Review again" (reviews.js _rerunReview)
+// must see commits pushed since the workspace was created (or since the last review),
+// not just replay the same diff Claude already saw. Unlike fetchPrHead (used once, at
+// workspace-creation time), this can't fetch onto the branch ref by name: that branch is
+// already checked out in the workspace's own worktree, and git refuses to move a ref
+// that's checked out elsewhere. So it fetches + hard-resets in place, in the worktree's
+// own directory (backend GitService.sync_pr_worktree). Best-effort per repo — one repo
+// failing to sync is reported but doesn't block the others or the review itself.
+// targets: [{repo, pull: {github, number}}], same shape resolvePrBranches consumes.
+export async function syncReviewWorktree(plugins, ws, targets) {
+  const { dialogs, wt, eventLog } = plugins;
+  const worktreeByRepo = Object.fromEntries(wt.wtRepos(ws).map((r) => [r.repo, r]));
+  const failed = [];
+  await Promise.all(
+    targets.map(async ({ repo, pull }) => {
+      const wtr = worktreeByRepo[repo.id];
+      if (!wtr) return;
+      const eid = eventLog.begin(`syncing PR #${pull.number} (${repo.id})`);
+      try {
+        const r = await postJSON("/api/code/remote-branch/sync-pr", {
+          path: wtr.worktreePath,
+          github: pull.github,
+          number: pull.number,
+          repo: repo.id,
+        });
+        eventLog.finish(eid, r.ok ? "done" : "error");
+        if (!r.ok) failed.push(`${repo.id}: ${r.error}`);
+      } catch (e) {
+        eventLog.finish(eid, "error");
+        failed.push(`${repo.id}: ${e.message}`);
+      }
+    }),
+  );
+  if (failed.length) dialogs.error("Syncing PR update failed", failed.join("\n"));
+}
+
 // The values a template prefills into the create form (also the payload its
 // select's onChange used to produce, before the source moved to the wizard's
 // first step): named after its enterprise/community branch, its checkouts as

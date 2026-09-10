@@ -24,6 +24,7 @@ import {
   createReviewWorkspace,
   createWorkspaceFromPRs,
   runClaudeReview,
+  syncReviewWorktree,
   REVIEW_CATEGORY,
 } from "../workspaces_screen/dialogs.js";
 import { ActionsCell } from "../branches_screen/cells.js";
@@ -506,10 +507,15 @@ export class ReviewsScreen extends Component {
   // _runReviewIfNeeded (which only starts one from the "none" state), this always
   // runs, so it's the only path that can add a second-or-later version to a
   // review's history. Called from the review panel's "Review again" button; a
-  // no-op while one is already running.
+  // no-op while one is already running. Syncs the workspace's checkouts to their
+  // tracked PRs' current heads first (syncReviewWorktree) — otherwise this would
+  // just re-review whatever was already checked out, missing any commits pushed
+  // since the workspace was created or since the last review.
   async _rerunReview(branch) {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws || this.claude.running(ws.id)) return;
+    const rows = this.allRows().filter((r) => r.branch === branch);
+    await syncReviewWorktree(this._dialogPlugins(), ws, this._targetsFor(rows));
     await runClaudeReview(this._dialogPlugins(), ws);
   }
 

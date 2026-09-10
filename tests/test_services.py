@@ -2483,6 +2483,50 @@ class GitServiceTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(non_ff)
 
+    def test_sync_pr_worktree_fetches_pr_head_and_hard_resets(self):
+        # unlike fetch_pr_head, this must never rename a local branch ref (that's
+        # refused by git when the branch is checked out in a worktree) — it fetches
+        # into FETCH_HEAD and resets the worktree itself onto it.
+        io = FakeIO()
+        ok, err = services.GitService(io).sync_pr_worktree("/wt/community", "odoo/odoo", 123)
+        self.assertEqual((ok, err), (True, None))
+        joined = [" ".join(c) for c in io.run_calls]
+        self.assertTrue(
+            any(
+                "fetch https://github.com/odoo/odoo.git refs/pull/123/head" in c
+                and ":master-x" not in c
+                for c in joined
+            )
+        )
+        self.assertTrue(any("reset --hard FETCH_HEAD" in c for c in joined))
+
+    def test_sync_pr_worktree_refuses_when_dirty(self):
+        io = FakeIO(runs={"status --porcelain": completed(stdout=" M foo.py\n")})
+        ok, err = services.GitService(io).sync_pr_worktree("/wt/community", "odoo/odoo", 123)
+        self.assertFalse(ok)
+        self.assertIn("uncommitted", err)
+        self.assertFalse(any("fetch" in " ".join(c) for c in io.run_calls))
+
+    def test_sync_pr_worktree_error_on_fetch_failure(self):
+        notes = []
+        io = FakeIO(
+            runs={"fetch": completed(returncode=1, stderr="could not read from remote\n")}
+        )
+        svc = services.GitService(
+            io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
+        )
+        ok, err = svc.sync_pr_worktree("/wt/community", "odoo/odoo", 123, repo="community")
+        self.assertFalse(ok)
+        self.assertEqual(err, "could not read from remote")
+        self.assertFalse(any("reset --hard" in " ".join(c) for c in io.run_calls))
+        self.assertEqual(
+            notes,
+            [
+                ("fetching PR #123 (community)", "start"),
+                ("fetching PR #123 (community)", "error"),
+            ],
+        )
+
     def test_fetch_master_uses_pull_remote(self):
         io = FakeIO()
         services.GitService(io).fetch_master(

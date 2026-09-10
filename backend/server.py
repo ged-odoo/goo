@@ -2497,6 +2497,14 @@ def _api_code_remote_branch_fetch_pr(body):
     return (200 if ok else 400), {"ok": ok, "error": error, "non_ff": non_ff}
 
 
+@post_route("/api/code/remote-branch/sync-pr", "path", "github", "number")
+def _api_code_remote_branch_sync_pr(body):
+    ok, error = GIT.sync_pr_worktree(
+        body["path"], body["github"], body["number"], repo=body.get("repo", "")
+    )
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
 @post_route("/api/code/wip-commit", "path")
 def _api_code_wip_commit(body):
     ok, error = GIT.wip_commit(body["path"])
