@@ -10053,6 +10053,32 @@ async function fetchPrHead(dialogs, { path, github, number, branch }) {
     (force) => postJSON("/api/code/remote-branch/fetch-pr", { path, github, number, branch, force })
   );
 }
+async function syncReviewWorktree(plugins, ws, targets) {
+  const { dialogs, wt, eventLog } = plugins;
+  const worktreeByRepo = Object.fromEntries(wt.wtRepos(ws).map((r) => [r.repo, r]));
+  const failed = [];
+  await Promise.all(
+    targets.map(async ({ repo, pull }) => {
+      const wtr = worktreeByRepo[repo.id];
+      if (!wtr) return;
+      const eid = eventLog.begin(`syncing PR #${pull.number} (${repo.id})`);
+      try {
+        const r = await postJSON("/api/code/remote-branch/sync-pr", {
+          path: wtr.worktreePath,
+          github: pull.github,
+          number: pull.number,
+          repo: repo.id
+        });
+        eventLog.finish(eid, r.ok ? "done" : "error");
+        if (!r.ok) failed.push(`${repo.id}: ${r.error}`);
+      } catch (e) {
+        eventLog.finish(eid, "error");
+        failed.push(`${repo.id}: ${e.message}`);
+      }
+    })
+  );
+  if (failed.length) dialogs.error("Syncing PR update failed", failed.join("\n"));
+}
 function templatePrefill(tpl) {
   if (!tpl) return {};
   const branch = tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
@@ -11342,10 +11368,15 @@ var ReviewsScreen = class extends Component {
   // _runReviewIfNeeded (which only starts one from the "none" state), this always
   // runs, so it's the only path that can add a second-or-later version to a
   // review's history. Called from the review panel's "Review again" button; a
-  // no-op while one is already running.
+  // no-op while one is already running. Syncs the workspace's checkouts to their
+  // tracked PRs' current heads first (syncReviewWorktree) — otherwise this would
+  // just re-review whatever was already checked out, missing any commits pushed
+  // since the workspace was created or since the last review.
   async _rerunReview(branch) {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws || this.claude.running(ws.id)) return;
+    const rows = this.allRows().filter((r) => r.branch === branch);
+    await syncReviewWorktree(this._dialogPlugins(), ws, this._targetsFor(rows));
     await runClaudeReview(this._dialogPlugins(), ws);
   }
   // how many tasks are fully merged (base PR(s) + every forward port) — drives

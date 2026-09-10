@@ -3814,6 +3814,34 @@ if __name__ == "__main__":
         non_ff = bool(error) and r is not None and "non-fast-forward" in (r.stderr or "")
         return error is None, error, non_ff
 
+    def sync_pr_worktree(self, path, github, number, repo=""):
+        """Bring a worktree checkout whose branch IS the PR's head (a review
+        workspace) up to date with the PR's current head commit. Unlike
+        fetch_pr_head, this never writes to a branch ref by name — git refuses
+        that for a branch checked out in a worktree ("refusing to fetch into
+        branch ... checked out at ...") — so it fetches refs/pull/<number>/head
+        into FETCH_HEAD at <path> itself, then hard-resets <path> onto it.
+        Refuses to clobber uncommitted changes. Returns (ok, error)."""
+        if not path:
+            return False, "missing path"
+        p = os.path.expanduser(path)
+        st = self.io.run(["git", "-C", p, "status", "--porcelain"], timeout=10)
+        if st.stdout.strip():
+            return False, "worktree has uncommitted changes"
+        label = repo or os.path.basename(p)
+        url = f"https://github.com/{github}.git"
+        fid = uuid.uuid4().hex
+        fetching = f"fetching PR #{number} ({label})"
+        self.notify(fetching, event_id=fid, status="start")
+        _, error = self._git(
+            p, "fetch", url, f"refs/pull/{number}/head", timeout=60, err="git fetch failed"
+        )
+        self.notify(fetching, event_id=fid, status="error" if error else "done")
+        if error:
+            return False, error
+        _, error = self._git(p, "reset", "--hard", "FETCH_HEAD", timeout=30, err="git reset failed")
+        return error is None, error
+
     def fetch_rebase(self, path, base, pull_remote="origin", repo=""):
         """Fetch the base branch from the configured pull remote and rebase the
         current branch onto it. Announces the fetch and rebase phases via notify.
