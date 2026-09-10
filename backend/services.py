@@ -3807,10 +3807,23 @@ if __name__ == "__main__":
         branches) has no guarantee of actually being. Relies on git's normal
         credential resolution for github.com (e.g. `gh auth login`'s HTTPS
         credential helper), same as any other github.com fetch. Onto the local
-        branch <branch>. Returns (ok, error, non_ff)."""
+        branch <branch>. If <branch> is already checked out in a worktree (this
+        one or another one entirely — e.g. a regular workspace someone already
+        has open on it), git refuses to move the ref ("refusing to fetch into
+        branch ... checked out at ..."); rather than surface that as a failure,
+        detect it and fall back to sync_pr_worktree's safe fetch-into-FETCH_HEAD-
+        and-reset at the worktree path git names in its own error, so the caller
+        still gets an up-to-date checkout. Returns (ok, error, non_ff)."""
         url = f"https://github.com/{github}.git"
         refspec = f"{'+' if force else ''}refs/pull/{number}/head:{branch}"
         r, error = self._git(path, "fetch", url, refspec, timeout=60, err="git fetch failed")
+        if error and r is not None:
+            m = re.search(
+                r"refusing to fetch into branch '[^']*' checked out at '([^']*)'", r.stderr or ""
+            )
+            if m:
+                ok, sync_error = self.sync_pr_worktree(m.group(1), github, number)
+                return ok, sync_error, False
         non_ff = bool(error) and r is not None and "non-fast-forward" in (r.stderr or "")
         return error is None, error, non_ff
 

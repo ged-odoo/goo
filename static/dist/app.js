@@ -10631,6 +10631,7 @@ async function createReviewWorkspace(plugins, targets) {
   const { config } = plugins;
   if (!targets.length) return null;
   const findExisting = (name2) => (config.config.workspaces || []).find((w) => w.category === REVIEW_CATEGORY && w.name === name2);
+  const findExistingAny = (name2) => (config.config.workspaces || []).find((w) => w.name === name2);
   try {
     const head = await postJSON("/api/prs/head", {
       repo: targets[0].pull.github,
@@ -10643,8 +10644,6 @@ async function createReviewWorkspace(plugins, targets) {
   const got = await resolvePrBranches(plugins, targets);
   if (!got) return null;
   const name = got[0].branch;
-  const existing = findExisting(name);
-  if (existing) return existing.id;
   if (!(config.config.workspace_categories || []).some((c) => c.id === REVIEW_CATEGORY)) {
     config.updateConfig({
       workspace_categories: [
@@ -10652,6 +10651,12 @@ async function createReviewWorkspace(plugins, targets) {
         { id: REVIEW_CATEGORY }
       ]
     });
+  }
+  const existing = findExistingAny(name);
+  if (existing) {
+    if (existing.category !== REVIEW_CATEGORY)
+      config.workspace(existing.id)?.setCategory(REVIEW_CATEGORY);
+    return existing.id;
   }
   const checkouts = got.map((g) => ({ repo: g.repo.id, branch: g.branch }));
   const forkRepos = /* @__PURE__ */ new Set();

@@ -911,6 +911,16 @@ export async function createReviewWorkspace(plugins, targets) {
   if (!targets.length) return null;
   const findExisting = (name) =>
     (config.config.workspaces || []).find((w) => w.category === REVIEW_CATEGORY && w.name === name);
+  // Any workspace at all (not just a review one) already checked out on this
+  // branch — e.g. a regular workspace someone has open on it for other reasons.
+  // Its worktree is exactly what git refuses to fetch into by ref name
+  // ("refusing to fetch into branch ... checked out at ..."); backend
+  // fetch_pr_head already falls back to a safe in-place update for that case
+  // (sync_pr_worktree), so once resolvePrBranches succeeds below there's no
+  // fetch left to do — just reuse it for the review instead of attempting a
+  // second worktree for the same branch, which `git worktree add` would refuse
+  // outright.
+  const findExistingAny = (name) => (config.config.workspaces || []).find((w) => w.name === name);
   // Resolve just the primary target's head branch first — a read-only lookup, no
   // fetch — so a review workspace already tracking this task can be reused WITHOUT
   // ever touching git. resolvePrBranches' fetchRemoteBranch would otherwise try to
@@ -934,9 +944,13 @@ export async function createReviewWorkspace(plugins, targets) {
   if (!got) return null;
   const name = got[0].branch;
   // idempotent: a branch already added once (e.g. its first PR, before a sibling
-  // showed up) keeps its original workspace rather than spawning a duplicate.
-  const existing = findExisting(name);
-  if (existing) return existing.id;
+  // showed up) keeps its original workspace rather than spawning a duplicate —
+  // or, if it's not a review workspace at all, whatever workspace already has
+  // this branch checked out (see findExistingAny above). Upgrade it into
+  // REVIEW_CATEGORY so reviews.js's category-scoped reviewWorkspaceFor can find
+  // it — without this the review still runs (ClaudePlugin is keyed by workspace
+  // id, not category) but the Reviews screen's spinner/score/panel can never
+  // look it back up.
   if (!(config.config.workspace_categories || []).some((c) => c.id === REVIEW_CATEGORY)) {
     config.updateConfig({
       workspace_categories: [
@@ -944,6 +958,12 @@ export async function createReviewWorkspace(plugins, targets) {
         { id: REVIEW_CATEGORY },
       ],
     });
+  }
+  const existing = findExistingAny(name);
+  if (existing) {
+    if (existing.category !== REVIEW_CATEGORY)
+      config.workspace(existing.id)?.setCategory(REVIEW_CATEGORY);
+    return existing.id;
   }
   const checkouts = got.map((g) => ({ repo: g.repo.id, branch: g.branch }));
   const forkRepos = new Set();
