@@ -4583,9 +4583,10 @@ class _FakeGitForHandlers:
     call so the test asserts on the handler's own orchestration, not GitService's
     (separately tested) internals. worktree_add's result is scripted per repo id."""
 
-    def __init__(self, worktree_add_results=None, owl_start="master"):
+    def __init__(self, worktree_add_results=None, owl_start="master", doc_attach_fails=False):
         self.worktree_add_results = worktree_add_results or {}
         self.owl_start = owl_start
+        self.doc_attach_fails = doc_attach_fails
         self.worktree_add_calls = []
         self.worktree_remove_calls = []
         self.write_odoo_conf_calls = []
@@ -4602,6 +4603,11 @@ class _FakeGitForHandlers:
                 **kwargs,
             }
         )
+        # the documentation "attach an existing branch" call (unlike its
+        # fresh-fork fallback) never passes new_branch — the one way to tell
+        # the two documentation worktree_add calls apart here
+        if repo == "documentation" and self.doc_attach_fails and "new_branch" not in kwargs:
+            return False, "no such branch on origin"
         return self.worktree_add_results.get(repo, (True, None))
 
     def worktree_remove(self, main_path, worktree_path, repo=""):
@@ -4780,7 +4786,10 @@ class ApiWorkspaceCreateTest(unittest.TestCase):
         self.assertEqual(doc_path, "/w/documentation")
 
     def test_documentation_forks_from_base_branch_when_nothing_manual(self):
-        fake_git = _FakeGitForHandlers()
+        # ticked with a bundle-matched branch (like the passing attach test) that
+        # turns out not to actually exist there — attach fails, falls back to
+        # forking fresh from the matching Odoo series (base_branch(dev_branch))
+        fake_git = _FakeGitForHandlers(doc_attach_fails=True)
         self.server.GIT = fake_git
         self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
         body = {
@@ -4791,16 +4800,18 @@ class ApiWorkspaceCreateTest(unittest.TestCase):
                     "worktreePath": "/w/odoo",
                     "newBranch": "master-feat-x",
                     "startPoint": "master",
-                }
+                },
+                {"repo": "documentation", "branch": "master-feat-x-docs"},
             ]
         }
         result = self.server._api_workspace_create(body)
         self.assertTrue(result["ok"])
         doc_calls = [c for c in fake_git.worktree_add_calls if c["repo"] == "documentation"]
-        self.assertEqual(len(doc_calls), 1)
-        self.assertEqual(doc_calls[0]["branch"], "master-feat-x")
-        self.assertTrue(doc_calls[0]["new_branch"])
-        self.assertEqual(doc_calls[0]["start_point"], "master")  # base_branch("master-feat-x")
+        self.assertEqual(len(doc_calls), 2)
+        self.assertEqual(doc_calls[0]["branch"], "master-feat-x-docs")  # failed attach attempt
+        self.assertEqual(doc_calls[1]["branch"], "master-feat-x")  # fresh fork fallback
+        self.assertTrue(doc_calls[1]["new_branch"])
+        self.assertEqual(doc_calls[1]["start_point"], "master")  # base_branch("master-feat-x")
 
     def test_owl_auto_forked_from_resolved_start(self):
         fake_git = _FakeGitForHandlers(owl_start="abcdef1")
@@ -4814,7 +4825,11 @@ class ApiWorkspaceCreateTest(unittest.TestCase):
                     "worktreePath": "/w/odoo",
                     "newBranch": "master-feat-x",
                     "startPoint": "master",
-                }
+                },
+                # owl ticked in the create dialog — never carries branch data of its
+                # own (see _api_workspace_create), just its presence in body["repos"]
+                # signals the checkbox was ticked
+                {"repo": "owl"},
             ]
         }
         result = self.server._api_workspace_create(body)
