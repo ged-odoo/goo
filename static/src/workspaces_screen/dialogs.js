@@ -302,11 +302,15 @@ export async function startNewWorkspaceWizard(plugins) {
   const info = res.info;
   // map the bundle's github repos onto the configured ones by repo name —
   // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo. Skips
-  // "owl": it never carries per-feature branches (goo always forks it itself from
-  // the exact vendored commit — see _api_workspace_create in server.py), unlike
-  // "documentation", which real doc work sometimes *does* push alongside a
-  // feature — the backend tries that branch first and only falls back to forking
-  // from the base series when it doesn't actually exist there.
+  // "owl": it never carries per-feature branches, so there's nothing on the
+  // bundle to match it to — leaving it out of the prefill means its Repositories
+  // checkbox opens unticked, and the user opts in by ticking it themselves (the
+  // backend then forks it from the exact vendored commit — see
+  // _api_workspace_create in server.py). "documentation" isn't skipped: real doc
+  // work sometimes *does* push alongside a feature, so a bundle branch for it
+  // gets matched (and ticked) like any other repo; the backend tries that branch
+  // first and only falls back to forking from the base series when it doesn't
+  // actually exist there.
   const matches = [];
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
