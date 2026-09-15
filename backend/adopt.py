@@ -62,7 +62,7 @@ def scan_and_register():
     existing_dirs = {
         os.path.normpath(os.path.expanduser(w["worktree"]["dir"]))
         for w in (config.get("workspaces") or [])
-        if w.get("worktree", {}).get("dir")
+        if (w.get("worktree") or {}).get("dir")
     }
     # never adopt whatever directory holds a configured repo's own main
     # checkout (e.g. worktree_dir/master, which holds .../master/odoo)
