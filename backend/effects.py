@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import zipfile
 
 TAG = "[goo]"
 
@@ -102,12 +103,61 @@ def http_get_nofollow(url, *, timeout=10):
         return 0, "", "", str(e)
 
 
+def http_head(url, *, timeout=10):
+    """HEAD a URL → (status, size, error), size being Content-Length in bytes (0 when
+    the server doesn't send one). Lets a caller check a remote artifact is really
+    there — and how big it is — before committing to downloading it. Never raises: a
+    network failure comes back as (0, 0, "<reason>")."""
+    log_request(f"HEAD {url}")
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "goo/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, int(resp.headers.get("Content-Length") or 0), None
+    except urllib.error.HTTPError as e:  # a 404 is an answer, not an outage
+        return e.code, 0, str(e)
+    except Exception as e:
+        return 0, 0, str(e)
+
+
+def http_download(url, path, *, timeout=60, on_progress=None):
+    """Stream a URL into a file → (ok, error). Unlike http_get this never holds the
+    body in memory — the payload is a database dump, not a page. `on_progress(done,
+    total)` is called as bytes land (total 0 when unknown), so a caller can narrate a
+    long download. A partial file is removed on failure: half a zip is worse than
+    none. Never raises."""
+    log_request(f"GET {url}")
+    p = os.path.expanduser(path)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "goo/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            with open(p, "wb") as f:
+                while chunk := resp.read(1 << 20):
+                    f.write(chunk)
+                    done += len(chunk)
+                    if on_progress:
+                        on_progress(done, total)
+        return True, None
+    except Exception as e:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+        return False, str(e)
+
+
 # ─────────────────────────── filesystem ───────────────────────────
 
 
 def is_dir(path):
     trace("isdir", path)
     return os.path.isdir(os.path.expanduser(path))
+
+
+def is_file(path):
+    trace("isfile", path)
+    return os.path.isfile(os.path.expanduser(path))
 
 
 def list_dir(path):
@@ -251,4 +301,48 @@ def copy_tree(src, dst):
         shutil.copytree(os.path.expanduser(src), os.path.expanduser(dst))
         return True, None
     except (OSError, shutil.Error) as e:
+        return False, str(e)
+
+
+def make_dirs(path):
+    """Create a directory (and its parents), no-op if it already exists. Returns
+    (ok, error)."""
+    trace("mkdir", path)
+    try:
+        os.makedirs(os.path.expanduser(path), exist_ok=True)
+        return True, None
+    except OSError as e:
+        return False, str(e)
+
+
+def make_temp_dir(prefix="goo-"):
+    """Create a temporary directory and return its path, or None if it can't be
+    made. The caller owns it — pair it with remove_tree()."""
+    try:
+        path = tempfile.mkdtemp(prefix=prefix)
+    except OSError:
+        return None
+    trace("mkdtemp", path)
+    return path
+
+
+def unzip(path, dest):
+    """Extract a zip archive into `dest` → (ok, error). Members whose path would
+    escape `dest` (absolute, or reaching up through "..") are skipped rather than
+    written: the archive comes off the network, so it must never be able to place a
+    file anywhere but the directory we picked for it."""
+    trace("unzip", f"{path} → {dest}")
+    src = os.path.expanduser(path)
+    root = os.path.abspath(os.path.expanduser(dest))
+    try:
+        os.makedirs(root, exist_ok=True)
+        with zipfile.ZipFile(src) as zf:
+            safe = [
+                m
+                for m in zf.namelist()
+                if os.path.abspath(os.path.join(root, m)).startswith(root + os.sep)
+            ]
+            zf.extractall(root, members=safe)
+        return True, None
+    except (OSError, zipfile.BadZipFile) as e:
         return False, str(e)

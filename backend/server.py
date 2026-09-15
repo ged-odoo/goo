@@ -2684,6 +2684,14 @@ def _api_runbot_bundle_info(body):
     return {"ok": True, **info}
 
 
+@post_route("/api/runbot/dumps", "branch:str")
+def _api_runbot_dumps(body):
+    # the database dumps runbot's latest batch for this branch's bundle left behind
+    # — "Restore runbot database" when the workspace forks off a base version
+    # (master / 19.0) rather than a pasted bundle URL
+    return {"ok": True, "dumps": RUNBOT.dumps(body["branch"], refresh=bool(body.get("refresh")))}
+
+
 @post_route("/api/nightly")
 def _api_nightly(body):
     max_nights = min(max(int(body.get("max_nights", 14)), 7), 84)
@@ -2789,6 +2797,16 @@ def _api_databases_drop(body):
 @post_route("/api/databases/clone", "source:str", "dest:str")
 def _api_databases_clone(body):
     ok, error = DATABASE.clone(body["source"], body["dest"], _filestore(body))
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/databases/restore-dump", "name:str", "url:str")
+def _api_databases_restore_dump(body):
+    # download a runbot build's database dump and restore it locally under `name`
+    # (the create-from-bundle wizard's "Restore runbot database"). Long — tens to
+    # hundreds of megabytes, then a psql replay — but the server is threaded, so it
+    # only ties up this request; progress is narrated to the goo log.
+    ok, error = DATABASE.restore_dump(body["name"], body["url"], _filestore(body))
     return (200 if ok else 400), {"ok": ok, "error": error}
 
 

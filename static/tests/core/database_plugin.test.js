@@ -16,7 +16,7 @@ function setup({ status = "stopped", filestore = "" } = {}) {
     stop: vi.fn(async () => {}),
     resume: vi.fn(async () => {}),
   };
-  const fakeEventLog = { add: vi.fn() };
+  const fakeEventLog = { add: vi.fn(), begin: vi.fn(() => "eid1"), finish: vi.fn() };
   const fakeConfig = { config: { filestore } };
   const harness = createPluginHarness([
     [ServerPlugin, fakeServer],
@@ -134,6 +134,34 @@ describe("DatabasePlugin", () => {
     const { plugin } = setup({ filestore: "/fs" });
     const result = await plugin.clone("a", "b");
     expect(result).toBeNull();
+  });
+
+  it("restoreRunbotDump() posts name/url/filestore, reloads, and logs a timed 'done' row on success", async () => {
+    const fetchMock = vi.fn(async (url, opts) => {
+      if (opts?.method === "POST") {
+        expect(url).toBe("/api/databases/restore-dump");
+        expect(JSON.parse(opts.body)).toEqual({ name: "bar", url: "http://runbot/dump.zip", filestore: "/fs" });
+        return jsonOk({});
+      }
+      return jsonOk({ databases: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { plugin, fakeEventLog } = setup({ filestore: "/fs" });
+    const result = await plugin.restoreRunbotDump("http://runbot/dump.zip", "bar");
+    expect(result).toBeNull();
+    expect(fakeEventLog.begin).toHaveBeenCalledWith("restoring runbot database into bar");
+    expect(fakeEventLog.finish).toHaveBeenCalledWith("eid1", "done");
+  });
+
+  it("restoreRunbotDump() returns the error message and logs a timed 'error' row on rejection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, json: async () => ({ error: "no space left" }) })),
+    );
+    const { plugin, fakeEventLog } = setup();
+    const result = await plugin.restoreRunbotDump("http://runbot/dump.zip", "bar");
+    expect(result).toBe("no space left");
+    expect(fakeEventLog.finish).toHaveBeenCalledWith("eid1", "error");
   });
 
   it("rename() returns the error message on failure without reloading", async () => {
