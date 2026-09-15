@@ -558,6 +558,29 @@ class GitHubService:
 
 # ─────────────────────────── Runbot (HTML scraping) ─────────────────────────
 
+# runbot's rd-1 page lists every bundle of the R&D project; the starred ones are the
+# sticky series (master, 19.0, saas-19.4, …). Both the Nightly screen (which walks
+# each series' night builds) and the dump lookup (which needs a series' canonical
+# bundle id — see RunbotService._bundle_html) read it through here.
+_BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
+_BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
+
+
+def parse_starred_bundles(html):
+    """[(version, bundle_id)] for the starred bundles on a runbot project page, in
+    page order (newest series first)."""
+    starts = [m.start() for m in _BUNDLE_ROW_RE.finditer(html or "")]
+    out = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else start + 4000
+        chunk = html[start:end]
+        if "fa fa-star" not in chunk:
+            continue
+        m = _BUNDLE_LINK_RE.search(chunk)
+        if m:
+            out.append((m.group(2), m.group(1)))
+    return out
+
 
 class RunbotService:
     """Runbot CI status for a branch's bundle, scraped from runbot.odoo.com."""
@@ -646,7 +669,156 @@ class RunbotService:
             if ("p", github, number) not in seen:
                 seen.add(("p", github, number))
                 prs.append({"github": github, "number": int(number)})
-        return {"name": tm.group(1), "branches": branches, "prs": prs}, None
+        dumps = self.bundle_dumps(html)
+        return {"name": tm.group(1), "branches": branches, "prs": prs, "dumps": dumps}, None
+
+    # ── database dumps ───────────────────────────────────────────────────────
+    # Every runbot build leaves its databases dumped next to its logs, as
+    # <host>/runbot/static/build/<dest>/logs/<dest>-<db_suffix>.zip (an odoo dump:
+    # dump.sql + filestore/) — that's the very URL runbot's own `restore` build step
+    # downloads to seed a child build. The bundle page never links it, but the
+    # <build-options-dropdown> element on each build slot carries all three parts as
+    # data attributes, so we can address it ourselves. Used by "Restore runbot
+    # database" in the create-workspace wizard — for a pasted bundle (bundle_info)
+    # and for a workspace forked off a sticky series (dumps).
+
+    _SLOT_NAME_RE = re.compile(r'class="[^"]*slot_name"[^>]*>\s*<span>\s*([^<]*?)\s*</span>')
+
+    @staticmethod
+    def _dump_url(host, dest, db):
+        return f"https://{host}/runbot/static/build/{dest}/logs/{dest}-{db}.zip"
+
+    @staticmethod
+    def _data_attr(attrs, name):
+        """One data-<name> value out of a raw tag's attribute string ("" if absent)."""
+        m = re.search(rf'data-{name}="([^"]*)"', attrs)
+        return html_lib.unescape(m.group(1)) if m else ""
+
+    def dumps(self, branch, refresh=False):
+        """The dumps of `branch`'s bundle — "the runbot database for master / 19.0 /
+        saas-19.4 / …", for a workspace forked off a sticky series rather than picked
+        up from a pasted bundle URL. Works for any branch with a bundle (see
+        _bundle_html for how each kind is resolved); [] when there's none, in which
+        case the create form simply doesn't offer the restore.
+
+        Cached under a tuple key, out of the way of the bare branch names the status
+        cache uses — the create form asks on every open, and a bundle's latest batch
+        doesn't change from one dialog to the next."""
+        key = ("dumps", branch)
+        if refresh:
+            self.cache.invalidate(key)
+        return self.cache.get(key, lambda: self._dumps(branch))
+
+    def _dumps(self, branch):
+        return self.bundle_dumps(self._bundle_html(branch))
+
+    def sticky_bundles(self, refresh=False):
+        """{version: bundle id} for runbot's sticky (starred) series — master, 19.0,
+        saas-19.4, … Cached under a tuple key, so it can never collide with the bare
+        branch names the status cache uses. {} if the page can't be read."""
+        key = ("sticky",)
+        if refresh:
+            self.cache.invalidate(key)
+        return self.cache.get(key, self._fetch_sticky)
+
+    def _fetch_sticky(self):
+        html, err = self.io.http_get(f"{RUNBOT_BASE}/runbot/rd-1", timeout=20)
+        return {} if err else dict(parse_starred_bundles(html))
+
+    def _bundle_html(self, branch):
+        """The bundle page for `branch` ("" when there's none to read).
+
+        A sticky series is addressed by the bundle id runbot's own starred list gives
+        it, never by name: /runbot/bundle/saas-19.4 redirects to `saas-194`, an
+        unrelated (and private → 403) dev bundle, so name resolution silently answers
+        for the wrong series. By id, the 301 to the canonical slug is the right
+        canonicalization and is simply followed.
+
+        Any other branch is a real branch name, resolved under the usual rules — a
+        302 is a genuine name match, a 301 means runbot read a trailing "-<n>" as
+        some other bundle's id (see _status)."""
+        bundle_id = self.sticky_bundles().get(branch)
+        if bundle_id:
+            html, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/bundle/{bundle_id}")
+            return html or ""
+        url = f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}"
+        status, location, html, _ = self.io.http_get_nofollow(url)
+        if status == 302:  # name match → the canonical bundle page
+            html, _ = self.io.http_get(urllib.parse.urljoin(RUNBOT_BASE, location))
+            return html or ""
+        if status != 200:  # 301 (id-misresolve to a foreign bundle), 404, or error
+            return ""
+        return html or ""
+
+    _MAX_BATCHES = 4  # how far back bundle_dumps looks for a batch that still has dumps
+
+    def bundle_dumps(self, html):
+        """[{build, slot, db, url, size}] — one entry per database dumped by the
+        builds of the bundle's newest USABLE batch ("all" and "base" for the Community
+        and Enterprise runs, "design-theme" for Design-themes; the Documentation build
+        dumps none, and says so with an empty data-databases).
+
+        Newest batch first, falling back to the one before it when that yields
+        nothing — neither "the latest" nor "any" batch is the right one to read. A
+        batch created moments ago has no build slots yet (runbot fills them in over
+        the following minutes), and runbot prunes old builds' directories, so what we
+        want is the newest batch that still HAS its dumps. Bounded to the few most
+        recent, so a bundle whose dumps are all long gone costs a handful of probes
+        rather than fifty.
+
+        Each candidate is HEAD-probed (in parallel) and only offered if it is really
+        still served — the alternative is letting the user tick a restore that only
+        fails once the workspace has already been created — and that probe doubles as
+        the size we label it with."""
+        for tile in html.split('class="batch_tile')[1 : self._MAX_BATCHES + 1]:
+            dumps = self._probe_dumps(self._batch_dump_candidates(tile))
+            if dumps:
+                return dumps
+        return []
+
+    def _batch_dump_candidates(self, tile):
+        """[{build, slot, db, url}] for one batch tile, read off its build slots' data
+        attributes — before any check that the dump is still on disk."""
+        candidates = []
+        for container in tile.split('class="slot_container"')[1:]:
+            attrs_m = re.search(r"<build-options-dropdown\b([^>]*)>", container)
+            if not attrs_m:
+                continue
+            attrs = attrs_m.group(1)
+            host = self._data_attr(attrs, "host")
+            dest = self._data_attr(attrs, "dest")
+            if not host or not dest:
+                continue
+            try:  # data-databases is a JSON list, e.g. ["all", "base"]
+                databases = json.loads(self._data_attr(attrs, "databases") or "[]")
+            except ValueError:
+                continue
+            slot_m = self._SLOT_NAME_RE.search(container)
+            slot = slot_m.group(1) if slot_m else dest
+            build = self._data_attr(attrs, "id")
+            for db in databases:
+                if isinstance(db, str) and db:
+                    candidates.append(
+                        {
+                            "build": build,
+                            "slot": slot,
+                            "db": db,
+                            "url": self._dump_url(host, dest, db),
+                        }
+                    )
+        return candidates
+
+    def _probe_dumps(self, candidates):
+        """The candidates whose zip is actually still served, each with its size."""
+        if not candidates:
+            return []
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+            probes = list(pool.map(lambda c: self.io.http_head(c["url"]), candidates))
+        return [
+            {**c, "size": size}
+            for c, (status, size, _err) in zip(candidates, probes, strict=False)
+            if status == 200
+        ]
 
     def _badge(self, branch):
         """Parse the runbot badge SVG: "success" / "failure" / "pending" / ""."""
@@ -1121,8 +1293,6 @@ class NightlyService:
         ("18.0", "320432"),
         ("17.0", "192736"),
     )
-    _BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
-    _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
     # step names whose log offers [MEMINFO] lines — checked in this order, first
     # match wins, so a build offering both takes the dedicated qunit-only run
     _MEMINFO_STEP_NAMES = ("start_qunit_only", "test_only_no_limit_no_autotags")
@@ -1146,20 +1316,8 @@ class NightlyService:
         html = self._fetch_html(self._VERSIONS_URL)
         if not html:
             return list(self._VERSIONS_FALLBACK)
-        starts = [m.start() for m in self._BUNDLE_ROW_RE.finditer(html)]
-        versions = []
-        for i, start in enumerate(starts):
-            end = starts[i + 1] if i + 1 < len(starts) else start + 4000
-            chunk = html[start:end]
-            if "fa fa-star" not in chunk:
-                continue
-            m = self._BUNDLE_LINK_RE.search(chunk)
-            if not m:
-                continue
-            bundle_id, version = m.group(1), m.group(2)
-            if version == "16.0":
-                continue
-            versions.append((version, bundle_id))
+        # 16.0 is starred but has no nightly Multi Qunit builds — skip it here only
+        versions = [(v, b) for v, b in parse_starred_bundles(html) if v != "16.0"]
         return versions or list(self._VERSIONS_FALLBACK)
 
     # ── bundle pages: the night index for one version ────────────────────────
@@ -1611,6 +1769,14 @@ class MemoryService:
 # Covers typical odoo db names (master, 19.0, master-feat-xyz, test_db).
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
+# A runbot build's dump, as RunbotService._dump_url builds it. restore_dump checks
+# the URL it is handed against this: the endpoint feeds a downloaded file straight
+# into psql, so it may fetch runbot dumps and nothing else — never an arbitrary
+# "download this and run it through my database" primitive.
+_RUNBOT_DUMP_URL_RE = re.compile(
+    r"^https?://[\w.-]+\.odoo\.com/runbot/static/build/[\w.-]+/logs/[\w.-]+\.zip$"
+)
+
 
 def _valid_db_name(name):
     return bool(name) and isinstance(name, str) and bool(_DB_NAME_RE.match(name))
@@ -1728,6 +1894,132 @@ class DatabaseService:
             if not ok:
                 self._log_filestore("copy", src, dst, err)
         return True, None
+
+    def exists(self, name):
+        """Whether a database of that name exists. False on any probe error (no
+        psql, a timeout) — the callers treat "can't tell" as "go ahead and try",
+        and the real createdb/dropdb below reports the truth either way."""
+        if not _valid_db_name(name):
+            return False
+        # the name is validated to the safe charset above, so quoting is injection-free
+        sql = f"SELECT 1 FROM pg_database WHERE datname = '{name}'"
+        try:
+            r = self.io.run(["psql", "-d", "postgres", "-tAc", sql], timeout=5, quiet=True)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        return r.returncode == 0 and r.stdout.strip() == "1"
+
+    def restore_dump(self, name, url, filestore=None, log_progress=True):
+        """Download a runbot database dump and restore it into a NEW database `name`.
+        Returns (ok, error); invalidates the list cache on success.
+
+        The dump is an odoo one — a zip of dump.sql plus the build's filestore/ — so
+        this is odoo's own restore: create the database the way odoo would
+        (template0 / unicode / LC_COLLATE C, which is what its dumps expect), replay
+        dump.sql through psql, and drop the filestore alongside as <filestore>/<name>
+        so the restored attachments actually resolve.
+
+        `name` must not exist yet: replaying a dump over a live database would merge
+        two schemas into rubble. A failure after the database was created takes it
+        back down rather than leaving an unusable shell behind, and the download +
+        extraction live in a temp directory that's removed either way."""
+        if not _valid_db_name(name):
+            return False, f"invalid database name: {name}"
+        if not _RUNBOT_DUMP_URL_RE.match(url or ""):
+            return False, "not a runbot dump URL"
+        if self.exists(name):
+            return False, f'database "{name}" already exists'
+        tmp = self.io.make_temp_dir("goo-dump-")
+        if not tmp:
+            return False, "could not create a temporary directory"
+        try:
+            return self._restore_dump(name, url, tmp, filestore, log_progress)
+        finally:
+            ok, err = self.io.remove_tree(tmp)
+            if not ok:
+                self.io.log(f"{getattr(self.io, 'TAG', '[goo]')} could not clean up {tmp}: {err}")
+
+    def _restore_dump(self, name, url, tmp, filestore, log_progress):
+        """The body of restore_dump, inside the temp directory it cleans up."""
+        zip_path = os.path.join(tmp, "dump.zip")
+        ok, err = self.io.http_download(
+            url,
+            zip_path,
+            timeout=1800,
+            on_progress=self._download_logger(url) if log_progress else None,
+        )
+        if not ok:
+            return False, f"could not download the dump: {err}"
+        unpacked = os.path.join(tmp, "dump")
+        ok, err = self.io.unzip(zip_path, unpacked)
+        if not ok:
+            return False, f"could not unpack the dump: {err}"
+        sql = os.path.join(unpacked, "dump.sql")
+        if not self.io.is_file(sql):
+            return False, "the archive holds no dump.sql — not an odoo database dump"
+        # odoo's own database shape (see odoo.service.db._create_empty_database):
+        # its dumps are taken from such a cluster and restore cleanly into no other
+        try:
+            r = self.io.run(
+                ["createdb", "--template=template0", "--encoding=unicode", "--lc-collate=C", name],
+                timeout=120,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode != 0:
+            return False, r.stderr.strip() or "createdb failed"
+        self.cache.invalidate("list")
+        try:
+            r = self.io.run(["psql", "--quiet", "--dbname", name, "--file", sql], timeout=3600)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            self._drop_quietly(name)
+            return False, str(e)
+        if r.returncode != 0:
+            self._drop_quietly(name)
+            return False, r.stderr.strip() or "psql restore failed"
+        # the filestore rides along in the archive; without it every attachment in
+        # the restored database 404s. Best-effort, like every other filestore step.
+        src = os.path.join(unpacked, "filestore")
+        dst = self._filestore_dir(filestore, name)
+        if not self.io.is_dir(src):
+            return True, None
+        if not dst:
+            # unlike clone/rename, a restore HAS the attachments in hand and would be
+            # dropping them — worth a word, or the database comes up with every
+            # attachment 404ing and nothing anywhere saying why
+            tag = getattr(self.io, "TAG", "[goo]")
+            self.io.log(f"{tag} no filestore configured: {name}'s attachments were not restored")
+            return True, None
+        ok, err = self.io.make_dirs(os.path.dirname(dst))
+        if ok:
+            ok, err = self.io.move_path(src, dst)
+        if not ok:
+            self._log_filestore("install", src, dst, err)
+        return True, None
+
+    def _drop_quietly(self, name):
+        """Take a half-restored database back down — the restore failed, so the shell
+        left behind is worse than nothing. Its filestore isn't installed yet."""
+        try:
+            self.io.run(["dropdb", "--if-exists", name], timeout=15, quiet=True)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        self.cache.invalidate("list")
+
+    def _download_logger(self, url):
+        """An on_progress callback that narrates a download to the goo log every 10%.
+        A dump runs to hundreds of megabytes; a silent multi-minute step looks hung."""
+        tag = getattr(self.io, "TAG", "[goo]")
+        state = {"decile": -1}
+
+        def on_progress(done, total):
+            decile = int(done * 10 / total) if total else -1
+            if decile == state["decile"]:
+                return
+            state["decile"] = decile
+            self.io.log(f"{tag} downloading {url}: {done * 100 // total}% of {total >> 20} MiB")
+
+        return on_progress
 
     def rename(self, old, new, filestore=None):
         """Rename database `old` to `new` (ALTER DATABASE … RENAME) and move its

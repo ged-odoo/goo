@@ -93,6 +93,29 @@ export class DatabasePlugin extends Plugin {
     }
   }
 
+  // restore a runbot build's database dump (see RunbotService.bundle_dumps) into a
+  // NEW database `target`; returns null on success or an error message. Unlike the
+  // other db actions this is slow enough to need a *timed* row — the backend
+  // downloads tens/hundreds of MB and replays them through psql — so it logs
+  // begin/finish rather than a single line, and the row keeps its animated "..."
+  // for as long as the restore really runs.
+  async restoreRunbotDump(url, target) {
+    const eid = this.eventLog.begin(`restoring runbot database into ${target}`);
+    try {
+      await postJSON("/api/databases/restore-dump", {
+        name: target,
+        url,
+        filestore: this._filestore(),
+      });
+      await this.load(true); // server cache was invalidated; pull the fresh list
+      this.eventLog.finish(eid, "done");
+      return null;
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      return e.message;
+    }
+  }
+
   // clone `source` into `target`, transparently stopping + resuming the server when
   // `source` is the active db (postgres createdb -T needs exclusive access). Returns
   // null on success or an error message; the server is resumed even if the clone fails.

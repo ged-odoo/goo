@@ -101,8 +101,8 @@ class DialogContainer extends Component {
 // validate?(values) => errorString, fields: [{ key, type: "text"|"textarea"|
 // "checkbox"|"select"|"check-select"|"repo-checks"|"action", label, value,
 // placeholder?, rows?, options?, onChange?, default?, hint?, visible?, run? }] }.
-// A "check-select" is a checkbox with an inline select that shows only when
-// ticked; its value is "" (off) or the chosen option, seeded from
+// A "check-select" is a checkbox with a select, on the line below it, that shows
+// only when ticked; its value is "" (off) or the chosen option, seeded from
 // default(values) on tick. A "repo-checks" is a list of checkboxes (one per
 // `options` entry); its value is the array of ticked option values. A
 // "textarea" is a multi-line text field (Enter inserts a newline rather than
