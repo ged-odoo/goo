@@ -189,6 +189,25 @@ class ScanAndRegisterTest(unittest.TestCase):
             adopted = self._run_scan(snapshot)
         self.assertIsNone(adopted, "path-based dedup must catch this even though the id differs")
 
+    def test_main_located_workspace_with_explicit_null_worktree_does_not_crash_scan(self):
+        """Regression test: a main-located workspace stores worktree: null (not an
+        absent key) -- `w.get("worktree", {}).get("dir")` still crashes on that with
+        AttributeError since dict.get's default only kicks in when the key is
+        missing, not when its value is explicitly None. The fix reads `(w.get(
+        "worktree") or {}).get("dir")` instead. This must scan past it without
+        raising, and still adopt a genuine orphan found alongside it."""
+        with tempfile.TemporaryDirectory() as wtdir:
+            ws_dir = os.path.join(wtdir, "myfeature")
+            make_checkout(ws_dir)
+            age(ws_dir, adopt.ADOPT_GRACE_SECONDS + 60)
+            snapshot = config_snapshot(
+                worktree_dir=wtdir,
+                workspaces=[{"id": "main-ws", "worktree": None}],
+            )
+            adopted = self._run_scan(snapshot)
+        self.assertIsNotNone(adopted)
+        self.assertEqual([w["id"] for w in adopted], ["main-ws", "myfeature"])
+
     def test_a_repos_own_main_checkout_dir_is_never_adopted(self):
         with tempfile.TemporaryDirectory() as wtdir:
             main_parent = os.path.join(wtdir, "master")
