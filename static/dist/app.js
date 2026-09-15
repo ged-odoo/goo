@@ -7659,6 +7659,28 @@ var DatabasePlugin = class extends Plugin {
       return e.message;
     }
   }
+  // restore a runbot build's database dump (see RunbotService.bundle_dumps) into a
+  // NEW database `target`; returns null on success or an error message. Unlike the
+  // other db actions this is slow enough to need a *timed* row — the backend
+  // downloads tens/hundreds of MB and replays them through psql — so it logs
+  // begin/finish rather than a single line, and the row keeps its animated "..."
+  // for as long as the restore really runs.
+  async restoreRunbotDump(url, target) {
+    const eid = this.eventLog.begin(`restoring runbot database into ${target}`);
+    try {
+      await postJSON("/api/databases/restore-dump", {
+        name: target,
+        url,
+        filestore: this._filestore()
+      });
+      await this.load(true);
+      this.eventLog.finish(eid, "done");
+      return null;
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      return e.message;
+    }
+  }
   // clone `source` into `target`, transparently stopping + resuming the server when
   // `source` is the active db (postgres createdb -T needs exclusive access). Returns
   // null on success or an error message; the server is resumed even if the clone fails.
@@ -10079,9 +10101,13 @@ async function syncReviewWorktree(plugins, ws, targets) {
   );
   if (failed.length) dialogs.error("Syncing PR update failed", failed.join("\n"));
 }
+function templateBranch(tpl) {
+  if (!tpl) return "";
+  return tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
+}
 function templatePrefill(tpl) {
   if (!tpl) return {};
-  const branch = tpl.checkouts.find((c) => c.repo === "enterprise")?.branch || tpl.checkouts.find((c) => c.repo === "community")?.branch || "";
+  const branch = templateBranch(tpl);
   return {
     template: tpl.id,
     name: branch,
@@ -10091,6 +10117,16 @@ function templatePrefill(tpl) {
     demoData: tpl.demo_data ?? true,
     category: tpl.category || ""
   };
+}
+async function baseVersionDumps(branch) {
+  const base = branch ? baseBranchOf(branch) : "";
+  if (!base) return [];
+  try {
+    const res = await postJSON("/api/runbot/dumps", { branch: base });
+    return res.dumps || [];
+  } catch {
+    return [];
+  }
 }
 var WorkspaceSourceDialog = class extends Component {
   static template = xml`
@@ -10125,7 +10161,7 @@ var WorkspaceSourceDialog = class extends Component {
         </div>
         <div class="dialog-foot">
           <button class="pbtn primary" t-att-disabled="!this.canContinue" t-on-click="() => this.continue_()">
-            <t t-if="this.busy()">Reading bundle…</t><t t-else="">Continue</t>
+            <t t-if="this.busy()">Reading runbot…</t><t t-else="">Continue</t>
           </button>
           <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
         </div>
@@ -10154,12 +10190,14 @@ var WorkspaceSourceDialog = class extends Component {
   }
   async continue_() {
     if (!this.canContinue) return;
-    if (this.source() === "template") {
-      return this.done({ source: "template", template: this.template() });
-    }
     this.busy.set(true);
     this.error.set("");
     try {
+      if (this.source() === "template") {
+        const tpl = this.props.templates.find((t2) => t2.id === this.template());
+        const dumps = await baseVersionDumps(templateBranch(tpl));
+        return this.done({ source: "template", template: this.template(), dumps });
+      }
       const info = await postJSON("/api/runbot/bundle-info", { url: this.url().trim() });
       this.done({ source: "bundle", info });
     } catch (e) {
@@ -10177,7 +10215,7 @@ async function startNewWorkspaceWizard(plugins) {
   if (!res) return;
   if (res.source === "template") {
     const tpl = (config.config.templates || []).find((x) => x.id === res.template);
-    return startCreateWorkspace(plugins, templatePrefill(tpl));
+    return startCreateWorkspace(plugins, { ...templatePrefill(tpl), dumps: res.dumps || [] });
   }
   const info = res.info;
   const matches = [];
@@ -10224,8 +10262,15 @@ async function startNewWorkspaceWizard(plugins) {
     config: repoBranchList.format(got.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }))),
     db: info.name,
     template: "",
-    createBranches: false
+    createBranches: false,
+    // the dumps the bundle's latest batch left on runbot, already proven to exist
+    // (the backend HEAD-probes them) — what "Restore runbot database" offers
+    dumps: info.dumps || []
   });
+}
+async function restoreRunbotDump({ db, dialogs }, url, dbName) {
+  const error = await db.restoreRunbotDump(url, dbName);
+  if (error) dialogs.error("Restoring the runbot database failed", error);
 }
 async function startCreateWorkspace(plugins, prefill = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
@@ -10238,8 +10283,16 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const hasLocalBranch = (repo, branch) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
   const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
+  const dumpOptions = (prefill.dumps || []).map((d) => ({
+    value: d.url,
+    label: `${d.slot} \u2014 ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`
+  }));
   const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
   const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
+  const wantsEnterprise = prefillRepoIds.includes("enterprise");
+  const bestDump = (prefill.dumps || []).find(
+    (d) => d.db === "all" && /enterprise/i.test(d.slot) === wantsEnterprise
+  ) || (prefill.dumps || []).find((d) => d.db === "all");
   const res = await dialogs.open({
     title: tpl ? `New workspace \u2014 from template "${tpl.name}"` : "New workspace",
     okLabel: "Create",
@@ -10253,6 +10306,12 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         return "set a database name to clone the selected database into";
       if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
         return `database "${(v.db || "").trim()}" already exists \u2014 pick a new name to clone into`;
+      if (v.restoreDump && v.cloneDb)
+        return "clone a database or restore the runbot dump \u2014 not both";
+      if (v.restoreDump && !(v.db || "").trim())
+        return "set a database name to restore the runbot dump into";
+      if (v.restoreDump && dbNames.has((v.db || "").trim()))
+        return `database "${(v.db || "").trim()}" already exists \u2014 pick a new name to restore into`;
       if (v.createVenv && v.location !== "worktree")
         return 'a venv needs Location set to "Own worktree + port"';
       return "";
@@ -10406,6 +10465,20 @@ async function startCreateWorkspace(plugins, prefill = {}) {
           return dbOptions[0]?.value || "";
         }
       },
+      // download + restore the bundle's own runbot database instead of starting from
+      // an empty one — the whole point of picking up a colleague's bundle is usually
+      // to reproduce something on their data. Bundle sources only (see dumpOptions).
+      ...dumpOptions.length ? [
+        {
+          key: "restoreDump",
+          type: "check-select",
+          label: "Restore runbot database",
+          options: dumpOptions,
+          value: "",
+          default: () => bestDump?.url || dumpOptions[0].value,
+          hint: (v) => v.restoreDump ? "downloaded from runbot and restored after the workspace is created \u2014 this can take a while" : null
+        }
+      ] : [],
       // same story as Start args: feeds --without-demo regardless of local vs.
       // docker launch — unused only under launch_mode "external"
       ...config.config.launch_mode === "external" ? [] : [
@@ -10478,7 +10551,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     }
   }
   if (res.location === "worktree") {
-    await wt.createWorktree({
+    const created = await wt.createWorktree({
       name: res.name.trim(),
       dbName: (res.db || "").trim(),
       cloneSource: res.cloneDb || "",
@@ -10493,6 +10566,9 @@ async function startCreateWorkspace(plugins, prefill = {}) {
       createVenv: !!res.createVenv,
       forkRepos
     });
+    if (created && res.restoreDump) {
+      await restoreRunbotDump(plugins, res.restoreDump, (res.db || "").trim());
+    }
     return;
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -10530,6 +10606,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   if (res.cloneDb && ws.db && res.cloneDb !== ws.db) {
     await db.cloneStoppingServer(res.cloneDb, ws.db);
   }
+  if (res.restoreDump && ws.db) await restoreRunbotDump(plugins, res.restoreDump, ws.db);
   wt.select(ws.id);
 }
 function findSubWorkspace(config, parentWs, row) {

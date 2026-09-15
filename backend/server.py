@@ -2120,21 +2120,28 @@ def _api_workspace_create(body):
     # add a git worktree per repo (the frontend computes every path); git creates
     # the parent <worktree_dir>/<target>/ folder on the first add.
     #
-    # "documentation"/"owl" get special handling below instead of the generic loop:
+    # "documentation"/"owl" get special handling below instead of the generic loop —
+    # but ONLY when the user actually ticked them in the create dialog's
+    # Repositories checkboxes (i.e. the frontend sent an entry for them at all):
     # - documentation sometimes DOES carry a real, bundle/PR-linked branch (someone
     #   documented the feature) — dialogs.js's startNewWorkspaceWizard matches it
     #   like any other configured repo, so an already-fetched "attach existing
     #   branch" entry for it may arrive here. Try that first; if it doesn't
-    #   actually exist there (or nothing was sent for it), fork fresh from the
-    #   matching Odoo series instead (base_branch) — never the dev branch itself,
-    #   the doc repo has no per-feature branches of its own.
+    #   actually exist there, fork fresh from the matching Odoo series instead
+    #   (base_branch) — never the dev branch itself, the doc repo has no
+    #   per-feature branches of its own.
     # - owl never carries per-feature branches at all (it's a different project,
-    #   versioned on its own) — always forked from the exact commit
+    #   versioned on its own) — forked from the exact commit
     #   community/addons/web/static/lib/owl/owl.js vendors (or "master" as a
-    #   fallback), regardless of anything the frontend sends for it.
+    #   fallback), regardless of anything the frontend sends for its branch.
     # Both are best-effort extras: a failure is reported in `results` (visible in
     # the event log) but never fails the whole workspace creation the way a
-    # failure in one of the actually-requested repos does.
+    # failure in one of the actually-requested repos does. Neither is ticked by
+    # default (templates/bundles don't list them as checkouts), so silently
+    # forking them regardless of the checkboxes surprised users who never asked
+    # for them — hence the explicit request check below.
+    doc_requested = any(r.get("repo") == "documentation" for r in body["repos"])
+    owl_requested = any(r.get("repo") == "owl" for r in body["repos"])
     doc_attach = next(
         (
             r
@@ -2170,7 +2177,7 @@ def _api_workspace_create(body):
     manual_doc = next((r for r in repos if r.get("repo") == "documentation"), None)
     if manual_doc:
         documentation_path = manual_doc["worktreePath"] if ok else None
-    elif ok and community and community.get("worktreePath") and dev_branch:
+    elif doc_requested and ok and community and community.get("worktreePath") and dev_branch:
         doc_cfg = _configured_repos().get("documentation")
         if doc_cfg:
             worktree_parent = os.path.dirname(community["worktreePath"])
@@ -2203,7 +2210,7 @@ def _api_workspace_create(body):
     # (GitService.resolve_owl_worktree_start; falls back to "master" when that
     # commit isn't reachable in the local owl clone).
     owl_path = None
-    if ok and community and community.get("worktreePath") and dev_branch:
+    if owl_requested and ok and community and community.get("worktreePath") and dev_branch:
         owl_cfg = _configured_repos().get("owl")
         if owl_cfg:
             worktree_parent = os.path.dirname(community["worktreePath"])
@@ -2271,10 +2278,13 @@ def _api_workspace_remove(body):
     for r in body["repos"]:
         ok, error = GIT.worktree_remove(r.get("mainPath"), r.get("worktreePath"), r.get("repo", ""))
         results.append({"repo": r.get("repo"), "ok": ok, "error": error})
-    # "documentation"/"owl" are auto-forked at creation without the frontend's
-    # knowledge (see _api_workspace_create) — never in body["repos"], so each needs
-    # its own explicit git worktree deregister here too, or the main repo's
-    # `git worktree list` goes stale
+    # "documentation"/"owl" get their OWN worktree paths at creation (see
+    # _api_workspace_create) rather than the ones the frontend computed for the
+    # repos it ticked — even when ticked, they aren't necessarily where a generic
+    # per-repo removal loop would look. Scan for them by their well-known
+    # <dirPath>/<repo_id> location instead (skipped if the directory was never
+    # created — e.g. neither was ticked at creation), or the main repo's
+    # `git worktree list` goes stale.
     dir_path = body.get("dirPath")
     if dir_path:
         configured = _configured_repos()
@@ -2683,6 +2693,14 @@ def _api_runbot_bundle_info(body):
     return {"ok": True, **info}
 
 
+@post_route("/api/runbot/dumps", "branch:str")
+def _api_runbot_dumps(body):
+    # the database dumps runbot's latest batch for this branch's bundle left behind
+    # — "Restore runbot database" when the workspace forks off a base version
+    # (master / 19.0) rather than a pasted bundle URL
+    return {"ok": True, "dumps": RUNBOT.dumps(body["branch"], refresh=bool(body.get("refresh")))}
+
+
 @post_route("/api/nightly")
 def _api_nightly(body):
     max_nights = min(max(int(body.get("max_nights", 14)), 7), 84)
@@ -2788,6 +2806,16 @@ def _api_databases_drop(body):
 @post_route("/api/databases/clone", "source:str", "dest:str")
 def _api_databases_clone(body):
     ok, error = DATABASE.clone(body["source"], body["dest"], _filestore(body))
+    return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+@post_route("/api/databases/restore-dump", "name:str", "url:str")
+def _api_databases_restore_dump(body):
+    # download a runbot build's database dump and restore it locally under `name`
+    # (the create-from-bundle wizard's "Restore runbot database"). Long — tens to
+    # hundreds of megabytes, then a psql replay — but the server is threaded, so it
+    # only ties up this request; progress is narrated to the goo log.
+    ok, error = DATABASE.restore_dump(body["name"], body["url"], _filestore(body))
     return (200 if ok else 400), {"ok": ok, "error": error}
 
 

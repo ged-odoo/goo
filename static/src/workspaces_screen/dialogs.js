@@ -13,6 +13,7 @@ import {
 import { newWorkspaceId } from "../core/config_plugin.js";
 import { RemoteBranchDialog } from "../core/dialogs.js";
 import {
+  formatBytes,
   postJSON,
   repoBranchList,
   descendantWorkspaces,
@@ -147,12 +148,20 @@ export async function syncReviewWorktree(plugins, ws, targets) {
 // select's onChange used to produce, before the source moved to the wizard's
 // first step): named after its enterprise/community branch, its checkouts as
 // the config, plus db / args / demo data.
-export function templatePrefill(tpl) {
-  if (!tpl) return {};
-  const branch =
+// the branch a template names itself after — its enterprise checkout's, else its
+// community one's. Also what its base version (and so its runbot bundle) derives from.
+export function templateBranch(tpl) {
+  if (!tpl) return "";
+  return (
     tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
     tpl.checkouts.find((c) => c.repo === "community")?.branch ||
-    "";
+    ""
+  );
+}
+
+export function templatePrefill(tpl) {
+  if (!tpl) return {};
+  const branch = templateBranch(tpl);
   return {
     template: tpl.id,
     name: branch,
@@ -162,6 +171,23 @@ export function templatePrefill(tpl) {
     demoData: tpl.demo_data ?? true,
     category: tpl.category || "",
   };
+}
+
+// The dumps of the bundle for a workspace's BASE version — "the runbot database
+// for master / 19.0" when the workspace is forked from a template rather than
+// picked up from a pasted bundle URL. Best-effort: runbot being slow or having no
+// bundle for that base just means the create form doesn't offer the restore, which
+// is a far better outcome than blocking the whole flow on it.
+async function baseVersionDumps(branch) {
+  // "— start blank —" picks no template, so there's no branch to derive a base from
+  const base = branch ? baseBranchOf(branch) : "";
+  if (!base) return [];
+  try {
+    const res = await postJSON("/api/runbot/dumps", { branch: base });
+    return res.dumps || [];
+  } catch {
+    return [];
+  }
 }
 
 // The wizard's FIRST step: pick the workspace's source — a template (or blank),
@@ -201,7 +227,7 @@ export class WorkspaceSourceDialog extends Component {
         </div>
         <div class="dialog-foot">
           <button class="pbtn primary" t-att-disabled="!this.canContinue" t-on-click="() => this.continue_()">
-            <t t-if="this.busy()">Reading bundle…</t><t t-else="">Continue</t>
+            <t t-if="this.busy()">Reading runbot…</t><t t-else="">Continue</t>
           </button>
           <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
         </div>
@@ -235,12 +261,18 @@ export class WorkspaceSourceDialog extends Component {
 
   async continue_() {
     if (!this.canContinue) return;
-    if (this.source() === "template") {
-      return this.done({ source: "template", template: this.template() });
-    }
     this.busy.set(true);
     this.error.set("");
     try {
+      // a template forks off a base version, so what the form can offer to restore
+      // is that version's own runbot database — looked up here, under this dialog's
+      // busy state, rather than after it closes and leaves the user staring at
+      // nothing. Best-effort (see baseVersionDumps): no bundle, no offer.
+      if (this.source() === "template") {
+        const tpl = this.props.templates.find((t2) => t2.id === this.template());
+        const dumps = await baseVersionDumps(templateBranch(tpl));
+        return this.done({ source: "template", template: this.template(), dumps });
+      }
       const info = await postJSON("/api/runbot/bundle-info", { url: this.url().trim() });
       this.done({ source: "bundle", info });
     } catch (e) {
@@ -264,16 +296,21 @@ export async function startNewWorkspaceWizard(plugins) {
   if (!res) return;
   if (res.source === "template") {
     const tpl = (config.config.templates || []).find((x) => x.id === res.template);
-    return startCreateWorkspace(plugins, templatePrefill(tpl));
+    // res.dumps: the base version's runbot databases, resolved in step 1
+    return startCreateWorkspace(plugins, { ...templatePrefill(tpl), dumps: res.dumps || [] });
   }
   const info = res.info;
   // map the bundle's github repos onto the configured ones by repo name —
   // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo. Skips
-  // "owl": it never carries per-feature branches (goo always forks it itself from
-  // the exact vendored commit — see _api_workspace_create in server.py), unlike
-  // "documentation", which real doc work sometimes *does* push alongside a
-  // feature — the backend tries that branch first and only falls back to forking
-  // from the base series when it doesn't actually exist there.
+  // "owl": it never carries per-feature branches, so there's nothing on the
+  // bundle to match it to — leaving it out of the prefill means its Repositories
+  // checkbox opens unticked, and the user opts in by ticking it themselves (the
+  // backend then forks it from the exact vendored commit — see
+  // _api_workspace_create in server.py). "documentation" isn't skipped: real doc
+  // work sometimes *does* push alongside a feature, so a bundle branch for it
+  // gets matched (and ticked) like any other repo; the backend tries that branch
+  // first and only falls back to forking from the base series when it doesn't
+  // actually exist there.
   const matches = [];
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
@@ -324,7 +361,21 @@ export async function startNewWorkspaceWizard(plugins) {
     db: info.name,
     template: "",
     createBranches: false,
+    // the dumps the bundle's latest batch left on runbot, already proven to exist
+    // (the backend HEAD-probes them) — what "Restore runbot database" offers
+    dumps: info.dumps || [],
   });
+}
+
+// Download + restore a runbot dump into the workspace's own database, as its last
+// creation step. Deliberately last, and deliberately non-fatal: it's a long network
+// + psql job, and a workspace whose checkouts already landed is worth keeping even
+// when its database didn't — the user can retry from the Databases screen rather
+// than redo the whole creation. The plugin logs the timed row; this only adds the
+// failure dialog, since nothing else would surface it (the form is already gone).
+async function restoreRunbotDump({ db, dialogs }, url, dbName) {
+  const error = await db.restoreRunbotDump(url, dbName);
+  if (error) dialogs.error("Restoring the runbot database failed", error);
 }
 
 // Create a workspace through the unified form — the wizard's SECOND step (the
@@ -355,6 +406,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       ?.branches.some((b) => b.name === branch) ?? false;
   const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
   const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
+  // "Restore runbot database": one option per database the bundle's latest batch
+  // dumped — "Enterprise Run — all (1.2 GB)". The option VALUE is the dump URL, so
+  // the form hands the restore step everything it needs. Only a bundle source
+  // prefills these, so the field is absent everywhere else.
+  const dumpOptions = (prefill.dumps || []).map((d) => ({
+    value: d.url,
+    label: `${d.slot} — ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`,
+  }));
   // ticked by default: whatever the prefilled config already covers, else every
   // non-external configured repo (a new task branch usually spans all of them;
   // external repos, e.g. odoo/owl, are outside the CI ecosystem and rarely need
@@ -368,6 +427,16 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   // "invalid reference" and takes the whole creation down (see the check below,
   // right before checkouts are used).
   const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
+
+  // default to the dump matching the checkout: an enterprise workspace wants the
+  // Enterprise run's db (community modules are in it too), a community-only one
+  // can't even load an enterprise dump. Within a build, "all" over "base" — "base"
+  // is a bare install, which is what an empty local db would give you anyway.
+  const wantsEnterprise = prefillRepoIds.includes("enterprise");
+  const bestDump =
+    (prefill.dumps || []).find(
+      (d) => d.db === "all" && /enterprise/i.test(d.slot) === wantsEnterprise,
+    ) || (prefill.dumps || []).find((d) => d.db === "all");
   const res = await dialogs.open({
     title: tpl ? `New workspace — from template "${tpl.name}"` : "New workspace",
     okLabel: "Create",
@@ -381,6 +450,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         return "set a database name to clone the selected database into";
       if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
         return `database "${(v.db || "").trim()}" already exists — pick a new name to clone into`;
+      // both would write the same database, and the dump restore needs a fresh one
+      // in every location (it replays a schema, it doesn't seed an empty shell)
+      if (v.restoreDump && v.cloneDb)
+        return "clone a database or restore the runbot dump — not both";
+      if (v.restoreDump && !(v.db || "").trim())
+        return "set a database name to restore the runbot dump into";
+      if (v.restoreDump && dbNames.has((v.db || "").trim()))
+        return `database "${(v.db || "").trim()}" already exists — pick a new name to restore into`;
       if (v.createVenv && v.location !== "worktree")
         return 'a venv needs Location set to "Own worktree + port"';
       return "";
@@ -563,6 +640,25 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
           return dbOptions[0]?.value || "";
         },
       },
+      // download + restore the bundle's own runbot database instead of starting from
+      // an empty one — the whole point of picking up a colleague's bundle is usually
+      // to reproduce something on their data. Bundle sources only (see dumpOptions).
+      ...(dumpOptions.length
+        ? [
+            {
+              key: "restoreDump",
+              type: "check-select",
+              label: "Restore runbot database",
+              options: dumpOptions,
+              value: "",
+              default: () => bestDump?.url || dumpOptions[0].value,
+              hint: (v) =>
+                v.restoreDump
+                  ? "downloaded from runbot and restored after the workspace is created — this can take a while"
+                  : null,
+            },
+          ]
+        : []),
       // same story as Start args: feeds --without-demo regardless of local vs.
       // docker launch — unused only under launch_mode "external"
       ...(config.config.launch_mode === "external"
@@ -658,7 +754,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   }
 
   if (res.location === "worktree") {
-    await wt.createWorktree({
+    const created = await wt.createWorktree({
       name: res.name.trim(),
       dbName: (res.db || "").trim(),
       cloneSource: res.cloneDb || "",
@@ -673,6 +769,10 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       createVenv: !!res.createVenv,
       forkRepos,
     });
+    // createWorktree returns the new id, or false once it has reported a failure
+    if (created && res.restoreDump) {
+      await restoreRunbotDump(plugins, res.restoreDump, (res.db || "").trim());
+    }
     return;
   }
 
@@ -717,6 +817,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   if (res.cloneDb && ws.db && res.cloneDb !== ws.db) {
     await db.cloneStoppingServer(res.cloneDb, ws.db);
   }
+  if (res.restoreDump && ws.db) await restoreRunbotDump(plugins, res.restoreDump, ws.db);
   wt.select(ws.id);
 }
 
