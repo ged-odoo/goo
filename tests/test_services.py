@@ -35,6 +35,7 @@ class FakeIO:
         runs=None,
         http=None,
         http_nofollow=None,
+        http_head=None,
         dirs=None,
         files=None,
         json_files=None,
@@ -45,6 +46,7 @@ class FakeIO:
         self._http = http or {}  # {url_substring: (text, error)}
         # {url_substring: (status, location, text)} for http_get_nofollow
         self._http_nofollow = http_nofollow or {}
+        self._http_head = http_head or {}  # {url_substring: (status, size)}
         self._dirs = dirs or {}  # {dir path: [entry names]}
         self._files = files or {}  # {file path: text content}
         self._json_files = dict(json_files or {})  # {path: parsed-json-object}
@@ -54,6 +56,9 @@ class FakeIO:
         self.http_calls = []
         self.logs = []
         self.fs_ops = []  # recorded (op, src, dst) filesystem mutations
+        self.downloads = []  # recorded (url, path) http_download calls
+        self.temp_dir = "/tmp/goo-fake"  # what make_temp_dir hands out
+        self.unpacks = {}  # {archive path substring: [member names]} for unzip
 
     def log_request(self, target):
         pass
@@ -84,8 +89,57 @@ class FakeIO:
                 return (*resp, None)
         return 0, "", "", "not stubbed"
 
+    def http_head(self, url, **kwargs):
+        self.http_calls.append(url)
+        for needle, resp in self._http_head.items():
+            if needle in url:
+                return (*resp, None)
+        return 404, 0, "not stubbed"
+
+    # downloads/archives: no bytes actually move — a download "creates" its target as
+    # a file, and unzip "extracts" whatever the test declared under the archive path.
+    def http_download(self, url, path, **kwargs):
+        self.http_calls.append(url)
+        self.downloads.append((url, path))
+        for needle, resp in self._http_head.items():
+            if needle in url:
+                if resp[0] != 200:
+                    return False, f"HTTP {resp[0]}"
+                self._files[path] = "<zip>"
+                return True, None
+        return False, "not stubbed"
+
+    def unzip(self, path, dest):
+        self.fs_ops.append(("unzip", path, dest))
+        if self.fs_fail and self.fs_fail in path:
+            return False, "boom"
+        for name, entries in list(self.unpacks.items()):
+            if name in path:
+                for entry in entries:
+                    full = os.path.join(dest, entry)
+                    if entry.endswith("/"):
+                        self._dirs[full.rstrip("/")] = []
+                    else:
+                        self._files[full] = ""
+                return True, None
+        return False, "nothing to unpack"
+
+    def make_temp_dir(self, prefix="goo-"):
+        self.fs_ops.append(("mkdtemp", prefix, None))
+        return self.temp_dir
+
+    def make_dirs(self, path):
+        self.fs_ops.append(("makedirs", path, None))
+        if self.fs_fail and self.fs_fail in path:
+            return False, "boom"
+        self._dirs.setdefault(path, [])
+        return True, None
+
     def is_dir(self, path):
         return path in self._dirs
+
+    def is_file(self, path):
+        return path in self._files
 
     def list_dir(self, path):
         return sorted(self._dirs.get(path, []))
@@ -317,6 +371,177 @@ class RunbotServiceTest(unittest.TestCase):
                 }
             },
         )
+
+    # ── database dumps off a bundle page ────────────────────────────────────
+
+    # two batch tiles (newest first), each with build slots carrying the data
+    # attributes the dump URL is assembled from. The Documentation slot dumps no
+    # database (data-databases="[]"), and the older tile must be ignored entirely.
+    @staticmethod
+    def _slot(name, build, dest, host, databases):
+        return (
+            f'<div class="slot_container"><a class="btn btn-default slot_name">'
+            f"<span>{name}</span></a>"
+            f'<build-options-dropdown data-id="{build}" data-dest="{dest}" '
+            f'data-host="{host}" data-databases="{databases}"></build-options-dropdown></div>'
+        )
+
+    def _bundle_with_batches(self):
+        latest = (
+            self._slot("Community Run", "12", "12-master", "runbot9.odoo.com", "[&#34;all&#34;]")
+            + self._slot(
+                "Enterprise Run",
+                "13",
+                "13-master",
+                "runbot9.odoo.com",
+                "[&#34;all&#34;, &#34;base&#34;]",
+            )
+            + self._slot("Documentation", "14", "14-master", "runbot9.odoo.com", "[]")
+        )
+        older = self._slot("Community Run", "1", "1-master", "runbot1.odoo.com", "[&#34;all&#34;]")
+        return (
+            "<title>Bundle master-x</title>"
+            f'<div class="batch_tile">{latest}</div><div class="batch_tile">{older}</div>'
+        )
+
+    def _bundle_with_fresh_empty_batch(self):
+        """A bundle whose newest batch was created seconds ago: runbot hasn't filled
+        in its build slots yet, so it carries no dropdowns at all."""
+        return self._bundle_with_batches().replace(
+            '<div class="batch_tile">',
+            '<div class="batch_tile"></div><div class="batch_tile">',
+            1,
+        )
+
+    def test_bundle_dumps_stops_at_the_newest_usable_batch(self):
+        # every dump the latest batch offers, each probed and sized; the older
+        # batch's build (runbot1) is never even looked at
+        io = FakeIO(
+            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_batches())},
+            http_head={"runbot9.odoo.com": (200, 4096)},
+        )
+        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-x"
+        )
+        self.assertIsNone(error)
+        self.assertEqual(
+            info["dumps"],
+            [
+                {
+                    "build": "12",
+                    "slot": "Community Run",
+                    "db": "all",
+                    "url": "https://runbot9.odoo.com/runbot/static/build/12-master/logs/12-master-all.zip",
+                    "size": 4096,
+                },
+                {
+                    "build": "13",
+                    "slot": "Enterprise Run",
+                    "db": "all",
+                    "url": "https://runbot9.odoo.com/runbot/static/build/13-master/logs/13-master-all.zip",
+                    "size": 4096,
+                },
+                {
+                    "build": "13",
+                    "slot": "Enterprise Run",
+                    "db": "base",
+                    "url": "https://runbot9.odoo.com/runbot/static/build/13-master/logs/13-master-base.zip",
+                    "size": 4096,
+                },
+            ],
+        )
+        self.assertNotIn("runbot1.odoo.com", " ".join(io.http_calls))
+
+    def test_bundle_dumps_falls_back_past_a_batch_with_no_builds(self):
+        # a batch created moments ago has no build slots yet — read the one before it
+        # rather than reporting that the bundle has no database to restore
+        io = FakeIO(
+            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_fresh_empty_batch())},
+            http_head={"runbot9.odoo.com": (200, 4096)},
+        )
+        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-x"
+        )
+        self.assertEqual(
+            [(d["build"], d["db"]) for d in info["dumps"]],
+            [("12", "all"), ("13", "all"), ("13", "base")],
+        )
+
+    def test_bundle_dumps_falls_back_when_every_dump_is_pruned(self):
+        # the newest batch's builds are all gone from disk → the previous batch's
+        # (runbot1) dumps are offered instead
+        io = FakeIO(
+            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_batches())},
+            http_head={"runbot9.odoo.com": (404, 0), "runbot1.odoo.com": (200, 77)},
+        )
+        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-x"
+        )
+        self.assertEqual(
+            [(d["build"], d["db"], d["size"]) for d in info["dumps"]], [("1", "all", 77)]
+        )
+
+    def test_bundle_dumps_drops_pruned_builds(self):
+        # runbot cleans old build directories up: a candidate whose zip is gone is
+        # not offered at all, rather than failing after the workspace exists
+        io = FakeIO(
+            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_batches())},
+            http_head={"13-master": (200, 10), "12-master": (404, 0)},
+        )
+        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-x"
+        )
+        self.assertEqual(
+            [(d["build"], d["db"]) for d in info["dumps"]], [("13", "all"), ("13", "base")]
+        )
+
+    def test_dumps_by_branch_name(self):
+        # "the runbot database for master" — the same parse, reached by bundle NAME
+        # (302 → canonical page) instead of a pasted URL
+        io = FakeIO(
+            http_nofollow={"bundle/master": (302, "/runbot/bundle/master-1", "")},
+            http={"bundle/master-1": (self._bundle_with_batches(), None)},
+            http_head={"runbot9.odoo.com": (200, 4096)},
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=60))
+        dumps = svc.dumps("master")
+        self.assertEqual(
+            [(d["build"], d["db"]) for d in dumps],
+            [("12", "all"), ("13", "all"), ("13", "base")],
+        )
+        # cached per branch under its own key — a second open costs no requests
+        before = len(io.http_calls)
+        svc.dumps("master")
+        self.assertEqual(len(io.http_calls), before)
+
+    def test_dumps_resolves_a_sticky_series_by_bundle_id(self):
+        # /runbot/bundle/saas-19.4 redirects to `saas-194`, an unrelated private dev
+        # bundle — a sticky series must be addressed by the id the starred list gives
+        # it, and never through that name lookup
+        rd1 = (
+            '<div class="row bundle_row"><i class="fa fa-star"></i>'
+            '<a href="/runbot/bundle/483750" title="View Bundle saas-19.4">v</a></div>'
+        )
+        io = FakeIO(
+            http={"rd-1": (rd1, None), "bundle/483750": (self._bundle_with_batches(), None)},
+            http_head={"runbot9.odoo.com": (200, 8)},
+        )
+        dumps = services.RunbotService(io, TTLCache(ttl=0)).dumps("saas-19.4")
+        self.assertEqual([d["build"] for d in dumps], ["12", "13", "13"])
+        # the misleading name URL was never requested
+        self.assertFalse(any("bundle/saas-19.4" in c for c in io.http_calls))
+
+    def test_dumps_by_branch_absent_bundle(self):
+        # 301 = runbot read the trailing number as some other bundle's id: no offer
+        io = FakeIO(http_nofollow={"bundle/nope-33": (301, "/runbot/bundle/foreign-33", "")})
+        self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("nope-33"), [])
+
+    def test_bundle_dumps_absent_without_batches(self):
+        io = FakeIO(http_nofollow={"bundle/x": (200, "", self.BUNDLE_HTML)})
+        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/x"
+        )
+        self.assertEqual(info["dumps"], [])
 
 
 class MergebotServiceTest(unittest.TestCase):
@@ -1405,6 +1630,88 @@ class DatabaseServiceTest(unittest.TestCase):
         ok, err = svc.rename("alpha", "gamma", filestore="/fs")
         self.assertTrue(ok, err)
         self.assertIn(("move", "/fs/alpha", "/fs/gamma"), io.fs_ops)
+
+    # ── runbot dump restore ─────────────────────────────────────────────────
+
+    DUMP_URL = "https://runbot9.odoo.com/runbot/static/build/13-master/logs/13-master-all.zip"
+
+    def _dump_io(self, **extra):
+        """An IO where `gamma` doesn't exist yet and the dump downloads + unpacks
+        into the odoo layout (dump.sql + filestore/)."""
+        io = self._io(**extra)
+        io._runs.setdefault("FROM pg_database WHERE datname", completed(stdout=""))
+        io._http_head = {"13-master": (200, 4096)}
+        io.unpacks = {"dump.zip": ["dump.sql", "filestore/"]}
+        return io
+
+    def test_restore_dump_creates_restores_and_installs_filestore(self):
+        io = self._dump_io()
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, filestore="/fs", log_progress=False)
+        self.assertTrue(ok, err)
+        self.assertEqual(io.downloads, [(self.DUMP_URL, "/tmp/goo-fake/dump.zip")])
+        # odoo's own database shape — its dumps restore into no other
+        self.assertIn(
+            ["createdb", "--template=template0", "--encoding=unicode", "--lc-collate=C", "gamma"],
+            io.run_calls,
+        )
+        self.assertIn(
+            ["psql", "--quiet", "--dbname", "gamma", "--file", "/tmp/goo-fake/dump/dump.sql"],
+            io.run_calls,
+        )
+        self.assertIn(("move", "/tmp/goo-fake/dump/filestore", "/fs/gamma"), io.fs_ops)
+        self.assertIn(("remove", "/tmp/goo-fake", None), io.fs_ops)  # temp dir cleaned up
+
+    def test_restore_dump_without_a_filestore_says_so(self):
+        # the archive's attachments are dropped (there's nowhere to put them) — the
+        # restore still succeeds, but it must not do that silently
+        io = self._dump_io()
+        io.unpacks = {"dump.zip": ["dump.sql", "filestore/"]}
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, filestore="", log_progress=False)
+        self.assertTrue(ok, err)
+        self.assertFalse(any(op == "move" for op, _s, _d in io.fs_ops))
+        self.assertTrue(any("no filestore configured" in line for line in io.logs))
+
+    def test_restore_dump_refuses_existing_database(self):
+        io = self._dump_io()
+        io._runs["FROM pg_database WHERE datname"] = completed(stdout="1\n")
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, log_progress=False)
+        self.assertFalse(ok)
+        self.assertIn("already exists", err)
+        self.assertEqual(io.downloads, [])  # nothing downloaded before the check
+
+    def test_restore_dump_refuses_foreign_url(self):
+        io = self._dump_io()
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", "https://example.com/evil.zip", log_progress=False)
+        self.assertFalse(ok)
+        self.assertIn("not a runbot dump URL", err)
+        self.assertEqual(io.downloads, [])
+
+    def test_restore_dump_drops_the_database_when_psql_fails(self):
+        io = self._dump_io()
+        io._runs["--file"] = completed(returncode=1, stderr="syntax error")
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, filestore="/fs", log_progress=False)
+        self.assertFalse(ok)
+        self.assertIn("syntax error", err)
+        # no half-restored shell left behind, and no filestore installed for it
+        self.assertIn(["dropdb", "--if-exists", "gamma"], io.run_calls)
+        self.assertNotIn(("move", "/tmp/goo-fake/dump/filestore", "/fs/gamma"), io.fs_ops)
+
+    def test_restore_dump_rejects_archive_without_dump_sql(self):
+        io = self._dump_io()
+        io.unpacks = {"dump.zip": ["logs.txt"]}
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, log_progress=False)
+        self.assertFalse(ok)
+        self.assertIn("no dump.sql", err)
+        self.assertNotIn(
+            ["createdb", "--template=template0", "--encoding=unicode", "--lc-collate=C", "gamma"],
+            io.run_calls,
+        )
 
 
 class ParseGithubSlugTest(unittest.TestCase):
