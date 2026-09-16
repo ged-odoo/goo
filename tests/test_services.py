@@ -4193,5 +4193,1519 @@ class DockerInfraServiceTest(unittest.TestCase):
         self.assertEqual(svc.next_container_slot(), "dev2")
 
 
+class FieldOkTest(unittest.TestCase):
+    """_field_ok's per-kind truthiness rules — every post_route's validation gate."""
+
+    def test_default_kind_is_plain_truthy(self):
+        from backend import server
+
+        self.assertTrue(server._field_ok({"x": "a"}, "x"))
+        self.assertFalse(server._field_ok({"x": ""}, "x"))
+        self.assertFalse(server._field_ok({}, "x"))
+
+    def test_str_kind_requires_non_empty_string(self):
+        from backend import server
+
+        self.assertTrue(server._field_ok({"x": "a"}, "x:str"))
+        self.assertFalse(server._field_ok({"x": ""}, "x:str"))
+        self.assertFalse(server._field_ok({"x": 1}, "x:str"))
+
+    def test_strip_kind_requires_non_blank_content(self):
+        from backend import server
+
+        self.assertTrue(server._field_ok({"x": "  a "}, "x:strip"))
+        self.assertFalse(server._field_ok({"x": "   "}, "x:strip"))
+        self.assertFalse(server._field_ok({"x": 1}, "x:strip"))
+
+    def test_list_kind_allows_empty_list(self):
+        from backend import server
+
+        self.assertTrue(server._field_ok({"x": []}, "x:list"))
+        self.assertTrue(server._field_ok({"x": [1]}, "x:list"))
+        self.assertFalse(server._field_ok({"x": "a"}, "x:list"))
+        self.assertFalse(server._field_ok({}, "x:list"))
+
+    def test_list_plus_kind_requires_non_empty_list(self):
+        from backend import server
+
+        self.assertTrue(server._field_ok({"x": [1]}, "x:list+"))
+        self.assertFalse(server._field_ok({"x": []}, "x:list+"))
+        self.assertFalse(server._field_ok({"x": "a"}, "x:list+"))
+
+
+class PostRouteMissingMessageTest(unittest.TestCase):
+    """post_route's auto-generated `missing` message, per required-field spec."""
+
+    def _register(self, *required, missing=""):
+        from backend import server
+
+        path = "/__test__/probe"
+
+        @server.post_route(path, *required, missing=missing)
+        def _probe(body):
+            return {"ok": True}
+
+        try:
+            return server.POST_ROUTES[path]
+        finally:
+            del server.POST_ROUTES[path]
+
+    def test_single_plain_field(self):
+        _fn, _required, missing = self._register("workspace")
+        self.assertEqual(missing, "missing workspace")
+
+    def test_single_list_field_gets_list_suffix(self):
+        _fn, _required, missing = self._register("repos:list")
+        self.assertEqual(missing, "missing repos list")
+
+    def test_single_list_plus_field_gets_list_suffix(self):
+        _fn, _required, missing = self._register("repos:list+")
+        self.assertEqual(missing, "missing repos list")
+
+    def test_multiple_fields_joined_with_or_no_list_suffix(self):
+        _fn, _required, missing = self._register("workspace", "prompt:str")
+        self.assertEqual(missing, "missing workspace or prompt")
+
+    def test_explicit_missing_overrides_generated_one(self):
+        _fn, _required, missing = self._register("repos", missing="custom message")
+        self.assertEqual(missing, "custom message")
+
+
+class _FakeGitForHandlers:
+    """Stand-in for GIT used by _api_workspace_create/_remove tests — records every
+    call so the test asserts on the handler's own orchestration, not GitService's
+    (separately tested) internals. worktree_add's result is scripted per repo id."""
+
+    def __init__(self, worktree_add_results=None, owl_start="master"):
+        self.worktree_add_results = worktree_add_results or {}
+        self.owl_start = owl_start
+        self.worktree_add_calls = []
+        self.worktree_remove_calls = []
+        self.write_odoo_conf_calls = []
+        self.create_worktree_claude_md_calls = []
+        self.create_worktree_skills_calls = []
+
+    def worktree_add(self, main_path, worktree_path, branch, repo="", **kwargs):
+        self.worktree_add_calls.append(
+            {
+                "main_path": main_path,
+                "worktree_path": worktree_path,
+                "branch": branch,
+                "repo": repo,
+                **kwargs,
+            }
+        )
+        return self.worktree_add_results.get(repo, (True, None))
+
+    def worktree_remove(self, main_path, worktree_path, repo=""):
+        self.worktree_remove_calls.append((main_path, worktree_path, repo))
+        return True, None
+
+    def resolve_owl_worktree_start(self, community_path, owl_main_path, pull_remote=None):
+        return self.owl_start
+
+    def write_odoo_conf(self, worktree_parent, addons_path, db_user, db_password):
+        self.write_odoo_conf_calls.append((worktree_parent, addons_path, db_user, db_password))
+
+    def create_worktree_claude_md(
+        self, worktree_parent, dev_branch, has_enterprise, documentation_path, owl_path
+    ):
+        self.create_worktree_claude_md_calls.append(
+            (worktree_parent, dev_branch, has_enterprise, documentation_path, owl_path)
+        )
+
+    def create_worktree_skills(
+        self, community_path, worktree_parent, dev_branch, documentation_path, owl_path
+    ):
+        self.create_worktree_skills_calls.append(
+            (community_path, worktree_parent, dev_branch, documentation_path, owl_path)
+        )
+
+
+class _FakeConfigStore:
+    def __init__(self, config):
+        self._config = config
+
+    def get(self):
+        return {"rev": 1, "config": self._config, "state": {}}
+
+
+class ApiWorkspaceCreateTest(unittest.TestCase):
+    """_api_workspace_create's own orchestration: repo/dev_branch selection, the
+    documentation attach-vs-fork branch, the owl auto-fork, the addons_path
+    exclusion set, and gating conf/CLAUDE.md/skills generation on every repo's
+    worktree_add having succeeded."""
+
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_git = server.GIT
+        self.orig_config = server.CONFIG
+
+    def tearDown(self):
+        self.server.GIT = self.orig_git
+        self.server.CONFIG = self.orig_config
+
+    def _config(self, main_repo_id=None, extra_repos=None):
+        repos = [
+            {"id": "documentation", "path": "/repos/documentation", "pull_remote": "origin"},
+            {"id": "owl", "path": "/repos/owl", "pull_remote": "origin"},
+        ] + (extra_repos or [])
+        cfg = {"repos": repos, "db_user": "odoo", "db_password": "secret"}
+        if main_repo_id is not None:
+            cfg["main_repo_id"] = main_repo_id
+        return cfg
+
+    def test_configured_main_repo_id_is_honored_not_hardcoded_community(self):
+        # regression test for the main_repo_id fix: the configured main repo id
+        # ("odoo", not "community") must drive dev_branch selection and be
+        # excluded from the addons_path, just like "community" used to be.
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+                {
+                    "repo": "enterprise",
+                    "mainPath": "/main/enterprise",
+                    "worktreePath": "/w/enterprise",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(fake_git.write_odoo_conf_calls), 1)
+        _parent, addons_path, db_user, db_password = fake_git.write_odoo_conf_calls[0]
+        paths = addons_path.split(",")
+        self.assertIn("/w/odoo/addons", paths)
+        self.assertIn("/w/enterprise", paths)
+        self.assertNotIn("/w/odoo", paths)  # main repo itself excluded, not just "community"
+        self.assertEqual(db_user, "odoo")
+        self.assertEqual(db_password, "secret")
+        _parent, dev_branch, has_enterprise, _doc, _owl = fake_git.create_worktree_claude_md_calls[
+            0
+        ]
+        self.assertEqual(dev_branch, "master-feat-x")
+        self.assertTrue(has_enterprise)
+
+    def test_defaults_to_community_when_main_repo_id_unset(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id=None))
+        body = {
+            "repos": [
+                {
+                    "repo": "community",
+                    "mainPath": "/main/community",
+                    "worktreePath": "/w/community",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                }
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(fake_git.write_odoo_conf_calls), 1)
+
+    def test_a_failed_repo_skips_conf_and_claude_md_generation(self):
+        fake_git = _FakeGitForHandlers(worktree_add_results={"enterprise": (False, "boom")})
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+                {
+                    "repo": "enterprise",
+                    "mainPath": "/main/enterprise",
+                    "worktreePath": "/w/enterprise",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertFalse(result["ok"])
+        self.assertEqual(fake_git.write_odoo_conf_calls, [])
+        self.assertEqual(fake_git.create_worktree_claude_md_calls, [])
+        self.assertEqual(fake_git.create_worktree_skills_calls, [])
+        errored = [r for r in result["results"] if r["repo"] == "enterprise"][0]
+        self.assertEqual(errored["error"], "boom")
+
+    def test_documentation_attach_used_when_an_existing_branch_was_sent(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+                {"repo": "documentation", "branch": "master-feat-x-docs"},
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        doc_calls = [c for c in fake_git.worktree_add_calls if c["repo"] == "documentation"]
+        self.assertEqual(len(doc_calls), 1)
+        self.assertEqual(doc_calls[0]["branch"], "master-feat-x-docs")
+        self.assertFalse(doc_calls[0].get("new_branch"))
+        _parent, _dev, _ent, doc_path, _owl = fake_git.create_worktree_claude_md_calls[0]
+        self.assertEqual(doc_path, "/w/documentation")
+
+    def test_documentation_forks_from_base_branch_when_nothing_manual(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                }
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        doc_calls = [c for c in fake_git.worktree_add_calls if c["repo"] == "documentation"]
+        self.assertEqual(len(doc_calls), 1)
+        self.assertEqual(doc_calls[0]["branch"], "master-feat-x")
+        self.assertTrue(doc_calls[0]["new_branch"])
+        self.assertEqual(doc_calls[0]["start_point"], "master")  # base_branch("master-feat-x")
+
+    def test_owl_auto_forked_from_resolved_start(self):
+        fake_git = _FakeGitForHandlers(owl_start="abcdef1")
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                }
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        owl_calls = [c for c in fake_git.worktree_add_calls if c["repo"] == "owl"]
+        self.assertEqual(len(owl_calls), 1)
+        self.assertEqual(owl_calls[0]["start_point"], "abcdef1")
+        self.assertEqual(owl_calls[0]["worktree_path"], "/w/owl")
+        _parent, _dev, _ent, _doc, owl_path = fake_git.create_worktree_claude_md_calls[0]
+        self.assertEqual(owl_path, "/w/owl")
+
+    def test_manually_selected_documentation_skips_auto_fork(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(self._config(main_repo_id="odoo"))
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+                {
+                    "repo": "documentation",
+                    "mainPath": "/main/documentation",
+                    "worktreePath": "/w/documentation-manual",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                },
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        # only the one, generic-loop call for documentation — no extra auto-fork call
+        doc_calls = [c for c in fake_git.worktree_add_calls if c["repo"] == "documentation"]
+        self.assertEqual(len(doc_calls), 1)
+        self.assertEqual(doc_calls[0]["worktree_path"], "/w/documentation-manual")
+        _parent, _dev, _ent, doc_path, _owl = fake_git.create_worktree_claude_md_calls[0]
+        self.assertEqual(doc_path, "/w/documentation-manual")
+
+    def test_no_extra_forks_when_documentation_and_owl_not_configured(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(
+            {"repos": [], "main_repo_id": "odoo", "db_user": "odoo", "db_password": "odoo"}
+        )
+        body = {
+            "repos": [
+                {
+                    "repo": "odoo",
+                    "mainPath": "/main/odoo",
+                    "worktreePath": "/w/odoo",
+                    "newBranch": "master-feat-x",
+                    "startPoint": "master",
+                }
+            ]
+        }
+        result = self.server._api_workspace_create(body)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(fake_git.worktree_add_calls), 1)  # only the requested repo
+        self.assertEqual(len(fake_git.write_odoo_conf_calls), 1)
+
+
+class ApiWorkspaceRemoveTest(unittest.TestCase):
+    """_api_workspace_remove: aggregate ok, the documentation/owl re-derivation
+    (never present in body["repos"], since they're auto-forked without the
+    frontend's knowledge), and the conditional remove_tree/CLAUDE.forget calls."""
+
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_git = server.GIT
+        self.orig_config = server.CONFIG
+        self.orig_effects_is_dir = server.effects.is_dir
+        self.orig_effects_remove_tree = server.effects.remove_tree
+        self.orig_claude_forget = server.CLAUDE.forget
+
+    def tearDown(self):
+        self.server.GIT = self.orig_git
+        self.server.CONFIG = self.orig_config
+        self.server.effects.is_dir = self.orig_effects_is_dir
+        self.server.effects.remove_tree = self.orig_effects_remove_tree
+        self.server.CLAUDE.forget = self.orig_claude_forget
+
+    def test_deregisters_auto_forked_documentation_and_owl_and_sweeps_dir(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore(
+            {
+                "repos": [
+                    {"id": "documentation", "path": "/repos/documentation"},
+                    {"id": "owl", "path": "/repos/owl"},
+                ]
+            }
+        )
+        self.server.effects.is_dir = lambda path: True
+        removed = []
+        self.server.effects.remove_tree = lambda path: removed.append(path)
+        forgotten = []
+        self.server.CLAUDE.forget = lambda ws: forgotten.append(ws)
+
+        body = {
+            "repos": [
+                {"repo": "odoo", "mainPath": "/main/odoo", "worktreePath": "/w/odoo"},
+            ],
+            "dirPath": "/w",
+            "workspace": "feat-x",
+        }
+        result = self.server._api_workspace_remove(body)
+        self.assertTrue(result["ok"])
+        doc_owl_removed = {c[2] for c in fake_git.worktree_remove_calls if c[2] != "odoo"}
+        self.assertEqual(doc_owl_removed, {"documentation", "owl"})
+        self.assertEqual(removed, ["/w"])
+        self.assertEqual(forgotten, ["feat-x"])
+
+    def test_no_sweep_or_forget_when_dirpath_and_workspace_absent(self):
+        fake_git = _FakeGitForHandlers()
+        self.server.GIT = fake_git
+        self.server.CONFIG = _FakeConfigStore({"repos": []})
+        removed = []
+        self.server.effects.remove_tree = lambda path: removed.append(path)
+        forgotten = []
+        self.server.CLAUDE.forget = lambda ws: forgotten.append(ws)
+
+        body = {"repos": [{"repo": "odoo", "mainPath": "/main/odoo", "worktreePath": "/w/odoo"}]}
+        result = self.server._api_workspace_remove(body)
+        self.assertTrue(result["ok"])
+        self.assertEqual(removed, [])
+        self.assertEqual(forgotten, [])
+
+    def test_aggregate_ok_is_false_when_any_repo_fails(self):
+        class FailingGit(_FakeGitForHandlers):
+            def worktree_remove(self, main_path, worktree_path, repo=""):
+                if repo == "odoo":
+                    return False, "still dirty"
+                return True, None
+
+        self.server.GIT = FailingGit()
+        self.server.CONFIG = _FakeConfigStore({"repos": []})
+        body = {"repos": [{"repo": "odoo", "mainPath": "/main/odoo", "worktreePath": "/w/odoo"}]}
+        result = self.server._api_workspace_remove(body)
+        self.assertFalse(result["ok"])
+
+
+class ApiWorkspaceExternalStatusTest(unittest.TestCase):
+    """The docker ps/inspect scan lives directly in the handler, not a service."""
+
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_run = server.effects.run
+
+    def tearDown(self):
+        self.server.effects.run = self.orig_run
+
+    def test_running_when_a_container_serves_the_named_db(self):
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["docker", "ps"]:
+                return completed(stdout="dev1\ndev2\n")
+            if cmd[:2] == ["docker", "inspect"] and cmd[-1] == "dev1":
+                return completed(stdout="[/bin/sh -c odoo-bin -d other ]")
+            if cmd[:2] == ["docker", "inspect"] and cmd[-1] == "dev2":
+                return completed(stdout="[/bin/sh -c odoo-bin -d mydb ]")
+            return completed(returncode=1)
+
+        self.server.effects.run = fake_run
+        result = self.server._api_workspace_external_status({"name": "mydb"})
+        self.assertTrue(result["running"])
+        self.assertEqual(result["url"], "http://dev2.localhost/")
+
+    def test_not_running_when_docker_ps_fails(self):
+        self.server.effects.run = lambda cmd, **kwargs: completed(returncode=1)
+        result = self.server._api_workspace_external_status({"name": "mydb"})
+        self.assertFalse(result["running"])
+        self.assertIsNone(result["url"])
+
+    def test_not_running_when_docker_missing(self):
+        def raise_missing(cmd, **kwargs):
+            raise FileNotFoundError("docker not found")
+
+        self.server.effects.run = raise_missing
+        result = self.server._api_workspace_external_status({"name": "mydb"})
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["running"])
+
+    def test_not_running_on_timeout(self):
+        def raise_timeout(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        self.server.effects.run = raise_timeout
+        result = self.server._api_workspace_external_status({"name": "mydb"})
+        self.assertFalse(result["running"])
+
+    def test_no_matching_container_reports_not_running(self):
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["docker", "ps"]:
+                return completed(stdout="dev1\n")
+            return completed(stdout="[/bin/sh -c odoo-bin -d other ]")
+
+        self.server.effects.run = fake_run
+        result = self.server._api_workspace_external_status({"name": "mydb"})
+        self.assertFalse(result["running"])
+
+
+class ApiCodeParallelFanoutTest(unittest.TestCase):
+    """_api_code_checkout/_api_code_rebase/_api_code_branches_create all fan a
+    per-repo git op out over a ThreadPoolExecutor and pool.map the results back —
+    verify the empty-list short-circuit and that every repo's own result survives
+    the round trip, for all three handlers."""
+
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_git = server.GIT
+
+    def tearDown(self):
+        self.server.GIT = self.orig_git
+
+    def test_checkout_empty_repos_short_circuits(self):
+        result = self.server._api_code_checkout({"repos": []})
+        self.assertEqual(result, {"ok": True, "results": []})
+
+    def test_checkout_fans_out_and_preserves_each_result(self):
+        class FakeGit:
+            def checkout(self, path, branch, repo=""):
+                return (branch != "bad"), (None if branch != "bad" else "conflict")
+
+        self.server.GIT = FakeGit()
+        body = {
+            "repos": [
+                {"path": "/a", "branch": "feat-x", "repo": "a"},
+                {"path": "/b", "branch": "bad", "repo": "b"},
+            ]
+        }
+        result = self.server._api_code_checkout(body)
+        self.assertTrue(result["ok"])  # the handler itself always reports ok=True
+        by_branch = {r["branch"]: r for r in result["results"]}
+        self.assertTrue(by_branch["feat-x"]["ok"])
+        self.assertFalse(by_branch["bad"]["ok"])
+        self.assertEqual(by_branch["bad"]["error"], "conflict")
+
+    def test_rebase_empty_repos_short_circuits(self):
+        result = self.server._api_code_rebase({"repos": []})
+        self.assertEqual(result, {"ok": True, "results": []})
+
+    def test_rebase_fans_out_over_repos(self):
+        class FakeGit:
+            def fetch_rebase(self, path, base, pull_remote, repo):
+                return True, None
+
+        self.server.GIT = FakeGit()
+        body = {"repos": [{"path": "/a", "base": "master", "repo": "a"}]}
+        result = self.server._api_code_rebase(body)
+        self.assertEqual(result["results"], [{"repo": "a", "ok": True, "error": None}])
+
+    def test_branches_create_empty_short_circuits(self):
+        result = self.server._api_code_branches_create({"branches": []})
+        self.assertEqual(result, {"ok": True, "results": []})
+
+    def test_branches_create_fans_out_over_branches(self):
+        class FakeGit:
+            def create_branch(
+                self, path, name, start_point, fresh_start=False, pull_remote=None, repo=""
+            ):
+                return True, None
+
+        self.server.GIT = FakeGit()
+        body = {"branches": [{"path": "/a", "name": "feat-x"}, {"path": "/b", "name": "feat-y"}]}
+        result = self.server._api_code_branches_create(body)
+        self.assertEqual(
+            {r["name"] for r in result["results"]},
+            {"feat-x", "feat-y"},
+        )
+
+
+class ApiCodeRemoteBranchesSearchTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_github = server.GITHUB
+
+    def tearDown(self):
+        self.server.GITHUB = self.orig_github
+
+    def test_repos_defaults_to_empty_list_when_absent(self):
+        class FakeGithub:
+            def search_branches(self, repos, query):
+                self.seen = (repos, query)
+                return []
+
+        fake = FakeGithub()
+        self.server.GITHUB = fake
+        result = self.server._api_code_remote_branches_search({"query": "master-x"})
+        self.assertEqual(result, {"ok": True, "results": []})
+        self.assertEqual(fake.seen, ([], "master-x"))
+
+    def test_non_list_repos_is_rejected(self):
+        status, payload = self.server._api_code_remote_branches_search(
+            {"query": "x", "repos": "not-a-list"}
+        )
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+
+
+class ApiPrsValidationTest(unittest.TestCase):
+    """_api_prs_ready/_api_prs_head/_api_prs_r_plus each carry their own
+    copy-pasted repo/number validation — test each independently since a
+    regression in one copy wouldn't be caught by testing another."""
+
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_github = server.GITHUB
+
+    def tearDown(self):
+        self.server.GITHUB = self.orig_github
+
+    def _bad_bodies(self):
+        return [
+            {"repo": "not-a-slug", "number": 1},
+            {"repo": "owner/repo/extra", "number": 1},
+            {"repo": 123, "number": 1},
+            {"repo": "owner/repo", "number": "1"},
+            {"repo": "owner/repo", "number": 1.5},
+            {"repo": "owner/repo", "number": 0},
+            {"repo": "owner/repo", "number": -1},
+            {"repo": "owner/repo"},
+        ]
+
+    def test_ready_rejects_invalid_repo_or_number(self):
+        for body in self._bad_bodies():
+            with self.subTest(body=body):
+                status, payload = self.server._api_prs_ready(body)
+                self.assertEqual(status, 400)
+                self.assertFalse(payload["ok"])
+
+    def test_ready_calls_through_on_valid_input(self):
+        class FakeGithub:
+            def ready_pr(self, repo, number):
+                self.seen = (repo, number)
+                return True, None
+
+        fake = FakeGithub()
+        self.server.GITHUB = fake
+        status, payload = self.server._api_prs_ready({"repo": "odoo/odoo", "number": 42})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(fake.seen, ("odoo/odoo", 42))
+
+    def test_head_rejects_invalid_repo_or_number(self):
+        for body in self._bad_bodies():
+            with self.subTest(body=body):
+                status, payload = self.server._api_prs_head(body)
+                self.assertEqual(status, 400)
+                self.assertFalse(payload["ok"])
+
+    def test_head_calls_through_on_valid_input(self):
+        class FakeGithub:
+            def pr_head(self, repo, number):
+                return "master-feat-x", None
+
+        self.server.GITHUB = FakeGithub()
+        result = self.server._api_prs_head({"repo": "odoo/odoo", "number": 42})
+        self.assertEqual(result, {"ok": True, "branch": "master-feat-x"})
+
+    def test_r_plus_rejects_invalid_repo_or_number(self):
+        for body in self._bad_bodies():
+            with self.subTest(body=body):
+                status, payload = self.server._api_prs_r_plus(body)
+                self.assertEqual(status, 400)
+                self.assertFalse(payload["ok"])
+
+    def test_r_plus_calls_through_on_valid_input(self):
+        class FakeGithub:
+            def post_r_plus(self, repo, number):
+                return True, None
+
+        self.server.GITHUB = FakeGithub()
+        status, payload = self.server._api_prs_r_plus({"repo": "odoo/odoo", "number": 42})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+
+
+class ApiNightlyAndCiMergeStatsTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_nightly = server.NIGHTLY
+        self.orig_ci = server.CI
+
+    def tearDown(self):
+        self.server.NIGHTLY = self.orig_nightly
+        self.server.CI = self.orig_ci
+
+    def test_max_nights_is_clamped_between_7_and_84(self):
+        class FakeNightly:
+            def builds(self, refresh=False, max_nights=None):
+                self.seen = max_nights
+                return {"builds": []}
+
+        for requested, expected in [(1, 7), (7, 7), (30, 30), (84, 84), (200, 84)]:
+            with self.subTest(requested=requested):
+                fake = FakeNightly()
+                self.server.NIGHTLY = fake
+                self.server._api_nightly({"max_nights": requested})
+                self.assertEqual(fake.seen, expected)
+
+    def test_max_nights_defaults_to_14_when_absent(self):
+        class FakeNightly:
+            def builds(self, refresh=False, max_nights=None):
+                self.seen = max_nights
+                return {}
+
+        fake = FakeNightly()
+        self.server.NIGHTLY = fake
+        self.server._api_nightly({})
+        self.assertEqual(fake.seen, 14)
+
+    def test_ci_merge_stats_days_is_clamped_between_1_and_60(self):
+        class FakeCi:
+            def merge_stats(self, days=None, refresh=False):
+                self.seen_days = days
+                return []
+
+            def queue(self):
+                return 3
+
+        for requested, expected in [(0, 1), (1, 1), (14, 14), (60, 60), (400, 60)]:
+            with self.subTest(requested=requested):
+                fake = FakeCi()
+                self.server.CI = fake
+                result = self.server._api_ci_merge_stats({"days": requested})
+                self.assertEqual(fake.seen_days, expected)
+                self.assertEqual(result["awaiting"], 3)
+
+    def test_nightly_errors_rejects_malformed_url(self):
+        for bad in ["", "/not/a/build/url", "/runbot/batch/x/build/1"]:
+            with self.subTest(url=bad):
+                status, payload = self.server._api_nightly_errors({"url": bad})
+                self.assertEqual(status, 400)
+                self.assertFalse(payload["ok"])
+
+    def test_nightly_errors_accepts_well_formed_url(self):
+        class FakeNightly:
+            def build_errors(self, url):
+                self.seen = url
+                return {"errors": [], "metrics": {}}
+
+        fake = FakeNightly()
+        self.server.NIGHTLY = fake
+        result = self.server._api_nightly_errors({"url": "/runbot/batch/123/build/456"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(fake.seen, "/runbot/batch/123/build/456")
+
+
+class ApiAddonsTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_addons = server.ADDONS
+        self.orig_database = server.DATABASE
+        self.orig_config = server.CONFIG
+
+    def tearDown(self):
+        self.server.ADDONS = self.orig_addons
+        self.server.DATABASE = self.orig_database
+        self.server.CONFIG = self.orig_config
+
+    def test_merges_installed_state_onto_modules_when_db_given(self):
+        class FakeAddons:
+            def modules(self, repos, main_repo_id):
+                self.seen_main_repo_id = main_repo_id
+                return [{"name": "sale"}, {"name": "purchase"}]
+
+        class FakeDatabase:
+            def installed_modules(self, db):
+                return {"sale": "installed"}
+
+        fake_addons = FakeAddons()
+        self.server.ADDONS = fake_addons
+        self.server.DATABASE = FakeDatabase()
+        self.server.CONFIG = _FakeConfigStore({"main_repo_id": "odoo"})
+        result = self.server._api_addons({"repos": [], "db": "mydb"})
+        by_name = {m["name"]: m["state"] for m in result["modules"]}
+        self.assertEqual(by_name, {"sale": "installed", "purchase": None})
+        self.assertEqual(fake_addons.seen_main_repo_id, "odoo")
+
+    def test_no_db_skips_installed_state_lookup(self):
+        class FakeAddons:
+            def modules(self, repos, main_repo_id):
+                return [{"name": "sale"}]
+
+        class FakeDatabase:
+            def installed_modules(self, db):
+                raise AssertionError("should not be called without a db")
+
+        self.server.ADDONS = FakeAddons()
+        self.server.DATABASE = FakeDatabase()
+        self.server.CONFIG = _FakeConfigStore({})
+        result = self.server._api_addons({"repos": []})
+        self.assertEqual(result["modules"], [{"name": "sale", "state": None}])
+        self.assertIsNone(result["db"])
+
+
+class ApiAssetsGenerateTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_assets = server.ASSETS
+        self.orig_config = server.CONFIG
+        self.orig_build_shell_cmd = server.build_shell_cmd
+
+    def tearDown(self):
+        self.server.ASSETS = self.orig_assets
+        self.server.CONFIG = self.orig_config
+        self.server.build_shell_cmd = self.orig_build_shell_cmd
+
+    def test_uses_server_config_when_no_workspace_override(self):
+        seen = {}
+
+        def fake_build_shell_cmd(cfg, db):
+            seen["cfg"] = cfg
+            return "odoo-bin shell"
+
+        class FakeAssets:
+            def generate(self, cmd, db):
+                seen["cmd"] = cmd
+                return True, None
+
+        self.server.build_shell_cmd = fake_build_shell_cmd
+        self.server.ASSETS = FakeAssets()
+        self.server.CONFIG = _FakeConfigStore({"marker": "server-config"})
+        status, payload = self.server._api_assets_generate({"db": "mydb"})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(seen["cfg"], {"marker": "server-config"})
+
+    def test_workspace_override_resolves_through_build_start_config(self):
+        def fake_build_shell_cmd(cfg, db):
+            return "odoo-bin shell"
+
+        class FakeAssets:
+            def generate(self, cmd, db):
+                return True, None
+
+        self.server.build_shell_cmd = fake_build_shell_cmd
+        self.server.ASSETS = FakeAssets()
+        self.server.CONFIG = _FakeConfigStore({"marker": "server-config"})
+        overridden = {"marker": "workspace-config"}
+        with unittest.mock.patch.object(
+            services, "build_start_config", return_value=overridden
+        ) as m:
+            status, payload = self.server._api_assets_generate({"db": "mydb", "workspace": "w1"})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        m.assert_called_once_with({"marker": "server-config"}, "w1")
+
+    def test_value_error_from_build_shell_cmd_maps_to_400(self):
+        def raising(cfg, db):
+            raise ValueError("invalid database name")
+
+        self.server.build_shell_cmd = raising
+        self.server.CONFIG = _FakeConfigStore({})
+        status, payload = self.server._api_assets_generate({"db": "; drop"})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid database name")
+
+
+class ApiAssetsBreakdownTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_assets = server.ASSETS
+
+    def tearDown(self):
+        self.server.ASSETS = self.orig_assets
+
+    def test_unknown_kind_is_normalized_to_none(self):
+        class FakeAssets:
+            def breakdown(self, db, bundle, filestore, kind):
+                self.seen_kind = kind
+                return {"js": [], "css": [], "xml": []}, None
+
+        fake = FakeAssets()
+        self.server.ASSETS = fake
+        self.server._api_assets_breakdown({"db": "mydb", "bundle": "web.assets", "kind": "wat"})
+        self.assertIsNone(fake.seen_kind)
+
+    def test_valid_kind_is_passed_through(self):
+        class FakeAssets:
+            def breakdown(self, db, bundle, filestore, kind):
+                self.seen_kind = kind
+                return {"js": [], "css": [], "xml": []}, None
+
+        fake = FakeAssets()
+        self.server.ASSETS = fake
+        self.server._api_assets_breakdown({"db": "mydb", "bundle": "web.assets", "kind": "js"})
+        self.assertEqual(fake.seen_kind, "js")
+
+    def test_none_data_maps_to_400(self):
+        class FakeAssets:
+            def breakdown(self, db, bundle, filestore, kind):
+                return None, "bundle not generated yet"
+
+        self.server.ASSETS = FakeAssets()
+        status, payload = self.server._api_assets_breakdown({"db": "mydb", "bundle": "web.assets"})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "bundle not generated yet")
+
+
+class ApiRustBundlerInstallTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_rust_bundler = server.RUST_BUNDLER
+        self.orig_config = server.CONFIG
+
+    def tearDown(self):
+        self.server.RUST_BUNDLER = self.orig_rust_bundler
+        self.server.CONFIG = self.orig_config
+
+    def test_success_maps_to_200(self):
+        class FakeBundler:
+            def install(self, config):
+                return True, {"installed": True}
+
+        self.server.RUST_BUNDLER = FakeBundler()
+        self.server.CONFIG = _FakeConfigStore({})
+        status, payload = self.server._api_rust_bundler_install({})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+
+    def test_already_in_progress_maps_to_409(self):
+        class FakeBundler:
+            def install(self, config):
+                return False, {"error": "a build is already in progress"}
+
+        self.server.RUST_BUNDLER = FakeBundler()
+        self.server.CONFIG = _FakeConfigStore({})
+        status, payload = self.server._api_rust_bundler_install({})
+        self.assertEqual(status, 409)
+
+    def test_other_failure_maps_to_500(self):
+        class FakeBundler:
+            def install(self, config):
+                return False, {"error": "cargo not found"}
+
+        self.server.RUST_BUNDLER = FakeBundler()
+        self.server.CONFIG = _FakeConfigStore({})
+        status, payload = self.server._api_rust_bundler_install({})
+        self.assertEqual(status, 500)
+
+
+class ApiOpenEditorTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_open_in_editor = server.open_in_editor
+
+    def tearDown(self):
+        self.server.open_in_editor = self.orig_open_in_editor
+
+    def test_paths_field_preferred_over_path(self):
+        seen = {}
+
+        def fake_open(editor, paths):
+            seen["paths"] = paths
+            return True, None
+
+        self.server.open_in_editor = fake_open
+        self.server._api_open_editor({"paths": ["/a", "/b"], "path": "/c"})
+        self.assertEqual(seen["paths"], ["/a", "/b"])
+
+    def test_falls_back_to_path_when_paths_absent(self):
+        seen = {}
+
+        def fake_open(editor, paths):
+            seen["paths"] = paths
+            return True, None
+
+        self.server.open_in_editor = fake_open
+        self.server._api_open_editor({"path": "/c"})
+        self.assertEqual(seen["paths"], "/c")
+
+    def test_neither_field_is_400(self):
+        status, payload = self.server._api_open_editor({})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "missing path")
+
+
+class ApiReviewPromptSaveTest(unittest.TestCase):
+    def setUp(self):
+        from backend import server
+
+        self.server = server
+        self.orig_write_text = server.effects.write_text
+
+    def tearDown(self):
+        self.server.effects.write_text = self.orig_write_text
+
+    def test_write_failure_falls_back_to_generic_message(self):
+        self.server.effects.write_text = lambda path, text: (False, "")
+        status, payload = self.server._api_review_prompt_save({"content": "x"})
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"], "write failed")
+
+    def test_write_failure_surfaces_real_error_when_present(self):
+        self.server.effects.write_text = lambda path, text: (False, "disk full")
+        status, payload = self.server._api_review_prompt_save({"content": "x"})
+        self.assertEqual(payload["error"], "disk full")
+
+    def test_success(self):
+        self.server.effects.write_text = lambda path, text: (True, None)
+        result = self.server._api_review_prompt_save({"content": "x"})
+        self.assertEqual(result, {"ok": True})
+
+
+class GitServiceGapTest(unittest.TestCase):
+    """Direct coverage for GitService methods only exercised indirectly (commit,
+    via wip_commit) or not at all (discard) elsewhere, plus a few failure
+    branches on already-tested methods."""
+
+    def test_commit_stages_and_commits_with_the_given_message(self):
+        io = FakeIO(runs={"add -A": completed(), "commit --no-verify": completed()})
+        svc = services.GitService(io)
+        ok, error = svc.commit("/repo", "a real message")
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertTrue(any("-m" in c and "a real message" in c for c in io.run_calls))
+
+    def test_commit_short_circuits_when_add_fails(self):
+        io = FakeIO(runs={"add -A": completed(returncode=1, stderr="add failed")})
+        svc = services.GitService(io)
+        ok, error = svc.commit("/repo", "msg")
+        self.assertFalse(ok)
+        self.assertIn("add failed", error)
+        self.assertEqual(len(io.run_calls), 1)  # commit was never attempted
+
+    def test_discard_resets_then_cleans(self):
+        io = FakeIO(runs={"reset --hard HEAD": completed(), "clean -fd": completed()})
+        svc = services.GitService(io)
+        ok, error = svc.discard("/repo")
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertTrue(any("reset" in c and "--hard" in c for c in io.run_calls))
+        self.assertTrue(any("clean" in c and "-fd" in c for c in io.run_calls))
+
+    def test_discard_short_circuits_when_reset_fails(self):
+        io = FakeIO(runs={"reset --hard HEAD": completed(returncode=1, stderr="reset failed")})
+        svc = services.GitService(io)
+        ok, error = svc.discard("/repo")
+        self.assertFalse(ok)
+        self.assertIn("reset failed", error)
+        self.assertFalse(any("clean" in c for c in io.run_calls))
+
+    def test_abort_rebase_failure_surfaces_error(self):
+        io = FakeIO(
+            runs={"rebase --abort": completed(returncode=1, stderr="no rebase in progress")}
+        )
+        svc = services.GitService(io)
+        ok, error = svc.abort_rebase("/repo")
+        self.assertFalse(ok)
+        self.assertIn("no rebase in progress", error)
+
+    def test_remote_branch_exists_error_branch(self):
+        io = FakeIO(runs={"ls-remote": completed(returncode=1, stderr="could not resolve host")})
+        svc = services.GitService(io)
+        exists, error = svc.remote_branch_exists("/repo", "master-feat-x")
+        self.assertIsNone(exists)
+        self.assertIn("could not resolve host", error)
+
+    def test_remote_branch_exists_true_when_ref_found(self):
+        io = FakeIO(runs={"ls-remote": completed(stdout="abc123\trefs/heads/master-feat-x\n")})
+        svc = services.GitService(io)
+        exists, error = svc.remote_branch_exists("/repo", "master-feat-x")
+        self.assertTrue(exists)
+        self.assertIsNone(error)
+
+    def test_fetch_master_logs_success(self):
+        io = FakeIO(runs={"fetch origin master": completed()})
+        svc = services.GitService(io)
+        svc.fetch_master({"id": "community", "path": "/repo"})
+        self.assertTrue(any("fetched origin/master" in line for line in io.logs))
+
+    def test_fetch_master_logs_failure(self):
+        io = FakeIO(runs={"fetch origin master": completed(returncode=1, stderr="network error\n")})
+        svc = services.GitService(io)
+        svc.fetch_master({"id": "community", "path": "/repo"})
+        self.assertTrue(any("failed" in line for line in io.logs))
+
+    def test_fetch_master_logs_exception(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        svc = services.GitService(RaisingIO())
+        svc.fetch_master({"id": "community", "path": "/repo"})
+        self.assertTrue(any("failed" in line for line in svc.io.logs))
+
+    def test_fetch_master_no_op_without_a_path(self):
+        io = FakeIO()
+        svc = services.GitService(io)
+        svc.fetch_master({"id": "community"})  # no "path" key — should just return
+        self.assertEqual(io.run_calls, [])
+
+
+class DatabaseServiceGapTest(unittest.TestCase):
+    def test_odoo_info_parses_a_full_row(self):
+        io = FakeIO(
+            runs={"SELECT (SELECT latest_version": completed(stdout="17.0|t|f|2024-01-01 00:00:00")}
+        )
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        version, enterprise, demo, last_update = svc.odoo_info("mydb")
+        self.assertEqual(version, "17.0")
+        self.assertTrue(enterprise)
+        self.assertFalse(demo)
+        self.assertEqual(last_update, "2024-01-01 00:00:00")
+
+    def test_odoo_info_no_odoo_tables(self):
+        io = FakeIO(runs={"SELECT (SELECT latest_version": completed(stdout="")})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        self.assertEqual(svc.odoo_info("mydb"), (None, False, False, None))
+
+    def test_odoo_info_exception_returns_none_tuple(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise FileNotFoundError("no psql")
+
+        svc = services.DatabaseService(RaisingIO(), TTLCache(ttl=0))
+        self.assertEqual(svc.odoo_info("mydb"), (None, False, False, None))
+
+    def test_creation_times_parses_rows(self):
+        io = FakeIO(runs={"pg_stat_file": completed(stdout="mydb|2024-01-01 00:00:00\n")})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        self.assertEqual(svc._creation_times(), {"mydb": "2024-01-01 00:00:00"})
+
+    def test_creation_times_empty_on_permission_failure(self):
+        io = FakeIO(runs={"pg_stat_file": completed(returncode=1, stderr="permission denied")})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        self.assertEqual(svc._creation_times(), {})
+
+    def test_creation_times_empty_on_exception(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        svc = services.DatabaseService(RaisingIO(), TTLCache(ttl=0))
+        self.assertEqual(svc._creation_times(), {})
+
+    def test_sizes_parses_rows_as_ints(self):
+        io = FakeIO(runs={"pg_database_size": completed(stdout="mydb|1234\n")})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        self.assertEqual(svc._sizes(), {"mydb": 1234})
+
+    def test_sizes_skips_unparseable_size(self):
+        io = FakeIO(runs={"pg_database_size": completed(stdout="mydb|not-a-number\n")})
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        self.assertEqual(svc._sizes(), {})
+
+    def test_sizes_empty_on_exception(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise FileNotFoundError("no psql")
+
+        svc = services.DatabaseService(RaisingIO(), TTLCache(ttl=0))
+        self.assertEqual(svc._sizes(), {})
+
+
+class CiServiceGapTest(unittest.TestCase):
+    CACHE = "/cfg/goo/ci_merge_stats.json"
+
+    def test_load_cache_falls_back_when_file_is_not_a_dict(self):
+        io = FakeIO(json_files={self.CACHE: ["not", "a", "dict"]})
+        svc = services.CiService(io, self.CACHE)
+        self.assertEqual(svc._load_cache(), {"oldest_complete": None, "days": {}})
+
+    def test_load_cache_fills_in_missing_keys(self):
+        io = FakeIO(json_files={self.CACHE: {"days": {"2024-01-01": {}}}})
+        svc = services.CiService(io, self.CACHE)
+        cache = svc._load_cache()
+        self.assertIsNone(cache["oldest_complete"])
+        self.assertEqual(cache["days"], {"2024-01-01": {}})
+
+    def test_merge_stats_paginates_across_multiple_pages(self):
+        today = CiServiceTest._today()
+        from datetime import timedelta
+
+        t0 = today.isoformat()
+        t_old = (today - timedelta(days=10)).isoformat()
+        page1 = _mb_page([_mb_row("bg-success", t0, [("odoo/odoo", 1)])], next_until=t_old)
+        page2 = _mb_page(
+            [_mb_row("bg-success", t_old, [("odoo/odoo", 2)])]
+        )  # no next_until -> exhausted
+        io = FakeIO(http={f"until={t_old}": (page2, None), "runbot_merge/1": (page1, None)})
+        svc = services.CiService(io, self.CACHE)
+        out = svc.merge_stats(days=14)
+        self.assertEqual(len(io.http_calls), 2)  # both pages fetched, not just the first
+        self.assertEqual(out[0]["merged"], 1)
+        self.assertEqual(out[10]["merged"], 1)  # t_old (today-10) folded in from page 2
+
+
+class MemoryServiceGapTest(unittest.TestCase):
+    def test_with_mobile_false_excludes_mobile_suites(self):
+        log = (
+            "a.WebSuite.Something.js:  [MEMINFO] @some.suite (after GC) - used: 100\n"
+            "a.MobileWebSuite.Something.js:  [MEMINFO] @mobile.suite (after GC) - used: 200\n"
+        )
+        io = FakeIO(http={"logurl": (log, None)})
+        svc = services.MemoryService(io)
+        rows = svc.fetch([{"label": "b1", "url": "http://logurl"}], with_mobile=False)
+        suites = {r["suite"] for r in rows}
+        self.assertIn("@some.suite", suites)
+        self.assertNotIn("@mobile.suite", suites)
+
+    def test_with_mobile_true_includes_mobile_suites(self):
+        log = "a.MobileWebSuite.Something.js:  [MEMINFO] @mobile.suite (after GC) - used: 200\n"
+        io = FakeIO(http={"logurl": (log, None)})
+        svc = services.MemoryService(io)
+        rows = svc.fetch([{"label": "b1", "url": "http://logurl"}], with_mobile=True)
+        self.assertEqual([r["suite"] for r in rows], ["@mobile.suite"])
+
+    def test_malformed_meminfo_line_is_dropped(self):
+        # has the "[MEMINFO] @" marker the pre-filter checks for, but doesn't match
+        # the full regex (missing "(after GC) - used: N")
+        log = "a.WebSuite.Something.js:  [MEMINFO] @some.suite nogood\n"
+        self.assertEqual(services.MemoryService(FakeIO()).parse_log(log), [])
+
+    def test_line_without_meminfo_marker_is_ignored_before_regex(self):
+        log = "just a normal log line with no marker at all\n"
+        self.assertEqual(services.MemoryService(FakeIO()).parse_log(log), [])
+
+
+class GitHubServiceExceptionTest(unittest.TestCase):
+    def test_fetch_one_exception_sets_error(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise FileNotFoundError("no gh")
+
+        svc = services.GitHubService(RaisingIO(), TTLCache(ttl=0))
+        entry = svc._fetch_one({"id": "community", "github": "odoo/odoo"})
+        self.assertIn("no gh", entry["error"])
+        self.assertEqual(entry["prs"], [])
+
+    def test_fetch_one_bad_json_sets_error(self):
+        io = FakeIO(run_result=completed(stdout="not json"))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        entry = svc._fetch_one({"id": "community", "github": "odoo/odoo"})
+        self.assertEqual(entry["error"], "unexpected gh output")
+
+    def test_fetch_head_returns_none_on_exception(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        svc = services.GitHubService(RaisingIO(), TTLCache(ttl=0))
+        self.assertIsNone(svc._fetch_head("odoo/odoo", "master-feat-x"))
+
+    def test_fetch_head_returns_none_on_bad_json(self):
+        io = FakeIO(run_result=completed(stdout="not json"))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        self.assertIsNone(svc._fetch_head("odoo/odoo", "master-feat-x"))
+
+    def test_fetch_info_returns_none_on_exception(self):
+        class RaisingIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                raise FileNotFoundError("no gh")
+
+        svc = services.GitHubService(RaisingIO(), TTLCache(ttl=0))
+        self.assertIsNone(svc._fetch_info("odoo/odoo", 1))
+
+    def test_pr_head_returns_error_on_malformed_json(self):
+        io = FakeIO(run_result=completed(stdout="{not json"))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        branch, error = svc.pr_head("odoo/odoo", 1)
+        self.assertEqual(branch, "")
+        self.assertTrue(error)
+
+class AddonsServiceGapTest(unittest.TestCase):
+    def test_repo_missing_id_or_path_is_skipped(self):
+        io = FakeIO(dirs={}, files={})
+        svc = services.AddonsService(io)
+        self.assertEqual(svc.modules([{"id": "community"}, {"path": "/only/path"}]), [])
+
+    def test_manifest_without_a_top_level_dict_returns_none(self):
+        io = FakeIO(
+            dirs={"/repo/addons": ["sale"], "/repo/addons/sale": []},
+            files={"/repo/addons/sale/__manifest__.py": "print('no dict literal here')"},
+        )
+        svc = services.AddonsService(io)
+        self.assertEqual(svc.modules([{"id": "community", "path": "/repo"}]), [])
+
+    def test_manifest_ast_literal_eval_error_returns_none(self):
+        # a dict literal whose value calls a function isn't a literal — ast.literal_eval
+        # raises ValueError on it, which _manifest must swallow, not propagate
+        io = FakeIO(
+            dirs={"/repo/addons": ["sale"], "/repo/addons/sale": []},
+            files={
+                "/repo/addons/sale/__manifest__.py": "{'name': some_function_call()}",
+            },
+        )
+        svc = services.AddonsService(io)
+        self.assertEqual(svc.modules([{"id": "community", "path": "/repo"}]), [])
+
+
+class AssetsServiceGapTest(unittest.TestCase):
+    def test_asset_text_none_when_row_absent(self):
+        svc = services.AssetsService(FakeIO(), TTLCache(ttl=0))
+        self.assertIsNone(svc._asset_text("db", "/filestore", None))
+
+    def test_asset_text_falls_back_to_none_on_corrupt_filestore_file(self):
+        class RaisingIO(FakeIO):
+            def read_text(self, path):
+                raise ValueError("not valid utf-8")
+
+        svc = services.AssetsService(RaisingIO(), TTLCache(ttl=0))
+        self.assertIsNone(svc._asset_text("db", "/filestore", ("stored.js", "")))
+
+    def test_asset_text_falls_back_to_none_on_corrupt_inline_base64(self):
+        svc = services.AssetsService(FakeIO(), TTLCache(ttl=0))
+        # "abc" is valid base64 alphabet but the wrong length (not a multiple of
+        # 4) -- guaranteed invalid padding, unlike relying on non-alphabet chars
+        # being silently stripped
+        self.assertIsNone(svc._asset_text("db", "/filestore", ("", "abc")))
+
+    def test_asset_text_reads_inline_base64_when_no_store_fname(self):
+        import base64
+
+        encoded = base64.b64encode(b"body { color: red }").decode()
+        svc = services.AssetsService(FakeIO(), TTLCache(ttl=0))
+        self.assertEqual(svc._asset_text("db", "/filestore", ("", encoded)), "body { color: red }")
+
+
+class ConfigStoreGapTest(unittest.TestCase):
+    def test_load_returns_error_shape_on_corrupt_file(self):
+        io = FakeIO()
+        io.read_json_file = lambda path: (None, "invalid JSON at line 3")
+        store = services.ConfigStore(io, "/cfg/goo/config.json")
+        result = store.get()
+        self.assertEqual(result["rev"], 0)
+        self.assertIsNone(result["config"])
+        self.assertEqual(result["error"], "invalid JSON at line 3")
+
+
+class ValidDbNameTest(unittest.TestCase):
+    def test_valid_names(self):
+        for name in ("master", "19.0", "master-feat-x", "test_db", "a1"):
+            with self.subTest(name=name):
+                self.assertTrue(services._valid_db_name(name))
+
+    def test_invalid_names(self):
+        for name in ("", None, "-leading-dash", "has space", "quote'd", "semi;colon", 123, []):
+            with self.subTest(name=name):
+                self.assertFalse(services._valid_db_name(name))
+
+
+class TTLCacheInvalidateTest(unittest.TestCase):
+    def test_invalidate_none_clears_every_key(self):
+        cache = TTLCache(ttl=3600)
+        calls = {"a": 0, "b": 0}
+
+        def compute(key):
+            calls[key] += 1
+            return f"{key}-{calls[key]}"
+
+        self.assertEqual(cache.get("a", lambda: compute("a")), "a-1")
+        self.assertEqual(cache.get("b", lambda: compute("b")), "b-1")
+        self.assertEqual(cache.get("a", lambda: compute("a")), "a-1")  # still cached
+
+        cache.invalidate(None)
+
+        self.assertEqual(cache.get("a", lambda: compute("a")), "a-2")
+        self.assertEqual(cache.get("b", lambda: compute("b")), "b-2")
+
+    def test_invalidate_one_key_leaves_others_cached(self):
+        cache = TTLCache(ttl=3600)
+        calls = {"a": 0, "b": 0}
+
+        def compute(key):
+            calls[key] += 1
+            return calls[key]
+
+        cache.get("a", lambda: compute("a"))
+        cache.get("b", lambda: compute("b"))
+        cache.invalidate("a")
+        self.assertEqual(cache.get("a", lambda: compute("a")), 2)
+        self.assertEqual(cache.get("b", lambda: compute("b")), 1)  # untouched
+
+
+class ModelsDataclassTest(unittest.TestCase):
+    def test_server_snapshot_defaults(self):
+        snap = ServerSnapshot(id="main", state="running")
+        d = asdict(snap)
+        self.assertEqual(d["id"], "main")
+        self.assertEqual(d["state"], "running")
+        self.assertFalse(d["terminal"])
+        self.assertIsNone(d["workspace"])
+        self.assertIsNone(d["db"])
+        self.assertIsNone(d["port"])
+        self.assertFalse(d["exited_unexpectedly"])
+        self.assertFalse(d["odoo_port_busy"])
+        self.assertIsNone(d["exists"])
+        self.assertIsNone(d["docker_container"])
+
+    def test_server_snapshot_full_worktree_shape(self):
+        snap = ServerSnapshot(
+            id="w1",
+            state="running",
+            terminal=False,
+            workspace="w1",
+            db="mydb",
+            port=9001,
+            mode="server",
+            pid=1234,
+            cmd="odoo-bin",
+            started_at=1000.0,
+            exists=True,
+            docker_container="dev1",
+        )
+        d = asdict(snap)
+        self.assertEqual(d["workspace"], "w1")
+        self.assertEqual(d["port"], 9001)
+        self.assertTrue(d["exists"])
+        self.assertEqual(d["docker_container"], "dev1")
+
+    def test_run_snapshot_defaults(self):
+        run = RunSnapshot(id="run-1", kind="test", state="running")
+        d = asdict(run)
+        self.assertEqual(d["server"], "main")
+        self.assertIsNone(d["workspace"])
+        self.assertEqual(d["spec"], {})
+        self.assertIsNone(d["ok"])
+        self.assertFalse(d["resume"])
+
+    def test_run_snapshot_full_shape(self):
+        run = RunSnapshot(
+            id="run-2",
+            kind="install",
+            state="done",
+            server="w1",
+            workspace="w1",
+            db="mydb",
+            spec={"module": "sale"},
+            returncode=0,
+            ok=True,
+            resume=True,
+            started_at=500.0,
+        )
+        d = asdict(run)
+        self.assertEqual(d["spec"], {"module": "sale"})
+        self.assertTrue(d["ok"])
+        self.assertTrue(d["resume"])
+
+    def test_pull_request_and_ci_rollup_direct_construction(self):
+        check = services.CiCheck(context="ci/runbot", state="failure", url="http://x")
+        rollup = services.CiRollup(overall="failure", runbot="failure", checks=[check])
+        pr = services.PullRequest(
+            github="odoo/odoo",
+            number=123,
+            title="Fix thing",
+            url="http://pr",
+            state="open",
+            branch="master-feat-x",
+            relation="authored",
+            ci=rollup,
+        )
+        d = asdict(pr)
+        self.assertEqual(d["number"], 123)
+        self.assertEqual(d["ci"]["overall"], "failure")
+        self.assertEqual(d["ci"]["checks"][0]["context"], "ci/runbot")
+        self.assertFalse(d["draft"])
+
+    def test_pull_request_defaults(self):
+        pr = services.PullRequest(
+            github="odoo/odoo",
+            number=1,
+            title="t",
+            url="u",
+            state="open",
+            branch="b",
+            relation="head",
+        )
+        self.assertFalse(pr.draft)
+        self.assertEqual(pr.created_at, "")
+        self.assertIsNone(pr.ci)
+
+
 if __name__ == "__main__":
     unittest.main()

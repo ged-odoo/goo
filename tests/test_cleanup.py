@@ -6,6 +6,7 @@ rather than through the full run() loop.
 Run from the repo root: `python3 -m unittest discover`
 """
 
+import subprocess
 import unittest
 import unittest.mock
 
@@ -180,6 +181,365 @@ class SafetyGuardTest(unittest.TestCase):
         with unittest.mock.patch.object(cleanup.GIT, "branches", return_value=[entry]):
             reason = cleanup._safety_guard(ws(), REPO_MAP)
         self.assertIsNone(reason)
+
+
+class NotifyTest(unittest.TestCase):
+    def test_calls_notify_send(self):
+        with unittest.mock.patch.object(cleanup.subprocess, "run") as run:
+            cleanup._notify("deleted 1: feature")
+        run.assert_called_once_with(["notify-send", "goo cleanup", "deleted 1: feature"], timeout=5)
+
+    def test_missing_notify_send_is_swallowed(self):
+        with unittest.mock.patch.object(cleanup.subprocess, "run", side_effect=FileNotFoundError):
+            cleanup._notify("deleted 1: feature")  # must not raise
+
+    def test_timeout_is_swallowed(self):
+        with unittest.mock.patch.object(
+            cleanup.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd="notify-send", timeout=5),
+        ):
+            cleanup._notify("deleted 1: feature")  # must not raise
+
+
+DELETE_REPO_MAP = {"community": {"path": "/main/community"}}
+
+
+def delete_ws(db="feature_db"):
+    return {
+        "id": "w1",
+        "name": "feature",
+        "worktree": {"dir": "/wt/feature"},
+        "checkouts": [{"repo": "community", "branch": "17.0-feature-jpp"}],
+        "db": db,
+    }
+
+
+class DeleteTest(unittest.TestCase):
+    def test_dry_run_touches_nothing(self):
+        with (
+            unittest.mock.patch.object(cleanup.GIT, "worktree_remove") as worktree_remove,
+            unittest.mock.patch.object(cleanup.GIT, "delete_branch") as delete_branch,
+            unittest.mock.patch.object(cleanup.subprocess, "run") as run,
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget") as forget,
+        ):
+            cleanup._delete(delete_ws(), DELETE_REPO_MAP, {"filestore": "/fs"}, dry_run=True)
+        worktree_remove.assert_not_called()
+        delete_branch.assert_not_called()
+        run.assert_not_called()
+        remove_tree.assert_not_called()
+        forget.assert_not_called()
+
+    def test_live_run_with_db_and_filestore_removes_everything(self):
+        with (
+            unittest.mock.patch.object(
+                cleanup.GIT, "worktree_remove", return_value=(True, None)
+            ) as worktree_remove,
+            unittest.mock.patch.object(
+                cleanup.GIT, "delete_branch", return_value=(True, None, None)
+            ) as delete_branch,
+            unittest.mock.patch.object(
+                cleanup.subprocess, "run", return_value=unittest.mock.Mock(returncode=0, stderr="")
+            ) as run,
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget") as forget,
+        ):
+            cleanup._delete(
+                delete_ws(), DELETE_REPO_MAP, {"filestore": "/fs", "db_user": "odoo"}, dry_run=False
+            )
+        worktree_remove.assert_called_once_with(
+            "/main/community", "/wt/feature/community", repo="community"
+        )
+        delete_branch.assert_called_once_with(
+            "/main/community", "17.0-feature-jpp", delete_remote=False
+        )
+        run.assert_called_once_with(
+            ["dropdb", "-U", "odoo", "--if-exists", "feature_db"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # both the per-db filestore folder and the worktree dir get removed
+        remove_tree.assert_has_calls(
+            [unittest.mock.call("/fs/feature_db"), unittest.mock.call("/wt/feature")]
+        )
+        forget.assert_called_once_with("w1")
+
+    def test_no_db_skips_dropdb_and_filestore_but_still_removes_worktree(self):
+        with (
+            unittest.mock.patch.object(cleanup.GIT, "worktree_remove", return_value=(True, None)),
+            unittest.mock.patch.object(
+                cleanup.GIT, "delete_branch", return_value=(True, None, None)
+            ),
+            unittest.mock.patch.object(cleanup.subprocess, "run") as run,
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget"),
+        ):
+            cleanup._delete(
+                delete_ws(db=None), DELETE_REPO_MAP, {"filestore": "/fs"}, dry_run=False
+            )
+        run.assert_not_called()
+        remove_tree.assert_called_once_with("/wt/feature")
+
+    def test_no_filestore_configured_skips_filestore_removal(self):
+        with (
+            unittest.mock.patch.object(cleanup.GIT, "worktree_remove", return_value=(True, None)),
+            unittest.mock.patch.object(
+                cleanup.GIT, "delete_branch", return_value=(True, None, None)
+            ),
+            unittest.mock.patch.object(
+                cleanup.subprocess, "run", return_value=unittest.mock.Mock(returncode=0, stderr="")
+            ),
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget"),
+        ):
+            cleanup._delete(delete_ws(), DELETE_REPO_MAP, {}, dry_run=False)
+        # only the worktree dir -- no filestore configured, so no per-db folder removal
+        remove_tree.assert_called_once_with("/wt/feature")
+
+    def test_worktree_remove_failure_does_not_abort_the_rest(self):
+        # a failed worktree_remove is only logged -- delete_branch, the db drop
+        # and the final worktree-dir removal must still run
+        with (
+            unittest.mock.patch.object(
+                cleanup.GIT, "worktree_remove", return_value=(False, "busy")
+            ),
+            unittest.mock.patch.object(
+                cleanup.GIT, "delete_branch", return_value=(True, None, None)
+            ) as delete_branch,
+            unittest.mock.patch.object(
+                cleanup.subprocess, "run", return_value=unittest.mock.Mock(returncode=0, stderr="")
+            ),
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget") as forget,
+        ):
+            cleanup._delete(delete_ws(), DELETE_REPO_MAP, {}, dry_run=False)
+        delete_branch.assert_called_once()
+        remove_tree.assert_called_once_with("/wt/feature")
+        forget.assert_called_once()
+
+    def test_dropdb_nonzero_exit_is_logged_not_fatal(self):
+        with (
+            unittest.mock.patch.object(cleanup.GIT, "worktree_remove", return_value=(True, None)),
+            unittest.mock.patch.object(
+                cleanup.GIT, "delete_branch", return_value=(True, None, None)
+            ),
+            unittest.mock.patch.object(
+                cleanup.subprocess,
+                "run",
+                return_value=unittest.mock.Mock(returncode=1, stderr="database does not exist"),
+            ),
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget") as forget,
+        ):
+            cleanup._delete(delete_ws(), DELETE_REPO_MAP, {}, dry_run=False)
+        # dropdb failing must not stop the worktree-dir removal or forget()
+        remove_tree.assert_called_once_with("/wt/feature")
+        forget.assert_called_once()
+
+    def test_dropdb_exception_is_swallowed(self):
+        with (
+            unittest.mock.patch.object(cleanup.GIT, "worktree_remove", return_value=(True, None)),
+            unittest.mock.patch.object(
+                cleanup.GIT, "delete_branch", return_value=(True, None, None)
+            ),
+            unittest.mock.patch.object(
+                cleanup.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd="dropdb", timeout=30),
+            ),
+            unittest.mock.patch.object(cleanup.effects, "remove_tree") as remove_tree,
+            unittest.mock.patch.object(cleanup.CLAUDE, "forget") as forget,
+        ):
+            cleanup._delete(delete_ws(), DELETE_REPO_MAP, {}, dry_run=False)  # must not raise
+        remove_tree.assert_called_once_with("/wt/feature")
+        forget.assert_called_once()
+
+
+def run_config(workspaces, rev=5):
+    return {
+        "rev": rev,
+        "config": {
+            "repos": [{"id": "community", "github": "odoo/odoo", "path": "/main/community"}],
+            "workspaces": workspaces,
+        },
+    }
+
+
+class RunTest(unittest.TestCase):
+    def test_eligible_workspace_is_deleted_and_config_saved(self):
+        w = ws()
+        w["location"] = "worktree"
+        snapshot = run_config([w])
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(cleanup, "_merge_gate", return_value=(True, "merged")),
+            unittest.mock.patch.object(cleanup, "_safety_guard", return_value=None),
+            unittest.mock.patch.object(cleanup, "_delete") as delete,
+            unittest.mock.patch.object(cleanup.CONFIG, "save", return_value=(True, {})) as save,
+            unittest.mock.patch.object(cleanup, "_notify") as notify,
+        ):
+            cleanup.run()
+        delete.assert_called_once_with(w, unittest.mock.ANY, snapshot["config"], False)
+        # the deleted workspace's id must be dropped from the saved config
+        saved_workspaces = save.call_args.kwargs["config"]["workspaces"]
+        self.assertEqual(saved_workspaces, [])
+        notify.assert_called_once()
+        self.assertIn("deleted 1", notify.call_args.args[0])
+
+    def test_merge_gate_skip_is_silent_not_warned(self):
+        # a workspace with no PR yet (WIP) is skipped without being reported as
+        # "needs attention" -- only a safety-guard failure counts as a warning
+        w = ws()
+        w["location"] = "worktree"
+        snapshot = run_config([w])
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(
+                cleanup, "_merge_gate", return_value=(False, "no PR yet (WIP)")
+            ),
+            unittest.mock.patch.object(cleanup, "_delete") as delete,
+            unittest.mock.patch.object(cleanup.CONFIG, "save") as save,
+            unittest.mock.patch.object(cleanup, "_notify") as notify,
+        ):
+            cleanup.run()
+        delete.assert_not_called()
+        save.assert_not_called()
+        notify.assert_not_called()
+
+    def test_safety_guard_skip_is_warned_and_notified(self):
+        w = ws()
+        w["location"] = "worktree"
+        snapshot = run_config([w])
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(cleanup, "_merge_gate", return_value=(True, "merged")),
+            unittest.mock.patch.object(
+                cleanup, "_safety_guard", return_value="community: uncommitted changes"
+            ),
+            unittest.mock.patch.object(cleanup, "_delete") as delete,
+            unittest.mock.patch.object(cleanup.CONFIG, "save") as save,
+            unittest.mock.patch.object(cleanup, "_notify") as notify,
+        ):
+            cleanup.run()
+        delete.assert_not_called()
+        save.assert_not_called()
+        notify.assert_called_once()
+        self.assertIn("skipped 1 (needs attention)", notify.call_args.args[0])
+
+    def test_dry_run_deletes_but_never_saves_config(self):
+        w = ws()
+        w["location"] = "worktree"
+        snapshot = run_config([w])
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(cleanup, "_merge_gate", return_value=(True, "merged")),
+            unittest.mock.patch.object(cleanup, "_safety_guard", return_value=None),
+            unittest.mock.patch.object(cleanup, "_delete") as delete,
+            unittest.mock.patch.object(cleanup.CONFIG, "save") as save,
+            unittest.mock.patch.object(cleanup, "_notify"),
+        ):
+            cleanup.run(dry_run=True)
+        delete.assert_called_once_with(w, unittest.mock.ANY, snapshot["config"], True)
+        save.assert_not_called()
+
+    def test_config_save_conflict_retries_against_the_fresh_config(self):
+        w = ws()
+        w["location"] = "worktree"
+        other = {**ws(branch="other"), "id": "w2"}
+        snapshot = run_config([w], rev=5)
+        conflict_config = {**snapshot["config"], "workspaces": [w, other]}
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(cleanup, "_merge_gate", return_value=(True, "merged")),
+            unittest.mock.patch.object(cleanup, "_safety_guard", return_value=None),
+            unittest.mock.patch.object(cleanup, "_delete"),
+            unittest.mock.patch.object(
+                cleanup.CONFIG,
+                "save",
+                side_effect=[
+                    (False, {"conflict": True, "rev": 6, "config": conflict_config}),
+                    (True, {}),
+                ],
+            ) as save,
+            unittest.mock.patch.object(cleanup, "_notify"),
+        ):
+            cleanup.run()
+        self.assertEqual(save.call_count, 2)
+        # retried at the fresh rev, against the fresh config's own workspace list
+        second_call = save.call_args_list[1]
+        self.assertEqual(second_call.args[0], 6)
+        self.assertEqual(second_call.kwargs["config"]["workspaces"], [other])
+
+    def test_config_save_conflict_exhausted_logs_and_does_not_raise(self):
+        w = ws()
+        w["location"] = "worktree"
+        snapshot = run_config([w], rev=5)
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(cleanup, "_merge_gate", return_value=(True, "merged")),
+            unittest.mock.patch.object(cleanup, "_safety_guard", return_value=None),
+            unittest.mock.patch.object(cleanup, "_delete"),
+            unittest.mock.patch.object(
+                cleanup.CONFIG,
+                "save",
+                return_value=(False, {"conflict": True, "rev": 6, "config": snapshot["config"]}),
+            ) as save,
+            unittest.mock.patch.object(cleanup, "_notify"),
+        ):
+            cleanup.run()  # must not raise even after exhausting all 3 attempts
+        self.assertEqual(save.call_count, 3)
+
+    def test_non_worktree_workspaces_are_ignored(self):
+        w = ws()
+        w["location"] = "external"
+        snapshot = run_config([w])
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=snapshot),
+            unittest.mock.patch.object(cleanup, "_merge_gate") as merge_gate,
+            unittest.mock.patch.object(cleanup, "_notify") as notify,
+        ):
+            cleanup.run()
+        merge_gate.assert_not_called()
+        notify.assert_not_called()
+
+
+class LoopTest(unittest.TestCase):
+    def test_disabled_skips_run(self):
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value={"config": {}}),
+            unittest.mock.patch.object(cleanup, "run") as run,
+            unittest.mock.patch.object(cleanup.time, "sleep", side_effect=StopIteration),
+        ):
+            with self.assertRaises(StopIteration):
+                cleanup.loop()
+        run.assert_not_called()
+
+    def test_enabled_calls_run(self):
+        with (
+            unittest.mock.patch.object(
+                cleanup.CONFIG, "get", return_value={"config": {"cleanup_enabled": True}}
+            ),
+            unittest.mock.patch.object(cleanup, "run") as run,
+            unittest.mock.patch.object(cleanup.time, "sleep", side_effect=StopIteration),
+        ):
+            with self.assertRaises(StopIteration):
+                cleanup.loop()
+        run.assert_called_once_with()
+
+    def test_run_exception_is_logged_not_raised(self):
+        # a failed run must never take the background thread (and so the whole
+        # server) down
+        with (
+            unittest.mock.patch.object(
+                cleanup.CONFIG, "get", return_value={"config": {"cleanup_enabled": True}}
+            ),
+            unittest.mock.patch.object(cleanup, "run", side_effect=RuntimeError("boom")),
+            unittest.mock.patch.object(cleanup.time, "sleep", side_effect=StopIteration),
+        ):
+            with self.assertRaises(StopIteration):
+                cleanup.loop()  # the RuntimeError itself must not propagate
 
 
 if __name__ == "__main__":
