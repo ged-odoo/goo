@@ -48,6 +48,14 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - Architecture: scattered fetch/parse/IO is behind the `effects` seam + `services`;
   the cohesive `OdooManager`/PTY subsystem keeps its own process side-effects (it's
   integration-proven, not unit-tested — abstracting it buys little).
+- `static/tests/` — Vitest + jsdom suite mirroring `static/src/<feature>/...`
+  path-for-path. `static/tests/setup.js` populates `globalThis.owl` (via
+  `vm.runInThisContext` on `static/lib/owl.js`, matching the classic `<script>`
+  semantics `static/index.html` itself relies on) before any test imports
+  `@odoo/owl`. `static/tests/helpers/plugin_harness.js` builds a real
+  `pluginManager` (via `new owl.App({})`, no DOM) for plugins that use
+  `usePlugin()`; a dependency-free plugin (e.g. `StorePlugin`) can be `new`'d
+  directly. Run `npm run test`.
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path. `rust_bundler/native/` is Goo's minimal Rust/PyO3 asset
   bundler; Odoo's resolved file list is authoritative and imports are never crawled.
@@ -100,6 +108,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `python3 -m unittest discover` — run the backend tests (from the repo root).
 - `npm run lint` / `npm run lint:fix` — eslint (`static/src` only).
 - `npm run format` — prettier (js/css/html/md).
+- `npm run test` / `npm run test:watch` — Vitest suite for `static/src/` (see
+  `static/tests/` above). Not pre-commit-hooked, same as the Python suite.
 - `npm run build` — bundle `static/src/main.js` → `static/dist/app.js` (esbuild;
   `@odoo/owl` aliased to the `window.owl` shim). Run + commit the output after editing
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
@@ -119,3 +129,13 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - Needs on PATH: `git`, `psql`/`dropdb`, `gh` (authed), Chrome (for hoot tests).
 - A working Odoo checkout + venv is required — goo launches `odoo-bin` (port 8069).
 - owl 3 is an early release version of owl. It is not fully compatible with owl 2
+  (see `static/tests/`'s owl-shim setup above) — full `mount()`-based component
+  rendering tests are deliberately not attempted for this reason; frontend tests
+  cover plugin/model logic and extracted pure functions instead.
+- Frontend unit-test exclusions (deliberate, mirroring the backend's
+  OdooManager/PTY note above, not gaps): `terminal.js` (WebSocket + xterm.js +
+  ResizeObserver), the live `EventSource` wiring end-to-end in `server_plugin.js`
+  (only its pure dispatch logic is tested, against a fake `EventSource`), real
+  pointer-drag geometry in `drag.js`'s `startRowDrag` (only `dropIndex` is
+  tested, against fixture rects), and the Chart.js/xterm lazy `<script>`-loading
+  paths in `nightly_screen`/`terminal.js`.

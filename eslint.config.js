@@ -18,4 +18,16 @@ export default [
       "lines-between-class-members": ["error", "always", { exceptAfterSingleLine: true }],
     },
   },
+  {
+    files: ["static/tests/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "module",
+      // node globals too: setup.js reads static/lib/owl.js off disk via node:fs/vm
+      globals: { ...globals.browser, ...globals.node, owl: "readonly" },
+    },
+    rules: {
+      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+    },
+  },
 ];

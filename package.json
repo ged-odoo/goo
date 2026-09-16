@@ -11,13 +11,17 @@
     "lint": "eslint static/src",
     "lint:fix": "eslint static/src --fix",
     "build": "esbuild static/src/main.js --bundle --format=esm --alias:@odoo/owl=./vendor/owl-orm/owl-global.js --outfile=static/dist/app.js",
-    "watch": "npm run build -- --watch"
+    "watch": "npm run build -- --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "esbuild": "^0.28.0",
     "eslint": "^9.0.0",
     "globals": "^15.0.0",
-    "prettier": "^3.0.0"
+    "jsdom": "^30.0.0",
+    "prettier": "^3.0.0",
+    "vitest": "^5.0.0"
   }
 }

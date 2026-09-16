@@ -40,7 +40,7 @@ import {
 } from "./cells.js";
 
 // a pasted GitHub PR URL or "owner/repo#123" shorthand → {github, number}, or null
-function parsePrRef(text) {
+export function parsePrRef(text) {
   const url = /github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/.exec(text);
   if (url) return { github: url[1], number: Number(url[2]) };
   const short = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(text.trim());
