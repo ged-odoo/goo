@@ -2144,7 +2144,9 @@ def _api_workspace_create(body):
         None,
     )
     repos = [r for r in body["repos"] if r.get("repo") != "owl" and r is not doc_attach]
-    community = next((r for r in repos if r.get("repo") == "community"), None)
+    cfg = CONFIG.get()["config"] or {}
+    main_repo_id = cfg.get("main_repo_id") or "community"
+    community = next((r for r in repos if r.get("repo") == main_repo_id), None)
     dev_branch = community and (community.get("newBranch") or community.get("branch"))
 
     results = []
@@ -2238,12 +2240,11 @@ def _api_workspace_create(body):
         addon_repo_paths = [
             r["worktreePath"]
             for r in repos
-            if r.get("repo") not in ("community", "documentation", "owl") and r.get("worktreePath")
+            if r.get("repo") not in (main_repo_id, "documentation", "owl") and r.get("worktreePath")
         ]
         addons_path = ",".join(
             [os.path.join(community_path, "addons"), *addon_repo_paths, ADDONS_DIR]
         )
-        cfg = CONFIG.get()["config"] or {}
         GIT.write_odoo_conf(
             worktree_parent, addons_path, cfg.get("db_user", "odoo"), cfg.get("db_password", "odoo")
         )
