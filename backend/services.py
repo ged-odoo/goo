@@ -485,40 +485,68 @@ class GitHubService:
         return data.get("headRefName", ""), None
 
     def search_branches(self, repos, query):
-        """Search GitHub for branches whose name starts with `query`, across all
-        repos that have a github field (one `gh api` call per repo, in parallel).
-        Returns a list of {repo: id, branch: name}."""
+        """Search GitHub for branches whose name starts with `query`, across each
+        repo's upstream (`github`) slug and its push remote's fork slug — a branch
+        pushed only to a personal/team fork never reaches upstream, so both are
+        searched (one `gh api` call per slug, in parallel across repos). Each
+        result also carries the git remote name to fetch it from (`pull_remote`
+        for an upstream match, else the fork's `push_remote`) — a caller that
+        blindly fetches from `pull_remote` gets "couldn't find remote ref" for a
+        fork-only branch. Returns a list of {repo: id, branch: name, remote: name}."""
         results = []
         lock = threading.Lock()
 
-        def search_one(r):
-            github = r.get("github", "")
-            if not github:
-                return
+        def matching_refs(slug):
             try:
                 res = self.io.run(
                     [
                         "gh",
                         "api",
-                        f"repos/{github}/git/matching-refs/heads/{query}",
+                        f"repos/{slug}/git/matching-refs/heads/{query}",
                         "--jq",
                         ".[].ref",
                     ],
                     timeout=15,
                 )
                 if res.returncode != 0:
-                    return
-                found = []
-                for line in res.stdout.splitlines():
-                    branch = line.strip()
-                    if branch.startswith("refs/heads/"):
-                        branch = branch[len("refs/heads/") :]
-                    if branch:
-                        found.append({"repo": r["id"], "branch": branch})
-                with lock:
-                    results.extend(found)
+                    return []
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
+                return []
+            found = []
+            for line in res.stdout.splitlines():
+                branch = line.strip()
+                if branch.startswith("refs/heads/"):
+                    branch = branch[len("refs/heads/") :]
+                if branch:
+                    found.append(branch)
+            return found
+
+        def fork_slug(r):
+            path, push_remote = r.get("path"), r.get("push_remote")
+            if not path or not push_remote:
+                return None
+            try:
+                pu = self.io.run(
+                    ["git", "-C", path, "remote", "get-url", push_remote], timeout=10, quiet=True
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                return None
+            return parse_github_slug(pu.stdout.strip()) if pu.returncode == 0 else None
+
+        def search_one(r):
+            found = {}  # branch -> remote name; an upstream match wins over a fork one
+            github = r.get("github", "")
+            if github:
+                for branch in matching_refs(github):
+                    found[branch] = r.get("pull_remote") or "origin"
+            fork = fork_slug(r)
+            if fork and fork != github:
+                push_remote = r.get("push_remote") or "dev"
+                for branch in matching_refs(fork):
+                    found.setdefault(branch, push_remote)
+            with lock:
+                for branch, remote in found.items():
+                    results.append({"repo": r["id"], "branch": branch, "remote": remote})
 
         threads = [threading.Thread(target=search_one, args=(r,), daemon=True) for r in repos]
         for t in threads:
@@ -1883,7 +1911,7 @@ def is_base_branch(name):
     return bool(_BASE_BRANCH_RE.fullmatch(name or ""))
 
 
-_GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
+_GITHUB_REMOTE_RE = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
 
 
 def parse_github_slug(url):
