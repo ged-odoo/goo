@@ -498,7 +498,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
             const r = await fetchRemoteBranch(dialogs, {
               path: pathByRepo[repoId],
               branch: res.branch,
-              pull_remote: pullRemoteByRepo[repoId],
+              pull_remote: res.remoteByRepo[repoId] || pullRemoteByRepo[repoId],
             });
             if (r.ok) fetchedNow.push(repoId);
             else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);
@@ -729,7 +729,7 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
   const { code, dialogs } = plugins;
   const res = await dialogs.openComponent(RemoteBranchDialog);
   if (!res) return;
-  const { branch, repos } = res;
+  const { branch, repos, remoteByRepo } = res;
   const { pathByRepo, pullRemoteByRepo } = code.groups();
   const fetched = [];
   for (const repoId of repos) {
@@ -738,7 +738,7 @@ export async function createWorkspaceFromRemoteBranch(plugins) {
     const r = await fetchRemoteBranch(dialogs, {
       path,
       branch,
-      pull_remote: pullRemoteByRepo[repoId],
+      pull_remote: remoteByRepo[repoId] || pullRemoteByRepo[repoId],
     });
     if (r.ok) fetched.push(repoId);
     else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);

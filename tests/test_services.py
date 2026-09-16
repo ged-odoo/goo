@@ -1432,6 +1432,14 @@ class ParseGithubSlugTest(unittest.TestCase):
             "someone/documentation",
         )
 
+    def test_ssh_over_https_port_form(self):
+        # git@ssh.github.com:443 — the SSH-over-443 host GitHub offers when port 22
+        # is blocked; the port must not be swallowed into the owner
+        self.assertEqual(
+            services.parse_github_slug("ssh://git@ssh.github.com:443/someone/documentation.git"),
+            "someone/documentation",
+        )
+
     def test_non_github_url_returns_none(self):
         self.assertIsNone(services.parse_github_slug("https://gitlab.com/someone/documentation"))
 
@@ -2703,6 +2711,73 @@ class GitHubSearchBranchesTest(unittest.TestCase):
         found = svc.search_branches([{"id": "community", "github": "odoo/odoo"}], "master-")
         self.assertEqual(sorted(f["branch"] for f in found), ["master-x", "master-y"])
         self.assertTrue(all(f["repo"] == "community" for f in found))
+        # no pull_remote given — falls back to "origin"
+        self.assertTrue(all(f["remote"] == "origin" for f in found))
+
+    def test_search_branches_also_searches_push_remote_fork(self):
+        # a branch pushed only to a personal/team fork (here "odoo-dev", resolved
+        # from the push remote's actual URL) never reaches the upstream repo
+        io = FakeIO(
+            runs={
+                "remote get-url dev": completed(stdout="git@github.com:odoo-dev/odoo.git\n"),
+                "repos/odoo/odoo/git/matching-refs": completed(stdout=""),
+                "repos/odoo-dev/odoo/git/matching-refs": completed(
+                    stdout="refs/heads/master-mine\n"
+                ),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        found = svc.search_branches(
+            [{"id": "community", "github": "odoo/odoo", "path": "/r", "push_remote": "dev"}],
+            "master-",
+        )
+        self.assertEqual([f["branch"] for f in found], ["master-mine"])
+        self.assertEqual(found[0]["repo"], "community")
+        # found only on the fork — must be fetched from "dev", not upstream
+        self.assertEqual(found[0]["remote"], "dev")
+
+    def test_search_branches_prefers_upstream_remote_over_fork(self):
+        io = FakeIO(
+            runs={
+                "remote get-url dev": completed(stdout="git@github.com:odoo-dev/odoo.git\n"),
+                "repos/odoo/odoo/git/matching-refs": completed(stdout="refs/heads/master-shared\n"),
+                "repos/odoo-dev/odoo/git/matching-refs": completed(
+                    stdout="refs/heads/master-shared\n"
+                ),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        found = svc.search_branches(
+            [{"id": "community", "github": "odoo/odoo", "path": "/r", "push_remote": "dev"}],
+            "master-",
+        )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["remote"], "origin")
+
+    def test_fork_slug_exception_does_not_lose_upstream_matches(self):
+        # regression test: fork_slug's own `git remote get-url` call used to be
+        # unguarded, unlike its sibling matching_refs — an exception there (e.g.
+        # git missing, or a hung process) silently dropped this repo's ALREADY
+        # FOUND upstream matches too, since the results.append happens after
+        # fork_slug returns. It must now degrade gracefully like matching_refs.
+        class RaisingOnRemoteGetUrlIO(FakeIO):
+            def run(self, cmd, **kwargs):
+                if cmd[:3] == ["git", "remote", "get-url"] or (
+                    len(cmd) > 3 and cmd[1] == "-C" and cmd[3:5] == ["remote", "get-url"]
+                ):
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                return super().run(cmd, **kwargs)
+
+        io = RaisingOnRemoteGetUrlIO(
+            runs={"repos/odoo/odoo/git/matching-refs": completed(stdout="refs/heads/master-x\n")}
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        found = svc.search_branches(
+            [{"id": "community", "github": "odoo/odoo", "path": "/r", "push_remote": "dev"}],
+            "master-",
+        )
+        self.assertEqual([f["branch"] for f in found], ["master-x"])
+        self.assertEqual(found[0]["remote"], "origin")
 
 
 class AddonsServiceTest(unittest.TestCase):

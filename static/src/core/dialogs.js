@@ -122,7 +122,13 @@ export class RemoteBranchDialog extends Component {
     const ids = this.repoIds;
     const repos = this.config.config.repos
       .filter((r) => r.github && (!ids || ids.has(r.id)))
-      .map((r) => ({ id: r.id, github: r.github }));
+      .map((r) => ({
+        id: r.id,
+        github: r.github,
+        path: r.path,
+        push_remote: r.push_remote,
+        pull_remote: r.pull_remote,
+      }));
     try {
       const res = await fetch("/api/code/remote-branches/search", {
         method: "POST",
@@ -132,9 +138,9 @@ export class RemoteBranchDialog extends Component {
       const data = await res.json();
       if (query !== this._query || !data.ok) return; // input moved on — drop this response
       const byBranch = new Map();
-      for (const { repo, branch } of data.results) {
-        if (!byBranch.has(branch)) byBranch.set(branch, new Set());
-        byBranch.get(branch).add(repo);
+      for (const { repo, branch, remote } of data.results) {
+        if (!byBranch.has(branch)) byBranch.set(branch, new Map());
+        byBranch.get(branch).set(repo, remote);
       }
       this._mergeRemote(byBranch);
     } finally {
@@ -143,20 +149,24 @@ export class RemoteBranchDialog extends Component {
   }
 
   // merge the remote results into whatever `_searchLocal` already produced,
-  // tagging each repo local/remote so a repo found in both shows once (as local)
+  // tagging each repo local/remote so a repo found in both shows once (as local,
+  // no fetch needed); a remote-only repo carries the git remote name to fetch it
+  // from (the upstream `pull_remote`, or a fork's `push_remote` — see
+  // GitHubService.search_branches), so a caller never guesses the wrong one
   _mergeRemote(remoteByBranch) {
     const merged = new Map(
-      this.rows().map((r) => [r.branch, new Map(r.repos.map((x) => [x.id, x.local]))]),
+      this.rows().map((r) => [r.branch, new Map(r.repos.map((x) => [x.id, x]))]),
     );
-    for (const [branch, repos] of remoteByBranch) {
+    for (const [branch, repoRemotes] of remoteByBranch) {
       if (!merged.has(branch)) merged.set(branch, new Map());
-      for (const repo of repos)
-        if (!merged.get(branch).has(repo)) merged.get(branch).set(repo, false);
+      for (const [repo, remote] of repoRemotes)
+        if (!merged.get(branch).has(repo))
+          merged.get(branch).set(repo, { id: repo, local: false, remote });
     }
     this.rows.set(
       [...merged.entries()].map(([branch, repoMap]) => ({
         branch,
-        repos: [...repoMap.entries()].map(([id, local]) => ({ id, local })),
+        repos: [...repoMap.values()],
       })),
     );
   }
@@ -168,8 +178,14 @@ export class RemoteBranchDialog extends Component {
   ok() {
     if (!this.sel()) return;
     const branch = this.sel();
-    const repos = (this.rows().find((r) => r.branch === branch)?.repos || []).map((r) => r.id);
-    this.done({ branch, repos });
+    const rowRepos = this.rows().find((r) => r.branch === branch)?.repos || [];
+    const repos = rowRepos.map((r) => r.id);
+    // which remote to `git fetch` each remote-only repo's branch from — a local
+    // repo needs none, it's already there
+    const remoteByRepo = Object.fromEntries(
+      rowRepos.filter((r) => !r.local && r.remote).map((r) => [r.id, r.remote]),
+    );
+    this.done({ branch, repos, remoteByRepo });
   }
 }
 
