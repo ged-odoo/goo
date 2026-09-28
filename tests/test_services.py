@@ -2893,6 +2893,49 @@ class GitServiceTest(unittest.TestCase):
         self.assertTrue(any("ls-remote --exit-code --heads upstream master" in c for c in joined))
         self.assertTrue(any("fetch upstream master" in c for c in joined))
 
+    def test_worktree_from_remote_base_tracks_it_as_upstream(self):
+        io = FakeIO(
+            runs={
+                "ls-remote --exit-code --heads upstream master": completed(
+                    stdout="abc123\trefs/heads/master\n"
+                ),
+                "fetch upstream master": completed(),
+            }
+        )
+        ok, err = services.GitService(io).worktree_add(
+            "/r",
+            "/wt/master-feature",
+            "master-feature",
+            new_branch=True,
+            start_point="master",
+            fresh_start=True,
+            pull_remote="upstream",
+        )
+        self.assertEqual((ok, err), (True, None))
+        joined = [" ".join(c) for c in io.run_calls]
+        add = joined.index("git -C /r worktree add -b master-feature /wt/master-feature FETCH_HEAD")
+        self.assertEqual(
+            joined[add + 1 :],
+            [
+                "git -C /r config branch.master-feature.remote upstream",
+                "git -C /r config branch.master-feature.merge refs/heads/master",
+            ],
+        )
+
+    def test_worktree_from_local_base_sets_no_upstream(self):
+        io = FakeIO(
+            runs={"ls-remote --exit-code --heads origin local-base": completed(returncode=2)}
+        )
+        services.GitService(io).worktree_add(
+            "/wt",
+            "/wt/feature",
+            "feature",
+            new_branch=True,
+            start_point="local-base",
+            fresh_start=True,
+        )
+        self.assertFalse(any(" config " in f" {' '.join(c)} " for c in io.run_calls))
+
     def test_worktree_uses_local_start_point_when_remote_branch_is_absent(self):
         io = FakeIO(
             runs={

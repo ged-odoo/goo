@@ -2465,6 +2465,7 @@ class GitService:
         if new_branch and not start_point:
             return False, "missing start point for the new branch"
         p = os.path.expanduser(main_path)
+        base = start_point
         if new_branch and fresh_start:
             start_point, error = self.fresh_start_point(p, start_point, pull_remote, repo)
             if error:
@@ -2479,6 +2480,14 @@ class GitService:
         else:
             args = ["worktree", "add", wp, branch]
         _, error = self._git(p, *args, timeout=120, err="git worktree add failed")
+        if not error and start_point == "FETCH_HEAD":
+            # forked from a freshly fetched remote base: FETCH_HEAD isn't a
+            # remote-tracking ref, so git sets no upstream and a bare `git pull`
+            # fails — track <pull_remote>/<base> so it pulls the base in. Written as
+            # config (not --set-upstream-to) so it doesn't need refs/remotes/<base>.
+            remote = pull_remote or "origin"
+            self._git(p, "config", f"branch.{branch}.remote", remote)
+            self._git(p, "config", f"branch.{branch}.merge", f"refs/heads/{base}")
         self.notify(creating, event_id=eid, status="error" if error else "done")
         return error is None, error
 
