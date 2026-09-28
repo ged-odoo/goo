@@ -17,9 +17,10 @@ jobs:
       # lands in the job summary so untested handlers are visible on every run
       - run: pip install coverage
       - run: coverage run -m unittest discover
+      # summary first (always written), then the check against fail_under
       - run: |
+          { echo '```'; coverage report --sort=cover --fail-under=0; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           coverage report --skip-covered --sort=cover
-          { echo '```'; coverage report --sort=cover; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   backend-types:
     name: Backend (ruff + pyright)

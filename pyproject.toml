@@ -31,6 +31,10 @@ typeCheckingMode = "standard"
 source = ["backend"]
 omit = ["backend/services/templates/*"]
 
+[tool.coverage.report]
+# CI fails below this — raise it as coverage grows, never lower it to make a PR pass
+fail_under = 88
+
 [tool.vulture]
 # dead-code check (`vulture`, run in CI); a dev tool only
 paths = ["backend", "goo.py"]

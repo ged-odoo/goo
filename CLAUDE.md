@@ -56,11 +56,17 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     copied verbatim into worktrees (excluded from ruff/pyright/prettier — edit
     them as the files they are).
   - `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
-- `tests/` — stdlib `unittest` suite; services run against a fake IO (no network,
-  subprocess, or disk). Run `python3 -m unittest discover`.
+- `tests/` — stdlib `unittest` suite. Services run against a fake IO (no network,
+  subprocess, or disk); `effects` itself and the process subsystem are tested for
+  real but local and fast: temp dirs, a `127.0.0.1` HTTP server on port 0, real git
+  repos in a temp dir, and fake `odoo-bin` / `claude` executables driven through the
+  real PTY / websocket paths (`test_effects`, `test_http`, `test_update`,
+  `test_workspace_manager`, `test_claude`). Every wait has a deadline — no bare
+  sleeps. Run `python3 -m unittest discover`; CI enforces a coverage floor
+  (`fail_under` in `pyproject.toml`).
 - Architecture: scattered fetch/parse/IO is behind the `effects` seam + `services`;
-  the cohesive `OdooManager`/PTY subsystem keeps its own process side-effects (it's
-  integration-proven, not unit-tested — abstracting it buys little).
+  the cohesive `WorkspaceManager`/PTY subsystem keeps its own process side-effects
+  (not abstracted behind the seam — its tests run it against a fake `odoo-bin`).
 - `static/tests/` — Vitest + jsdom suite mirroring `static/src/<feature>/...`
   path-for-path. `static/tests/setup.js` populates `globalThis.owl` (via
   `vm.runInThisContext` on `static/lib/owl.js`, matching the classic `<script>`
@@ -178,8 +184,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   (see `static/tests/`'s owl-shim setup above) — full `mount()`-based component
   rendering tests are deliberately not attempted for this reason; frontend tests
   cover plugin/model logic and extracted pure functions instead.
-- Frontend unit-test exclusions (deliberate, mirroring the backend's
-  OdooManager/PTY note above, not gaps): `terminal.js` (WebSocket + xterm.js +
+- Frontend unit-test exclusions (deliberate, not gaps): `terminal.js` (WebSocket + xterm.js +
   ResizeObserver), the live `EventSource` wiring end-to-end in `server_plugin.js`
   (only its pure dispatch logic is tested, against a fake `EventSource`), real
   pointer-drag geometry in `drag.js`'s `startRowDrag` (only `dropIndex` is
