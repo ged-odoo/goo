@@ -15,7 +15,7 @@ jobs:
           python-version: "3.11"
       # coverage is a CI-only dev tool (the server stays stdlib-only); the report
       # lands in the job summary so untested handlers are visible on every run
-      - run: pip install coverage
+      - run: pip install coverage==7.16.2
       - run: coverage run -m unittest discover
       # summary first (always written), then the check against fail_under
       - run: |
@@ -37,8 +37,9 @@ jobs:
       # ruff's ANN rules keep every backend function annotated; pyright checks
       # the annotations (both configured in pyproject.toml). Dev tools only —
       # the server itself stays stdlib-only.
-      - run: pip install ruff vulture
+      - run: pip install ruff==0.16.7 vulture==2.16
       - run: ruff check
+      - run: ruff format --check
       # dead code (config in pyproject.toml [tool.vulture])
       - run: vulture
       - run: npm ci

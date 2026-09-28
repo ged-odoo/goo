@@ -29,8 +29,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     module-level service singletons (`GIT`, `CONFIG`, `DATABASE`, … — tests swap
     them on this module, so whatever reads them stays here: the handlers,
     `WorkspaceManager`, the DATABASE-probing odoo/docker command builders, the
-    update state/loop), `Handler` and `main`. It re-imports what moved out, so
-    `server.<name>` keeps working.
+    update state/loop), `Handler` and `main`. It re-imports the moved names other
+    code uses (`server.<name>`).
   - `events.py` — the `EventBus` (SSE). `processes.py` — the port/process/editor
     helpers, the service-free command builders, the PTY/CLI websocket frame helpers
     and `_Entry`; `GOO_DIR` (the repo root — where `static/`, `addons/`, and the git
@@ -60,7 +60,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   subprocess, or disk); `effects` itself and the process subsystem are tested for
   real but local and fast: temp dirs, a `127.0.0.1` HTTP server on port 0, real git
   repos in a temp dir, and fake `odoo-bin` / `claude` executables driven through the
-  real PTY / websocket paths (`test_effects`, `test_http`, `test_update`,
+  real PTY / websocket paths (`test_effects`, `test_processes`, `test_http`, `test_update`,
   `test_workspace_manager`, `test_claude`). Every wait has a deadline — no bare
   sleeps. Run `python3 -m unittest discover`; CI enforces a coverage floor
   (`fail_under` in `pyproject.toml`).
@@ -140,7 +140,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `vulture` / `npm run deadcode` (knip) — dead-code checks, both run in CI (config in
   `pyproject.toml` `[tool.vulture]` and `knip.json`). `pip install vulture` locally.
 - `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
-- `pre-commit` runs ruff + prettier + eslint on changed files.
+- `pre-commit` runs ruff + pyright + prettier + eslint on changed files, and rebuilds
+  `static/dist/app.js` when `static/src/` or `vendor/owl-orm/` changed.
 
 ## Conventions
 
@@ -158,8 +159,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - **Hooks enforce the checks** (`.claude/settings.json` → `.claude/hooks/`): every
   edited file is formatted + linted on the spot (`format.sh`), and a turn can't end
   while the checks for what the branch changed fail (`check.sh`: ruff, pyright,
-  unit tests, eslint, vitest, bundle freshness). Fix the failure — don't disable
-  the hook or work around it.
+  unit tests, eslint, vitest; a stale `static/dist/app.js` is rebuilt). It's
+  skipped when nothing changed since the last passing run; the frontend checks
+  need `npm install`. Fix the failure — don't disable the hook or work around it.
 - **Tests check the outcome, not the command sent to a fake.** A test that asserts
   "ran `git worktree add …`" passes even when the result is broken; assert what the
   user would observe (the branch tracks its upstream, the commits are reordered,

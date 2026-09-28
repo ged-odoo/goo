@@ -4,8 +4,8 @@ The implementation of goo; the repo-root `goo.py` is a thin launcher that calls
 main() here. The frontend (static/) holds the configuration and posts it with each
 start request; the backend is stateless apart from the server-side caches.
 
-Self-contained pieces live in sibling modules and are re-imported here, so
-`server.<name>` keeps working: the SSE bus in events.py, the port/process/editor
+Self-contained pieces live in sibling modules; the names other code uses are
+re-imported here (`server.<name>`): the SSE bus in events.py, the port/process/editor
 helpers, the service-free command builders, the WebSocket frame helpers and
 `_Entry` in processes.py, the self-update git probes in update.py, and the Claude
 chat in claude.py. What reads the module-level singletons below (the route

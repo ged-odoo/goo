@@ -6,11 +6,37 @@ rather than through the full run() loop.
 Run from the repo root: `python3 -m unittest discover`
 """
 
+import os
 import subprocess
+import tempfile
 import unittest
 import unittest.mock
 
 from backend import cleanup
+
+_state_dir = tempfile.TemporaryDirectory()
+
+
+def setUpModule():
+    # run() logs to ~/.local/state/goo/cleanup.log: keep the fixtures' fake
+    # "deleting …" lines out of the user's real cleanup log
+    patches = [
+        unittest.mock.patch.object(cleanup, "STATE_DIR", _state_dir.name),
+        unittest.mock.patch.object(
+            cleanup, "LOG_PATH", os.path.join(_state_dir.name, "cleanup.log")
+        ),
+    ]
+    for p in patches:
+        p.start()
+        unittest.addModuleCleanup(p.stop)
+
+
+def tearDownModule():
+    for h in list(cleanup.log.handlers):
+        cleanup.log.removeHandler(h)
+        h.close()
+    _state_dir.cleanup()
+
 
 REPO_MAP = {"community": {"github": "odoo/odoo", "pull_remote": "origin"}}
 TWO_REPO_MAP = {

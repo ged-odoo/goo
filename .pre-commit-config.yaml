@@ -8,18 +8,16 @@ repos:
         entry: python3 -m ruff check --fix
         language: system
         types: [python]
-        exclude: ^old_odev\.py$
       - id: ruff-format
         name: ruff (format)
         entry: python3 -m ruff format
         language: system
         types: [python]
-        exclude: ^old_odev\.py$
       # whole-project type check (pyright needs every module to judge one), so it
       # runs once per commit that touches Python, not per file
       - id: pyright
         name: pyright (types)
-        entry: npm run -s typecheck:py
+        entry: npx --yes pyright
         language: system
         types: [python]
         pass_filenames: false

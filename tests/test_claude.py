@@ -364,6 +364,34 @@ class TestStop(ClaudeTestCase):
             ],
         )
 
+    def test_a_second_stop_during_the_kill_leaves_it_to_the_first(self):
+        self.start_hanging()
+        real_terminate = claude.terminate_process
+        seen = {}
+
+        def terminate_with_a_second_click(process):
+            # the user clicks Stop again (another tab) while the first kill runs
+            seen["second"] = self.mgr.stop("w1")
+            seen["state_after_second"] = self.mgr.history_for("w1")["state"]
+            seen["send_after_second"] = self.send("hi", "w1")
+            real_terminate(process)
+
+        with unittest.mock.patch.object(
+            claude, "terminate_process", side_effect=terminate_with_a_second_click
+        ):
+            self.assertEqual(self.mgr.stop("w1"), (True, "stopped"))
+        join_readers()
+        self.assertEqual(seen["second"], (True, "stopping"))
+        # still busy until the first stop is done: no new turn can sneak in
+        self.assertEqual(seen["state_after_second"], "running")
+        self.assertFalse(seen["send_after_second"][0])
+        self.assertEqual(self.bus.items()[-1], {"role": "result", "ok": True})
+        self.assertEqual(
+            [i for i in self.bus.items() if i["role"] == "result"], [{"role": "result", "ok": True}]
+        )
+        self.assertEqual(self.mgr.history_for("w1")["state"], "idle")
+        self.assertIn("resume=sess-1", self.texts(self.turn("whoami"))[1])
+
     def test_stop_when_idle_is_harmless(self):
         self.assertEqual(self.mgr.stop("nobody"), (True, "stopped"))
         self.assertEqual(self.bus.items("nobody"), [{"role": "result", "ok": True}])

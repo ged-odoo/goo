@@ -3,9 +3,14 @@
 # way pre-commit would. Lint errors that can't be auto-fixed are sent back to
 # Claude (exit 2) so it fixes them in the same turn.
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
-f=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty')
-[ -f "$f" ] || exit 0
-f=$(realpath --relative-to=. "$f")
+# the edited file, relative to the repo root (python3: always there, unlike jq)
+f=$(python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+p = (d.get("tool_input") or {}).get("file_path") or (d.get("tool_response") or {}).get("filePath") or ""
+print(os.path.relpath(p) if p and os.path.isfile(p) else "")
+')
+[ -n "$f" ] || exit 0
 case "$f" in
   ../*) exit 0 ;; # outside the repo
   *.py)

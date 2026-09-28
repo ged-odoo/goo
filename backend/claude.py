@@ -318,6 +318,9 @@ class ClaudeManager:
         """Interrupt a running Claude turn (idempotent)."""
         with self.lock:
             e = self.convos.get(target)
+            if e and e["state"] == "running" and e["process"] is None:
+                # a stop is already killing this turn — let it finish the job
+                return True, "stopping"
             process = e["process"] if e and e["state"] == "running" else None
             if e and process is not None:
                 # release the turn before killing it: the reader sees it no longer
@@ -331,9 +334,12 @@ class ClaudeManager:
                 self.bus.publish_log(f"{TAG} error stopping claude ({target}): {ex}")
         with self.lock:
             e = self.convos.get(target)
+            if e and e["process"] is not None:
+                # a newer turn started while the kill was running (the old turn
+                # reached its result mid-kill): it's not ours to reset
+                return True, "stopped"
             if e:
                 e["state"] = "idle"
-                e["process"] = None
         self.bus.publish_claude({"workspace": target, "role": "result", "ok": True})
         return True, "stopped"
 
