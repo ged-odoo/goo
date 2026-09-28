@@ -131,6 +131,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   config in `pyproject.toml`). Runs in CI next to `ruff check`, and in pre-commit.
 - CI also reports backend test coverage (`coverage run -m unittest discover`) in the
   job summary — `pip install coverage` to run it locally; a dev tool only.
+- `vulture` / `npm run deadcode` (knip) — dead-code checks, both run in CI (config in
+  `pyproject.toml` `[tool.vulture]` and `knip.json`). `pip install vulture` locally.
 - `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
 - `pre-commit` runs ruff + prettier + eslint on changed files.
 
@@ -144,6 +146,29 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - Frontend: lint/format only touch `static/src` — `static/lib/` (vendored) and
   `static/dist/` (generated bundle) are left alone (both are prettier/eslint-ignored).
 - Keep the server dependency-free — no pip packages.
+
+## Working rules (goo is written with Claude Code)
+
+- **Hooks enforce the checks** (`.claude/settings.json` → `.claude/hooks/`): every
+  edited file is formatted + linted on the spot (`format.sh`), and a turn can't end
+  while the checks for what the branch changed fail (`check.sh`: ruff, pyright,
+  unit tests, eslint, vitest, bundle freshness). Fix the failure — don't disable
+  the hook or work around it.
+- **Tests check the outcome, not the command sent to a fake.** A test that asserts
+  "ran `git worktree add …`" passes even when the result is broken; assert what the
+  user would observe (the branch tracks its upstream, the commits are reordered,
+  the file exists). For git behavior, prefer a real repo in a temp dir.
+- **Comments describe what the code does now.** History ("used to…", "a bug we
+  hit…", "moved from…") belongs in the commit message, not the code. When a file
+  moves or is renamed, update every reference to it — `tests/test_doc_paths.py`
+  fails on a path in `CLAUDE.md` or a reference to a goo source file that no longer
+  exists.
+- **Delete dead code, don't leave it behind.** When a feature or caller is removed,
+  remove what only it used (vulture + knip fail CI on unused code).
+- **Review in a separate session before every PR.** The session that wrote the code
+  shares its blind spots — before opening (or updating) a PR, run `/code-review` on
+  the branch in a fresh Claude Code session (or a subagent given only the diff, not
+  the implementation reasoning), and address its findings first.
 
 ## Gotchas
 
