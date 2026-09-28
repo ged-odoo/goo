@@ -25,3 +25,8 @@ include = ["backend", "goo.py"]
 exclude = ["backend/services/templates"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
+
+[tool.coverage.run]
+# CI reports backend coverage (`coverage run -m unittest discover`); a dev tool only
+source = ["backend"]
+omit = ["backend/services/templates/*"]

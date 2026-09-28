@@ -15,6 +15,14 @@ repos:
         language: system
         types: [python]
         exclude: ^old_odev\.py$
+      # whole-project type check (pyright needs every module to judge one), so it
+      # runs once per commit that touches Python, not per file
+      - id: pyright
+        name: pyright (types)
+        entry: npm run -s typecheck:py
+        language: system
+        types: [python]
+        pass_filenames: false
       - id: prettier
         name: prettier
         entry: npx --yes prettier@3 --write
