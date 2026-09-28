@@ -1,4 +1,4 @@
-// Config + app-state store, owned by the server (backend/services.py ConfigStore,
+// Config + app-state store, owned by the server (backend/services/config.py ConfigStore,
 // persisted to ~/.config/goo/config.json as {rev, config, state}). This plugin is the
 // client's adapter over that config: it seeds an owl-orm ORM from GET /api/config at
 // boot (see loadServerConfig + config_models.js), and keeps its flat public API —

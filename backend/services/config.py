@@ -15,7 +15,7 @@ class ConfigStore:
 
     `config` (the user's settings/repos/targets) and `state` (app-recorded: active
     target, test history, claude model) are opaque JSON blobs — the schema
-    lives in the frontend (static/src/config.js); the server only versions them under
+    lives in the frontend (static/src/core/config.js); the server only versions them under
     one shared `rev`, guards concurrent writes, and reads a few well-known fields for
     the CLI / auto-reloader. A missing file reads as rev 0 with null blobs (the client
     seeds it on first boot). Writes go through the effects seam, so it's unit-testable.

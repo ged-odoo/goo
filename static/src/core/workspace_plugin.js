@@ -8,7 +8,7 @@
 // worktree server log streams into its own LogBuffer (the unified "log" SSE).
 // `worktree` is { base, dir, venv }: `venv` (optional) marks a dedicated
 // <dir>/.venv built from this worktree's own requirements.txt — build_start_config
-// (backend/services.py) activates it instead of the global venv_activate.
+// (backend/services/config.py) activates it instead of the global venv_activate.
 
 import { ConfigPlugin } from "./config_plugin.js";
 import { StorePlugin } from "./store_plugin.js";
