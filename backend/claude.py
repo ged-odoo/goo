@@ -236,6 +236,7 @@ class ClaudeManager:
                     self._entry(target)["session"] = sid
             if self._handle(target, obj):
                 got_result = True
+        process.stdout.close()
         ret = process.wait()
         with self.lock:
             e = self.convos.get(target)
@@ -281,9 +282,11 @@ class ClaudeManager:
             item = {"role": "result", "ok": ok, "cost": obj.get("total_cost_usd")}
             if not ok:
                 item["error"] = obj.get("result") or obj.get("error") or "claude reported an error"
-            self._emit(target, item)
             if ok:
+                # saved before the result goes out, so once a turn is reported
+                # finished its review can already be read
                 self._persist_review(target)
+            self._emit(target, item)
             return True
         return False
 
@@ -316,6 +319,10 @@ class ClaudeManager:
         with self.lock:
             e = self.convos.get(target)
             process = e["process"] if e and e["state"] == "running" else None
+            if e and process is not None:
+                # release the turn before killing it: the reader sees it no longer
+                # owns the entry and doesn't report the kill as a failed turn
+                e["process"] = None
         if process is not None:
             self.bus.publish_log(f"{TAG} stopping claude ({target})...")
             try:

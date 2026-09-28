@@ -79,6 +79,8 @@ def http_get(url: str, *, timeout: float = 10) -> tuple[str, str | None]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), None
     except Exception as e:  # any network/HTTP error just means "unreachable"
+        if isinstance(e, urllib.error.HTTPError):
+            e.close()
         return "", str(e)
 
 
@@ -119,6 +121,7 @@ def http_head(url: str, *, timeout: float = 10) -> tuple[int, int, str | None]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, int(resp.headers.get("Content-Length") or 0), None
     except urllib.error.HTTPError as e:  # a 404 is an answer, not an outage
+        e.close()
         return e.code, 0, str(e)
     except Exception as e:
         return 0, 0, str(e)
@@ -149,8 +152,13 @@ def http_download(
                     done += len(chunk)
                     if on_progress:
                         on_progress(done, total)
+            # a connection closed early just ends the read loop, it doesn't raise
+            if total and done < total:
+                raise OSError(f"download truncated: got {done} of {total} bytes")
         return True, None
     except Exception as e:
+        if isinstance(e, urllib.error.HTTPError):
+            e.close()
         try:
             os.unlink(p)
         except OSError:

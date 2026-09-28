@@ -633,6 +633,11 @@ class WorkspaceManager:
                 else "server"
             )
             entry.started_at = time.time()
+            # a fresh scrollback for this launch — cleared before the port choice
+            # below, whose fallback notice belongs in it
+            entry.log.clear()
+            with entry.raw_lock:
+                entry.raw_buf.clear()
             if main or is_docker:
                 # docker mode has no OS port to allocate either — the container
                 # binds its own default 8069/8072 inside the network namespace,
@@ -695,10 +700,6 @@ class WorkspaceManager:
                 # the workspace's own stream — its log pane shows the exact launch cmd
                 self.bus.publish_log(f"{TAG} starting odoo: {full_cmd}", server=wsid)
                 warn_if_rust_bundler_missing(config, self.bus, context=f"workspace {wsid}")
-
-            entry.log.clear()
-            with entry.raw_lock:
-                entry.raw_buf.clear()
 
             effects.trace("run", full_cmd)
             master_fd, slave_fd = pty.openpty()
@@ -923,12 +924,15 @@ class WorkspaceManager:
                 entry.workspace = None
                 entry.cmd = None
                 entry.started_at = None
-            entry.exited_unexpectedly = True
+            # a one-shot run (tests/install) is meant to exit: finish_run reports
+            # how it went, it isn't a crash
+            crashed = not (entry.run and entry.run.get("state") == "running")
+            entry.exited_unexpectedly = crashed
             entry.returncode = ret
             public = None if main else self._public(entry)
-        if main:
+        if crashed and main:
             self.bus.publish_log(f"{TAG} odoo exited unexpectedly (code {ret})")
-        else:
+        elif crashed:
             self.bus.publish_event(
                 f"workspace server ({wsid}) exited unexpectedly (code {ret})", level="error"
             )
@@ -2326,6 +2330,7 @@ class Handler(BaseHTTPRequestHandler):
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except OSError:
                 pass
+            proc.wait()  # reap it — no zombie left per closed terminal
             try:
                 os.close(master_fd)
             except OSError:
@@ -2455,6 +2460,9 @@ class Handler(BaseHTTPRequestHandler):
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except OSError:
                 pass
+            proc.wait()
+        finally:
+            proc.stdout.close()
 
     def _send_event(self, event: str, payload: Any) -> None:
         # json.dumps guarantees a single-line data field
