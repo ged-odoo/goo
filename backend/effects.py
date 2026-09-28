@@ -283,18 +283,6 @@ def remove_tree(path: str) -> tuple[bool, str | None]:
         return False, str(e)
 
 
-def remove_file(path: str) -> tuple[bool, str | None]:
-    """Delete a single file. Returns (ok, error); a missing path is ok."""
-    trace("rm", path)
-    p = os.path.expanduser(path)
-    try:
-        if os.path.exists(p):
-            os.remove(p)
-        return True, None
-    except OSError as e:
-        return False, str(e)
-
-
 def move_path(src: str, dst: str) -> tuple[bool, str | None]:
     """Move/rename a path (src → dst). Returns (ok, error)."""
     trace("move", f"{src} → {dst}")

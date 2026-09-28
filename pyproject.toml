@@ -30,3 +30,16 @@ typeCheckingMode = "standard"
 # CI reports backend coverage (`coverage run -m unittest discover`); a dev tool only
 source = ["backend"]
 omit = ["backend/services/templates/*"]
+
+[tool.vulture]
+# dead-code check (`vulture`, run in CI); a dev tool only
+paths = ["backend", "goo.py"]
+# models.py fields are the wire contract (read by the frontend, not by Python)
+exclude = ["backend/services/templates/", "backend/models.py"]
+ignore_decorators = ["@post_route"]  # routes are registered by the decorator
+# called by the stdlib (http.server / socketserver / urllib / signal), not by goo
+ignore_names = [
+    "do_GET", "do_POST", "log_message", "format", "https_response",
+    "daemon_threads", "allow_reuse_address", "signum", "frame", "cls",
+    "AUTORELOAD",  # kept for its side effect: the constructor starts the fetch thread
+]

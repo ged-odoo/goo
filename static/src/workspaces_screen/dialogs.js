@@ -821,39 +821,6 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   wt.select(ws.id);
 }
 
-// Search for a remote branch across the repos, fetch it locally, then open the
-// create dialog prefilled with it. "Create branches" defaults off — the fetch
-// already created the local branches. A repo whose fetch fails (or has no
-// path) is reported and left out of the prefill entirely — never handed to
-// the create form as if it had a real local branch to attach.
-export async function createWorkspaceFromRemoteBranch(plugins) {
-  const { code, dialogs } = plugins;
-  const res = await dialogs.openComponent(RemoteBranchDialog);
-  if (!res) return;
-  const { branch, repos, remoteByRepo } = res;
-  const { pathByRepo, pullRemoteByRepo } = code.groups();
-  const fetched = [];
-  for (const repoId of repos) {
-    const path = pathByRepo[repoId];
-    if (!path) continue;
-    const r = await fetchRemoteBranch(dialogs, {
-      path,
-      branch,
-      pull_remote: remoteByRepo[repoId] || pullRemoteByRepo[repoId],
-    });
-    if (r.ok) fetched.push(repoId);
-    else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);
-  }
-  if (!fetched.length) return;
-  await startCreateWorkspace(plugins, {
-    name: branch,
-    config: fetched.map((r) => `${r}:${branch}`).join(","),
-    db: branch,
-    template: "",
-    createBranches: false,
-  });
-}
-
 // An existing sub-workspace already spawned from `parentWs` for this forward-port row
 // (matched by parent + the row's branch — that pair is what a prior click of the
 // button created). Exported so the button can label itself "Open" instead of

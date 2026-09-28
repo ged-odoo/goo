@@ -36,8 +36,10 @@ jobs:
       # ruff's ANN rules keep every backend function annotated; pyright checks
       # the annotations (both configured in pyproject.toml). Dev tools only —
       # the server itself stays stdlib-only.
-      - run: pip install ruff
+      - run: pip install ruff vulture
       - run: ruff check
+      # dead code (config in pyproject.toml [tool.vulture])
+      - run: vulture
       - run: npm ci
       - run: npm run typecheck:py
 
@@ -52,3 +54,5 @@ jobs:
           cache: "npm"
       - run: npm ci
       - run: npm run test
+      # dead code: unused files/exports/dependencies (config in knip.json)
+      - run: npm run deadcode

@@ -14,7 +14,8 @@
     "watch": "npm run build -- --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck:py": "pyright"
+    "typecheck:py": "pyright",
+    "deadcode": "knip"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -22,6 +23,7 @@
     "eslint": "^9.0.0",
     "globals": "^15.0.0",
     "jsdom": "^30.0.0",
+    "knip": "^6.38.0",
     "prettier": "^3.0.0",
     "pyright": "^1.1.414",
     "vitest": "^5.0.0"

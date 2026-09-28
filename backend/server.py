@@ -526,12 +526,6 @@ class WorkspaceManager:
             others = [self._public(e) for w, e in self.entries.items() if w != "main"]
         return [self.status()] + others
 
-    def run_snapshot(self, wsid: str = "main") -> dict[str, Any] | None:
-        """One workspace's current/last one-shot run, or None."""
-        with self.lock:
-            e = self.entries.get(wsid)
-            return dict(e.run) if e and e.run else None
-
     def run_snapshots(self) -> list[dict[str, Any]]:
         """Every workspace's current/last run — primed on SSE connect."""
         with self.lock:
