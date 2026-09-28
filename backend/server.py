@@ -625,7 +625,11 @@ def build_odoo_cmd(config):
         # run_check.sh, so a UI-triggered run and a Claude-triggered one land
         # in the same place
         dump_dir = os.path.join(
-            worktree_parent, ".claude", "skills", "odoo-memory-perf", "dumps",
+            worktree_parent,
+            ".claude",
+            "skills",
+            "odoo-memory-perf",
+            "dumps",
             f"memcheck_{stamp}",
         )
         extra_env = {"MEMCHECK_DUMP_DIR": dump_dir}
@@ -1108,7 +1112,9 @@ class WorkspaceManager:
         # docker-mode ensure_*/image build/pull below can take minutes, for the
         # exact same reason
         if is_docker:
-            net_ok, net_err = DOCKER_INFRA.ensure_network(config.get("docker_network") or "goo_odoo")
+            net_ok, net_err = DOCKER_INFRA.ensure_network(
+                config.get("docker_network") or "goo_odoo"
+            )
             if not net_ok:
                 return False, f"docker network: {net_err}"
             pg_ok, pg_err = DOCKER_INFRA.ensure_postgres(config)
@@ -1305,7 +1311,9 @@ class WorkspaceManager:
                 # stop` is the authoritative signal, and — since the container
                 # was started with --rm — also removes it on success.
                 try:
-                    effects.run(["docker", "stop", "-t", "10", docker_container], quiet=True, timeout=20)
+                    effects.run(
+                        ["docker", "stop", "-t", "10", docker_container], quiet=True, timeout=20
+                    )
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
             elif port:
@@ -2491,7 +2499,10 @@ def _api_code_remote_branches_search(body):
 @post_route("/api/code/remote-branch/fetch", "path", "branch")
 def _api_code_remote_branch_fetch(body):
     ok, error, non_ff = GIT.fetch_remote_branch(
-        body["path"], body["branch"], pull_remote=body.get("pull_remote"), force=bool(body.get("force"))
+        body["path"],
+        body["branch"],
+        pull_remote=body.get("pull_remote"),
+        force=bool(body.get("force")),
     )
     return (200 if ok else 400), {"ok": ok, "error": error, "non_ff": non_ff}
 
@@ -3091,7 +3102,9 @@ class Handler(BaseHTTPRequestHandler):
                         cfg.get("docker_network") or "goo_odoo"
                     )
                     if not net_ok:
-                        return self._send_json(400, {"ok": False, "error": f"docker network: {net_err}"})
+                        return self._send_json(
+                            400, {"ok": False, "error": f"docker network: {net_err}"}
+                        )
                     pg_ok, pg_err = DOCKER_INFRA.ensure_postgres(cfg)
                     if not pg_ok:
                         return self._send_json(
@@ -3099,7 +3112,9 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     image, img_err = DOCKER_INFRA.ensure_image(cfg, cfg.get("docker_branch") or "")
                     if img_err:
-                        return self._send_json(400, {"ok": False, "error": f"docker image: {img_err}"})
+                        return self._send_json(
+                            400, {"ok": False, "error": f"docker image: {img_err}"}
+                        )
                     shell_cmd = build_docker_shell_cmd(cfg, db, image)
                 else:
                     shell_cmd = build_shell_cmd(cfg, db)
@@ -3417,7 +3432,7 @@ def main():
     # config once at startup: PGUSER/PGPASSWORD always (harmless even for peer
     # auth), PGHOST/PGPORT only when db_host is set (empty = unchanged socket
     # behavior). Not re-read on config changes -- restart goo after editing.
-    pg_config = (CONFIG.get()["config"] or {})
+    pg_config = CONFIG.get()["config"] or {}
     if pg_config.get("db_user"):
         os.environ["PGUSER"] = pg_config["db_user"]
     if pg_config.get("db_password"):

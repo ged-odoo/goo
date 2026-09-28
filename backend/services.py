@@ -2516,7 +2516,9 @@ class GitService:
             "don't touch the main one.",
         ]
         if has_enterprise:
-            repo_lines.append(f"- `enterprise/` — same, for odoo/enterprise, on branch **{branch}**.")
+            repo_lines.append(
+                f"- `enterprise/` — same, for odoo/enterprise, on branch **{branch}**."
+            )
         if documentation_path:
             repo_lines.append(
                 f"- `documentation/` — same, for odoo/documentation, forked from "
@@ -3191,7 +3193,7 @@ the leak is real.
         `heapcheck_cdp.py` to reproduce the same per-suite memory curve locally.
         Complements odoo-memory-perf (which needs the addon + a live goo workspace)
         and odoo-bootstrap-leak-audit (a different, unrelated leak pattern)."""
-        skill_md = r'''---
+        skill_md = r"""---
 name: odoo-leak-bisect
 description: 'Use when a memory leak was reported on CI/runbot (a batch is flagged, an earlier one wasn''t) and needs to be bisected down to the introducing commit and root-caused — especially when the goo `memleak_check` addon and the `chrome-devtools` MCP aren''t available locally (a bare/sandboxed checkout), so the usual `/leak-check` + `odoo-memory-perf` empirical path can''t be used directly.'
 ---
@@ -3429,7 +3431,7 @@ argument for why it *should* work.
   this one does) rather than only the scratch dir, and be ready to redo
   the DB/worktree setup (step 3) from scratch — it's ~15 minutes of
   mostly-scripted work, not a re-investigation.
-'''
+"""
         heapcheck_cdp_py = r'''#!/usr/bin/env python3
 """Standalone empirical mail-hoot-suite leak check via raw CDP.
 
@@ -4803,8 +4805,6 @@ def _worktree_dir(config, target):
     return f"{base}/{_worktree_slug(target)}"
 
 
-
-
 def resolve_docker_image(branch, docker_images):
     """The Docker image row matching `branch`'s Odoo version — the first row
     whose `versions` prefixes match (plain branch.startswith(prefix), mirroring
@@ -4843,7 +4843,7 @@ class DockerInfraService:
         return True, None
 
     def _container_status(self, name):
-        """"running" | "stopped" | "missing" for a container name."""
+        """ "running" | "stopped" | "missing" for a container name."""
         r = self.io.run(
             ["docker", "inspect", "-f", "{{.State.Running}}", name], quiet=True, timeout=10
         )
@@ -4968,7 +4968,10 @@ class DockerInfraService:
         (image_tag, error)."""
         row = resolve_docker_image(branch, config.get("docker_images") or [])
         if row is None:
-            return None, "no Docker image configured for this Odoo version, and no default image set"
+            return (
+                None,
+                "no Docker image configured for this Odoo version, and no default image set",
+            )
         tag = row.get("image") or f"goo-{row.get('id') or row.get('label') or 'odoo'}"
         r = self.io.run(["docker", "image", "inspect", tag], quiet=True, timeout=10)
         if r.returncode == 0:
