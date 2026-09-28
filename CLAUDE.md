@@ -25,17 +25,26 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `backend/` — the Python package (import with `from backend import …`):
   - `server.py` — the HTTP server: the declarative POST route table (`@post_route`
     declares the path + required body fields; the dispatch does the shared
-    read-json/validate/send-json envelope), the `EventBus`
-    (SSE), and the **process subsystem** (`OdooManager` + the PTY/CLI websocket
-    handlers + the goo self-update), which owns its own inherent process
-    side-effects. `GOO_DIR` is the repo root (parent of this package) — where
-    `static/`, `addons/`, and the git checkout live.
+    read-json/validate/send-json envelope) and every `_api_*` handler, the
+    module-level service singletons (`GIT`, `CONFIG`, `DATABASE`, … — tests swap
+    them on this module, so whatever reads them stays here: the handlers,
+    `WorkspaceManager`, the DATABASE-probing odoo/docker command builders, the
+    update state/loop), `Handler` and `main`. It re-imports what moved out, so
+    `server.<name>` keeps working.
+  - `events.py` — the `EventBus` (SSE). `processes.py` — the port/process/editor
+    helpers, the service-free command builders, the PTY/CLI websocket frame helpers
+    and `_Entry`; `GOO_DIR` (the repo root — where `static/`, `addons/`, and the git
+    checkout live). `update.py` — the goo self-update git probes. `claude.py` — the
+    Claude chat (`ClaudeManager`) and its persisted reviews. The process subsystem
+    owns its own inherent process side-effects. New modules never import `server`.
   - `effects.py` — the IO seam: the one place raw subprocess / network / filesystem
     happen (`run`, `http_get`, `read_text`/`list_dir`/`read_json_file`/…,
     `log_request`). Fake this in tests.
-  - `services.py` — domain services over the seam (`GitService`, `GitHubService`,
-    `RunbotService`, `MergebotService`, `DatabaseService`, `AddonsService`); fetch +
-    parse external state, cached server-side where it's worth it (PRs/runbot/
+  - `services/` — domain services over the seam, one module per domain (`git.py`,
+    `github.py`, `runbot.py` (runbot/mergebot/CI/nightly/memory), `database.py`,
+    `odoo.py` (venv/addons/assets/rust bundler), `docker.py`, `config.py`);
+    `__init__.py` re-exports every name, so `services.X` is the import to use. They
+    fetch + parse external state, cached server-side where it's worth it (PRs/runbot/
     mergebot/databases have TTLs; git reads are volatile so they're uncached). Also
     `ConfigStore` — the server-owned config, persisted to `~/.config/goo/config.json`
     as `{rev, config, state}` (config = user settings/repos/targets, state =
@@ -43,6 +52,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     and mirrors it (`GET/POST /api/config`, rev-checked, SSE-broadcast for multi-tab);
     the CLI / auto-reloader / update-check read it directly. It lives outside `GOO_DIR`
     so the self-updater's `git pull` never touches it. Overridable with `goo --config`.
+    `services/templates/` holds the static files of the generated Claude skills,
+    copied verbatim into worktrees (excluded from ruff/pyright/prettier — edit
+    them as the files they are).
   - `cache.py` — `TTLCache` (TTL + single-flight) used by the services.
 - `tests/` — stdlib `unittest` suite; services run against a fake IO (no network,
   subprocess, or disk). Run `python3 -m unittest discover`.
@@ -116,7 +128,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
 - `ruff check --fix` / `ruff format` — Python lint+format.
 - `npm run typecheck:py` — pyright over `backend/` + `goo.py` (standard mode, py3.10;
-  config in `pyproject.toml`). Runs in CI next to `ruff check`.
+  config in `pyproject.toml`). Runs in CI next to `ruff check`, and in pre-commit.
+- CI also reports backend test coverage (`coverage run -m unittest discover`) in the
+  job summary — `pip install coverage` to run it locally; a dev tool only.
 - `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
 - `pre-commit` runs ruff + prettier + eslint on changed files.
 

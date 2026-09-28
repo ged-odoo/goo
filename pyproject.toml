@@ -1,7 +1,7 @@
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["static"]
+extend-exclude = ["static", "backend/services/templates"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "ANN"]
@@ -22,5 +22,6 @@ ignore = [
 # type-checks the backend (`npm run typecheck:py`, also run in CI); ruff's ANN rules
 # above make sure every backend function stays annotated
 include = ["backend", "goo.py"]
+exclude = ["backend/services/templates"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"

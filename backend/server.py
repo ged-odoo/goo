@@ -3,14 +3,19 @@
 The implementation of goo; the repo-root `goo.py` is a thin launcher that calls
 main() here. The frontend (static/) holds the configuration and posts it with each
 start request; the backend is stateless apart from the server-side caches.
+
+Self-contained pieces live in sibling modules and are re-imported here, so
+`server.<name>` keeps working: the SSE bus in events.py, the port/process/editor
+helpers, the service-free command builders, the WebSocket frame helpers and
+`_Entry` in processes.py, the self-update git probes in update.py, and the Claude
+chat in claude.py. What reads the module-level singletons below (the route
+handlers, WorkspaceManager, the DATABASE-probing command builders, the update
+state/loop) stays here.
 """
 
 import argparse
 import atexit
-import base64
-import collections
 import fcntl
-import hashlib
 import json
 import mimetypes
 import os
@@ -19,11 +24,9 @@ import queue
 import re
 import shlex
 import signal
-import socket
 import struct
 import subprocess
 import sys
-import tempfile
 import termios
 import threading
 import time
@@ -39,299 +42,36 @@ from typing import Any
 
 from . import effects, services
 from .cache import TTLCache
-
-# the IO seam (effects) and the services layer over it; the server's remaining
-# subprocess calls (kill_port, the goo self-update probes) go through run().
-from .effects import TAG, run
+from .claude import ClaudeManager
+from .effects import TAG
+from .events import EventBus
 from .models import RunSnapshot, ServerSnapshot
+from .processes import (
+    ADDONS_DIR,
+    GOO_DIR,
+    HOST,
+    RAW_BUF_MAX,
+    _docker_run_prefix,
+    _Entry,
+    _odoo_cmd_base,
+    _ws_accept_key,
+    _ws_recv_frame,
+    _ws_send_frame,
+    build_docker_shell_cmd,
+    build_shell_cmd,
+    free_port,
+    kill_port,
+    open_in_editor,
+    port_busy,
+    port_is_free,
+    terminate_process,
+)
+from .update import _git_goo, goo_fast_forward, goo_update_status
 
-HOST = "127.0.0.1"
 PORT = 8068
 ODOO_PORT = 8069
 READY_MARKER = "odoo.registry: Registry loaded"
-# the repo root (parent of this backend/ package) — goo's own git checkout, and where
-# static/ and addons/ live. Used for the self-update git, the launcher re-exec, etc.
-GOO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(GOO_DIR, "static")
-ADDONS_DIR = os.path.join(GOO_DIR, "addons")
-LOG_BUFFER_SIZE = 2000
-
-
-# =============================================================================
-# Event bus: log ring buffer + SSE fan-out
-# =============================================================================
-
-
-class EventBus:
-    def __init__(self, maxlen: int = LOG_BUFFER_SIZE) -> None:
-        self._lock = threading.Lock()
-        self._buffer: collections.deque[str] = collections.deque(maxlen=maxlen)
-        self._subscribers: list[queue.Queue[tuple[str, Any]]] = []
-
-    def _broadcast(self, event: str, payload: Any) -> None:
-        """Fan one (event, payload) out to every subscribed client queue."""
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put((event, payload))
-
-    def publish_log(self, line: str, server: str = "main") -> None:
-        """Stream one server's log line to the browser (SSE 'log', {server, line}).
-        Only the MAIN server's lines feed the shared backlog ring buffer (replayed on
-        SSE connect); other servers keep per-entry scrollback in WorkspaceManager,
-        primed on selection via /api/workspace/logs."""
-        # buffer append + subscriber snapshot under ONE lock: a client subscribing
-        # in between would otherwise see the line twice (backlog + live)
-        with self._lock:
-            if server == "main":
-                self._buffer.append(line)
-            subscribers = list(self._subscribers)
-        for q in subscribers:
-            q.put(("log", {"server": server, "line": line}))
-
-    def publish_server(self, snapshot: dict[str, Any] | None) -> None:
-        """Push one server snapshot to the browser (SSE 'server'), keyed by
-        snapshot["id"] ("main" | target id). Both the main OdooManager and the
-        per-target WorktreeManager publish through here — one event, one shape — so
-        the frontend folds them into a single `servers` map."""
-        self._broadcast("server", snapshot)
-
-    def publish_event(
-        self, text: str, level: str = "", event_id: str = "", status: str = ""
-    ) -> None:
-        """A business event: logged to the goo server stdout and pushed to the
-        browser event log via an SSE 'event' message (level "error" tints it).
-
-        A long-running event can be tracked across its lifetime by passing a
-        stable `event_id` plus a `status` of "start" then "done"/"error": the
-        browser shows an animated "..." next to the line while it runs and
-        appends "ok" (or "failed") when it finishes. Omit both for a plain
-        one-off line (the default)."""
-        print(f"{TAG} {time.strftime('%H:%M:%S')} • {text}", flush=True)
-        payload = {"text": text, "level": level}
-        if event_id:
-            payload["id"] = event_id
-            payload["status"] = status
-        self._broadcast("event", payload)
-
-    def publish_goo_update(self, status: dict[str, Any]) -> None:
-        """Push the recomputed goo-update status to the browser (SSE 'goo_update')
-        so the navbar update badge appears live when the hourly check finds new
-        commits — not only on reload / the next 30-min poll / a manual check."""
-        self._broadcast("goo_update", status)
-
-    def publish_config(self, payload: dict[str, Any]) -> None:
-        """Broadcast the new {rev, config, state} to every tab (SSE 'config') after a
-        config/state write, so all open tabs stay in lockstep — the multi-tab
-        consistency the server-owned config buys over per-browser localStorage."""
-        self._broadcast("config", payload)
-
-    def publish_run(self, snapshot: dict[str, Any]) -> None:
-        """Push one-shot run state to the browser (SSE 'run'): a RunSnapshot as it
-        goes running → done/failed. The Tests/Addons screens watch these instead of
-        keeping their own runActive/sawRun flags; the backend also owns resume-after,
-        so the run survives a mid-run reload."""
-        self._broadcast("run", snapshot)
-
-    def publish_claude(self, payload: dict[str, Any]) -> None:
-        """Stream one Claude chat item for a worktree to the browser (SSE 'claude').
-        payload is {workspace, role, ...}: role 'assistant'/'tool'/'result'/'error' as a
-        headless `claude -p` run produces text, tool activity and its final result.
-        Per-target history lives in ClaudeManager and is primed via /api/workspace/
-        claude/history — this only pushes the live increments."""
-        self._broadcast("claude", payload)
-
-    def subscribe(self) -> tuple[queue.Queue[tuple[str, Any]], list[str]]:
-        """Register a client queue. Returns (queue, log backlog) atomically so
-        no line is lost between the backlog replay and the live stream."""
-        q: queue.Queue[tuple[str, Any]] = queue.Queue()
-        with self._lock:
-            backlog = list(self._buffer)
-            self._subscribers.append(q)
-        return q, backlog
-
-    def unsubscribe(self, q: queue.Queue[tuple[str, Any]]) -> None:
-        with self._lock:
-            try:
-                self._subscribers.remove(q)
-            except ValueError:
-                pass
-
-
-# =============================================================================
-# Helpers
-# =============================================================================
-
-
-def free_port() -> int:
-    """An OS-assigned free TCP port, so a CLI test run can use its own http /
-    gevent ports and not clash with the running server's."""
-    with socket.socket() as s:
-        s.bind((HOST, 0))
-        return s.getsockname()[1]
-
-
-def port_busy(port: int) -> bool:
-    try:
-        with socket.create_connection((HOST, port), timeout=0.3):
-            return True
-    except OSError:
-        return False
-
-
-def port_is_free(port: int) -> bool:
-    """Whether we can actually bind the port — used to honor a workspace's stable
-    port with a safe fallback when a stale process still holds it."""
-    try:
-        with socket.socket() as s:
-            s.bind((HOST, port))
-            return True
-    except OSError:
-        return False
-
-
-def kill_port(port: int) -> None:
-    """Kill any process listening on the given port."""
-    try:
-        # -sTCP:LISTEN so we only kill the process *listening* on the port, not
-        # every process that merely has a client connection open to it (a browser,
-        # psql, or goo itself) — plain `lsof -ti :PORT` matches those too.
-        result = run(
-            ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        for pid_str in result.stdout.strip().split("\n"):
-            if pid_str.strip():
-                try:
-                    os.kill(int(pid_str.strip()), signal.SIGKILL)
-                except (ProcessLookupError, ValueError, OSError):
-                    pass
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-
-def terminate_process(process: subprocess.Popen[Any] | None) -> None:
-    """Signal-escalate a process group until it exits: graceful SIGTERM, then a
-    second SIGTERM (odoo needs a second signal to force shutdown when graceful
-    hangs), then SIGKILL as a last resort. Safe on an already-gone process."""
-    if process is None:
-        return
-    try:
-        pgid = os.getpgid(process.pid)
-    except (ProcessLookupError, OSError):
-        return
-    for sig, wait in ((signal.SIGTERM, 4), (signal.SIGTERM, 3), (signal.SIGKILL, 3)):
-        try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, OSError):
-            return  # already gone
-        try:
-            process.wait(timeout=wait)
-            return
-        except subprocess.TimeoutExpired:
-            continue
-
-
-def open_in_editor(editor: str | None, paths: str | list[str] | None) -> tuple[bool, str | None]:
-    """Launch the configured editor (e.g. `code`) on one or more repo directories,
-    detached so it outlives goo and isn't part of its process group. The editor
-    string may carry flags (`code --reuse-window`), so it's run through bash with
-    each path quoted; passing several dirs (`code repo1 repo2`) opens them in one
-    window. `paths` may be a single string or a list. Returns (ok, error).
-
-    A missing/failing editor command exits quickly with a non-zero code — we wait
-    briefly to catch that and return its stderr (so the UI shows why it failed,
-    e.g. `code: command not found`). A GUI editor that keeps running past the
-    grace period is taken as a successful launch."""
-    editor = (editor or "").strip()
-    if isinstance(paths, str):
-        paths = [paths]
-    dirs = [os.path.expanduser(p) for p in (paths or []) if p]
-    if not editor:
-        return False, "no editor configured"
-    if not dirs:
-        return False, "no path"
-    for path in dirs:
-        if not os.path.isdir(path):
-            return False, f"not a directory: {path}"
-    cmd = f"{editor} {' '.join(shlex.quote(p) for p in dirs)}"
-    effects.trace("run", cmd)
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            executable="/bin/bash",
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-            text=True,
-        )
-    except OSError as e:
-        return False, str(e)
-    try:
-        _, stderr = proc.communicate(timeout=2)
-    except subprocess.TimeoutExpired:
-        return True, None  # still running → launched OK
-    if proc.returncode:
-        err = (stderr or "").strip() or f"editor exited with code {proc.returncode}"
-        print(f"$ {cmd}\n{err}", flush=True)  # log the raw failure to the goo log too
-        return False, err
-    return True, None
-
-
-def _git_goo(*args: str, timeout: float = 10) -> subprocess.CompletedProcess[str] | None:
-    """Run a git command in goo's own checkout. Returns the CompletedProcess, or
-    None if git is missing / times out."""
-    try:
-        # probes for the update check — a non-zero exit (no repo / no origin/master)
-        # is an expected outcome, not an error to log
-        return run(
-            ["git", "-C", GOO_DIR, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            quiet=True,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-
-
-def goo_update_status() -> dict[str, Any]:
-    """How goo's checkout compares to (the already-fetched) origin/master — no
-    network. Returns {checked, is_repo, branch, behind, ahead, dirty,
-    can_fast_forward}. `behind` = commits on origin/master missing locally; `ahead`
-    = local commits not on origin/master (the user's own work). A fast-forward is
-    only offered when behind>0, ahead==0 and the tree is clean."""
-    base = {
-        "checked": True,
-        "is_repo": False,
-        "branch": "",
-        "behind": 0,
-        "ahead": 0,
-        "dirty": False,
-        "can_fast_forward": False,
-    }
-    inside = _git_goo("rev-parse", "--is-inside-work-tree")
-    if not inside or inside.returncode != 0 or inside.stdout.strip() != "true":
-        return base
-    base["is_repo"] = True
-    branch = _git_goo("rev-parse", "--abbrev-ref", "HEAD")
-    base["branch"] = branch.stdout.strip() if branch and branch.returncode == 0 else ""
-    # need origin/master to compare against (populated by the startup fetch)
-    om = _git_goo("rev-parse", "--verify", "--quiet", "origin/master")
-    if not om or om.returncode != 0:
-        return base
-    behind = _git_goo("rev-list", "--count", "HEAD..origin/master")
-    ahead = _git_goo("rev-list", "--count", "origin/master..HEAD")
-    dirty = _git_goo("status", "--porcelain")
-    base["behind"] = int(behind.stdout.strip()) if behind and behind.returncode == 0 else 0
-    base["ahead"] = int(ahead.stdout.strip()) if ahead and ahead.returncode == 0 else 0
-    base["dirty"] = bool(dirty.stdout.strip()) if dirty and dirty.returncode == 0 else False
-    base["can_fast_forward"] = base["behind"] > 0 and base["ahead"] == 0 and not base["dirty"]
-    return base
 
 
 def check_goo_update() -> bool:
@@ -373,25 +113,6 @@ def goo_update_loop() -> None:
         if (CONFIG.get()["config"] or {}).get("update_check", True) is not False:
             check_goo_update()
         time.sleep(3600)
-
-
-def goo_fast_forward() -> tuple[bool, str | None]:
-    """Fast-forward goo onto origin/master, but only when it's still provably safe
-    (re-validated to avoid a TOCTOU race). Returns (ok, error)."""
-    status = goo_update_status()
-    if not status["can_fast_forward"]:
-        if status["ahead"]:
-            return False, "local commits on top of master — update manually (git pull --rebase)"
-        if status["dirty"]:
-            return False, "the working tree is dirty — commit or stash first"
-        return False, "nothing to fast-forward"
-    r = _git_goo("merge", "--ff-only", "origin/master", timeout=30)
-    if not r:
-        return False, "git not available or timed out"
-    if r.returncode != 0:
-        msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[-1]
-        return False, msg or "git merge --ff-only failed"
-    return True, None
 
 
 def restart_goo() -> None:
@@ -441,67 +162,6 @@ def _filestore(body: dict[str, Any] | None) -> str | None:
     database endpoints keep each db's <filestore>/<db> directory in lockstep."""
     fs = (body or {}).get("filestore")
     return fs if isinstance(fs, str) and fs.strip() else None
-
-
-def _odoo_cmd_base(
-    config: dict[str, Any],
-    addons_repo_ids: list[str] | None = None,
-    extra_env: dict[str, str] | None = None,
-) -> tuple[str, str]:
-    """The invocation prefix build_odoo_cmd and build_shell_cmd share: resolve the
-    repo map + community checkout, assemble the addons path (over `addons_repo_ids`,
-    or every configured repo when None) and the venv/rust/odoo-bin launch prefix.
-    `extra_env` (optional {name: value}) is prefixed right before the odoo-bin
-    invocation itself, same spot as the existing RUST_BUNDLER=1 prefix — not
-    before the whole `cd ... &&` chain, where a bare env assignment wouldn't
-    scope to the actual command.
-    Returns (cmd_prefix, addons_path). Raises ValueError on invalid config."""
-    main_repo_id = config.get("main_repo_id") or "community"
-    repo_map = {
-        r["id"]: {**r, "path": os.path.expanduser(r["path"])}
-        for r in config.get("repos", [])
-        if isinstance(r, dict) and "id" in r and "path" in r
-    }
-    community = repo_map.get(main_repo_id)
-    if not community:
-        raise ValueError(f"no '{main_repo_id}' repo defined in repos")
-    community_path = community["path"]
-
-    if addons_repo_ids is None:
-        addons_repo_ids = list(repo_map)
-    addons_parts = []
-    for repo_id in addons_repo_ids:
-        repo = repo_map.get(repo_id)
-        if not repo:
-            raise ValueError(f"unknown repo '{repo_id}' in start.repos")
-        if repo_id == main_repo_id:
-            addons_parts.append("addons")
-        else:
-            addons_parts.append(os.path.relpath(repo["path"], community_path))
-    if not addons_parts:
-        raise ValueError("no repos selected in start.repos")
-    addons_parts.append(ADDONS_DIR)  # goo's own addons (autologin, auto-installed)
-    addons_path = ",".join(addons_parts)
-
-    # the odoo-bin executable; goo cd's into the community checkout and appends the
-    # dynamic args. Defaults to that checkout's own odoo-bin, so a worktree start
-    # config — which passes the worktree's community path — automatically runs the
-    # worktree's odoo-bin without any extra wiring.
-    server_path = config.get("server_path") or os.path.join(community_path, "odoo-bin")
-    # a dedicated per-workspace venv (config["venv_python"], set by
-    # build_start_config for a worktree with worktree.venv) invokes odoo-bin's
-    # interpreter explicitly instead of relying on odoo-bin's own shebang line to
-    # pick up the activated venv via PATH — correct either way, but doesn't
-    # depend on it being `#!/usr/bin/env python3`
-    venv_python = config.get("venv_python")
-    invocation = f"{venv_python} {server_path}" if venv_python else server_path
-    parts = []
-    if config.get("venv_activate"):
-        parts.append(config["venv_activate"])
-    rust = "RUST_BUNDLER=1 " if config.get("rust_bundler") else ""
-    env_prefix = "".join(f"{k}={shlex.quote(v)} " for k, v in (extra_env or {}).items())
-    parts.append(f"cd {community_path} && {rust}{env_prefix}{invocation}")
-    return " && ".join(parts), addons_path
 
 
 def _odoo_bin_invocation(
@@ -653,69 +313,6 @@ def build_odoo_cmd(config: dict[str, Any]) -> tuple[str, str, bool]:
     return cmd, db, is_new
 
 
-# fixed in-container mount point for goo's own addons (autologin, …) — GOO_DIR
-# is goo's own checkout, not per-workspace, so it's bind-mounted read-only at
-# a stable path rather than living under the worktree mount like the repos do
-_DOCKER_GOO_ADDONS = "/goo-addons"
-
-
-def _docker_run_prefix(
-    config: dict[str, Any], container: str | None = None
-) -> tuple[str, str, str, str]:
-    """The `docker run` setup shared by build_docker_cmd (a workspace's own
-    server) and build_docker_shell_cmd (a one-off odoo-bin shell REPL): repo
-    validation, network, mounts, addons-path. `container` is omitted for the
-    shell variant (--rm, no fixed name, so it can run alongside an
-    already-started server of the same workspace instead of colliding with it).
-
-    Returns (run_prefix_ending_after_the_mounts, mount_path, main_repo_id,
-    addons_path). Raises ValueError on invalid config."""
-    main_repo_id = config.get("main_repo_id") or "community"
-    addons_repo_ids = list((config.get("start") or {}).get("repos") or [])
-    if not addons_repo_ids:
-        raise ValueError("no repos selected in start.repos")
-    if main_repo_id not in addons_repo_ids:
-        raise ValueError(f"'{main_repo_id}' (main_repo_id) must be one of start.repos")
-    host_dir = config.get("docker_worktree_dir")
-    if not host_dir:
-        raise ValueError("no worktree directory resolved for this Docker workspace")
-
-    # every repo mounts as a direct SIBLING of the main repo — build_start_config's
-    # worktree branch already gives every repo the uniform HOST path <dir>/<repo_id>,
-    # so the in-container equivalent is just <mount_path>/<repo_id> regardless of the
-    # actual host path. --workdir below is <mount_path>/<main_repo_id> (mirroring
-    # build_odoo_cmd's `cd {community_path}`), so a sibling repo's addons_path entry
-    # must climb back out one level first — "../enterprise", not bare "enterprise" —
-    # exactly what _odoo_cmd_base's real os.path.relpath(repo path, community path)
-    # would compute for this same sibling layout.
-    mount_path = (config.get("docker_mount_path") or "/src").rstrip("/")
-    addons_path = (
-        ",".join("addons" if rid == main_repo_id else f"../{rid}" for rid in addons_repo_ids)
-        + f",{_DOCKER_GOO_ADDONS}"
-    )
-
-    network = config.get("docker_network") or "goo_odoo"
-    filestore_host = os.path.expanduser(config.get("filestore") or "")
-    filestore_mount = config.get("docker_filestore_mount") or (
-        "/home/odoo_user/.local/share/Odoo/filestore"
-    )
-    name_flag = f"--name {shlex.quote(container)} " if container else ""
-
-    # --workdir is docker's own equivalent of build_odoo_cmd's `cd {community_path}
-    # &&` — without it, addons_path's relative entries ("addons", "enterprise")
-    # resolve against the image's own default WORKDIR (or /), not the checkout,
-    # exactly the same way a local odoo-bin invocation would break without its cd
-    run = (
-        f"docker run --rm -it --network {shlex.quote(network)} {name_flag}"
-        f"--workdir {shlex.quote(f'{mount_path}/{main_repo_id}')} "
-        f"-v {shlex.quote(host_dir)}:{shlex.quote(mount_path)} "
-        f"-v {shlex.quote(ADDONS_DIR)}:{shlex.quote(_DOCKER_GOO_ADDONS)}:ro "
-    )
-    if filestore_host:
-        run += f"-v {shlex.quote(filestore_host)}:{shlex.quote(filestore_mount)} "
-    return run, mount_path, main_repo_id, addons_path
-
-
 def build_docker_cmd(config: dict[str, Any], image: str) -> tuple[str, str, bool]:
     """Build the `docker run` shell command from a client config + the already-
     resolved image tag (WorkspaceManager.start resolves/builds it via
@@ -797,37 +394,6 @@ def build_docker_cmd(config: dict[str, Any], image: str) -> tuple[str, str, bool
     return cmd, db, is_new
 
 
-def build_docker_shell_cmd(config: dict[str, Any], db: str, image: str) -> str:
-    """Build a one-off `docker run --rm -it ... odoo-bin shell -d <db>` command:
-    an interactive Python REPL against a Docker-mode workspace's database,
-    independent of whether the workspace's own server container is running (no
-    --name, so it never collides with one). Mirrors build_docker_cmd's
-    mounts/addons-path, minus the server-only flags (headed browser,
-    --db-filter, --limit-time-*, --http-interface). Raises ValueError on
-    invalid config/db name."""
-    if not services._valid_db_name(db):
-        raise ValueError("invalid database name")
-    run, mount_path, main_repo_id, addons_path = _docker_run_prefix(config)
-    pg_container = config.get("docker_postgres_container") or "goo-postgres"
-    db_user = config.get("db_user", "odoo")
-    db_password = config.get("db_password", "odoo")
-    user_flag = (
-        f"--user {shlex.quote(config['docker_container_user'])} "
-        if config.get("docker_container_user")
-        else ""
-    )
-    extra_args = config.get("docker_extra_run_args") or ""
-    if extra_args:
-        extra_args += " "
-    run += (
-        f"{user_flag}{extra_args}{shlex.quote(image)} python3 {mount_path}/{main_repo_id}/odoo-bin shell "
-        f"-d {db} -r {db_user} -w {db_password} --no-http --no-database-list "
-        f"--addons-path {addons_path} --db_host {shlex.quote(pg_container)} --db_port 5432 "
-        f"--log-level=warn"
-    )
-    return run
-
-
 def warn_if_rust_bundler_missing(
     config: dict[str, Any] | None, bus: EventBus, context: str = ""
 ) -> threading.Thread | None:
@@ -862,126 +428,9 @@ def warn_if_rust_bundler_missing(
     return thread
 
 
-def build_shell_cmd(config: dict[str, Any], db: str) -> str:
-    """Build an `odoo-bin shell -d <db>` command (Python read from its stdin) for a
-    one-off task like pregenerating assets. Mirrors build_odoo_cmd's venv prefix and
-    addons-path, but spans ALL configured repos (not just start.repos) so whatever
-    is installed in <db> can load. Raises ValueError on invalid config/db name."""
-    if not services._valid_db_name(db):
-        raise ValueError("invalid database name")
-    cmd, addons_path = _odoo_cmd_base(config)  # ALL repos
-    db_user = config.get("db_user", "odoo")
-    db_password = config.get("db_password", "odoo")
-    cmd += (
-        f" shell -d {db} --no-http --no-database-list"
-        f" -r {db_user} -w {db_password} --addons-path {addons_path} --log-level=warn"
-    )
-    return cmd
-
-
-# =============================================================================
-# WebSocket helpers (no external deps — only stdlib hashlib/base64/struct)
-# =============================================================================
-
-_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-RAW_BUF_MAX = 256 * 1024  # raw PTY byte ring buffer for terminal replay
-
-
-def _ws_accept_key(key: str) -> str:
-    digest = hashlib.sha1((key + _WS_GUID).encode()).digest()
-    return base64.b64encode(digest).decode()
-
-
-def _ws_send_frame(sock: socket.socket, payload: bytes | bytearray, opcode: int = 2) -> None:
-    """Send one unmasked WebSocket frame (server→client). opcode 2 = binary."""
-    n = len(payload)
-    if n < 126:
-        header = bytes([0x80 | opcode, n])
-    elif n < 65536:
-        header = bytes([0x80 | opcode, 126]) + struct.pack(">H", n)
-    else:
-        header = bytes([0x80 | opcode, 127]) + struct.pack(">Q", n)
-    sock.sendall(header + (payload if isinstance(payload, bytes) else bytes(payload)))
-
-
-def _ws_recv_frame(sock: socket.socket) -> tuple[int, bytes]:
-    """Receive one WebSocket frame (client→server, always masked).
-    Returns (opcode, payload_bytes). Raises OSError on disconnect."""
-
-    def _recv(n: int) -> bytes:
-        buf = b""
-        while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
-            if not chunk:
-                raise OSError("WebSocket disconnected")
-            buf += chunk
-        return buf
-
-    b0, b1 = _recv(2)
-    opcode = b0 & 0x0F
-    masked = bool(b1 & 0x80)
-    length = b1 & 0x7F
-    if length == 126:
-        length = struct.unpack(">H", _recv(2))[0]
-    elif length == 127:
-        length = struct.unpack(">Q", _recv(8))[0]
-    mask = _recv(4) if masked else b""
-    payload = bytearray(_recv(length))
-    if masked:
-        for i in range(len(payload)):
-            payload[i] ^= mask[i % 4]
-    return opcode, bytes(payload)
-
-
 # =============================================================================
 # Workspace process manager
 # =============================================================================
-
-
-class _Entry:
-    """The full per-workspace server state — one per workspace id. Every entry has
-    the complete kit: a PTY (terminal channel), a one-shot run slot with
-    resume-after, per-server log scrollback, and its own port bookkeeping ("main"
-    keeps port None — odoo's implicit default)."""
-
-    LOG_TAIL = 500  # lines kept per server so a freshly-selected workspace has scrollback
-
-    def __init__(self, wsid: str) -> None:
-        self.id = wsid
-        # process/lifecycle: stopped -> starting -> running -> stopping -> stopped
-        self.state = "stopped"
-        self.process: subprocess.Popen[bytes] | None = None
-        self.master_fd: int | None = None
-        self.reader_thread: threading.Thread | None = None
-        self.db: str | None = None
-        self.workspace: str | None = None  # the workspace this server runs
-        self.cmd: str | None = None
-        self.mode = "server"  # server | test | install | upgrade
-        self.started_at: float | None = None
-        self.exited_unexpectedly = False
-        self.returncode: int | None = None
-        # None for "main" (odoo default); the bound http port otherwise
-        self.port: int | None = None
-        self.gport: int | None = None
-        # launch_mode="docker": the container name (see build_docker_cmd) — set
-        # while running so stop() can issue an authoritative `docker stop` (the
-        # local `docker run` client's own process/signal handling isn't a
-        # reliable way to stop the remote container, see WorkspaceManager.stop)
-        self.docker_container: str | None = None
-        # one-shot Run occupying the slot (test/install/upgrade) — None for a plain
-        # server or when stopped; kept as the last finished snapshot until superseded.
-        # resume-after: the config of the server interrupted to run the one-shot.
-        self.run: dict[str, Any] | None = None
-        self.server_config: dict[str, Any] | None = None
-        self.resume_config: dict[str, Any] | None = None
-        # per-server log tail (worktree screens prime their scrollback from it)
-        self.log: collections.deque[str] = collections.deque(maxlen=self.LOG_TAIL)
-        # raw PTY byte ring buffer: replayed to each new terminal WebSocket client
-        # so xterm.js can reconstruct the current terminal state on connect
-        self.raw_buf = bytearray()
-        self.raw_lock = threading.Lock()
-        # set of queue.Queue, one per terminal WS connection
-        self.ws_clients: set[queue.Queue[bytes | None]] = set()
 
 
 class WorkspaceManager:
@@ -1542,358 +991,8 @@ class WorkspaceManager:
         return out
 
 
-def _summarize_tool(name: str, inp: dict[str, Any] | None) -> str:
-    """A short human label for a Claude tool call, shown as one activity line in the
-    chat (e.g. Edit -> the file's basename, Bash -> the command). Empty when the tool
-    has no useful one-liner — the frontend then shows just the tool name."""
-    inp = inp or {}
-    if name in ("Edit", "Write", "Read", "MultiEdit"):
-        return os.path.basename(inp.get("file_path", "")) or inp.get("file_path", "")
-    if name == "NotebookEdit":
-        return os.path.basename(inp.get("notebook_path", ""))
-    if name == "Bash":
-        return " ".join((inp.get("command") or "").split())[:120]
-    if name in ("Grep", "Glob"):
-        return inp.get("pattern", "")
-    if name == "Task":
-        return inp.get("description", "")
-    if name == "WebFetch":
-        return inp.get("url", "")
-    return ""
-
-
-class ClaudeManager:
-    """One headless Claude conversation per workspace. A message spawns
-    `claude -p <prompt> --output-format stream-json` with the worktree checkout as
-    cwd, streaming its assistant text + tool activity to the browser (SSE 'claude')
-    and keeping a per-target transcript so a reload can re-prime the chat. The
-    session id from the first turn is stashed and passed as --resume on the next, so
-    each target is a continuing conversation. One run per target at a time.
-
-    Full autonomy by design: --permission-mode bypassPermissions, so Claude edits
-    files and runs commands unattended — the worktree is a throwaway checkout on its
-    own branch, so a task never touches the user's main tree.
-    """
-
-    HISTORY_MAX = 400  # chat items kept per target so a reload re-primes the transcript
-
-    def __init__(self, bus: EventBus) -> None:
-        self.bus = bus
-        self.lock = threading.Lock()
-        self.convos: dict[str, dict[str, Any]] = {}  # target_id -> entry dict
-
-    def _entry(self, target: str) -> dict[str, Any]:
-        e = self.convos.get(target)
-        if e is None:
-            e = {
-                "state": "idle",
-                "session": None,
-                "process": None,
-                "history": [],
-                "ctx_dir": None,  # this conversation's ephemeral Odoo-dev context (see send())
-            }
-            self.convos[target] = e
-        return e
-
-    def _emit(self, target: str, item: dict[str, Any]) -> None:
-        """Record one chat item in the target's transcript and push it to the browser.
-        `item` is a {role, ...} dict (assistant/tool/result/error); user prompts are
-        stored (for re-prime) but not re-pushed — the sending client shows them
-        optimistically."""
-        with self.lock:
-            e = self._entry(target)
-            e["history"].append(item)
-            del e["history"][: -self.HISTORY_MAX]
-            # tally how many items the in-flight review turn has produced so far (see
-            # send()/_persist_review) — counted rather than recorded as a fixed index
-            # into history, since the HISTORY_MAX trim above can shift/drop earlier
-            # indices out from under a long turn.
-            if e.get("review"):
-                e["review_count"] = e.get("review_count", 0) + 1
-        if item.get("role") != "user":
-            self.bus.publish_claude({"workspace": target, **item})
-
-    def send(
-        self,
-        target: str,
-        prompt: str,
-        cwd: str,
-        add_dirs: list[str] | None = None,
-        model: str | None = None,
-        review: bool = False,
-    ) -> tuple[bool, Any]:
-        """Spawn a Claude turn for <target> in <cwd> (its worktree checkout), resuming
-        the target's session when one exists. `model` (a CLI alias/name, e.g. "sonnet"
-        or "opus[1m]") overrides the CLI's default when set. `review=True` marks this
-        turn's assistant reply for persistence to disk on completion (see
-        _persist_review) — so a review survives a goo restart, unlike an ordinary chat
-        turn. Returns (ok, detail)."""
-        if not target or not (prompt or "").strip():
-            return False, "missing workspace or prompt"
-        # expanduser everything up front: effects.is_dir/GitService._git already do
-        # this internally for their own checks, but subprocess.Popen below takes cwd
-        # literally (no shell involved to expand a leading "~" itself) — a
-        # worktree_dir setting like "~/Coding/worktrees" would otherwise pass the
-        # is_dir check (which expands) and then fail Popen with ENOENT on the raw,
-        # unexpanded path.
-        cwd = os.path.expanduser(cwd)
-        add_dirs = [os.path.expanduser(d) for d in (add_dirs or []) if d]
-        if not effects.is_dir(cwd):
-            return False, f"worktree checkout not found: {cwd}"
-        with self.lock:
-            e = self._entry(target)
-            if e["state"] == "running":
-                return False, "already_running"
-            session = e["session"]
-            ctx_dir = e["ctx_dir"]
-        if not session and not ctx_dir:
-            # fresh conversation: materialize a one-shot Odoo-dev context (CLAUDE.md +
-            # skills) into a throwaway temp dir, matching <cwd>'s *current* branch.
-            # Regenerated per conversation rather than reused from the worktree's
-            # persisted .claude/ (see GitService._create_worktree_claude_md/_skills):
-            # always reflects goo's latest skill templates, and also covers a
-            # main-located target, which has no worktree parent dir of its own.
-            ctx_dir = tempfile.mkdtemp(prefix="goo-claude-ctx-")
-            branch = GIT.current_branch(cwd)
-            GIT.write_dev_context(ctx_dir, cwd, branch)
-            with self.lock:
-                self._entry(target)["ctx_dir"] = ctx_dir
-        cmd = [
-            "claude",
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--permission-mode",
-            "bypassPermissions",
-        ]
-        if model:
-            cmd += ["--model", model]
-        if session:
-            cmd += ["--resume", session]
-        for d in [*add_dirs, ctx_dir]:
-            if d:
-                cmd += ["--add-dir", d]
-        self._emit(target, {"role": "user", "text": prompt})
-        with self.lock:
-            e = self._entry(target)
-            e["review"] = review
-            e["review_count"] = 0
-        self.bus.publish_log(f"{TAG} claude ({target}) in {cwd}: {' '.join(cmd)}")
-        effects.trace("run", " ".join(cmd))
-        # --add-dir dirs auto-load their .claude/skills/ (a documented exception), but
-        # NOT their CLAUDE.md unless this is set — needed for ctx_dir's CLAUDE.md to
-        # surface too.
-        env = {**os.environ, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1"}
-        try:
-            process = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid,
-            )
-        except (FileNotFoundError, OSError) as ex:
-            # `claude` not on PATH is the usual cause
-            self._emit(target, {"role": "error", "text": f"could not launch claude: {ex}"})
-            self._emit(target, {"role": "result", "ok": False})
-            return False, str(ex)
-        with self.lock:
-            e = self._entry(target)
-            e["state"] = "running"
-            e["process"] = process
-        # feed the prompt on stdin (avoids any arg-length / escaping limit) then close
-        assert process.stdin is not None  # stdin=PIPE
-        try:
-            process.stdin.write(prompt)
-            process.stdin.close()
-        except (BrokenPipeError, OSError):
-            pass
-        threading.Thread(target=self._reader, args=(target, process), daemon=True).start()
-        return True, {"state": "running"}
-
-    def _reader(self, target: str, process: subprocess.Popen[str]) -> None:
-        """Drain the stream-json output: forward each assistant text / tool call as a
-        chat item, capture the session id, and finalize on the result line (or on an
-        unexpected exit, surfacing whatever non-JSON output we saw as the error)."""
-        stray = []
-        got_result = False
-        assert process.stdout is not None  # stdout=PIPE (see send())
-        for line in process.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                stray.append(line)
-                continue
-            sid = obj.get("session_id")
-            if sid:
-                with self.lock:
-                    self._entry(target)["session"] = sid
-            if self._handle(target, obj):
-                got_result = True
-        ret = process.wait()
-        with self.lock:
-            e = self.convos.get(target)
-            # stop() or a newer turn now owns the entry (its process handle differs) —
-            # don't clobber its state or emit a spurious error for an interrupted turn
-            if not e or e["process"] is not process:
-                return
-            e["state"] = "idle"
-            e["process"] = None
-        if not got_result:
-            detail = "\n".join(stray[-12:]).strip() or f"claude exited (code {ret}) with no result"
-            self._emit(target, {"role": "error", "text": detail})
-            self._emit(target, {"role": "result", "ok": False})
-
-    def _handle(self, target: str, obj: dict[str, Any]) -> bool:
-        """Turn one stream-json event into chat items. Returns True on the final
-        result event (which ends the turn)."""
-        t = obj.get("type")
-        if t == "assistant":
-            for block in obj.get("message", {}).get("content", []):
-                if block.get("type") == "text" and block.get("text", "").strip():
-                    self._emit(target, {"role": "assistant", "text": block["text"].strip()})
-                elif block.get("type") == "tool_use":
-                    name = block.get("name", "")
-                    self._emit(
-                        target,
-                        {
-                            "role": "tool",
-                            "tool": name,
-                            "text": _summarize_tool(name, block.get("input")),
-                        },
-                    )
-        elif t == "result":
-            # the turn is over at the result — flip to idle now (not only once stdout
-            # hits EOF a moment later) so a reload in between doesn't prime a stuck run.
-            # Safe without a process guard: state is still "running" here, so no newer
-            # turn can have started yet (send() refuses while running).
-            with self.lock:
-                e = self.convos.get(target)
-                if e:
-                    e["state"] = "idle"
-            ok = not obj.get("is_error")
-            item = {"role": "result", "ok": ok, "cost": obj.get("total_cost_usd")}
-            if not ok:
-                item["error"] = obj.get("result") or obj.get("error") or "claude reported an error"
-            self._emit(target, item)
-            if ok:
-                self._persist_review(target)
-            return True
-        return False
-
-    def _persist_review(self, target: str) -> None:
-        """If this turn was started with review=True (see send()), save its assistant
-        text to disk as markdown — so it's still there after a goo restart, when this
-        in-memory transcript is gone. Written as a new numbered version alongside any
-        earlier reviews for this target (see _review_versions), never overwriting."""
-        with self.lock:
-            e = self.convos.get(target)
-            if not e or not e.get("review"):
-                return
-            # tail slice by count (see _emit), not a fixed index: history may have
-            # been trimmed to HISTORY_MAX mid-turn, which would shift/invalidate a
-            # remembered start index but leaves a from-the-end count still correct.
-            count = e.get("review_count") or 0
-            turn = list(e["history"][-count:]) if count else []
-            e["review"] = False
-            e["review_count"] = 0
-        text = "\n\n".join(
-            it["text"].strip() for it in turn if it.get("role") == "assistant" and it.get("text")
-        ).strip()
-        if text:
-            versions = _review_versions(target)
-            next_version = versions[-1] + 1 if versions else 1
-            effects.write_text(_review_path(target, next_version), text)
-
-    def stop(self, target: str) -> tuple[bool, str]:
-        """Interrupt a running Claude turn (idempotent)."""
-        with self.lock:
-            e = self.convos.get(target)
-            process = e["process"] if e and e["state"] == "running" else None
-        if process is not None:
-            self.bus.publish_log(f"{TAG} stopping claude ({target})...")
-            try:
-                terminate_process(process)
-            except Exception as ex:
-                self.bus.publish_log(f"{TAG} error stopping claude ({target}): {ex}")
-        with self.lock:
-            e = self.convos.get(target)
-            if e:
-                e["state"] = "idle"
-                e["process"] = None
-        self.bus.publish_claude({"workspace": target, "role": "result", "ok": True})
-        return True, "stopped"
-
-    def history_for(self, target: str) -> dict[str, Any]:
-        """The transcript + live state for one target, to re-prime the chat on load.
-        Falls back to the on-disk persisted review's latest version (see
-        send()/_persist_review) when memory holds nothing and no turn is running —
-        e.g. right after a goo restart, the usual case this covers, since the
-        in-memory transcript doesn't survive one."""
-        with self.lock:
-            e = self.convos.get(target)
-            state = e["state"] if e else "idle"
-            items = list(e["history"]) if e else []
-        if not items and state != "running":
-            persisted = self.review_text(target)["text"]
-            if persisted:
-                items = [{"role": "assistant", "text": persisted}]
-        return {"items": items, "state": state}
-
-    def review_text(self, target: str, version: int | None = None) -> dict[str, Any]:
-        """The persisted review markdown for <target> at <version> (see
-        _persist_review) as {text, version, versions, created}: which version number
-        that is, every version number on disk (oldest first), and that version's
-        file mtime (epoch seconds, or None) — "" / None / [] / None if none was ever
-        saved. <version> defaults (or falls back, if it names a version that no
-        longer exists) to the latest. Straight from disk regardless of the in-memory
-        conversation state — unlike history_for's fallback, this is for a UI that
-        wants one finished review's text, not a chat transcript to re-prime."""
-        versions = _review_versions(target)
-        if not versions:
-            return {"text": "", "version": None, "versions": [], "created": None}
-        v = version if version in versions else versions[-1]
-        path = _review_path(target, v)
-        return {
-            "text": effects.read_text(path) or "",
-            "version": v,
-            "versions": versions,
-            "created": effects.mtime(path),
-        }
-
-    def forget(self, target: str) -> None:
-        """Drop a workspace's conversation (its worktree was removed) and every review
-        version persisted for it."""
-        self.stop(target)
-        with self.lock:
-            e = self.convos.pop(target, None)
-        if e and e.get("ctx_dir"):
-            effects.remove_tree(e["ctx_dir"])
-        effects.remove_tree(_review_dir(target))
-
-    def shutdown(self) -> None:
-        """Stop every running turn (goo exit / restart), and clean up every
-        conversation's ephemeral context dir (see send())."""
-        with self.lock:
-            targets = [t for t, e in self.convos.items() if e["state"] == "running"]
-            ctx_dirs = [e["ctx_dir"] for e in self.convos.values() if e.get("ctx_dir")]
-        for t in targets:
-            self.stop(t)
-        for d in ctx_dirs:
-            effects.remove_tree(d)
-
-
 BUS = EventBus()
 WORKSPACES = WorkspaceManager(BUS)
-CLAUDE = ClaudeManager(BUS)
 # services layer over the IO seam (effects): external state fetched + parsed +
 # cached server-side. TTLs: PRs 10 min, runbot/mergebot 5 min, databases 1 min.
 # A `refresh` flag on the read endpoints bypasses the cache (the UI's manual Refresh).
@@ -1955,25 +1054,7 @@ REVIEW_PROMPT_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "review_prompt.m
 # the one before it. Lives next to config.json, same reasoning as REVIEW_PROMPT_PATH
 # above.
 REVIEWS_DIR = os.path.join(os.path.dirname(CONFIG_PATH), "reviews")
-
-
-def _review_dir(target: str) -> str:
-    """The directory holding every persisted review version for <target>. Workspace
-    ids are already filesystem-safe slugs (see WorkspacePlugin._newId in the
-    frontend), but sanitize defensively since this builds a path from
-    client-supplied data."""
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", target).strip("-.") or "workspace"
-    return os.path.join(REVIEWS_DIR, safe)
-
-
-def _review_versions(target: str) -> list[int]:
-    """Every persisted version number for <target>, oldest first."""
-    matches = (re.fullmatch(r"(\d+)\.md", name) for name in effects.list_dir(_review_dir(target)))
-    return sorted(int(m.group(1)) for m in matches if m)
-
-
-def _review_path(target: str, version: int) -> str:
-    return os.path.join(_review_dir(target), f"{version}.md")
+CLAUDE = ClaudeManager(BUS, REVIEWS_DIR)
 
 
 DEFAULT_REVIEW_PROMPT = (
@@ -2402,6 +1483,7 @@ def _api_workspace_claude(body: dict[str, Any]) -> RouteResult:
         body.get("addDirs") or [],
         model=body.get("model"),
         review=bool(body.get("review")),
+        git=GIT,
     )
     if ok:
         return {"ok": True, "state": detail["state"]}
@@ -3469,6 +2551,7 @@ def main() -> int:
         global REVIEW_PROMPT_PATH, REVIEWS_DIR
         REVIEW_PROMPT_PATH = os.path.join(os.path.dirname(CONFIG.path), "review_prompt.md")
         REVIEWS_DIR = os.path.join(os.path.dirname(CONFIG.path), "reviews")
+        CLAUDE.reviews_dir = REVIEWS_DIR
 
     # DatabaseService/AssetsService's psql calls never pass connection info of
     # their own -- they rely entirely on psql's defaults (a local unix socket,

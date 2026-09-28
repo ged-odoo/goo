@@ -2,3 +2,5 @@ static/lib/
 static/dist/
 node_modules/
 sim/data/
+# generated-skill templates, copied verbatim into worktrees (see services/git.py)
+backend/services/templates/

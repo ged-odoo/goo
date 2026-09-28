@@ -4,7 +4,7 @@ stdlib `@dataclass` types shared between the services (which build them) and the
 HTTP handlers (which `dataclasses.asdict()` them onto the wire). Field names on
 the wire are snake_case; the backend normalizes GitHub's camelCase at the source
 (see `GitHubService`), and the frontend mirrors these shapes in
-`static/src/models.js`.
+`static/src/core/models.js`.
 
 Only shapes that actually cross the wire live here — the PullRequest family
 (built by `GitHubService`) and the server/run snapshots (published over SSE).

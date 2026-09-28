@@ -1,4 +1,4 @@
-"""In-memory caches for the services layer (see services.py).
+"""In-memory caches for the services layer (see services/).
 
 A TTLCache memoizes a value per key for a fixed time-to-live, and "single-flights"
 concurrent misses so the same expensive fetch (a runbot scrape, a `gh` call) runs

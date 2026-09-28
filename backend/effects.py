@@ -1,5 +1,5 @@
 """The IO seam: the single place goo reaches outside the process — subprocess,
-network, and the filesystem. The services layer (see services.py) depends on this
+network, and the filesystem. The services layer (see services/) depends on this
 module, or a fake of it, so services can be unit-tested without spawning commands,
 hitting the network, or touching disk.
 """
