@@ -15,6 +15,26 @@ jobs:
           python-version: "3.11"
       - run: python3 -m unittest discover
 
+  backend-types:
+    name: Backend (ruff + pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      # ruff's ANN rules keep every backend function annotated; pyright checks
+      # the annotations (both configured in pyproject.toml). Dev tools only —
+      # the server itself stays stdlib-only.
+      - run: pip install ruff
+      - run: ruff check
+      - run: npm ci
+      - run: npm run typecheck:py
+
   frontend:
     name: Frontend (vitest)
     runs-on: ubuntu-latest

@@ -19,10 +19,13 @@ import tempfile
 import threading
 import urllib.parse
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
+from .cache import TTLCache
 from .models import CiCheck, CiRollup, PullRequest
 
 RUNBOT_BASE = "https://runbot.odoo.com"
@@ -32,7 +35,7 @@ MERGEBOT_BASE = "https://mergebot.odoo.com"
 # ─────────────────────────── GitHub PRs (via the `gh` CLI) ───────────────────
 
 
-def _ci_state(raw):
+def _ci_state(raw: str | None) -> str:
     """Normalize a GitHub status/check state to success | failure | pending | ""."""
     s = (raw or "").lower()
     if s == "success":
@@ -52,7 +55,7 @@ def _ci_state(raw):
     return ""
 
 
-def _ci_rollup(rollup):
+def _ci_rollup(rollup: list[dict[str, Any]] | None) -> CiRollup:
     """Compress a PR's statusCheckRollup into a CiRollup {overall, runbot, checks}.
 
     `checks` is [CiCheck(context, state, url)] (state normalized via _ci_state);
@@ -90,12 +93,12 @@ def _ci_rollup(rollup):
 class GitHubService:
     """The user's PRs and PR actions, via the `gh` CLI."""
 
-    def __init__(self, io, cache):
+    def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
         self.cache = cache
         self._login = None
 
-    def prs(self, repos, refresh=False):
+    def prs(self, repos: list[dict[str, Any]], refresh: bool = False) -> list[dict[str, Any]]:
         """For each repo {id, github}: the user's PRs (all states). Cached per
         repo-set; pass refresh=True to bypass the cache."""
         key = tuple(sorted((r.get("id"), r.get("github")) for r in repos))
@@ -103,7 +106,7 @@ class GitHubService:
             self.cache.invalidate(key)
         return self.cache.get(key, lambda: self._fetch(repos))
 
-    def _fetch(self, repos):
+    def _fetch(self, repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # one `gh pr list` per repo, in parallel (pool.map preserves order)
         valid = [r for r in repos if r.get("id") and r.get("github")]
         if not valid:
@@ -111,7 +114,7 @@ class GitHubService:
         with ThreadPoolExecutor(max_workers=min(8, len(valid))) as pool:
             return list(pool.map(self._fetch_one, valid))
 
-    def _fetch_one(self, repo):
+    def _fetch_one(self, repo: dict[str, Any]) -> dict[str, Any]:
         rid, gh_repo = repo["id"], repo["github"]
         entry = {"id": rid, "github": gh_repo, "prs": [], "error": None}
         self.io.log_request(f"gh pr list --repo {gh_repo} --author @me")
@@ -161,7 +164,9 @@ class GitHubService:
             entry["error"] = "unexpected gh output"
         return entry
 
-    def prs_for_branches(self, pairs, refresh=False):
+    def prs_for_branches(
+        self, pairs: list[dict[str, Any]], refresh: bool = False
+    ) -> list[dict[str, Any]]:
         """For each {github, branch}: the PR whose head is that branch, regardless
         of author, so forward-port / colleagues' PRs resolve too (the authored
         `prs()` fetch misses them). Returns a flat list of PullRequest dicts
@@ -188,7 +193,7 @@ class GitHubService:
             )
         return [pr for pr in results if pr]
 
-    def _fetch_head(self, gh_repo, branch):
+    def _fetch_head(self, gh_repo: str, branch: str) -> dict[str, Any] | None:
         """The best PR whose head ref is `branch` (open preferred, else most recently
         updated), or None. Returns a PullRequest dict, cached by the caller."""
         self.io.log_request(f"gh pr list --repo {gh_repo} --head {branch}")
@@ -237,7 +242,7 @@ class GitHubService:
             )
         )
 
-    def pr_infos(self, pairs, refresh=False):
+    def pr_infos(self, pairs: list[dict[str, Any]], refresh: bool = False) -> list[dict[str, Any]]:
         """Full PR info (title, url, state, ci, ...) for explicit {github, number}
         pairs — e.g. a user-curated watchlist, regardless of author. Cached per
         (github, number); refresh=True bypasses it. Returns a list of PullRequest
@@ -257,7 +262,7 @@ class GitHubService:
             )
         return [pr for pr in results if pr]
 
-    def _fetch_info(self, gh_repo, number):
+    def _fetch_info(self, gh_repo: str, number: int) -> dict[str, Any] | None:
         """A single PR's full info by number, regardless of author. Returns a
         PullRequest dict, or None if `gh` couldn't resolve it."""
         self.io.log_request(f"gh pr view {number} --repo {gh_repo}")
@@ -296,7 +301,7 @@ class GitHubService:
             )
         )
 
-    def review_statuses(self, pairs, refresh=False):
+    def review_statuses(self, pairs: list[dict[str, Any]], refresh: bool = False) -> dict[str, str]:
         """For each {github, number}: "reviewed" if the authenticated user has
         submitted a review on it and isn't currently in the pending
         review-request list (i.e. hasn't been re-asked since), else
@@ -320,7 +325,7 @@ class GitHubService:
             f"{gh_repo}#{number}": s for (gh_repo, number), s in zip(uniq, statuses, strict=True)
         }
 
-    def _fetch_review_status(self, gh_repo, number):
+    def _fetch_review_status(self, gh_repo: str, number: int) -> str:
         """ "reviewed" if the authenticated user has submitted a review (any state
         — Odoo reviewers mostly leave plain "Comment" reviews, never GitHub's
         formal Approve/Request-changes) more recently than the last time they
@@ -354,7 +359,7 @@ class GitHubService:
         last_request_at = self._last_review_request(gh_repo, number, login)
         return "to_review" if last_request_at > last_review_at else "reviewed"
 
-    def _last_review_request(self, gh_repo, number, login):
+    def _last_review_request(self, gh_repo: str, number: int, login: str) -> str:
         """The most recent time `login` was requested to review this PR (ISO
         timestamp, "" if never/unknown) — from the issue timeline, since a
         PR's current `reviewRequests` doesn't carry timing and (per above)
@@ -391,7 +396,7 @@ class GitHubService:
                 at_times.append(obj["at"])
         return max(at_times) if at_times else ""
 
-    def _me(self):
+    def _me(self) -> str:
         """The authenticated `gh` user's login, cached for the service's lifetime."""
         if self._login is None:
             self.io.log_request("gh api user --jq .login")
@@ -403,7 +408,7 @@ class GitHubService:
         return self._login
 
     @staticmethod
-    def _uniq_pairs(pairs):
+    def _uniq_pairs(pairs: list[dict[str, Any]]) -> list[tuple[str, int]]:
         seen, uniq = set(), []
         for p in pairs:
             gh_repo, number = p.get("github"), p.get("number")
@@ -413,7 +418,7 @@ class GitHubService:
             uniq.append((gh_repo, number))
         return uniq
 
-    def close_pr(self, github, number):
+    def close_pr(self, github: str, number: int) -> tuple[bool, str | None]:
         """Close a GitHub PR. Returns (ok, error); invalidates the PR cache on
         success so the next fetch reflects the closure."""
         self.io.log_request(f"gh pr close {number} --repo {github}")
@@ -426,7 +431,7 @@ class GitHubService:
         self.cache.invalidate()
         return True, None
 
-    def ready_pr(self, github, number):
+    def ready_pr(self, github: str, number: int) -> tuple[bool, str | None]:
         """Mark a draft GitHub PR ready for review. Returns (ok, error);
         invalidates the PR cache on success so the next fetch reflects it."""
         self.io.log_request(f"gh pr ready {number} --repo {github}")
@@ -439,7 +444,7 @@ class GitHubService:
         self.cache.invalidate()
         return True, None
 
-    def post_r_plus(self, github, number):
+    def post_r_plus(self, github: str, number: int) -> tuple[bool, str | None]:
         """Post the mergebot approval command on a GitHub PR via ``gh``."""
         self.io.log_request(f"gh pr comment {number} --repo {github} --body 'robodoo r+'")
         try:
@@ -463,7 +468,7 @@ class GitHubService:
         self.cache.invalidate()
         return True, None
 
-    def pr_head(self, github, number):
+    def pr_head(self, github: str, number: int) -> tuple[str, str | None]:
         """The head branch ref of a PR by number. Used for forward-port sub-workspaces:
         the mergebot matrix only exposes the target branch (e.g. "master"), while the
         forward-port PR's actual head is fw-bot's `master-<src>-<n>-fw` on odoo-dev.
@@ -484,7 +489,7 @@ class GitHubService:
             return "", str(e)
         return data.get("headRefName", ""), None
 
-    def search_branches(self, repos, query):
+    def search_branches(self, repos: list[dict[str, Any]], query: str) -> list[dict[str, str]]:
         """Search GitHub for branches whose name starts with `query`, across each
         repo's upstream (`github`) slug and its push remote's fork slug — a branch
         pushed only to a personal/team fork never reaches upstream, so both are
@@ -496,7 +501,7 @@ class GitHubService:
         results = []
         lock = threading.Lock()
 
-        def matching_refs(slug):
+        def matching_refs(slug: str) -> list[str]:
             try:
                 res = self.io.run(
                     [
@@ -521,7 +526,7 @@ class GitHubService:
                     found.append(branch)
             return found
 
-        def fork_slug(r):
+        def fork_slug(r: dict[str, Any]) -> str | None:
             path, push_remote = r.get("path"), r.get("push_remote")
             if not path or not push_remote:
                 return None
@@ -533,7 +538,7 @@ class GitHubService:
                 return None
             return parse_github_slug(pu.stdout.strip()) if pu.returncode == 0 else None
 
-        def search_one(r):
+        def search_one(r: dict[str, Any]) -> None:
             found = {}  # branch -> remote name; an upstream match wins over a fork one
             github = r.get("github", "")
             if github:
@@ -566,7 +571,7 @@ _BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
 _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
 
 
-def parse_starred_bundles(html):
+def parse_starred_bundles(html: str) -> list[tuple[str, str]]:
     """[(version, bundle_id)] for the starred bundles on a runbot project page, in
     page order (newest series first)."""
     starts = [m.start() for m in _BUNDLE_ROW_RE.finditer(html or "")]
@@ -585,11 +590,11 @@ def parse_starred_bundles(html):
 class RunbotService:
     """Runbot CI status for a branch's bundle, scraped from runbot.odoo.com."""
 
-    def __init__(self, io, cache):
+    def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
         self.cache = cache
 
-    def statuses(self, branches, refresh=False):
+    def statuses(self, branches: list[str], refresh: bool = False) -> dict[str, dict[str, Any]]:
         """{branch: {result, running}} for the given branches, cached per branch
         and fetched in parallel. Pass refresh=True to bypass the cache."""
         branches = [b for b in dict.fromkeys(branches) if b]  # unique, non-empty
@@ -602,7 +607,7 @@ class RunbotService:
             states = pool.map(lambda b: self.cache.get(b, lambda b=b: self._status(b)), branches)
             return dict(zip(branches, states, strict=False))
 
-    def _status(self, branch):
+    def _status(self, branch: str) -> dict[str, Any]:
         """{result, running, url} for a branch's runbot bundle.
 
         `/runbot/bundle/<name>` resolves the *name* and 302-redirects to the bundle's
@@ -640,7 +645,7 @@ class RunbotService:
         running = "bg-info-subtle" in latest or "fa-spin" in latest
         return {"result": result, "running": running, "url": url}
 
-    def bundle_info(self, url):
+    def bundle_info(self, url: str | None) -> tuple[dict[str, Any] | None, str | None]:
         """The bundle a pasted runbot URL names: (info, error) with info =
         {name, branches, prs}. `name` is the bundle (= branch) name from the
         page title; `branches` lists the github repos carrying the branch (the
@@ -685,16 +690,16 @@ class RunbotService:
     _SLOT_NAME_RE = re.compile(r'class="[^"]*slot_name"[^>]*>\s*<span>\s*([^<]*?)\s*</span>')
 
     @staticmethod
-    def _dump_url(host, dest, db):
+    def _dump_url(host: str, dest: str, db: str) -> str:
         return f"https://{host}/runbot/static/build/{dest}/logs/{dest}-{db}.zip"
 
     @staticmethod
-    def _data_attr(attrs, name):
+    def _data_attr(attrs: str, name: str) -> str:
         """One data-<name> value out of a raw tag's attribute string ("" if absent)."""
         m = re.search(rf'data-{name}="([^"]*)"', attrs)
         return html_lib.unescape(m.group(1)) if m else ""
 
-    def dumps(self, branch, refresh=False):
+    def dumps(self, branch: str, refresh: bool = False) -> list[dict[str, Any]]:
         """The dumps of `branch`'s bundle — "the runbot database for master / 19.0 /
         saas-19.4 / …", for a workspace forked off a sticky series rather than picked
         up from a pasted bundle URL. Works for any branch with a bundle (see
@@ -709,10 +714,10 @@ class RunbotService:
             self.cache.invalidate(key)
         return self.cache.get(key, lambda: self._dumps(branch))
 
-    def _dumps(self, branch):
+    def _dumps(self, branch: str) -> list[dict[str, Any]]:
         return self.bundle_dumps(self._bundle_html(branch))
 
-    def sticky_bundles(self, refresh=False):
+    def sticky_bundles(self, refresh: bool = False) -> dict[str, str]:
         """{version: bundle id} for runbot's sticky (starred) series — master, 19.0,
         saas-19.4, … Cached under a tuple key, so it can never collide with the bare
         branch names the status cache uses. {} if the page can't be read."""
@@ -721,11 +726,11 @@ class RunbotService:
             self.cache.invalidate(key)
         return self.cache.get(key, self._fetch_sticky)
 
-    def _fetch_sticky(self):
+    def _fetch_sticky(self) -> dict[str, str]:
         html, err = self.io.http_get(f"{RUNBOT_BASE}/runbot/rd-1", timeout=20)
         return {} if err else dict(parse_starred_bundles(html))
 
-    def _bundle_html(self, branch):
+    def _bundle_html(self, branch: str) -> str:
         """The bundle page for `branch` ("" when there's none to read).
 
         A sticky series is addressed by the bundle id runbot's own starred list gives
@@ -752,7 +757,7 @@ class RunbotService:
 
     _MAX_BATCHES = 4  # how far back bundle_dumps looks for a batch that still has dumps
 
-    def bundle_dumps(self, html):
+    def bundle_dumps(self, html: str) -> list[dict[str, Any]]:
         """[{build, slot, db, url, size}] — one entry per database dumped by the
         builds of the bundle's newest USABLE batch ("all" and "base" for the Community
         and Enterprise runs, "design-theme" for Design-themes; the Documentation build
@@ -776,7 +781,7 @@ class RunbotService:
                 return dumps
         return []
 
-    def _batch_dump_candidates(self, tile):
+    def _batch_dump_candidates(self, tile: str) -> list[dict[str, str]]:
         """[{build, slot, db, url}] for one batch tile, read off its build slots' data
         attributes — before any check that the dump is still on disk."""
         candidates = []
@@ -808,7 +813,7 @@ class RunbotService:
                     )
         return candidates
 
-    def _probe_dumps(self, candidates):
+    def _probe_dumps(self, candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
         """The candidates whose zip is actually still served, each with its size."""
         if not candidates:
             return []
@@ -820,7 +825,7 @@ class RunbotService:
             if status == 200
         ]
 
-    def _badge(self, branch):
+    def _badge(self, branch: str) -> str:
         """Parse the runbot badge SVG: "success" / "failure" / "pending" / ""."""
         svg, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/badge/1/{urllib.parse.quote(branch)}.svg")
         if not svg:
@@ -860,11 +865,13 @@ MERGEBOT_STATES = frozenset(
 class MergebotService:
     """Mergebot merge-queue state for a PR, scraped from mergebot.odoo.com."""
 
-    def __init__(self, io, cache):
+    def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
         self.cache = cache
 
-    def statuses(self, prs, refresh=False):
+    def statuses(
+        self, prs: list[dict[str, Any]], refresh: bool = False
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, list[dict[str, Any]]], list[str]]:
         """Return ({"github#number": state}, {"github#number": detail},
         {"github#number": forward-port matrix}, [unsupported repos]) for the given
         PRs, cached per PR and fetched in parallel. Pass refresh=True to bypass the
@@ -921,7 +928,9 @@ class MergebotService:
         unsupported = sorted(missing - reachable)
         return states, details, forward_ports, unsupported
 
-    def _status(self, github, number):
+    def _status(
+        self, github: str, number: int
+    ) -> tuple[str, str, list[dict[str, Any]], bool | None]:
         """(merge state, detail, forward ports, supported).
 
         `supported` is False on a 404 and None on a transient failure. State is
@@ -946,12 +955,12 @@ class MergebotService:
         return state, self._blocked_reasons(html), self._forward_ports(html, github, number), True
 
     @staticmethod
-    def _html_text(fragment):
+    def _html_text(fragment: str) -> str:
         text = re.sub(r"<[^>]+>", " ", fragment)
         return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
 
     @staticmethod
-    def _html_attr(attrs, name):
+    def _html_attr(attrs: str, name: str) -> str:
         match = re.search(rf"\b{re.escape(name)}\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", attrs, re.I)
         return (
             (match.group(1) if match and match.group(1) is not None else match.group(2))
@@ -959,7 +968,7 @@ class MergebotService:
             else ""
         )
 
-    def _forward_ports(self, html, github, number):
+    def _forward_ports(self, html: str, github: str, number: int | str) -> list[dict[str, Any]]:
         """Parse the forward-port matrix below a PR and return subsequent rows.
 
         Each row keeps one cell per repository because linked community/enterprise
@@ -1048,7 +1057,7 @@ class MergebotService:
         # The target row itself is already represented by the workspace checkout.
         return rows[target_index + 1 :]
 
-    def _blocked_reasons(self, html):
+    def _blocked_reasons(self, html: str) -> str:
         """The unmet merge requirements from the page's `todo` checklist: the labels
         of the top-level <li> items not marked satisfied (class 'ok'), joined like
         "Review, CI". Nested per-CI-check items begin with an <a>, so their empty
@@ -1101,14 +1110,14 @@ class CiService:
 
     MAX_PAGES = 40  # ~1 day/page — a hard stop so a parse miss can't loop forever
 
-    def __init__(self, io, cache_path, branch=1):
+    def __init__(self, io: Any, cache_path: str, branch: int | str = 1) -> None:
         self.io = io
         self.cache_path = cache_path
         self.branch = branch
 
     # ── on-disk cache of immutable completed days ─────────────────────────────
     # {"oldest_complete": "YYYY-MM-DD" | None, "days": {"YYYY-MM-DD": {...}}}
-    def _load_cache(self):
+    def _load_cache(self) -> dict[str, Any]:
         data, _ = self.io.read_json_file(self.cache_path)
         if not isinstance(data, dict):
             return {"oldest_complete": None, "days": {}}
@@ -1116,17 +1125,17 @@ class CiService:
         data.setdefault("oldest_complete", None)
         return data
 
-    def _save_cache(self, cache):
+    def _save_cache(self, cache: dict[str, Any]) -> None:
         self.io.write_json_file(self.cache_path, cache)
 
-    def _fetch_page(self, until):
+    def _fetch_page(self, until: str | None) -> tuple[str, str | None]:
         url = f"{MERGEBOT_BASE}/runbot_merge/{self.branch}"
         if until:
             url += f"?until={urllib.parse.quote(until)}&state="
         return self.io.http_get(url, timeout=30)
 
     @staticmethod
-    def _blank_day(d):
+    def _blank_day(d: str) -> dict[str, Any]:
         return {
             "date": d,
             "batches": 0,
@@ -1138,7 +1147,7 @@ class CiService:
         }
 
     @classmethod
-    def _parse_page(cls, html):
+    def _parse_page(cls, html: str) -> tuple[list[dict[str, Any]], str | None]:
         """Return (rows, next_until). rows = [{date, state, prs}] newest-first."""
         rows = []
         for cls_name, body in _STAGING_ROW_RE.findall(html):
@@ -1153,7 +1162,7 @@ class CiService:
         nxt = _NEXT_UNTIL_RE.search(html)
         return rows, (html_lib.unescape(nxt.group(1)) if nxt else None)
 
-    def merge_stats(self, days=14, refresh=False):
+    def merge_stats(self, days: int = 14, refresh: bool = False) -> list[dict[str, Any]]:
         """Per-day stats for the last `days` days (today back), newest-first.
 
         Walks the stagings pages back in time, folding each row into its UTC day.
@@ -1206,7 +1215,7 @@ class CiService:
         # covered" marker so the next call can skip them.
         today_iso = today.isoformat()
 
-        def complete(d):
+        def complete(d: str) -> bool:
             return d < today_iso and (exhausted or (oldest_seen is not None and d > oldest_seen))
 
         for d, agg in fresh.items():
@@ -1235,7 +1244,7 @@ class CiService:
             d -= timedelta(days=1)
         return out
 
-    def queue(self):
+    def queue(self) -> int | None:
         """The current 'Awaiting' queue size for this branch — batches approved but
         not yet staged — scraped from the root runbot_merge dashboard. Volatile (the
         queue drains constantly), so uncached. Returns the PR count, or None if the
@@ -1297,22 +1306,22 @@ class NightlyService:
     # match wins, so a build offering both takes the dedicated qunit-only run
     _MEMINFO_STEP_NAMES = ("start_qunit_only", "test_only_no_limit_no_autotags")
 
-    def __init__(self, io, cache):
+    def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
         self.cache = cache
 
-    def _fetch_html(self, url, timeout=20):
+    def _fetch_html(self, url: str, timeout: float = 20) -> str:
         html, err = self.io.http_get(url, timeout=timeout)
         return "" if err else html
 
     # ── versions: starred bundles on the rd-1 page ───────────────────────────
 
-    def _versions(self, refresh=False):
+    def _versions(self, refresh: bool = False) -> list[tuple[str, str]]:
         if refresh:
             self.cache.invalidate("versions")
         return self.cache.get("versions", self._fetch_versions)
 
-    def _fetch_versions(self):
+    def _fetch_versions(self) -> list[tuple[str, str]]:
         html = self._fetch_html(self._VERSIONS_URL)
         if not html:
             return list(self._VERSIONS_FALLBACK)
@@ -1323,17 +1332,19 @@ class NightlyService:
     # ── bundle pages: the night index for one version ────────────────────────
 
     @staticmethod
-    def _bundle_url(bundle_id, page):
+    def _bundle_url(bundle_id: str, page: int) -> str:
         url = f"{RUNBOT_BASE}/runbot/bundle/{bundle_id}"
         return f"{url}?page={page}" if page > 1 else url
 
-    def _bundle_page_html(self, bundle_id, page, refresh=False):
+    def _bundle_page_html(self, bundle_id: str, page: int, refresh: bool = False) -> str:
         key = ("bundle", bundle_id, page)
         if refresh:
             self.cache.invalidate(key)
         return self.cache.get(key, lambda: self._fetch_html(self._bundle_url(bundle_id, page)))
 
-    def _bundle_nights(self, bundle_id, max_nights, refresh=False):
+    def _bundle_nights(
+        self, bundle_id: str, max_nights: int, refresh: bool = False
+    ) -> list[dict[str, Any]]:
         """Fetch bundle pages until max_nights nightly builds are collected,
         stopping early if a page returns no new dates (history exhausted)."""
         all_nights, seen_dates = [], set()
@@ -1351,7 +1362,7 @@ class NightlyService:
                 break
         return all_nights[:max_nights]
 
-    def _parse_bundle(self, html, max_nights=7):
+    def _parse_bundle(self, html: str, max_nights: int = 7) -> list[dict[str, Any]]:
         """Extract nightly batches from a bundle page.
 
         Returns a list of {date, community, enterprise} where each build is
@@ -1407,7 +1418,7 @@ class NightlyService:
 
     # ── per-build detail: cached forever once the build is terminal ─────────
 
-    def _build_detail(self, url, running=False):
+    def _build_detail(self, url: str, running: bool = False) -> dict[str, Any] | None:
         """{"counts", "child_rows"} for a Multi Qunit build page. Cached
         permanently unless `running` (the build's own status isn't terminal
         yet), in which case it's always re-fetched fresh."""
@@ -1415,7 +1426,7 @@ class NightlyService:
             return self._fetch_build_detail(url)
         return self.cache.get(("build", url), lambda: self._fetch_build_detail(url))
 
-    def _fetch_build_detail(self, url):
+    def _fetch_build_detail(self, url: str) -> dict[str, Any] | None:
         html = self._fetch_html(f"{RUNBOT_BASE}{url}")
         if not html:
             return None
@@ -1436,14 +1447,14 @@ class NightlyService:
 
     # ── per-child detail: individual test failures + perf metrics ───────────
 
-    def _child_detail(self, child_url, row_status):
+    def _child_detail(self, child_url: str, row_status: str) -> dict[str, Any]:
         # a child only appears in `child_rows` once its row is success/warning/
         # danger (i.e. finished) — always safe to cache permanently.
         return self.cache.get(
             ("child", child_url), lambda: self._fetch_child_detail(child_url, row_status)
         )
 
-    def _fetch_child_detail(self, child_url, row_status):
+    def _fetch_child_detail(self, child_url: str, row_status: str) -> dict[str, Any]:
         html = self._fetch_html(f"{RUNBOT_BASE}{child_url}")
         if not html:
             return {"errors": [], "metrics": {}}
@@ -1458,11 +1469,11 @@ class NightlyService:
         return {"errors": errors, "metrics": metrics}
 
     @staticmethod
-    def _fmt_warning(text):
+    def _fmt_warning(text: str) -> str:
         tl = text.lower()
         if "time" in tl:
 
-            def _t(m):
+            def _t(m: re.Match[str]) -> str:
                 v = float(m.group())
                 mins = int(v // 60)
                 return f"{mins}m {int(v % 60)}s" if mins else f"{int(v)}s"
@@ -1474,7 +1485,7 @@ class NightlyService:
             )
         return text
 
-    def _parse_child_errors(self, html_text):
+    def _parse_child_errors(self, html_text: str) -> list[dict[str, Any]]:
         """[{test_name, status, timeout, known, assignee}] from a Multi Qunit
         Child build page. log-server rows: ERROR + [HOOT] Test → test failure;
         ERROR + Script timeout exceeded → timeout. log-runbot rows: WARNING +
@@ -1526,7 +1537,7 @@ class NightlyService:
                     )
         return errors
 
-    def _parse_child_metrics(self, html):
+    def _parse_child_metrics(self, html: str) -> dict[str, dict[str, Any]]:
         """{suite_name: {avg_mem, max_mem, time, tests, assertions}} for suites
         where the three required memory/time values are present."""
         data = {}
@@ -1549,7 +1560,7 @@ class NightlyService:
 
     # ── public API ────────────────────────────────────────────────────────
 
-    def builds(self, refresh=False, max_nights=14):
+    def builds(self, refresh: bool = False, max_nights: int = 14) -> dict[str, Any]:
         """{"versions": [...], "nights": [{date, versions: {v: {community,
         enterprise}}}]} for all starred Odoo versions, newest night first."""
         max_nights = max(7, min(max_nights, 84))
@@ -1557,7 +1568,7 @@ class NightlyService:
         if not versions:
             return {"versions": [], "nights": []}
 
-        def fetch_bundle(vb):
+        def fetch_bundle(vb: tuple[str, str]) -> tuple[str, list[dict[str, Any]]]:
             version, bundle_id = vb
             return version, self._bundle_nights(bundle_id, max_nights, refresh=refresh)
 
@@ -1572,7 +1583,9 @@ class NightlyService:
                     if b:
                         jobs.append((version, night["date"], kind, b))
 
-        def fetch_detail(job):
+        def fetch_detail(
+            job: tuple[str, str, str, dict[str, Any]],
+        ) -> tuple[str, str, str, dict[str, Any] | None]:
             version, date, kind, b = job
             return version, date, kind, self._build_detail(b["url"], running=b["status"] == "info")
 
@@ -1605,7 +1618,7 @@ class NightlyService:
         ]
         return {"versions": [v for v, _ in versions], "nights": sorted_nights}
 
-    def build_errors(self, parent_url):
+    def build_errors(self, parent_url: str) -> dict[str, Any]:
         """{"errors": [...], "metrics": {suite: {avg_mem, max_mem, time,
         count, tests, assertions}}} for a Multi Qunit build URL — test-level
         errors and aggregated per-suite performance metrics across its
@@ -1614,7 +1627,7 @@ class NightlyService:
         if not detail:
             return {"errors": [], "metrics": {}}
 
-        def fetch_child(info):
+        def fetch_child(info: tuple[str, str]) -> dict[str, Any]:
             child_url, row_status = info
             return self._child_detail(child_url, row_status)
 
@@ -1655,7 +1668,7 @@ class NightlyService:
                 }
         return {"errors": all_errors, "metrics": agg_metrics}
 
-    def batch_builds(self, url):
+    def batch_builds(self, url: str) -> list[dict[str, str]]:
         """[{"label", "url"}] of raw step-log URLs (one of `_MEMINFO_STEP_NAMES`)
         for builds offering one of those steps on a runbot batch/build page —
         used by the Memory panel to bulk-import builds from a batch
@@ -1715,10 +1728,10 @@ class MemoryService:
         r".*(\.MobileWebSuite|\.WebSuite).*:\s+\[MEMINFO\]\s+([^ ]+)\s+\(after GC\)\s+-\s+used:\s+(\d+)"
     )
 
-    def __init__(self, io):
+    def __init__(self, io: Any) -> None:
         self.io = io
 
-    def parse_log(self, text):
+    def parse_log(self, text: str) -> list[tuple[str, int, bool]]:
         """[(suite_name, used_bytes, is_mobile)] from a hoot build log."""
         results = []
         for line in text.splitlines():
@@ -1730,13 +1743,15 @@ class MemoryService:
                 results.append((suite_name, used, suite_type == ".MobileWebSuite"))
         return results
 
-    def fetch(self, builds, with_mobile=False):
+    def fetch(
+        self, builds: list[dict[str, Any]], with_mobile: bool = False
+    ) -> list[dict[str, Any]]:
         """[{suite, <label>: bytes, ...}] — one row per suite, one column per
         build — for a list of {"label", "url"} builds fetched in parallel, or
         {"label", "content"} builds (a log uploaded from disk) parsed directly."""
         to_fetch = [b for b in builds if b.get("url") and not b.get("content")]
 
-        def fetch_one(build):
+        def fetch_one(build: dict[str, Any]) -> tuple[str, list[tuple[str, int, bool]]]:
             html, err = self.io.http_get(build["url"], timeout=60)
             return build.get("label", ""), ([] if err else self.parse_log(html))
 
@@ -1778,7 +1793,7 @@ _RUNBOT_DUMP_URL_RE = re.compile(
 )
 
 
-def _valid_db_name(name):
+def _valid_db_name(name: object) -> bool:
     return bool(name) and isinstance(name, str) and bool(_DB_NAME_RE.match(name))
 
 
@@ -1788,18 +1803,18 @@ class DatabaseService:
     with parallel per-db probes; drop invalidates the cache. The probes are quiet
     (a non-zero exit just means "no such db" / "not an odoo db")."""
 
-    def __init__(self, io, cache):
+    def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
         self.cache = cache
 
-    def databases(self, refresh=False):
+    def databases(self, refresh: bool = False) -> list[dict[str, Any]]:
         """All non-template databases with their odoo info. Cached; pass
         refresh=True to bypass. Raises RuntimeError if psql can't be reached."""
         if refresh:
             self.cache.invalidate("list")
         return self.cache.get("list", self._list)
 
-    def _list(self):
+    def _list(self) -> list[dict[str, Any]]:
         try:
             r = self.io.run(
                 [
@@ -1843,17 +1858,17 @@ class DatabaseService:
     # are best-effort: a filestore failure is logged, never failing the DB op (the
     # database change already happened). Names are charset-validated, so the joined
     # path can't traverse out of the filestore root.
-    def _filestore_dir(self, filestore, name):
+    def _filestore_dir(self, filestore: str | None, name: str) -> str | None:
         if not filestore or not _valid_db_name(name):
             return None
         return os.path.join(os.path.expanduser(filestore), name)
 
-    def _log_filestore(self, action, src, dst, err):
+    def _log_filestore(self, action: str, src: str, dst: str | None, err: str | None) -> None:
         tag = getattr(self.io, "TAG", "[goo]")
         where = f"{src} → {dst}" if dst else src
         self.io.log(f"{tag} could not {action} filestore {where}: {err}")
 
-    def drop(self, name, filestore=None):
+    def drop(self, name: str, filestore: str | None = None) -> tuple[bool, str | None]:
         """Drop a database (and its filestore). Returns (ok, error); invalidates the
         list cache. --if-exists: a target's db may never have been created (or was
         already dropped) — that's not a failure, so dropdb shouldn't error on it."""
@@ -1871,7 +1886,9 @@ class DatabaseService:
                 self._log_filestore("delete", store, None, err)
         return True, None
 
-    def clone(self, source, target, filestore=None):
+    def clone(
+        self, source: str, target: str, filestore: str | None = None
+    ) -> tuple[bool, str | None]:
         """Clone `source` into a new database `target` (createdb -T) and copy its
         filestore. Returns (ok, error); invalidates the list cache on success. The
         source must have no active connections (a postgres requirement) — stop the
@@ -1895,7 +1912,7 @@ class DatabaseService:
                 self._log_filestore("copy", src, dst, err)
         return True, None
 
-    def exists(self, name):
+    def exists(self, name: str) -> bool:
         """Whether a database of that name exists. False on any probe error (no
         psql, a timeout) — the callers treat "can't tell" as "go ahead and try",
         and the real createdb/dropdb below reports the truth either way."""
@@ -1909,7 +1926,9 @@ class DatabaseService:
             return False
         return r.returncode == 0 and r.stdout.strip() == "1"
 
-    def restore_dump(self, name, url, filestore=None, log_progress=True):
+    def restore_dump(
+        self, name: str, url: str, filestore: str | None = None, log_progress: bool = True
+    ) -> tuple[bool, str | None]:
         """Download a runbot database dump and restore it into a NEW database `name`.
         Returns (ok, error); invalidates the list cache on success.
 
@@ -1939,7 +1958,9 @@ class DatabaseService:
             if not ok:
                 self.io.log(f"{getattr(self.io, 'TAG', '[goo]')} could not clean up {tmp}: {err}")
 
-    def _restore_dump(self, name, url, tmp, filestore, log_progress):
+    def _restore_dump(
+        self, name: str, url: str, tmp: str, filestore: str | None, log_progress: bool
+    ) -> tuple[bool, str | None]:
         """The body of restore_dump, inside the temp directory it cleans up."""
         zip_path = os.path.join(tmp, "dump.zip")
         ok, err = self.io.http_download(
@@ -1997,7 +2018,7 @@ class DatabaseService:
             self._log_filestore("install", src, dst, err)
         return True, None
 
-    def _drop_quietly(self, name):
+    def _drop_quietly(self, name: str) -> None:
         """Take a half-restored database back down — the restore failed, so the shell
         left behind is worse than nothing. Its filestore isn't installed yet."""
         try:
@@ -2006,13 +2027,13 @@ class DatabaseService:
             pass
         self.cache.invalidate("list")
 
-    def _download_logger(self, url):
+    def _download_logger(self, url: str) -> Callable[[int, int], None]:
         """An on_progress callback that narrates a download to the goo log every 10%.
         A dump runs to hundreds of megabytes; a silent multi-minute step looks hung."""
         tag = getattr(self.io, "TAG", "[goo]")
         state = {"decile": -1}
 
-        def on_progress(done, total):
+        def on_progress(done: int, total: int) -> None:
             decile = int(done * 10 / total) if total else -1
             if decile == state["decile"]:
                 return
@@ -2021,7 +2042,7 @@ class DatabaseService:
 
         return on_progress
 
-    def rename(self, old, new, filestore=None):
+    def rename(self, old: str, new: str, filestore: str | None = None) -> tuple[bool, str | None]:
         """Rename database `old` to `new` (ALTER DATABASE … RENAME) and move its
         filestore. Returns (ok, error); invalidates the list cache on success. `old`
         must have no active connections (a postgres requirement)."""
@@ -2046,7 +2067,7 @@ class DatabaseService:
                 self._log_filestore("move", src, dst, err)
         return True, None
 
-    def db_initialized(self, db):
+    def db_initialized(self, db: str) -> bool:
         """Whether the database exists AND holds an initialized odoo schema. A db
         can exist as an empty shell; odoo refuses to load it without -i, so treat
         that as new. On a probe error (no psql), assume initialized to avoid a
@@ -2069,7 +2090,7 @@ class DatabaseService:
             return False  # database doesn't exist
         return r.stdout.strip() == "1"
 
-    def odoo_info(self, db):
+    def odoo_info(self, db: str) -> tuple[str | None, bool, bool, str | None]:
         """(version, is_enterprise, has_demo_data, last_update) of the odoo in a
         database, or (None, False, False, None) if it holds no odoo. has_demo_data
         reflects ir_module_module.demo — set per-module by odoo itself when that
@@ -2101,7 +2122,7 @@ class DatabaseService:
         version, enterprise, demo_data, last_update = line.split("|", 3)
         return version or None, enterprise == "t", demo_data == "t", last_update or None
 
-    def installed_modules(self, db):
+    def installed_modules(self, db: str) -> dict[str, str]:
         """Map of module name -> state for a database (empty if unreadable)."""
         try:
             r = self.io.run(
@@ -2120,7 +2141,7 @@ class DatabaseService:
                 out[name] = state
         return out
 
-    def _creation_times(self):
+    def _creation_times(self) -> dict[str, str | None]:
         """Map db name -> creation timestamp (naive UTC ISO) from each database's
         PG_VERSION mtime. Needs superuser / pg_read_server_files; {} if not."""
         try:
@@ -2148,7 +2169,7 @@ class DatabaseService:
                 out[name] = ts or None
         return out
 
-    def _sizes(self):
+    def _sizes(self) -> dict[str, int]:
         """Map db name -> on-disk size in bytes (pg_database_size). Best-effort: {}
         on any error — the size is just informational, never blocks the listing."""
         try:
@@ -2184,7 +2205,7 @@ class DatabaseService:
 _BASE_BRANCH_RE = re.compile(r"^(saas-\d+\.\d+|\d+\.\d+|master)")
 
 
-def base_branch(name):
+def base_branch(name: str | None) -> str:
     """The canonical base a branch derives from (master-owl-update -> master,
     19.0-fix -> 19.0). Defaults to master."""
     m = _BASE_BRANCH_RE.match(name or "")
@@ -2198,7 +2219,7 @@ _OWL_VERSION_RE = re.compile(r'version = "(\d+)\.[^"]*"')
 _OWL_HASH_RE = re.compile(r'hash:\s*"([0-9a-f]+)"')
 
 
-def is_base_branch(name):
+def is_base_branch(name: str | None) -> bool:
     """Whether <name> IS a base branch (exact match — master-foo is a work branch)."""
     return bool(_BASE_BRANCH_RE.fullmatch(name or ""))
 
@@ -2206,7 +2227,7 @@ def is_base_branch(name):
 _GITHUB_REMOTE_RE = re.compile(r"github\.com(?::\d+)?[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
 
 
-def parse_github_slug(url):
+def parse_github_slug(url: str | None) -> str | None:
     """The "owner/repo" GitHub slug a remote URL points to (SSH, HTTPS, or
     ssh:// forms), or None if it's not a github.com URL. A repo's push remote
     can be a fork under a different owner — and even a differently-renamed
@@ -2222,11 +2243,19 @@ class GitService:
     fetch fresh each time. `notify` (optional) reports progress events (the fetch /
     rebase phases) — wired to the event bus in production, a no-op in tests."""
 
-    def __init__(self, io, notify=None):
+    def __init__(self, io: Any, notify: Callable[..., None] | None = None) -> None:
         self.io = io
         self.notify = notify or (lambda *a, **k: None)
 
-    def _git(self, path, *args, timeout=30, err="git failed", quiet=False, tail=False):
+    def _git(
+        self,
+        path: str,
+        *args: str,
+        timeout: float = 30,
+        err: str = "git failed",
+        quiet: bool = False,
+        tail: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
         """Run one git command in <path> (expanduser'd). Returns (result, error):
         error is None on success, else the first stderr line (or <err> when git
         was silent), or the FileNotFoundError/TimeoutExpired message — the shared
@@ -2245,16 +2274,16 @@ class GitService:
             return r, (lines[-1] if tail else lines[0]) or err
         return r, None
 
-    def current_branch(self, path):
+    def current_branch(self, path: str) -> str:
         """The branch currently checked out at <path> ("" if detached/unreadable).
         A lightweight single-subprocess alternative to branches() for callers that
         only need the current branch name (e.g. the headless Claude chat, which
         needs it on every fresh conversation and shouldn't pay for the full
         dirty/ahead-behind/remote-refs read)."""
         r, error = self._git(path, "branch", "--show-current", timeout=10)
-        return "" if error else (r.stdout or "").strip()
+        return "" if error or r is None else (r.stdout or "").strip()
 
-    def branches(self, repos):
+    def branches(self, repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """For each repo {id, path}: the checked-out branch and all local branches
         with their last-commit date, plus dirty / pushed / ahead-behind state and
         the push remote's resolved "owner/repo" (push_github, None if the remote
@@ -2265,7 +2294,7 @@ class GitService:
         if not valid:
             return []
 
-        def one(repo):
+        def one(repo: dict[str, Any]) -> dict[str, Any]:
             rid = repo.get("id")
             path = os.path.expanduser(repo.get("path", ""))
             entry = {
@@ -2395,7 +2424,9 @@ class GitService:
         with ThreadPoolExecutor(max_workers=min(8, len(valid))) as pool:
             return list(pool.map(one, valid))
 
-    def checkout(self, path, branch, repo=""):
+    def checkout(
+        self, path: str | None, branch: str | None, repo: str | None = ""
+    ) -> tuple[bool, str | None]:
         """Checkout a local branch in a repo. Returns (ok, error). Announced as a
         timed event via notify so the browser shows a live "..." that resolves to
         "ok"/"failed"."""
@@ -2409,7 +2440,9 @@ class GitService:
         self.notify(checking, event_id=eid, status="error" if error else "done")
         return error is None, error
 
-    def fresh_start_point(self, path, branch, pull_remote="origin", repo=""):
+    def fresh_start_point(
+        self, path: str, branch: str | None, pull_remote: str | None = "origin", repo: str = ""
+    ) -> tuple[str | None, str | None]:
         """Resolve a workspace branch's start point. If the configured pull remote
         has <branch>, fetch it and return FETCH_HEAD so branch/worktree creation
         starts from the freshly fetched commit. If the branch is local-only, return
@@ -2445,15 +2478,15 @@ class GitService:
 
     def worktree_add(
         self,
-        main_path,
-        worktree_path,
-        branch,
-        repo="",
-        new_branch=False,
-        start_point=None,
-        fresh_start=False,
-        pull_remote="origin",
-    ):
+        main_path: str,
+        worktree_path: str,
+        branch: str,
+        repo: str = "",
+        new_branch: bool = False,
+        start_point: str | None = None,
+        fresh_start: bool = False,
+        pull_remote: str | None = "origin",
+    ) -> tuple[bool, str | None]:
         """Add a git worktree at <worktree_path>, linked to the repo at <main_path>
         (sharing its .git); git creates intermediate dirs. With new_branch, create
         <branch> at <start_point> in the new worktree (git worktree add -b) — the
@@ -2492,8 +2525,13 @@ class GitService:
         return error is None, error
 
     def create_worktree_claude_md(
-        self, worktree_parent, branch, has_enterprise, documentation_path=None, owl_path=None
-    ):
+        self,
+        worktree_parent: str,
+        branch: str,
+        has_enterprise: bool,
+        documentation_path: str | None = None,
+        owl_path: str | None = None,
+    ) -> None:
         """Create a .claude/CLAUDE.md file at the worktree's parent dir for Claude Code
         context — outside any git-tracked repo (<worktree_dir>/<slug>/.claude/CLAUDE.md,
         <worktree_dir>/<slug>/{community,enterprise,documentation,owl}/ are its
@@ -2508,7 +2546,13 @@ class GitService:
             self._claude_md_content(branch, has_enterprise, documentation_path, owl_path),
         )
 
-    def _claude_md_content(self, branch, has_enterprise, documentation_path=None, owl_path=None):
+    def _claude_md_content(
+        self,
+        branch: str,
+        has_enterprise: bool,
+        documentation_path: str | None = None,
+        owl_path: str | None = None,
+    ) -> str:
         repo_lines = [
             "- `community/` — an independent `git worktree` checkout of odoo/odoo, on "
             f"branch **{branch}**. It shares git history/objects with the main checkout "
@@ -2528,7 +2572,7 @@ class GitService:
             )
         if owl_path:
             repo_lines.append(
-                f"- `owl/` — same, for odoo/owl, forked from the exact commit vendored at "
+                "- `owl/` — same, for odoo/owl, forked from the exact commit vendored at "
                 "`community/addons/web/static/lib/owl/owl.js` (odoo/owl's `master` branch "
                 "when that exact commit wasn't locally reachable). The frontend skill "
                 "reads it directly from disk too."
@@ -2630,7 +2674,7 @@ Claude Code restarts.
 *This file was auto-generated. Feel free to edit it.*
 """
 
-    def _resolve_owl_docs(self, community_path):
+    def _resolve_owl_docs(self, community_path: str) -> tuple[str, str, str]:
         """(ref, doc_base_path, major) to fetch odoo/owl docs matching the Owl build
         actually vendored at <community_path>/addons/web/static/lib/owl/owl.js — the
         bundle exports a literal `version = "X.Y.Z..."` plus `__info__.hash` (a short
@@ -2664,7 +2708,9 @@ Claude Code restarts.
                 return ref, path, major
         return "master", versioned_path, major
 
-    def resolve_owl_worktree_start(self, community_path, owl_main_path, pull_remote="origin"):
+    def resolve_owl_worktree_start(
+        self, community_path: str, owl_main_path: str, pull_remote: str | None = "origin"
+    ) -> str:
         """The odoo/owl ref to fork an owl worktree from, matching the Owl build
         actually vendored at <community_path> (an already-created worktree — this is
         called after community's own worktree_add, once its owl.js is real). Returns
@@ -2692,8 +2738,13 @@ Claude Code restarts.
         return commit if not error else "master"
 
     def create_worktree_skills(
-        self, community_path, worktree_parent, branch, documentation_path=None, owl_path=None
-    ):
+        self,
+        community_path: str,
+        worktree_parent: str,
+        branch: str,
+        documentation_path: str | None = None,
+        owl_path: str | None = None,
+    ) -> None:
         """Create the .claude/skills/ Odoo-dev skills at the worktree's parent dir
         (alongside .claude/CLAUDE.md — see create_worktree_claude_md), one per domain,
         each pointing at documentation matched to this worktree's Odoo version (and,
@@ -2711,7 +2762,7 @@ Claude Code restarts.
             for rel_path, content in files.items():
                 self.io.write_text(os.path.join(skills_dir, slug, rel_path), content)
 
-    def _owl_local_layout(self, owl_path, major):
+    def _owl_local_layout(self, owl_path: str, major: str) -> str:
         """Which on-disk doc/ layout an owl worktree checkout actually has — probed
         directly (the checkout is real, so there's no need to guess/retry like
         _resolve_owl_docs's remote canary-fetch does): the pre-v2/v3-split flat
@@ -2721,7 +2772,13 @@ Claude Code restarts.
             return "doc/reference"
         return split
 
-    def _skill_contents(self, community_path, branch, documentation_path=None, owl_path=None):
+    def _skill_contents(
+        self,
+        community_path: str,
+        branch: str,
+        documentation_path: str | None = None,
+        owl_path: str | None = None,
+    ) -> dict[str, dict[str, str]]:
         """{slug: full SKILL.md content (frontmatter + body)} for the four Odoo-dev
         skills, version-matched to <branch> (and, for odoo-frontend-owl, the Owl
         build actually vendored at <community_path>). Odoo/Owl doc references read
@@ -2734,13 +2791,13 @@ Claude Code restarts.
             doc_base = f"{documentation_path}/content/developer"
             doc_fetch = "Read the file directly"
 
-            def doc_browse(subdir):
+            def doc_browse(subdir: str) -> str:
                 return f"`find {documentation_path}/content/developer/{subdir} -type f`"
         else:
             doc_base = f"https://raw.githubusercontent.com/odoo/documentation/{doc_branch}/content/developer"
             doc_fetch = "WebFetch the raw URL"
 
-            def doc_browse(subdir):
+            def doc_browse(subdir: str) -> str:
                 return (
                     f"`gh api repos/odoo/documentation/contents/content/developer/"
                     f"{subdir}?ref={doc_branch}`"
@@ -2892,7 +2949,7 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         result["odoo-leak-bisect"] = self._leak_bisect_skill_files()
         return result
 
-    def _memory_perf_skill_files(self):
+    def _memory_perf_skill_files(self) -> dict[str, str]:
         """{relative_path: content} for the odoo-memory-perf skill — unlike the
         four doc-reference skills above, this one is a runnable tool (empirical
         heap-diff memory check via memlab + an existing Odoo tour), bundled with
@@ -3062,7 +3119,7 @@ echo "dump saved: $DUMP_DIR/ (*.heapsnapshot, data/cur/leaks.txt)"
             "scripts/run_check.sh": run_check_sh,
         }
 
-    def _bootstrap_leak_audit_skill_files(self):
+    def _bootstrap_leak_audit_skill_files(self) -> dict[str, str]:
         """{relative_path: content} for the odoo-bootstrap-leak-audit skill — a
         *static* grep-and-read methodology for one specific, recurring,
         already-proven memory-leak anti-pattern in Odoo's JS: a vendored
@@ -3183,7 +3240,7 @@ the leak is real.
 """
         return {"SKILL.md": skill_md}
 
-    def _leak_bisect_skill_files(self):
+    def _leak_bisect_skill_files(self) -> dict[str, str]:
         """{relative_path: content} for the odoo-leak-bisect skill — a from-scratch
         methodology for bisecting a JS memory leak reported on CI/runbot down to the
         introducing commit, for when neither the goo `memleak_check` addon nor a
@@ -3664,7 +3721,7 @@ if __name__ == "__main__":
             "scripts/heapcheck_cdp.py": heapcheck_cdp_py,
         }
 
-    def write_dev_context(self, out_dir, community_path, branch):
+    def write_dev_context(self, out_dir: str, community_path: str, branch: str) -> None:
         """Materialize the Odoo-dev CLAUDE.md + skills straight into <out_dir>/.claude/
         (no existence guard — meant for a fresh, throwaway directory, e.g. the headless
         Claude chat's per-conversation temp dir). Unlike the persisted worktree copy
@@ -3677,7 +3734,7 @@ if __name__ == "__main__":
         parent = os.path.dirname(community_path)
         has_enterprise = self.io.is_dir(os.path.join(parent, "enterprise"))
 
-        def sibling_or_none(name):
+        def sibling_or_none(name: str) -> str | None:
             path = os.path.join(parent, name)
             return path if self.io.is_dir(path) else None
 
@@ -3694,7 +3751,9 @@ if __name__ == "__main__":
                     os.path.join(out_dir, ".claude", "skills", slug, rel_path), content
                 )
 
-    def write_odoo_conf(self, worktree_parent, addons_path, db_user, db_password):
+    def write_odoo_conf(
+        self, worktree_parent: str, addons_path: str, db_user: str, db_password: str
+    ) -> None:
         """Write a ready-to-use odoo.conf at the worktree root (sibling to
         community/enterprise, alongside .claude/ — see create_worktree_claude_md), so
         `./odoo-bin -c ../odoo.conf -d <db>` just works from within community/ without
@@ -3712,7 +3771,9 @@ if __name__ == "__main__":
             f"db_password = {db_password}\n",
         )
 
-    def worktree_remove(self, main_path, worktree_path, repo=""):
+    def worktree_remove(
+        self, main_path: str, worktree_path: str, repo: str = ""
+    ) -> tuple[bool, str | None]:
         """Remove the git worktree at <worktree_path> (--force, so it goes even with
         local changes or a running server). Returns (ok, error). Timed event."""
         if not main_path or not worktree_path:
@@ -3730,8 +3791,14 @@ if __name__ == "__main__":
         return error is None, error
 
     def create_branch(
-        self, path, name, start_point, fresh_start=False, pull_remote="origin", repo=""
-    ):
+        self,
+        path: str | None,
+        name: str | None,
+        start_point: str | None,
+        fresh_start: bool = False,
+        pull_remote: str | None = "origin",
+        repo: str = "",
+    ) -> tuple[bool, str | None]:
         """Create a new local branch <name> at <start_point> WITHOUT checking it
         out (working tree / current branch untouched). Returns (ok, error)."""
         if not path or not name or not start_point:
@@ -3740,10 +3807,13 @@ if __name__ == "__main__":
             start_point, error = self.fresh_start_point(path, start_point, pull_remote, repo)
             if error:
                 return False, error
+            assert start_point is not None  # fresh_start_point: no error => a start point
         _, error = self._git(path, "branch", name, start_point, timeout=10, err="git branch failed")
         return error is None, error
 
-    def delete_branch(self, path, branch, delete_remote=False, push_remote="dev"):
+    def delete_branch(
+        self, path: str, branch: str, delete_remote: bool = False, push_remote: str | None = "dev"
+    ) -> tuple[bool, str | None, str | None]:
         """Force-delete a local branch, and optionally its branch on the configured
         push remote too. Returns (ok, error, remote_error): the first two are for the
         local delete; remote_error is set when the local delete succeeded but the
@@ -3774,7 +3844,7 @@ if __name__ == "__main__":
                 remote_error = None
         return True, None, remote_error
 
-    def commit(self, path, message):
+    def commit(self, path: str, message: str) -> tuple[bool, str | None]:
         """Stage all changes and create a commit with the given message. Returns
         (ok, error)."""
         _, error = self._git(path, "add", "-A", err="git add failed")
@@ -3783,11 +3853,11 @@ if __name__ == "__main__":
         _, error = self._git(path, "commit", "--no-verify", "-m", message, err="git commit failed")
         return error is None, error
 
-    def wip_commit(self, path):
+    def wip_commit(self, path: str) -> tuple[bool, str | None]:
         """Stage all changes and create a WIP commit. Returns (ok, error)."""
         return self.commit(path, "[WIP]")
 
-    def amend_commit(self, path, message):
+    def amend_commit(self, path: str, message: str) -> tuple[bool, str | None]:
         """Stage all changes and fold them into the HEAD commit with the given
         message (git commit --amend). Returns (ok, error)."""
         _, error = self._git(path, "add", "-A", err="git add failed")
@@ -3798,7 +3868,9 @@ if __name__ == "__main__":
         )
         return error is None, error
 
-    def _ahead_shas(self, path, ref, base, pull_remote):
+    def _ahead_shas(
+        self, path: str, ref: str, base: str, pull_remote: str | None
+    ) -> set[str] | None:
         """The set of commit shas reachable from <ref> (default HEAD) but not from
         the base branch — its fetched <pull_remote>/<base> tip, falling back to a
         local <base> branch — i.e. unique to this branch, not inherited from base.
@@ -3813,7 +3885,7 @@ if __name__ == "__main__":
                 return set(r.stdout.split())
         return None
 
-    def _rebase_in_progress(self, path):
+    def _rebase_in_progress(self, path: str) -> bool:
         """Whether <path> currently has a rebase left mid-flight (conflict, or
         any other stop) — the standard `.git/rebase-merge` (interactive; what
         rewrite_history always uses) or `.git/rebase-apply` (plain am-style)
@@ -3832,13 +3904,13 @@ if __name__ == "__main__":
                 return True
         return False
 
-    def abort_rebase(self, path):
+    def abort_rebase(self, path: str) -> tuple[bool, str | None]:
         """Abort an in-progress rebase (git rebase --abort), restoring the
         branch to its pre-rebase state. Returns (ok, error)."""
         _, error = self._git(path, "rebase", "--abort", err="git rebase --abort failed")
         return error is None, error
 
-    def rebase_status(self, path):
+    def rebase_status(self, path: str) -> tuple[bool, str | None]:
         """Whether <path> already has a rebase left mid-flight — from a
         conflicted rewrite_history (or anything else, e.g. a manual rebase run
         outside goo) — checked fresh on every history view load, not just
@@ -3850,7 +3922,9 @@ if __name__ == "__main__":
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return False, str(e)
 
-    def rewrite_history(self, path, base, plan, pull_remote="origin"):
+    def rewrite_history(
+        self, path: str, base: str, plan: list[dict[str, Any]], pull_remote: str | None = "origin"
+    ) -> tuple[bool, str | None, bool]:
         """Reorder and/or squash this branch's own commits via a scripted,
         non-interactive `git rebase -i`.
 
@@ -3992,7 +4066,9 @@ if __name__ == "__main__":
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def reword_commit(self, path, sha, message, base="", pull_remote="origin"):
+    def reword_commit(
+        self, path: str, sha: str, message: str, base: str = "", pull_remote: str | None = "origin"
+    ) -> tuple[bool, str | None]:
         """Rewrite an existing commit's message, leaving its content untouched.
 
         Uses git's own non-interactive reword mechanism: an empty `--fixup=reword:`
@@ -4048,7 +4124,7 @@ if __name__ == "__main__":
             if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
 
-    def discard(self, path):
+    def discard(self, path: str) -> tuple[bool, str | None]:
         """Make the working tree pristine: reset tracked files to HEAD, then remove
         untracked files/dirs (git clean -fd, leaving ignored files). (ok, error)."""
         _, error = self._git(path, "reset", "--hard", "HEAD", err="git reset failed")
@@ -4057,7 +4133,14 @@ if __name__ == "__main__":
         _, error = self._git(path, "clean", "-fd", err="git clean failed")
         return error is None, error
 
-    def log(self, path, n=20, ref="", base="", pull_remote="origin"):
+    def log(
+        self,
+        path: str,
+        n: int = 20,
+        ref: str = "",
+        base: str = "",
+        pull_remote: str | None = "origin",
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
         """The last n commits on <ref> (default HEAD). Returns (commits, error);
         commits is a list of {sha, author, date, subject, body, ahead}. Fields are
         \\x1f-separated, commits \\x1e-terminated so multi-line bodies survive.
@@ -4072,7 +4155,7 @@ if __name__ == "__main__":
         if ref:
             args += [ref, "--"]  # log a specific branch; -- disambiguates ref from a path
         r, error = self._git(path, *args, err="git log failed")
-        if error:
+        if error or r is None:
             return None, error
         ahead = self._ahead_shas(path, ref, base, pull_remote) if base else None
         commits = []
@@ -4096,7 +4179,7 @@ if __name__ == "__main__":
             )
         return commits, None
 
-    def commit_diff(self, path, sha):
+    def commit_diff(self, path: str, sha: str) -> tuple[str | None, str | None]:
         """Return the patch introduced by one commit as (diff, error)."""
         if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
             return None, "invalid commit hash"
@@ -4111,9 +4194,11 @@ if __name__ == "__main__":
             "--",
             err="git show failed",
         )
-        return (None, error) if error else (r.stdout, None)
+        return (None, error) if error or r is None else (r.stdout, None)
 
-    def fetch_remote_branch(self, path, branch, pull_remote="origin", force=False):
+    def fetch_remote_branch(
+        self, path: str, branch: str, pull_remote: str | None = "origin", force: bool = False
+    ) -> tuple[bool, str | None, bool]:
         """Fetch a remote branch and create/reset the local branch to track it
         (git fetch <pull_remote> {branch}:{branch}). Also updates the remote's
         opportunistic tracking ref (refs/remotes/<remote>/<branch>), so callers can
@@ -4128,7 +4213,9 @@ if __name__ == "__main__":
         non_ff = bool(error) and r is not None and "non-fast-forward" in (r.stderr or "")
         return error is None, error, non_ff
 
-    def fetch_pr_head(self, path, github, number, branch, force=False):
+    def fetch_pr_head(
+        self, path: str, github: str, number: int, branch: str, force: bool = False
+    ) -> tuple[bool, str | None, bool]:
         """Fetch a PR's head commit via GitHub's refs/pull/<number>/head, straight
         from the PR's own repo (https://github.com/<github>.git) rather than any
         locally-configured remote — refs/pull/<number>/head only ever resolves
@@ -4158,7 +4245,9 @@ if __name__ == "__main__":
         non_ff = bool(error) and r is not None and "non-fast-forward" in (r.stderr or "")
         return error is None, error, non_ff
 
-    def sync_pr_worktree(self, path, github, number, repo=""):
+    def sync_pr_worktree(
+        self, path: str, github: str, number: int, repo: str = ""
+    ) -> tuple[bool, str | None]:
         """Bring a worktree checkout whose branch IS the PR's head (a review
         workspace) up to date with the PR's current head commit. Unlike
         fetch_pr_head, this never writes to a branch ref by name — git refuses
@@ -4186,7 +4275,13 @@ if __name__ == "__main__":
         _, error = self._git(p, "reset", "--hard", "FETCH_HEAD", timeout=30, err="git reset failed")
         return error is None, error
 
-    def fetch_rebase(self, path, base, pull_remote="origin", repo=""):
+    def fetch_rebase(
+        self,
+        path: str | None,
+        base: str | None,
+        pull_remote: str | None = "origin",
+        repo: str | None = "",
+    ) -> tuple[bool, str | None]:
         """Fetch the base branch from the configured pull remote and rebase the
         current branch onto it. Announces the fetch and rebase phases via notify.
         Returns (ok, error); on conflict the rebase is left in progress."""
@@ -4214,16 +4309,20 @@ if __name__ == "__main__":
             error = r.stdout.strip().split("\n")[0] or "git rebase failed"
         return error is None, error
 
-    def remote_branch_exists(self, path, branch, push_remote="dev"):
+    def remote_branch_exists(
+        self, path: str, branch: str, push_remote: str | None = "dev"
+    ) -> tuple[bool | None, str | None]:
         """Whether <branch> exists on the configured push remote. (exists, error)."""
         remote = push_remote or "dev"
         self.io.log_request(f"git ls-remote {remote} {branch}")
         r, error = self._git(
             path, "ls-remote", "--heads", remote, branch, timeout=20, err="git ls-remote failed"
         )
-        return (None, error) if error else (bool(r.stdout.strip()), None)
+        return (None, error) if error or r is None else (bool(r.stdout.strip()), None)
 
-    def push_branch(self, path, branch, force=False, push_remote="dev"):
+    def push_branch(
+        self, path: str, branch: str, force: bool = False, push_remote: str | None = "dev"
+    ) -> tuple[bool, str | None]:
         """Push <branch> to the configured push remote, setting upstream. With force,
         use --force-with-lease (aborts if the remote moved unexpectedly). (ok, error).
         Base branches (master, saas-19.4, …) are never pushed."""
@@ -4238,7 +4337,7 @@ if __name__ == "__main__":
         _, error = self._git(path, *args, timeout=120, err="git push failed", tail=True)
         return error is None, error
 
-    def fetch_master(self, repo):
+    def fetch_master(self, repo: dict[str, Any]) -> None:
         """Fetch master objects for one repo (no merge, no working-tree change).
         Slow on stale odoo clones, so callers run this off the main thread."""
         rid = repo.get("id") or "?"
@@ -4276,11 +4375,11 @@ class VenvService:
     is available in every worktree but isn't itself an Odoo dependency). Same
     notify-timed-event shape as GitService's mutations."""
 
-    def __init__(self, io, notify=None):
+    def __init__(self, io: Any, notify: Callable[..., None] | None = None) -> None:
         self.io = io
         self.notify = notify or (lambda *a, **k: None)
 
-    def _pip(self, pip, *args, timeout, err):
+    def _pip(self, pip: str, *args: str, timeout: float, err: str) -> tuple[bool, str | None]:
         """Run one pip command in the venv. Returns (ok, error): error is the last
         stderr line (or <err> when pip was silent), or a raised
         FileNotFoundError/TimeoutExpired's message."""
@@ -4293,7 +4392,9 @@ class VenvService:
             return False, (lines[-1] if lines else err)
         return True, None
 
-    def create(self, venv_path, requirements_path, timeout=600):
+    def create(
+        self, venv_path: str, requirements_path: str, timeout: float = 600
+    ) -> tuple[bool, str | None]:
         """Create the venv at <venv_path> and install <requirements_path> into it
         if that file exists. Returns (ok, error). Announced as a timed event."""
         vp = os.path.expanduser(venv_path)
@@ -4338,10 +4439,12 @@ class AddonsService:
     __manifest__.py. Over the IO seam (filesystem reads), so it's testable without
     a real checkout. The install state per db comes from DatabaseService."""
 
-    def __init__(self, io):
+    def __init__(self, io: Any) -> None:
         self.io = io
 
-    def modules(self, repos, main_repo_id="community"):
+    def modules(
+        self, repos: list[dict[str, Any]], main_repo_id: str = "community"
+    ) -> list[dict[str, Any]]:
         """Scan each repo {id, path} for modules with a manifest. A module name
         found in an earlier repo wins (community before enterprise, etc.)."""
         mods = []
@@ -4373,14 +4476,14 @@ class AddonsService:
         return mods
 
     @staticmethod
-    def _roots(rid, path, main_repo_id="community"):
+    def _roots(rid: str, path: str, main_repo_id: str = "community") -> list[str]:
         """Directories that hold modules for a repo, matching the addons-path."""
         p = os.path.expanduser(path)
         if rid == main_repo_id:
             return [os.path.join(p, "addons"), os.path.join(p, "odoo", "addons")]
         return [p]
 
-    def _manifest(self, module_path):
+    def _manifest(self, module_path: str) -> dict[str, Any] | None:
         """Parse a module's __manifest__.py into a dict, or None."""
         content = self.io.read_text(os.path.join(module_path, "__manifest__.py"))
         if content is None:
@@ -4411,11 +4514,11 @@ class AssetsService:
     # the shell rolls its cursor back unless we commit, so the script commits itself
     PREGEN_SCRIPT = "env['ir.qweb']._pregenerate_assets_bundles()\nenv.cr.commit()\n"
 
-    def __init__(self, io, cache):
+    def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
         self.cache = cache
 
-    def bundles(self, db, refresh=False):
+    def bundles(self, db: str, refresh: bool = False) -> list[dict[str, Any]]:
         """[{id, name, url, size, created}] for a db's asset bundles, ordered by
         name. Empty if the db is unreadable or holds no odoo. refresh bypasses the
         cache."""
@@ -4425,7 +4528,7 @@ class AssetsService:
             self.cache.invalidate(db)
         return self.cache.get(db, lambda: self._bundles(db))
 
-    def _bundles(self, db):
+    def _bundles(self, db: str) -> list[dict[str, Any]]:
         try:
             r = self.io.run(
                 [
@@ -4460,7 +4563,7 @@ class AssetsService:
             )
         return rows
 
-    def generate(self, cmd, db, timeout=900):
+    def generate(self, cmd: str, db: str, timeout: float = 900) -> tuple[bool, str | None]:
         """Run a prepared `odoo-bin shell` command, piping the pregeneration call to
         its stdin. Returns (ok, error); on success the cached bundle list for db is
         dropped so the next read reflects the new attachments."""
@@ -4488,7 +4591,9 @@ class AssetsService:
     # fallback when the client sends no filestore root (the config always has one)
     DEFAULT_FILESTORE = os.path.expanduser("~/.local/share/Odoo/filestore")
 
-    def breakdown(self, db, bundle, filestore=None, kind=None):
+    def breakdown(
+        self, db: str, bundle: str, filestore: str | None = None, kind: str | None = None
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """Per-file minified-size breakdown of a bundle, read straight from its
         stored attachments — the actual shipped bytes, so it's version-correct and
         needs no odoo process. `filestore` is the configured filestore root (a db's
@@ -4519,7 +4624,7 @@ class AssetsService:
         css = self._split_markers(css_text or "")
         return {"js": js, "css": css, "xml": xml}, None
 
-    def _bundle_files(self, db, bundle):
+    def _bundle_files(self, db: str, bundle: str) -> dict[str, tuple[str, str]] | None:
         """{"min.js"|"min.css": (store_fname, db_datas_b64)} for a bundle's stored
         attachments, or None if the db can't be read. bundle is pre-validated."""
         names = f"'{bundle}.min.js', '{bundle}.min.css'"
@@ -4552,7 +4657,7 @@ class AssetsService:
                     out[ext] = (store_fname, datas)
         return out
 
-    def _asset_text(self, db, filestore, row):
+    def _asset_text(self, db: str, filestore: str, row: tuple[str, str] | None) -> str | None:
         """One stored attachment's text — from its filestore file
         (<filestore>/<db>/<store_fname>), else its inline db_datas. None when
         absent/unreadable."""
@@ -4572,7 +4677,7 @@ class AssetsService:
                 return None
         return None
 
-    def _split_markers(self, text):
+    def _split_markers(self, text: str) -> list[list[Any]]:
         """[[path, bytes], …] by slicing text on the "/* /path */" file markers; each
         file's size is the byte length of its chunk up to the next marker."""
         marks = list(self._MARKER.finditer(text))
@@ -4582,7 +4687,7 @@ class AssetsService:
             out.append([m.group(1), len(text[m.end() : end].encode("utf-8"))])
         return out
 
-    def _templates(self, text):
+    def _templates(self, text: str) -> list[list[Any]]:
         """[[template, bytes], …] from a bundle's XML section (registerTemplate
         calls). Dotted names become slash paths so they nest by addon in the tree."""
         marks = list(self._TPL.finditer(text))
@@ -4609,36 +4714,38 @@ class RustBundlerService:
         'print(json.dumps({"version": module.__version__}))'
     )
 
-    def __init__(self, io, source_dir, notify=None):
+    def __init__(self, io: Any, source_dir: str, notify: Callable[..., None] | None = None) -> None:
         self.io = io
         self.source_dir = os.path.abspath(source_dir)
         self.notify = notify
         self._build_lock = threading.Lock()
 
-    def expected_version(self):
+    def expected_version(self) -> str:
         cargo = self.io.read_text(os.path.join(self.source_dir, "Cargo.toml")) or ""
         package = re.search(r'(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"', cargo)
         return package.group(1) if package else "unknown"
 
     @staticmethod
-    def _environment_command(config, command):
+    def _environment_command(config: dict[str, Any] | None, command: str) -> str:
         activate = ((config or {}).get("venv_activate") or "").strip()
         return f"{activate} && {command}" if activate else command
 
-    def install_command(self, config):
+    def install_command(self, config: dict[str, Any] | None) -> str:
         pip = f"python3 -m pip install --force-reinstall --no-deps {shlex.quote(self.source_dir)}"
         return self._environment_command(config, pip)
 
-    def probe_command(self, config):
+    def probe_command(self, config: dict[str, Any] | None) -> str:
         probe = f"python3 -c {shlex.quote(self.PROBE_CODE)}"
         return self._environment_command(config, probe)
 
     @staticmethod
-    def _tail(result, fallback):
+    def _tail(result: subprocess.CompletedProcess[str], fallback: str) -> str:
         lines = ((result.stderr or result.stdout or "").strip()).splitlines()
         return "\n".join(lines[-12:])[-3000:] if lines else fallback
 
-    def _probe(self, config, allow_while_building=False):
+    def _probe(
+        self, config: dict[str, Any] | None, allow_while_building: bool = False
+    ) -> dict[str, Any]:
         expected = self.expected_version()
         base = {
             "installed": False,
@@ -4673,10 +4780,12 @@ class RustBundlerService:
             "version": version,
         }
 
-    def status(self, config):
+    def status(self, config: dict[str, Any] | None) -> dict[str, Any]:
         return self._probe(config)
 
-    def install(self, config, timeout=900):
+    def install(
+        self, config: dict[str, Any] | None, timeout: float = 900
+    ) -> tuple[bool, dict[str, Any]]:
         if not self._build_lock.acquire(blocking=False):
             return False, {"error": "Rust bundler installation is already in progress"}
 
@@ -4732,14 +4841,14 @@ class ConfigStore:
     seeds it on first boot). Writes go through the effects seam, so it's unit-testable.
     """
 
-    def __init__(self, io, path, notify=None):
+    def __init__(self, io: Any, path: str, notify: Callable[..., None] | None = None) -> None:
         self.io = io
         self.path = path
         self._notify = notify  # called with the new {rev, config, state} after a save
         self._lock = threading.Lock()
         self._cache = None  # {rev, config, state}, lazily loaded
 
-    def _load(self):
+    def _load(self) -> dict[str, Any]:
         data, error = self.io.read_json_file(self.path)
         if error:
             # a corrupt file: don't clobber it — surface rev 0 so the client can decide
@@ -4752,14 +4861,16 @@ class ConfigStore:
             "state": data.get("state"),
         }
 
-    def get(self):
+    def get(self) -> dict[str, Any]:
         """The current {rev, config, state} (cached after first read)."""
         with self._lock:
             if self._cache is None:
                 self._cache = self._load()
             return dict(self._cache)
 
-    def save(self, rev, config=_KEEP, state=_KEEP):
+    def save(
+        self, rev: int, config: Any = _KEEP, state: Any = _KEEP
+    ) -> tuple[bool, dict[str, Any]]:
         """Replace `config` and/or `state` (whichever isn't _KEEP) iff `rev` matches the
         current rev. Returns (ok, result): on success (True, {rev, config, state}) with
         rev bumped; on a stale rev (False, {conflict:True, rev, config, state}) leaving
@@ -4788,14 +4899,14 @@ class ConfigStore:
             return True, dict(new)
 
 
-def _worktree_slug(target):
+def _worktree_slug(target: dict[str, Any]) -> str | None:
     """Filesystem-safe folder name for a worktree target — the Python twin of
     utils.js worktreeSlug (case-preserving, falls back to the stable id)."""
     s = re.sub(r"(^-+|-+$)", "", re.sub(r"[^a-zA-Z0-9._-]+", "-", target.get("name") or ""))
     return s or target.get("id")
 
 
-def _worktree_dir(config, target):
+def _worktree_dir(config: dict[str, Any], target: dict[str, Any]) -> str:
     """A worktree target's on-disk directory: its persisted `worktree.dir` (frozen at
     creation, Step 3), else the derived <worktree_dir>/<slug> fallback."""
     wt = target.get("worktree") or {}
@@ -4805,7 +4916,9 @@ def _worktree_dir(config, target):
     return f"{base}/{_worktree_slug(target)}"
 
 
-def resolve_docker_image(branch, docker_images):
+def resolve_docker_image(
+    branch: str, docker_images: list[dict[str, Any]] | None
+) -> dict[str, Any] | None:
     """The Docker image row matching `branch`'s Odoo version — the first row
     whose `versions` prefixes match (plain branch.startswith(prefix), mirroring
     oe.fish's `switch $OdooVersion { case "16.0*" "17.0*": ... }`), else the row
@@ -4827,11 +4940,11 @@ class DockerInfraService:
     (WorkspaceManager.start) should run them before taking any of its own
     locks, since docker build/pull can take minutes."""
 
-    def __init__(self, io, nginx_conf_path):
+    def __init__(self, io: Any, nginx_conf_path: str) -> None:
         self.io = io
         self.nginx_conf_path = nginx_conf_path
 
-    def ensure_network(self, name):
+    def ensure_network(self, name: str) -> tuple[bool, str | None]:
         """Create the shared Docker network if it doesn't exist yet. Returns
         (ok, error)."""
         r = self.io.run(["docker", "network", "inspect", name], quiet=True, timeout=10)
@@ -4842,7 +4955,7 @@ class DockerInfraService:
             return False, r.stderr.strip() or "docker network create failed"
         return True, None
 
-    def _container_status(self, name):
+    def _container_status(self, name: str) -> str:
         """ "running" | "stopped" | "missing" for a container name."""
         r = self.io.run(
             ["docker", "inspect", "-f", "{{.State.Running}}", name], quiet=True, timeout=10
@@ -4851,7 +4964,7 @@ class DockerInfraService:
             return "missing"
         return "running" if r.stdout.strip() == "true" else "stopped"
 
-    def ensure_postgres(self, config):
+    def ensure_postgres(self, config: dict[str, Any]) -> tuple[bool, str | None]:
         """Idempotently get the Docker-managed Postgres container running,
         creating it (with db_user/db_password — the same credentials goo's own
         psql access already uses) on first call. Returns (ok, error)."""
@@ -4917,7 +5030,7 @@ class DockerInfraService:
         "}\n"
     )
 
-    def ensure_nginx(self, config):
+    def ensure_nginx(self, config: dict[str, Any]) -> tuple[bool, str | None]:
         """Idempotently get the goo-generated nginx reverse proxy running. The
         config file is (re)written every call so a settings change (network,
         nginx_port) takes effect on the container's next (re)start; an already-
@@ -4961,7 +5074,7 @@ class DockerInfraService:
             return False, r.stderr.strip() or "docker run (nginx) failed"
         return True, None
 
-    def ensure_image(self, config, branch):
+    def ensure_image(self, config: dict[str, Any], branch: str) -> tuple[str | None, str | None]:
         """Resolve the Docker image for `branch` (resolve_docker_image); build
         it from its Dockerfile on demand if the tag isn't present locally yet
         (mirroring oe.fish's own "build the missing image" step). Returns
@@ -4986,7 +5099,7 @@ class DockerInfraService:
             return None, r.stderr.strip() or "docker build failed"
         return tag, None
 
-    def next_container_slot(self):
+    def next_container_slot(self) -> str | None:
         """The next free "dev", "dev1", "dev2", ... container name — an
         anonymous pool of slots (order of starting decides the number),
         NOT a fixed name per workspace: the same workspace can land on a
@@ -5008,7 +5121,9 @@ class DockerInfraService:
         return None
 
 
-def build_start_config(config, workspace_id, overrides=None):
+def build_start_config(
+    config: dict[str, Any], workspace_id: str | None, overrides: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     """Assemble the launch config `build_odoo_cmd` consumes from the stored config, a
     workspace id, and optional `overrides` ({other_args?, test_tags?, install?,
     upgrade?, memcheck?}). This is the one server-side

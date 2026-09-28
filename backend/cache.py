@@ -8,20 +8,22 @@ so the services that use it stay easy to unit-test.
 
 import threading
 import time as _time
+from collections.abc import Callable, Hashable
+from typing import Any, TypeGuard
 
 
 class TTLCache:
-    def __init__(self, ttl, *, clock=_time.time):
+    def __init__(self, ttl: float, *, clock: Callable[[], float] = _time.time) -> None:
         self.ttl = ttl  # seconds a value stays fresh
         self._clock = clock  # injectable for tests
         self._lock = threading.Lock()
-        self._entries = {}  # key -> (stored_at, value)
-        self._key_locks = {}  # key -> Lock, for single-flight
+        self._entries: dict[Hashable, tuple[float, Any]] = {}  # key -> (stored_at, value)
+        self._key_locks: dict[Hashable, threading.Lock] = {}  # key -> Lock, for single-flight
 
-    def _fresh(self, entry):
+    def _fresh(self, entry: tuple[float, Any] | None) -> TypeGuard[tuple[float, Any]]:
         return entry is not None and (self._clock() - entry[0]) < self.ttl
 
-    def get(self, key, compute):
+    def get(self, key: Hashable, compute: Callable[[], Any]) -> Any:
         """Return the fresh cached value for `key`, else call compute(), store and
         return it. Concurrent misses for the same key compute exactly once."""
         with self._lock:
@@ -39,7 +41,7 @@ class TTLCache:
                 self._entries[key] = (self._clock(), value)
             return value
 
-    def invalidate(self, key=None):
+    def invalidate(self, key: Hashable | None = None) -> None:
         """Drop a single key, or the whole cache when key is None."""
         with self._lock:
             if key is None:

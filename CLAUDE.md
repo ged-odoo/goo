@@ -5,7 +5,8 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 
 ## Stack
 
-- **Backend**: the `backend/` package, Python 3.10+, **stdlib only** (no pip deps).
+- **Backend**: the `backend/` package, Python 3.10+, **stdlib only** (no pip deps),
+  fully type-annotated and checked with pyright.
 - **Frontend**: `static/src/` — Owl 3, authored as ES modules with real
   `import { … } from "@odoo/owl"`. `npm run build` (esbuild) bundles `static/src/main.js`
   → **`static/dist/app.js`**, which is **committed**, so the app still runs straight from
@@ -114,12 +115,18 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   `@odoo/owl` aliased to the `window.owl` shim). Run + commit the output after editing
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
 - `ruff check --fix` / `ruff format` — Python lint+format.
+- `npm run typecheck:py` — pyright over `backend/` + `goo.py` (standard mode, py3.10;
+  config in `pyproject.toml`). Runs in CI next to `ruff check`.
 - `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
 - `pre-commit` runs ruff + prettier + eslint on changed files.
 
 ## Conventions
 
 - Python: ruff, line length 100, target py310; `static/` excluded from ruff.
+- Python types: every backend function is annotated (ruff's `ANN` rules enforce it;
+  `tests/` and `addons/` are exempt) and must pass pyright. Py3.10 syntax (`X | None`,
+  builtin generics); `Any` / `dict[str, Any]` is fine for JSON bodies and config dicts.
+  pyright is an npm devDependency — a dev tool, the server itself stays stdlib-only.
 - Frontend: lint/format only touch `static/src` — `static/lib/` (vendored) and
   `static/dist/` (generated bundle) are left alone (both are prettier/eslint-ignored).
 - Keep the server dependency-free — no pip packages.

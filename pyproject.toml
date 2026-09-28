@@ -4,10 +4,23 @@ target-version = "py310"
 extend-exclude = ["static"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP"]
-ignore = ["E501"]  # long SQL / command strings are clearer unwrapped
+select = ["E", "F", "W", "I", "B", "UP", "ANN"]
+ignore = [
+    "E501",  # long SQL / command strings are clearer unwrapped
+    "ANN401",  # Any is allowed: JSON bodies / config dicts are genuinely dynamic
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Odoo addon idioms: __init__.py re-export imports, __manifest__.py bare dict
 "addons/**/__init__.py" = ["F401"]
 "addons/**/__manifest__.py" = ["B018"]
+# only the backend is required to be fully annotated (see [tool.pyright])
+"addons/**" = ["ANN"]
+"tests/**" = ["ANN"]
+
+[tool.pyright]
+# type-checks the backend (`npm run typecheck:py`, also run in CI); ruff's ANN rules
+# above make sure every backend function stays annotated
+include = ["backend", "goo.py"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"

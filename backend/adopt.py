@@ -11,6 +11,7 @@ import datetime
 import os
 import subprocess
 import time
+from typing import Any
 
 from .server import CONFIG
 
@@ -23,7 +24,7 @@ SCAN_INTERVAL = 60
 ADOPT_GRACE_SECONDS = 120
 
 
-def _current_branch(path):
+def _current_branch(path: str) -> str | None:
     if not os.path.exists(os.path.join(path, ".git")):
         return None
     try:
@@ -41,7 +42,7 @@ def _current_branch(path):
     return r.stdout.strip() or None
 
 
-def scan_and_register():
+def scan_and_register() -> None:
     snapshot = CONFIG.get()
     config = snapshot.get("config") or {}
     rev = snapshot.get("rev", 0)
@@ -72,7 +73,7 @@ def scan_and_register():
         if r.get("path")
     }
 
-    adopted = []
+    adopted: list[dict[str, Any]] = []
     for name in sorted(os.listdir(worktree_dir)):
         if name in existing_ids:
             continue
@@ -86,7 +87,7 @@ def scan_and_register():
                 continue  # too fresh — likely still being registered by goo itself
         except OSError:
             pass
-        checkouts = []
+        checkouts: list[dict[str, str]] = []
         for rid in repo_ids:
             branch = _current_branch(os.path.join(ws_dir, rid))
             if branch:
@@ -132,7 +133,7 @@ def scan_and_register():
         return
 
 
-def loop():
+def loop() -> None:
     """Run the scan at startup and then every SCAN_INTERVAL seconds, for as
     long as this goo process stays up. A failed scan is logged, never takes
     the server down."""

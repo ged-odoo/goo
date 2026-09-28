@@ -29,6 +29,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import Any
 
 from . import effects
 from .server import CLAUDE, CONFIG, GIT, GITHUB, MERGEBOT
@@ -40,7 +41,7 @@ DAY = 86400
 log = logging.getLogger("goo.cleanup")
 
 
-def _setup_logging():
+def _setup_logging() -> None:
     if log.handlers:  # loop() calls run() repeatedly — only wire handlers once
         return
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -53,14 +54,14 @@ def _setup_logging():
     log.addHandler(rotating)
 
 
-def _notify(summary):
+def _notify(summary: str) -> None:
     try:
         subprocess.run(["notify-send", "goo cleanup", summary], timeout=5)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
 
-def _pr_is_empty(github, number):
+def _pr_is_empty(github: str, number: int) -> bool:
     """True if a PR never had any actual changes (0 changed files). Odoo's
     multi-repo bundle workflow opens a PR per touched repo even when a repo
     ends up needing no changes there — that empty PR gets closed rather than
@@ -82,7 +83,7 @@ def _pr_is_empty(github, number):
         return False
 
 
-def _merge_gate(ws, repo_map):
+def _merge_gate(ws: dict[str, Any], repo_map: dict[str, dict[str, Any]]) -> tuple[bool, str]:
     """(ok, reason): ok is True only once every checkout with a PR is merged
     (a checkout with no PR at all is ignored — e.g. a repo this change never
     touched, and so is one whose PR was closed empty — see _pr_is_empty);
@@ -126,7 +127,7 @@ def _merge_gate(ws, repo_map):
     return True, "every checkout with a PR is merged"
 
 
-def _safety_guard(ws, repo_map):
+def _safety_guard(ws: dict[str, Any], repo_map: dict[str, dict[str, Any]]) -> str | None:
     """None if clean; else a reason string to skip on. Only checks for
     uncommitted work — NOT "is HEAD reachable from a remote ref"
     (git_service.branches' head_pushed): _merge_gate already confirmed the PR
@@ -154,7 +155,12 @@ def _safety_guard(ws, repo_map):
     return None
 
 
-def _delete(ws, repo_map, config, dry_run):
+def _delete(
+    ws: dict[str, Any],
+    repo_map: dict[str, dict[str, Any]],
+    config: dict[str, Any],
+    dry_run: bool,
+) -> None:
     ws_dir = ws["worktree"]["dir"]
     db = ws.get("db")
     for c in ws.get("checkouts", []):
@@ -210,7 +216,7 @@ def _delete(ws, repo_map, config, dry_run):
         CLAUDE.forget(ws["id"])
 
 
-def run(dry_run=False):
+def run(dry_run: bool = False) -> None:
     _setup_logging()
     snapshot = CONFIG.get()
     config = snapshot.get("config") or {}
@@ -218,7 +224,9 @@ def run(dry_run=False):
     repo_map = {r["id"]: r for r in config.get("repos", []) if r.get("id")}
     workspaces = [w for w in (config.get("workspaces") or []) if w.get("location") == "worktree"]
 
-    deleted_ids, deleted_names, warned = [], [], []
+    deleted_ids: list[str] = []
+    deleted_names: list[str] = []
+    warned: list[str] = []
     for ws in workspaces:
         name = ws.get("name") or ws.get("id")
         ok, reason = _merge_gate(ws, repo_map)
@@ -256,7 +264,7 @@ def run(dry_run=False):
         _notify("; ".join(parts))
 
 
-def loop():
+def loop() -> None:
     """Run the cleanup at startup and then every 24h, for as long as this goo
     process stays up, but only when cleanup_enabled is on (checked fresh each
     time, so flipping it in the Config screen takes effect on the next tick
@@ -271,7 +279,7 @@ def loop():
         time.sleep(DAY)
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

@@ -10,8 +10,11 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Callable, Sequence
+from typing import Any
 
 TAG = "[goo]"
 
@@ -20,13 +23,13 @@ _subprocess_run = subprocess.run  # raw reference, so the rename to run() doesn'
 _trace_on = False  # `goo --trace`: log every external op to the goo log (stdout only)
 
 
-def set_trace(enabled):
+def set_trace(enabled: bool) -> None:
     """Turn verbose tracing on/off (see trace()). Called from main() for `--trace`."""
     global _trace_on
     _trace_on = enabled
 
 
-def trace(kind, detail):
+def trace(kind: str, detail: object) -> None:
     """When tracing is on, log one external operation (subprocess / filesystem) to
     the goo log. Stdout only — deliberately not pushed to the browser. Network GETs
     are already announced unconditionally by log_request(), so they aren't repeated
@@ -35,18 +38,20 @@ def trace(kind, detail):
         print(f"{TAG} {time.strftime('%H:%M:%S')} trace {kind}: {detail}", flush=True)
 
 
-def log(message):
+def log(message: str) -> None:
     """Write a line to the goo log (stdout)."""
     print(message, flush=True)
 
 
-def log_request(target):
+def log_request(target: str) -> None:
     """Announce an outgoing network/subprocess request on the terminal, so the user
     can see what goo is reaching out to (runbot, GitHub, git remotes)."""
     print(f"{TAG} {time.strftime('%H:%M:%S')} → {target}", flush=True)
 
 
-def run(cmd, *, quiet=False, **kwargs):
+def run(
+    cmd: str | Sequence[str], *, quiet: bool = False, **kwargs: Any
+) -> subprocess.CompletedProcess[str]:
     """Run a command, capturing its output. On a non-zero exit (unless quiet), dump
     the command and its raw stderr to the goo log — verbatim, no [goo] prefix — so a
     failed git/gh/psql/… call is never silent. Returns the CompletedProcess; raised
@@ -65,7 +70,7 @@ def run(cmd, *, quiet=False, **kwargs):
     return result
 
 
-def http_get(url, *, timeout=10):
+def http_get(url: str, *, timeout: float = 10) -> tuple[str, str | None]:
     """GET a URL and return (text, error). Logs the request and never raises — a
     network/HTTP failure comes back as ("", "<reason>")."""
     log_request(f"GET {url}")
@@ -80,13 +85,13 @@ def http_get(url, *, timeout=10):
 class _NoRedirect(urllib.request.HTTPErrorProcessor):
     """Opener processor that returns 3xx responses as-is instead of following them."""
 
-    def http_response(self, request, response):
+    def http_response(self, request: Any, response: Any) -> Any:
         return response
 
     https_response = http_response
 
 
-def http_get_nofollow(url, *, timeout=10):
+def http_get_nofollow(url: str, *, timeout: float = 10) -> tuple[int, str, str, str | None]:
     """GET a URL WITHOUT following redirects → (status, location, text, error).
     Lets a caller tell a redirect's flavour apart — e.g. runbot redirects a bundle
     *name* to its canonical URL with a 302, but a wrong slug (a trailing number that
@@ -103,7 +108,7 @@ def http_get_nofollow(url, *, timeout=10):
         return 0, "", "", str(e)
 
 
-def http_head(url, *, timeout=10):
+def http_head(url: str, *, timeout: float = 10) -> tuple[int, int, str | None]:
     """HEAD a URL → (status, size, error), size being Content-Length in bytes (0 when
     the server doesn't send one). Lets a caller check a remote artifact is really
     there — and how big it is — before committing to downloading it. Never raises: a
@@ -119,7 +124,13 @@ def http_head(url, *, timeout=10):
         return 0, 0, str(e)
 
 
-def http_download(url, path, *, timeout=60, on_progress=None):
+def http_download(
+    url: str,
+    path: str,
+    *,
+    timeout: float = 60,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> tuple[bool, str | None]:
     """Stream a URL into a file → (ok, error). Unlike http_get this never holds the
     body in memory — the payload is a database dump, not a page. `on_progress(done,
     total)` is called as bytes land (total 0 when unknown), so a caller can narrate a
@@ -150,17 +161,17 @@ def http_download(url, path, *, timeout=60, on_progress=None):
 # ─────────────────────────── filesystem ───────────────────────────
 
 
-def is_dir(path):
+def is_dir(path: str) -> bool:
     trace("isdir", path)
     return os.path.isdir(os.path.expanduser(path))
 
 
-def is_file(path):
+def is_file(path: str) -> bool:
     trace("isfile", path)
     return os.path.isfile(os.path.expanduser(path))
 
 
-def list_dir(path):
+def list_dir(path: str) -> list[str]:
     """Sorted directory entries, or [] if it can't be read."""
     trace("list", path)
     try:
@@ -169,7 +180,7 @@ def list_dir(path):
         return []
 
 
-def read_text(path):
+def read_text(path: str) -> str | None:
     """A file's contents as text, or None if it can't be read."""
     trace("read", path)
     try:
@@ -179,7 +190,7 @@ def read_text(path):
         return None
 
 
-def mtime(path):
+def mtime(path: str) -> float | None:
     """A file's last-modified time, as epoch seconds — or None if it can't be
     stat'd."""
     trace("stat", path)
@@ -189,7 +200,7 @@ def mtime(path):
         return None
 
 
-def read_json_file(path):
+def read_json_file(path: str) -> tuple[Any, str | None]:
     """Read a JSON data file. Returns (data, error); a missing file is not an error
     — it returns (None, None) so the caller can create it on first use."""
     trace("read", path)
@@ -203,7 +214,7 @@ def read_json_file(path):
         return None, str(e)
 
 
-def write_text(path, text):
+def write_text(path: str, text: str) -> tuple[bool, str | None]:
     """Write text to a file atomically, creating parent dirs. Returns (ok, error).
 
     Writes to a temp file in the target directory, fsyncs, then os.replace()s it into
@@ -231,7 +242,7 @@ def write_text(path, text):
         return False, str(e)
 
 
-def write_json_file(path, data):
+def write_json_file(path: str, data: Any) -> tuple[bool, str | None]:
     """Write data as pretty JSON atomically, creating parent dirs. Returns (ok, error).
 
     Writes to a temp file in the target directory, fsyncs, then os.replace()s it into
@@ -260,7 +271,7 @@ def write_json_file(path, data):
         return False, str(e)
 
 
-def remove_tree(path):
+def remove_tree(path: str) -> tuple[bool, str | None]:
     """Recursively delete a directory. Returns (ok, error); a missing path is ok."""
     trace("rmtree", path)
     p = os.path.expanduser(path)
@@ -272,7 +283,7 @@ def remove_tree(path):
         return False, str(e)
 
 
-def remove_file(path):
+def remove_file(path: str) -> tuple[bool, str | None]:
     """Delete a single file. Returns (ok, error); a missing path is ok."""
     trace("rm", path)
     p = os.path.expanduser(path)
@@ -284,7 +295,7 @@ def remove_file(path):
         return False, str(e)
 
 
-def move_path(src, dst):
+def move_path(src: str, dst: str) -> tuple[bool, str | None]:
     """Move/rename a path (src → dst). Returns (ok, error)."""
     trace("move", f"{src} → {dst}")
     try:
@@ -294,7 +305,7 @@ def move_path(src, dst):
         return False, str(e)
 
 
-def copy_tree(src, dst):
+def copy_tree(src: str, dst: str) -> tuple[bool, str | None]:
     """Recursively copy a directory (src → dst). Returns (ok, error)."""
     trace("copy", f"{src} → {dst}")
     try:
@@ -304,7 +315,7 @@ def copy_tree(src, dst):
         return False, str(e)
 
 
-def make_dirs(path):
+def make_dirs(path: str) -> tuple[bool, str | None]:
     """Create a directory (and its parents), no-op if it already exists. Returns
     (ok, error)."""
     trace("mkdir", path)
@@ -315,7 +326,7 @@ def make_dirs(path):
         return False, str(e)
 
 
-def make_temp_dir(prefix="goo-"):
+def make_temp_dir(prefix: str = "goo-") -> str | None:
     """Create a temporary directory and return its path, or None if it can't be
     made. The caller owns it — pair it with remove_tree()."""
     try:
@@ -326,7 +337,7 @@ def make_temp_dir(prefix="goo-"):
     return path
 
 
-def unzip(path, dest):
+def unzip(path: str, dest: str) -> tuple[bool, str | None]:
     """Extract a zip archive into `dest` → (ok, error). Members whose path would
     escape `dest` (absolute, or reaching up through "..") are skipped rather than
     written: the archive comes off the network, so it must never be able to place a
