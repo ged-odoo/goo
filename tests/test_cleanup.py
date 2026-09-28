@@ -118,18 +118,28 @@ class MergeGateTest(unittest.TestCase):
         # (mergebot squash, GitHub shows "closed"), enterprise's PR closed
         # empty (0 changed files, nothing needed there) -- must be eligible
         community_pr = {
-            "github": "odoo/odoo", "branch": "master-x-jpp", "number": 241056, "state": "closed",
+            "github": "odoo/odoo",
+            "branch": "master-x-jpp",
+            "number": 241056,
+            "state": "closed",
         }
         enterprise_pr = {
-            "github": "odoo/enterprise", "branch": "master-x-jpp", "number": 102796, "state": "closed",
+            "github": "odoo/enterprise",
+            "branch": "master-x-jpp",
+            "number": 102796,
+            "state": "closed",
         }
         mb_states = {"odoo/odoo#241056": "merged", "odoo/enterprise#102796": "closed"}
         with (
             unittest.mock.patch.object(
                 cleanup.GITHUB, "prs_for_branches", return_value=[community_pr, enterprise_pr]
             ),
-            unittest.mock.patch.object(cleanup.MERGEBOT, "statuses", return_value=(mb_states, {}, {}, [])),
-            unittest.mock.patch.object(cleanup, "_pr_is_empty", side_effect=lambda gh, n: gh == "odoo/enterprise"),
+            unittest.mock.patch.object(
+                cleanup.MERGEBOT, "statuses", return_value=(mb_states, {}, {}, [])
+            ),
+            unittest.mock.patch.object(
+                cleanup, "_pr_is_empty", side_effect=lambda gh, n: gh == "odoo/enterprise"
+            ),
         ):
             ok, reason = cleanup._merge_gate(ws_two_repos("master-x-jpp"), TWO_REPO_MAP)
         self.assertTrue(ok)

@@ -2007,7 +2007,10 @@ class GitServiceTest(unittest.TestCase):
     def test_create_worktree_claude_md_mentions_local_documentation_when_given(self):
         io = FakeIO()
         services.GitService(io).create_worktree_claude_md(
-            "/wt/demo", "18.0-fix", has_enterprise=False, documentation_path="/wt/demo/documentation"
+            "/wt/demo",
+            "18.0-fix",
+            has_enterprise=False,
+            documentation_path="/wt/demo/documentation",
         )
         claude_md = io._files["/wt/demo/.claude/CLAUDE.md"]
         self.assertIn("documentation/", claude_md)
@@ -2023,7 +2026,10 @@ class GitServiceTest(unittest.TestCase):
     def test_create_worktree_skills_uses_local_documentation_path_when_given(self):
         io = FakeIO()
         services.GitService(io).create_worktree_skills(
-            "/wt/demo/community", "/wt/demo", "18.0-fix", documentation_path="/wt/demo/documentation"
+            "/wt/demo/community",
+            "/wt/demo",
+            "18.0-fix",
+            documentation_path="/wt/demo/documentation",
         )
         skill = io._files["/wt/demo/.claude/skills/odoo-orm/SKILL.md"]
         self.assertIn("/wt/demo/documentation/content/developer", skill)
@@ -2066,14 +2072,16 @@ class GitServiceTest(unittest.TestCase):
         run_check = io._files[f"{base}/scripts/run_check.sh"]
         self.assertIn("odoo-bin -c ../odoo.conf", run_check)
         self.assertIn("dropdb --if-exists", run_check)
-        self.assertIn("-i \"memleak_check,$MODULES\"", run_check)
-        self.assertIn("--test-tags \"$TEST_TAGS\"", run_check)
+        self.assertIn('-i "memleak_check,$MODULES"', run_check)
+        self.assertIn('--test-tags "$TEST_TAGS"', run_check)
         self.assertIn("MEMCHECK_DUMP_DIR", run_check)
         self.assertIn("memlab@latest find-leaks", run_check)
         self.assertIn("--baseline", run_check)
         self.assertIn("--target", run_check)
         self.assertIn("--final", run_check)
-        self.assertIn("--work-dir", run_check)  # else the leaks.txt dump lands in a throwaway temp dir
+        self.assertIn(
+            "--work-dir", run_check
+        )  # else the leaks.txt dump lands in a throwaway temp dir
         self.assertIn("DUMP_DIR", run_check)
 
     def test_create_worktree_skills_writes_bootstrap_leak_audit_skill(self):
@@ -2116,7 +2124,9 @@ class GitServiceTest(unittest.TestCase):
 
     def test_create_worktree_claude_md_does_not_overwrite_existing_file(self):
         io = FakeIO(files={"/wt/demo/.claude/CLAUDE.md": "user-edited content"})
-        services.GitService(io).create_worktree_claude_md("/wt/demo", "18.0-fix", has_enterprise=True)
+        services.GitService(io).create_worktree_claude_md(
+            "/wt/demo", "18.0-fix", has_enterprise=True
+        )
         self.assertEqual(io._files["/wt/demo/.claude/CLAUDE.md"], "user-edited content")
 
     def test_resolve_owl_docs_pins_exact_commit_when_reachable(self):
@@ -2824,9 +2834,7 @@ class GitServiceTest(unittest.TestCase):
 
     def test_sync_pr_worktree_error_on_fetch_failure(self):
         notes = []
-        io = FakeIO(
-            runs={"fetch": completed(returncode=1, stderr="could not read from remote\n")}
-        )
+        io = FakeIO(runs={"fetch": completed(returncode=1, stderr="could not read from remote\n")})
         svc = services.GitService(
             io, notify=lambda text, **kw: notes.append((text, kw.get("status", "")))
         )
@@ -3654,9 +3662,7 @@ class WorkspaceResolutionTest(unittest.TestCase):
             server.DATABASE.db_initialized = orig
         self.assertEqual(db, "wzdb")
         self.assertIn("cd /wt/feature-z/community &&", cmd)
-        self.assertIn(
-            "/wt/feature-z/.venv/bin/python /wt/feature-z/community/odoo-bin", cmd
-        )
+        self.assertIn("/wt/feature-z/.venv/bin/python /wt/feature-z/community/odoo-bin", cmd)
         self.assertNotIn("/c/odoo-bin", cmd)  # never the global community repo's own
 
     def test_worktree_workspace_gets_docker_fields(self):
@@ -3755,7 +3761,8 @@ class BuildOdooCmdTest(unittest.TestCase):
         # no special syntax: whatever --test-tags value the classic run
         # already uses is passed through completely unchanged
         cmd = self._cmd(
-            test_tags="web:WebSuite.test_unit_desktop", memcheck=True,
+            test_tags="web:WebSuite.test_unit_desktop",
+            memcheck=True,
             memleak_check_installed=True,
         )
         self.assertIn("--test-tags web:WebSuite.test_unit_desktop", cmd)
@@ -3827,9 +3834,7 @@ class BuildOdooCmdTest(unittest.TestCase):
         self.assertIn("source /wt/feature-z/.venv/bin/activate &&", cmd)
         # the venv's own python invokes odoo-bin explicitly — correct regardless
         # of odoo-bin's shebang line
-        self.assertIn(
-            "/wt/feature-z/.venv/bin/python /wt/feature-z/community/odoo-bin", cmd
-        )
+        self.assertIn("/wt/feature-z/.venv/bin/python /wt/feature-z/community/odoo-bin", cmd)
 
     def test_without_venv_python_odoo_bin_runs_directly(self):
         self.assertIn("&& /repo/community/odoo-bin", self._cmd())
@@ -3979,7 +3984,9 @@ class BuildDockerCmdTest(unittest.TestCase):
         # not yet supported in Docker mode (see build_docker_cmd) — must fail
         # clearly rather than crash on a None dump_dir
         with self.assertRaises(ValueError):
-            self._cmd(start={"repos": ["community"], "db": "db1", "test_tags": "sale", "memcheck": True})
+            self._cmd(
+                start={"repos": ["community"], "db": "db1", "test_tags": "sale", "memcheck": True}
+            )
 
 
 class BuildDockerShellCmdTest(unittest.TestCase):
@@ -5862,6 +5869,7 @@ class GitHubServiceExceptionTest(unittest.TestCase):
         branch, error = svc.pr_head("odoo/odoo", 1)
         self.assertEqual(branch, "")
         self.assertTrue(error)
+
 
 class AddonsServiceGapTest(unittest.TestCase):
     def test_repo_missing_id_or_path_is_skipped(self):
