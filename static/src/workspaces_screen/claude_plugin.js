@@ -17,13 +17,15 @@ import { Plugin, usePlugin, signal } from "@odoo/owl";
 
 // the model dropdown's choices. "" = don't pass --model, so the backend inherits the
 // claude CLI's default (the user's global Claude Code model). The rest are CLI
-// aliases understood by `claude --model`.
+// aliases understood by `claude --model`; each resolves to the latest model of its
+// family, so the labels name the family, not a version.
 export const CLAUDE_MODELS = [
   { value: "", label: "Default model" },
-  { value: "opus[1m]", label: "Opus 4.8 · 1M" },
-  { value: "opus", label: "Opus 4.8" },
-  { value: "sonnet", label: "Sonnet 5" },
-  { value: "haiku", label: "Haiku 4.5" },
+  { value: "fable", label: "Fable" },
+  { value: "opus[1m]", label: "Opus · 1M" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "haiku", label: "Haiku" },
 ];
 
 export class ClaudePlugin extends Plugin {

@@ -9590,10 +9590,11 @@ var CiScreen = class extends Component {
 // static/src/workspaces_screen/claude_plugin.js
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
-  { value: "opus[1m]", label: "Opus 4.8 \xB7 1M" },
-  { value: "opus", label: "Opus 4.8" },
-  { value: "sonnet", label: "Sonnet 5" },
-  { value: "haiku", label: "Haiku 4.5" }
+  { value: "fable", label: "Fable" },
+  { value: "opus[1m]", label: "Opus \xB7 1M" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "haiku", label: "Haiku" }
 ];
 var ClaudePlugin = class extends Plugin {
   static sequence = 6;
