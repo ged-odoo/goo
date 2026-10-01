@@ -199,6 +199,10 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 
 - Needs on PATH: `git`, `psql`/`dropdb`, `gh` (authed), Chrome (for hoot tests).
 - A working Odoo checkout + venv is required — goo launches `odoo-bin` (port 8069).
+- CI installs with Node 22's npm 10 (`npm ci`), which rejects a lockfile an incremental
+  `npm install` under npm 11 can leave out of sync (optional `@emnapi/*` deps of knip's
+  wasm resolver). After changing dependencies: `rm -rf node_modules package-lock.json &&
+npm install`, then check `npx npm@10 ci` passes in a copy before pushing.
 - owl 3 is an early release version of owl, not fully compatible with owl 2 — it runs
   in tests from `static/lib/owl.js` itself (see `static/tests/setup.ts`), and mounting
   components in jsdom works (`static/tests/helpers/app.ts`; `await settle()` after each interaction).
