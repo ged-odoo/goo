@@ -55,6 +55,12 @@ jobs:
           node-version: "22"
           cache: "npm"
       - run: npm ci
-      - run: npm run test
+      # strict TypeScript (tsconfig.json) and eslint over static/src + static/tests
+      - run: npm run typecheck:ts
+      - run: npm run lint
+      # the committed bundle must be what the sources build to
+      - run: npm run build && git diff --exit-code static/dist/app.js
+      # tests under coverage; vitest.config.js holds the thresholds (CI fails below)
+      - run: npm run test:coverage
       # dead code: unused files/exports/dependencies (config in knip.json)
       - run: npm run deadcode

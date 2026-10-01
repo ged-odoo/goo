@@ -7,8 +7,9 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 
 - **Backend**: the `backend/` package, Python 3.10+, **stdlib only** (no pip deps),
   fully type-annotated and checked with pyright.
-- **Frontend**: `static/src/` — Owl 3, authored as ES modules with real
-  `import { … } from "@odoo/owl"`. `npm run build` (esbuild) bundles `static/src/main.ts`
+- **Frontend**: `static/src/` — Owl 3, in **strict TypeScript** (ES modules with real
+  `import { … } from "@odoo/owl"`, typed by the published `@odoo/owl` package of the exact
+  vendored version — a devDependency for its types only). `npm run build` (esbuild) bundles `static/src/main.ts`
   → **`static/dist/app.js`**, which is **committed**, so the app still runs straight from
   the checkout with no build/install at dev time. The Owl runtime itself
   (`static/lib/owl.js`) stays a classic global `<script>`; the build aliases `@odoo/owl`
@@ -74,16 +75,20 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   `@odoo/owl`. `static/tests/helpers/plugin_harness.ts` builds a real
   `pluginManager` (via `new owl.App({})`, no DOM) for plugins that use
   `usePlugin()`; a dependency-free plugin (e.g. `StorePlugin`) can be `new`'d
-  directly. Run `npm run test`.
+  directly. `static/tests/helpers/app.ts` `mountApp({ section, routes })` boots the real
+  `App` with every plugin (`static/src/plugins.ts`) against a routed fake `fetch` — screens
+  are tested through it, asserting the rendered DOM and the requests sent. Run
+  `npm run test` (`npm run test:coverage` for the coverage report + thresholds).
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path. `rust_bundler/native/` is Goo's minimal Rust/PyO3 asset
   bundler; Odoo's resolved file list is authoritative and imports are never crawled.
-- `static/src/` — the Owl 3 frontend application (ES modules; `main.ts` at the root is the
-  entry). Organized **by feature**: a shared `core/` plus one folder per screen.
+- `static/src/` — the Owl 3 frontend application (TypeScript ES modules; `main.ts` at the root
+  is the entry, `plugins.ts` the registered plugin list, `globals.d.ts` the `<script>`-loaded
+  globals: owl, xterm, Chart.js). Organized **by feature**: a shared `core/` plus one folder per screen.
   - `core/` — the application basics everything builds on: the shared plugins (state/action
     layer — `config_plugin`, `store_plugin`, `server_plugin`, `code_plugin`, `dialog_plugin`,
     `event_log_plugin`, `router_plugin`, `workspace_plugin`, `database_plugin`,
-    `terminal_plugin`, `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
+    `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
     `observed_models`, `runtime_models`) + wire normalizers (`models.ts`), the shared UI
     (`common.ts` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.ts`, `dialogs.ts`,
     `terminal.ts`, `recordset.ts` (the generic `RecordList` — flat or grouped-by-field with
@@ -98,7 +103,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     from `core/common.ts` — import it, never re-instantiate.
   - One folder per screen, each suffixed `_screen/` (`workspaces_screen/`,
     `branches_screen/`, `todo_screen/`, `databases_screen/`, `nightly_screen/`,
-    `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
+    `memory_screen/`, `config_screen/`, `ci_screen/`, `reviews_screen/`): each holds its screen component; some also hold a dedicated plugin
     (`workspaces_screen/claude_plugin.ts`, `nightly_screen/nightly_plugin.ts`,
     `memory_screen/memory_plugin.ts`). `workspaces_screen/` is the primary surface — the
     master-detail Workspaces screen, split one file per component: `workspaces.ts`
@@ -108,7 +113,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     `branches_screen/` is the merged **Branches & PRs** screen (one RecordList grouped by
     branch name: local branches + their PRs, plus PR-only rows for authored PRs with no
     local branch; the old separate PRs screen and the PR-review feature are retired —
-    `#prs`/`#reviews` alias to `#branches`).
+    `#prs`/`#reviews` alias to `#branches`). `reviews_screen/` is a different, live feature:
+    the opt-in **Reviews** tab (section id `review-queue`, a review queue + Claude reviews).
     `assets_screen/` and `addons_screen/` are plugin-only folders (their standalone screens
     retired into the Workspaces tabs; `assets_screen/analysis.ts` is the bundle-analysis view
     those tabs render). Everything else is shared → `core/`. A screen folder may import from
@@ -125,10 +131,12 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 
 - `python3 goo.py` — run (add `--open` to launch the browser).
 - `python3 -m unittest discover` — run the backend tests (from the repo root).
-- `npm run lint` / `npm run lint:fix` — eslint (`static/src` only).
-- `npm run format` — prettier (js/css/html/md).
+- `npm run lint` / `npm run lint:fix` — eslint (typescript-eslint; `static/src` + `static/tests`).
+- `npm run typecheck:ts` — `tsc` (strict, `tsconfig.json`, no emit). CI, pre-commit and the
+  hooks run it.
+- `npm run format` — prettier (ts/js/css/html/md).
 - `npm run test` / `npm run test:watch` — Vitest suite for `static/src/` (see
-  `static/tests/` above). Not pre-commit-hooked, same as the Python suite.
+  `static/tests/` above; ~30s). Not pre-commit-hooked, same as the Python suite.
 - `npm run build` — bundle `static/src/main.ts` → `static/dist/app.js` (esbuild;
   `@odoo/owl` aliased to the `window.owl` shim). Run + commit the output after editing
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
@@ -137,6 +145,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   config in `pyproject.toml`). Runs in CI next to `ruff check`, and in pre-commit.
 - CI also reports backend test coverage (`coverage run -m unittest discover`) in the
   job summary — `pip install coverage` to run it locally; a dev tool only.
+- `npm run test:coverage` — the frontend suite under v8 coverage; CI fails below the
+  thresholds in `vitest.config.js` (`main.ts`, the bare page mount, is excluded).
 - `vulture` / `npm run deadcode` (knip) — dead-code checks, both run in CI (config in
   `pyproject.toml` `[tool.vulture]` and `knip.json`). `pip install vulture` locally.
 - `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
@@ -150,7 +160,12 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   `tests/` and `addons/` are exempt) and must pass pyright. Py3.10 syntax (`X | None`,
   builtin generics); `Any` / `dict[str, Any]` is fine for JSON bodies and config dicts.
   pyright is an npm devDependency — a dev tool, the server itself stays stdlib-only.
-- Frontend: lint/format only touch `static/src` — `static/lib/` (vendored) and
+- Frontend types: strict, no `any` without an `eslint-disable` + reason, no
+  `@ts-ignore`; `as`/`!` only on stated invariants. Components type props via
+  `useProps({...})` (`t.any() as Type<X>` names a non-validated prop's type), plugins via
+  `usePlugin(X)` / `PluginInstance<typeof X>`, wire JSON via interfaces
+  (`postJSON<Reply>(…)`), and `catch (e)` via `errorMessage(e)` (`core/utils.ts`).
+- Frontend: lint/format only touch `static/src` + `static/tests` — `static/lib/` (vendored) and
   `static/dist/` (generated bundle) are left alone (both are prettier/eslint-ignored).
 - Keep the server dependency-free — no pip packages.
 
@@ -182,13 +197,11 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 
 - Needs on PATH: `git`, `psql`/`dropdb`, `gh` (authed), Chrome (for hoot tests).
 - A working Odoo checkout + venv is required — goo launches `odoo-bin` (port 8069).
-- owl 3 is an early release version of owl. It is not fully compatible with owl 2
-  (see `static/tests/`'s owl-shim setup above) — full `mount()`-based component
-  rendering tests are deliberately not attempted for this reason; frontend tests
-  cover plugin/model logic and extracted pure functions instead.
-- Frontend unit-test exclusions (deliberate, not gaps): `terminal.ts` (WebSocket + xterm.js +
-  ResizeObserver), the live `EventSource` wiring end-to-end in `server_plugin.ts`
-  (only its pure dispatch logic is tested, against a fake `EventSource`), real
-  pointer-drag geometry in `drag.ts`'s `startRowDrag` (only `dropIndex` is
-  tested, against fixture rects), and the Chart.js/xterm lazy `<script>`-loading
-  paths in `nightly_screen`/`terminal.ts`.
+- owl 3 is an early release version of owl, not fully compatible with owl 2 — it runs
+  in tests from `static/lib/owl.js` itself (see `static/tests/setup.ts`), and mounting
+  components in jsdom works (`static/tests/helpers/app.ts`; `await settle()` after each interaction).
+- Frontend test exclusions (deliberate, not gaps): real pointer-drag geometry in
+  `drag.ts`'s `startRowDrag` and the nightly popover clamping (jsdom has no layout —
+  `dropIndex` is tested against fixture rects), and the Chart.js/xterm lazy
+  `<script>` loading. xterm, Chart.js, `WebSocket` and `EventSource` are replaced by
+  small fakes in the tests that use them.
