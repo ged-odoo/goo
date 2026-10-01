@@ -4,18 +4,41 @@
 // them explicitly; the build-row/batch-url fields below are just persisted
 // form input, not a data cache.
 
-import { postJSON } from "../core/utils.ts";
+import { errorMessage, postJSON } from "../core/utils.ts";
 
 import { Plugin, signal } from "@odoo/owl";
 
 const STORAGE_KEY = "oo-memory-builds";
 const STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
 
+// one build row of the form: a log URL, or a log file uploaded from disk (its
+// `content` is transient — never persisted; `fileName` alone survives a reload)
+export interface MemoryBuild {
+  label: string;
+  url: string;
+  fileName?: string;
+  content?: string;
+}
+
+// one graph row (POST /api/memory/fetch): a suite + one used-bytes column per build label
+export interface MemoryRow {
+  suite: string;
+  [label: string]: string | number;
+}
+
+interface BatchReply {
+  builds?: MemoryBuild[];
+}
+
+interface FetchReply {
+  data?: MemoryRow[];
+}
+
 export class MemoryPlugin extends Plugin {
   static sequence = 4;
 
-  builds = signal(this._loadBuilds());
-  data = signal([]);
+  builds = signal<MemoryBuild[]>(this._loadBuilds());
+  data = signal<MemoryRow[]>([]);
   loading = signal(false);
   error = signal("");
   withMobile = signal(false);
@@ -24,17 +47,17 @@ export class MemoryPlugin extends Plugin {
   batchLoading = signal(false);
   batchError = signal("");
 
-  _loadBuilds() {
+  _loadBuilds(): MemoryBuild[] {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : null;
+      const parsed: unknown = raw ? JSON.parse(raw) : null;
       return Array.isArray(parsed) && parsed.length ? parsed : [{ label: "", url: "" }];
     } catch {
       return [{ label: "", url: "" }];
     }
   }
 
-  _saveBuilds(builds) {
+  _saveBuilds(builds: MemoryBuild[]): void {
     try {
       const persisted = builds.map(({ content: _content, ...rest }) => rest);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
@@ -43,25 +66,25 @@ export class MemoryPlugin extends Plugin {
     }
   }
 
-  setBuilds(builds) {
+  setBuilds(builds: MemoryBuild[]): void {
     this.builds.set(builds);
     this._saveBuilds(builds);
   }
 
-  addBuild() {
+  addBuild(): void {
     this.setBuilds([...this.builds(), { label: "", url: "" }]);
   }
 
-  removeBuild(idx) {
+  removeBuild(idx: number): void {
     const next = this.builds().filter((_, i) => i !== idx);
     this.setBuilds(next.length ? next : [{ label: "", url: "" }]);
     this.data.set([]);
   }
 
-  updateBuild(idx, key, value) {
+  updateBuild(idx: number, key: "label" | "url", value: string): void {
     const next = this.builds().map((b, i) => {
       if (i !== idx) return b;
-      const updated = { ...b, [key]: value };
+      const updated: MemoryBuild = { ...b, [key]: value };
       if (key === "url") {
         delete updated.fileName;
         delete updated.content;
@@ -74,14 +97,14 @@ export class MemoryPlugin extends Plugin {
   // uploaded file content is transient (never written to localStorage — logs
   // can be many MB, and a fresh upload is needed after reload anyway); typing
   // a URL and picking a file are mutually exclusive for a given row.
-  setBuildFile(idx, fileName, content) {
+  setBuildFile(idx: number, fileName: string, content: string): void {
     const next = this.builds().map((b, i) =>
       i === idx ? { ...b, url: "", fileName, content } : b,
     );
     this.setBuilds(next);
   }
 
-  clearBuildFile(idx) {
+  clearBuildFile(idx: number): void {
     const next = this.builds().map((b, i) => {
       if (i !== idx) return b;
       const { fileName: _fileName, content: _content, ...rest } = b;
@@ -90,7 +113,7 @@ export class MemoryPlugin extends Plugin {
     this.setBuilds(next);
   }
 
-  setBatchUrl(url) {
+  setBatchUrl(url: string): void {
     this.batchUrl.set(url);
     try {
       localStorage.setItem(STORAGE_KEY_BATCH_URL, url);
@@ -99,13 +122,13 @@ export class MemoryPlugin extends Plugin {
     }
   }
 
-  async fetchBatch() {
+  async fetchBatch(): Promise<void> {
     const url = this.batchUrl().trim();
     if (!url || this.batchLoading()) return;
     this.batchLoading.set(true);
     this.batchError.set("");
     try {
-      const res = await postJSON("/api/memory/batch", { url });
+      const res = await postJSON<BatchReply>("/api/memory/batch", { url });
       if (!res.builds || !res.builds.length) {
         this.batchError.set("No builds found at that URL.");
       } else {
@@ -114,26 +137,26 @@ export class MemoryPlugin extends Plugin {
         this.setBuilds([...existing, ...res.builds]);
       }
     } catch (e) {
-      this.batchError.set(e.message || "failed to fetch batch builds");
+      this.batchError.set(errorMessage(e) || "failed to fetch batch builds");
     } finally {
       this.batchLoading.set(false);
     }
   }
 
-  async load() {
+  async load(): Promise<void> {
     const builds = this.builds().filter((b) => b.url.trim() || b.content);
     if (!builds.length || this.loading()) return;
 
     this.loading.set(true);
     this.error.set("");
     try {
-      const res = await postJSON("/api/memory/fetch", {
+      const res = await postJSON<FetchReply>("/api/memory/fetch", {
         builds,
         with_mobile: this.withMobile(),
       });
       this.data.set(res.data || []);
     } catch (e) {
-      this.error.set(e.message || "failed to load memory data");
+      this.error.set(errorMessage(e) || "failed to load memory data");
     } finally {
       this.loading.set(false);
     }

@@ -6,11 +6,20 @@ import { WorkspacePlugin } from "../../src/core/workspace_plugin.ts";
 import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
 import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
+import type { ClaudeEvent } from "../../src/core/server_plugin.ts";
+import type { WorktreeRepo } from "../../src/core/workspace_plugin.ts";
+
+type ClaudeListener = (d: ClaudeEvent) => void;
+
+// a fetch reply stub: postJSON only reads ok/status/json()
+function reply(ok: boolean, body: unknown, status = 200): Response {
+  return { ok, status, json: async () => body } as Response;
+}
 
 function makePlugin() {
-  const claudeListeners = new Set();
+  const claudeListeners = new Set<ClaudeListener>();
   const server = {
-    onClaude: (cb) => claudeListeners.add(cb),
+    onClaude: (cb: ClaudeListener) => claudeListeners.add(cb),
   };
   const config = {
     getState: () => "",
@@ -18,7 +27,10 @@ function makePlugin() {
     config: { main_repo_id: "community", repos: [{ id: "community", path: "/main/community" }] },
     workspace: () => ({ touchActivity: vi.fn() }),
   };
-  const worktree = { isWorktree: () => false, wtRepos: () => [] };
+  const worktree: {
+    isWorktree: () => boolean;
+    wtRepos: () => Pick<WorktreeRepo, "repo" | "worktreePath">[];
+  } = { isWorktree: () => false, wtRepos: () => [] };
   const eventLog = { add: vi.fn() };
   const dialogs = { error: vi.fn() };
   const harness = createPluginHarness([
@@ -34,7 +46,8 @@ function makePlugin() {
     config,
     worktree,
     dialogs,
-    emitClaude: (d) => claudeListeners.forEach((cb) => cb(d)),
+    // Partial: a malformed SSE payload (no workspace id) must be tolerated too
+    emitClaude: (d: Partial<ClaudeEvent>) => claudeListeners.forEach((cb) => cb(d as ClaudeEvent)),
   };
 }
 
@@ -132,7 +145,7 @@ describe("ClaudePlugin._dirsFor", () => {
   it("a main-located target with no main repo configured errors and returns null", () => {
     const { plugin, config, dialogs } = makePlugin();
     config.config.main_repo_id = "missing";
-    const result = plugin._dirsFor({ checkouts: [] });
+    const result = plugin._dirsFor({ id: "w1", checkouts: [] });
     expect(result).toBeNull();
     expect(dialogs.error).toHaveBeenCalledWith("Cannot run Claude", "no main repo configured");
   });
@@ -140,7 +153,7 @@ describe("ClaudePlugin._dirsFor", () => {
   it("a main-located target resolves cwd/addDirs from config.repos", () => {
     const { plugin, config } = makePlugin();
     config.config.repos.push({ id: "enterprise", path: "/main/enterprise" });
-    const tgt = { checkouts: [{ repo: "enterprise" }] };
+    const tgt = { id: "w1", checkouts: [{ repo: "enterprise", branch: "master" }] };
     expect(plugin._dirsFor(tgt)).toEqual({
       cwd: "/main/community",
       addDirs: ["/main/enterprise"],
@@ -164,16 +177,16 @@ describe("ClaudePlugin.send", () => {
     await plugin.send({ id: "w1" }, "another prompt"); // apply() never set state -> still idle
     // running() is false here since only a result event flips it, so send proceeds;
     // simulate an actually in-flight turn instead
-    fetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.mocked(fetch).mockResolvedValue(reply(true, {}));
     await plugin.send({ id: "w1" }, "second prompt"); // starts running
-    fetch.mockClear();
+    vi.mocked(fetch).mockClear();
     await plugin.send({ id: "w1" }, "third prompt while running");
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("optimistically appends the user's message and posts to the backend", async () => {
     const { plugin } = makePlugin();
-    fetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.mocked(fetch).mockResolvedValue(reply(true, {}));
     await plugin.send({ id: "w1" }, "do the thing");
     expect(plugin.items("w1")[0]).toEqual({ role: "user", text: "do the thing" });
     expect(fetch).toHaveBeenCalledWith(
@@ -184,7 +197,7 @@ describe("ClaudePlugin.send", () => {
 
   it("a failed send appends an error item and returns to idle", async () => {
     const { plugin } = makePlugin();
-    fetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({ error: "boom" }) });
+    vi.mocked(fetch).mockResolvedValue(reply(false, { error: "boom" }, 500));
     await plugin.send({ id: "w1" }, "do the thing");
     expect(plugin.items("w1").at(-1)).toEqual({ role: "error", text: "boom" });
     expect(plugin.running("w1")).toBe(false);

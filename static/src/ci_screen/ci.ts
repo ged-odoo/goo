@@ -1,5 +1,6 @@
 import { Component, usePlugin, xml } from "@odoo/owl";
 import { CiPlugin } from "./ci_plugin.ts";
+import type { CiDay } from "./ci_plugin.ts";
 import { ICONS, m } from "../core/common.ts";
 import { Panel } from "../core/panel.ts";
 
@@ -83,39 +84,40 @@ export class CiScreen extends Component {
     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M7 17 17 7M9 7h8v8"/></svg>`,
   );
 
-  setup() {
+  setup(): void {
     this.ci.load();
   }
 
-  refresh() {
+  refresh(): void {
     this.ci.load(true);
   }
 
-  get stamp() {
+  get stamp(): string {
     const at = this.ci.at();
     if (!at) return "";
     return "updated " + new Date(at).toLocaleTimeString();
   }
 
-  get totals() {
+  get totals(): Omit<CiDay, "date"> {
     const t = { batches: 0, merged: 0, failed: 0, killed: 0, pending: 0, prs_merged: 0 };
-    for (const d of this.ci.days()) for (const k in t) t[k] += d[k] || 0;
+    const keys = Object.keys(t) as (keyof typeof t)[]; // exactly t's own literal keys
+    for (const d of this.ci.days()) for (const k of keys) t[k] += d[k] || 0;
     return t;
   }
 
   // hours the day has run: a full 24 for a completed day, the UTC hours elapsed so
   // far for today (row 0) — so today's PR/hour is a live rate, not diluted by /24
-  _hours(dIndex) {
+  _hours(dIndex: number): number {
     if (dIndex !== 0) return 24;
     const now = new Date();
     return Math.max(now.getUTCHours() + now.getUTCMinutes() / 60, 0.25);
   }
 
-  perHour(d, dIndex) {
+  perHour(d: CiDay, dIndex: number): string {
     return (d.prs_merged / this._hours(dIndex)).toFixed(1);
   }
 
-  get totalPerHour() {
+  get totalPerHour(): string {
     const days = this.ci.days();
     if (!days.length) return "0.0";
     let prs = 0;
@@ -129,7 +131,7 @@ export class CiScreen extends Component {
 
   // rough time to clear the awaiting queue at a given merge rate (PRs/hour):
   // awaiting PRs / rate → a formatted duration ("" when the rate is unknown)
-  _etaAt(rate) {
+  _etaAt(rate: number): string {
     const n = this.ci.awaiting();
     if (n == null || !(rate > 0)) return "";
     const h = n / rate;
@@ -139,29 +141,29 @@ export class CiScreen extends Component {
   }
 
   // today's own merge rate (the first row's PR/hour)
-  get _todayRate() {
+  get _todayRate(): number {
     const days = this.ci.days();
     return days.length ? parseFloat(this.perHour(days[0], 0)) : 0;
   }
 
-  get queueEta() {
+  get queueEta(): string {
     return this._etaAt(parseFloat(this.totalPerHour));
   }
 
-  get queueEtaTitle() {
+  get queueEtaTitle(): string {
     return `at the last 14 days' average of ${this.totalPerHour} PRs merged/hour`;
   }
 
-  get queueEtaToday() {
+  get queueEtaToday(): string {
     return this._etaAt(this._todayRate);
   }
 
-  get queueEtaTodayTitle() {
+  get queueEtaTodayTitle(): string {
     return `at today's rate of ${this._todayRate.toFixed(1)} PRs merged/hour`;
   }
 
   // "Wed" from an ISO date (parsed as UTC to match the server's staged day)
-  weekday(iso) {
+  weekday(iso: string): string {
     return new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, {
       weekday: "short",
       timeZone: "UTC",

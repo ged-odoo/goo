@@ -6,7 +6,7 @@ import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
 import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
 
-function jsonOk(data) {
+function jsonOk(data: object) {
   return { ok: true, json: async () => ({ ok: true, ...data }) };
 }
 
@@ -58,7 +58,7 @@ describe("AssetsPlugin", () => {
   });
 
   it("drops a stale load() response if the db changed mid-flight", async () => {
-    let resolveFirst;
+    let resolveFirst = (): void => {}; // replaced once dbA's fetch is in flight
     const fetchMock = vi.fn((url, opts) => {
       const body = JSON.parse(opts.body);
       if (body.db === "dbA") {

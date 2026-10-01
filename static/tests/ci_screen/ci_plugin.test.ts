@@ -1,12 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 import { CiPlugin } from "../../src/ci_screen/ci_plugin.ts";
+import { newPlugin } from "../helpers/plugin.ts";
 
-function jsonOk(data) {
+function jsonOk(data: object) {
   return { ok: true, json: async () => ({ ok: true, ...data }) };
 }
 
 function start() {
-  return new CiPlugin({});
+  return newPlugin(CiPlugin);
 }
 
 describe("CiPlugin", () => {
@@ -34,10 +35,10 @@ describe("CiPlugin", () => {
   });
 
   it("skips a second concurrent load() while one is in flight", async () => {
-    let resolveFirst;
+    let resolveFirst = () => {};
     const fetchMock = vi.fn(
       () =>
-        new Promise((resolve) => {
+        new Promise<ReturnType<typeof jsonOk>>((resolve) => {
           resolveFirst = () => resolve(jsonOk({ days: [] }));
         }),
     );

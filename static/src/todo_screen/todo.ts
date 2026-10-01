@@ -2,6 +2,7 @@ import { Component, onMounted, onWillUnmount, usePlugin, signal, useEffect, xml 
 import { ICONS, m } from "../core/common.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
 import { startRowDrag, dropIndex } from "../core/drag.ts";
+import type { StopDrag } from "../core/drag.ts";
 import { Panel } from "../core/panel.ts";
 
 const STORAGE_KEY = "oo-todos";
@@ -15,7 +16,34 @@ const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 // `starred`/`description`/`status` and a list's `mode` are absent on records
 // created before those fields existed — treat missing as the default (falsy /
 // empty / "backlog" / "list") rather than backfilling on read.
-const KANBAN_STAGES = ["backlog", "ongoing", "done"];
+type TodoStage = "backlog" | "ongoing" | "done";
+type TodoMode = "list" | "kanban";
+
+// the stored record shapes. Only `id`/`title` (todo) and `id`/`name` (list) are
+// checked on read; the other fields are trusted as goo itself wrote them.
+interface Todo {
+  id: string;
+  title: string;
+  done?: boolean;
+  status?: string; // "backlog" | "ongoing" when set
+  starred?: boolean;
+  description?: string;
+  created?: number; // ms epoch; absent on older todos (see createdTitle)
+}
+
+interface TodoList {
+  id: string;
+  name: string;
+  mode?: TodoMode;
+  todos: Todo[];
+}
+
+interface TodoStore {
+  lists: TodoList[];
+  selected: string;
+}
+
+const KANBAN_STAGES: TodoStage[] = ["backlog", "ongoing", "done"];
 
 // Width of the main column when the details pane is open, dragged on the splitter
 // between them. A browser-side view preference (like the workspace list's
@@ -25,7 +53,7 @@ const MAIN_WIDTH_KEY = "oo-todo-main-width";
 const MIN_MAIN_WIDTH = 320;
 const MIN_DETAILS_WIDTH = 300;
 
-function storedMainWidth() {
+function storedMainWidth(): number {
   try {
     const n = Number(localStorage.getItem(MAIN_WIDTH_KEY));
     return Number.isFinite(n) && n >= MIN_MAIN_WIDTH ? n : 0;
@@ -33,14 +61,25 @@ function storedMainWidth() {
     return 0;
   }
 }
-function storedState() {
+function storedState(): TodoStore {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    const cleanTodos = (todos) =>
+    const raw: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    const cleanTodos = (todos: unknown): Todo[] =>
       (Array.isArray(todos) ? todos : []).filter(
-        (item) => item && typeof item.id === "string" && typeof item.title === "string",
+        (item: unknown): item is Todo =>
+          typeof item === "object" &&
+          item !== null &&
+          "id" in item &&
+          typeof item.id === "string" &&
+          "title" in item &&
+          typeof item.title === "string",
       );
-    const cleanList = (l) => ({
+    const cleanList = (l: {
+      id: string;
+      name: string;
+      mode?: unknown;
+      todos?: unknown;
+    }): TodoList => ({
       id: l.id,
       name: l.name,
       mode: l.mode === "kanban" ? "kanban" : "list",
@@ -50,19 +89,29 @@ function storedState() {
       const list = { ...cleanList({ id: uid(), name: "Todo" }), todos: cleanTodos(raw) };
       return { lists: [list], selected: list.id };
     }
-    if (raw && Array.isArray(raw.lists)) {
+    if (typeof raw === "object" && raw !== null && "lists" in raw && Array.isArray(raw.lists)) {
       const lists = raw.lists
-        .filter((l) => l && typeof l.id === "string" && typeof l.name === "string")
+        .filter(
+          (l: unknown): l is { id: string; name: string } =>
+            typeof l === "object" &&
+            l !== null &&
+            "id" in l &&
+            typeof l.id === "string" &&
+            "name" in l &&
+            typeof l.name === "string",
+        )
         .map(cleanList);
       if (lists.length) {
-        const selected = lists.some((l) => l.id === raw.selected) ? raw.selected : lists[0].id;
+        const sel = "selected" in raw ? raw.selected : undefined;
+        const selected =
+          typeof sel === "string" && lists.some((l) => l.id === sel) ? sel : lists[0].id;
         return { lists, selected };
       }
     }
   } catch {
     // corrupted storage — start fresh below
   }
-  const list = { id: uid(), name: "Todo", mode: "list", todos: [] };
+  const list: TodoList = { id: uid(), name: "Todo", mode: "list", todos: [] };
   return { lists: [list], selected: list.id };
 }
 
@@ -201,14 +250,14 @@ export class TodoScreen extends Component {
 
   dialogs = usePlugin(DialogPlugin);
   _stored = storedState(); // read once — lists + selected must come from the same snapshot
-  lists = signal(this._stored.lists);
+  lists = signal<TodoList[]>(this._stored.lists);
   selected = signal(this._stored.selected);
   draft = signal("");
   menuOpen = signal(false);
   detailTodoId = signal("");
   listDragId = signal("");
   dragId = signal(""); // id of the todo being dragged ("" = none)
-  dragOverStage = signal(""); // kanban column the dragged card is currently over
+  dragOverStage = signal<string>(""); // kanban column the dragged card is currently over
   newTodo = signal.ref(HTMLInputElement);
   railEl = signal.ref(HTMLElement);
   listEl = signal.ref(HTMLElement);
@@ -221,7 +270,12 @@ export class TodoScreen extends Component {
   listIcon = m(ICONS.list);
   kanbanIcon = m(ICONS.kanban);
 
-  setup() {
+  // set during a drag / splitter resize (cleared when it ends)
+  declare _dragStop?: StopDrag | null;
+  declare _resizeStop?: StopDrag | null;
+  declare _dragOrigin?: Todo | null; // the grab-time kanban card
+
+  setup(): void {
     // close the list-actions menu on any outside click
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
@@ -237,27 +291,27 @@ export class TodoScreen extends Component {
   }
 
   // the selected list (falls back to the first — a list always exists)
-  get list() {
+  get list(): TodoList {
     return this.lists().find((l) => l.id === this.selected()) || this.lists()[0];
   }
 
-  get detailTodo() {
+  get detailTodo(): Todo | undefined {
     return this.list.todos.find((todo) => todo.id === this.detailTodoId());
   }
 
   // ── the main | details splitter ──────────────────────────────────────────────
   // Only applied once dragged: unset, the stylesheet's flex basis + max-width win.
-  get mainStyle() {
+  get mainStyle(): string {
     const w = this.mainWidth();
     return w ? `flex: 0 0 ${w}px; max-width: none;` : "";
   }
 
-  onResizeStart(ev) {
+  onResizeStart(ev: PointerEvent): void {
     if (ev.button !== 0) return;
     ev.preventDefault(); // no text selection while dragging
     const layout = this.layoutEl();
     const mainEl = layout?.querySelector(".todo-main");
-    if (!mainEl) return;
+    if (!layout || !mainEl) return;
     const startX = ev.clientX;
     const startWidth = mainEl.getBoundingClientRect().width;
     const original = this.mainWidth(); // restored on Escape
@@ -267,11 +321,11 @@ export class TodoScreen extends Component {
       MIN_MAIN_WIDTH,
       layout.getBoundingClientRect().width - railWidth - MIN_DETAILS_WIDTH - 48,
     );
-    const move = (e) => {
+    const move = (e: PointerEvent): void => {
       const next = startWidth + (e.clientX - startX);
       this.mainWidth.set(Math.round(Math.min(maxWidth, Math.max(MIN_MAIN_WIDTH, next))));
     };
-    const stop = (commit) => {
+    const stop = (commit: boolean): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("keydown", key);
@@ -282,7 +336,9 @@ export class TodoScreen extends Component {
       else this.mainWidth.set(original);
     };
     const up = () => stop(true);
-    const key = (e) => e.key === "Escape" && stop(false);
+    const key = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") stop(false);
+    };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("keydown", key);
@@ -291,7 +347,7 @@ export class TodoScreen extends Component {
     this._resizeStop = stop;
   }
 
-  _saveMainWidth() {
+  _saveMainWidth(): void {
     try {
       localStorage.setItem(MAIN_WIDTH_KEY, String(this.mainWidth()));
     } catch {
@@ -300,7 +356,7 @@ export class TodoScreen extends Component {
   }
 
   // double-click the splitter: back to the stylesheet's default width
-  resetMainWidth() {
+  resetMainWidth(): void {
     this.mainWidth.set(0);
     try {
       localStorage.removeItem(MAIN_WIDTH_KEY);
@@ -310,26 +366,30 @@ export class TodoScreen extends Component {
   }
 
   // ── view mode (per project) ──────────────────────────────────────────────────
-  get mode() {
+  get mode(): TodoMode {
     return this.list.mode === "kanban" ? "kanban" : "list";
   }
 
-  setMode(mode) {
+  setMode(mode: TodoMode): void {
     if (this.mode === mode) return;
     this._updateList(this.list.id, (l) => ({ ...l, mode }));
   }
 
   // a todo's kanban column: done drives "done"; the rest split on `status`, which
   // defaults to backlog (so pre-status todos and new ones land there)
-  stageOf(todo) {
+  stageOf(todo: Todo): TodoStage {
     if (todo.done) return "done";
     return todo.status === "ongoing" ? "ongoing" : "backlog";
   }
 
   // the three columns, each with the selected list's todos for that stage in array
   // order (so kanban and list share one ordering)
-  get kanbanColumns() {
-    const labels = { backlog: "Backlog", ongoing: "Ongoing", done: "Done" };
+  get kanbanColumns(): { stage: TodoStage; label: string; todos: Todo[] }[] {
+    const labels: Record<TodoStage, string> = {
+      backlog: "Backlog",
+      ongoing: "Ongoing",
+      done: "Done",
+    };
     return KANBAN_STAGES.map((stage) => ({
       stage,
       label: labels[stage],
@@ -339,52 +399,52 @@ export class TodoScreen extends Component {
 
   // the field patch that moves a todo to a stage. "done" only flips the flag,
   // leaving `status` so unchecking in list mode restores the prior stage.
-  _stageFields(stage) {
+  _stageFields(stage: TodoStage): Pick<Todo, "done" | "status"> {
     if (stage === "done") return { done: true };
     return { done: false, status: stage };
   }
 
-  openCount(l) {
+  openCount(l: TodoList): number {
     return l.todos.filter((todo) => !todo.done).length;
   }
 
-  get completedCount() {
+  get completedCount(): number {
     return this.list.todos.filter((todo) => todo.done).length;
   }
 
-  get summary() {
+  get summary(): string {
     const total = this.list.todos.length;
     return `${total - this.completedCount} open · ${total} total`;
   }
 
-  select(id) {
+  select(id: string): void {
     this.detailTodoId.set("");
     this.selected.set(id);
     this._save();
     this.newTodo()?.focus();
   }
 
-  menuAct(fn) {
+  menuAct<R>(fn: () => R): R {
     this.menuOpen.set(false);
     return fn();
   }
 
   // ── lists ──────────────────────────────────────────────────────────────────
-  async addList() {
+  async addList(): Promise<void> {
     const res = await this._nameDialog("New project", "Create", "");
     if (!res) return;
-    const list = { id: uid(), name: res, todos: [] };
+    const list: TodoList = { id: uid(), name: res, todos: [] };
     this.lists.set([...this.lists(), list]);
     this.select(list.id);
   }
 
-  async renameList() {
+  async renameList(): Promise<void> {
     const res = await this._nameDialog("Rename list", "Rename", this.list.name);
     if (!res) return;
     this._updateList(this.list.id, (l) => ({ ...l, name: res }));
   }
 
-  async deleteList() {
+  async deleteList(): Promise<void> {
     const target = this.list;
     if (this.lists().length === 1) return;
     if (target.todos.length) {
@@ -399,7 +459,7 @@ export class TodoScreen extends Component {
     this.select(this.lists()[0].id);
   }
 
-  _nameDialog(title, okLabel, value) {
+  _nameDialog(title: string, okLabel: string, value: string): Promise<string> {
     return this.dialogs
       .open({
         title,
@@ -413,10 +473,10 @@ export class TodoScreen extends Component {
   // ── todos (on the selected list) ────────────────────────────────────────────
   // new todos go to the front, so the default order is last-created-first;
   // drag-and-drop (below) then lets the array order be reshuffled freely.
-  add() {
+  add(): void {
     const title = this.draft().trim();
     if (!title) return;
-    const todo = {
+    const todo: Todo = {
       id: uid(),
       title,
       done: false,
@@ -433,7 +493,7 @@ export class TodoScreen extends Component {
 
   // the row tooltip: when the todo was created. New todos store `created`;
   // older ones carry the same timestamp as their id's Date.now() prefix.
-  createdTitle(todo) {
+  createdTitle(todo: Todo): string {
     const ts = todo.created || Number((todo.id || "").split("-")[0]);
     if (!ts) return "";
     const abs = new Date(ts).toLocaleString(undefined, {
@@ -443,58 +503,60 @@ export class TodoScreen extends Component {
     return `created ${abs}`;
   }
 
-  toggle(id) {
+  toggle(id: string): void {
     this._updateTodos((todos) =>
       todos.map((todo) => (todo.id === id ? { ...todo, done: !todo.done } : todo)),
     );
   }
 
-  toggleStar(id) {
+  toggleStar(id: string): void {
     this._updateTodos((todos) =>
       todos.map((todo) => (todo.id === id ? { ...todo, starred: !todo.starred } : todo)),
     );
   }
 
-  openTodo(id) {
+  openTodo(id: string): void {
     this.detailTodoId.set(id);
   }
 
-  closeTodo() {
+  closeTodo(): void {
     this.detailTodoId.set("");
   }
 
-  updateDescription(id, description) {
+  updateDescription(id: string, description: string): void {
     this._updateTodos((todos) =>
       todos.map((todo) => (todo.id === id ? { ...todo, description } : todo)),
     );
   }
 
-  updateTitle(id, ev) {
-    const title = ev.target.value.trim();
+  updateTitle(id: string, ev: Event): void {
+    const input = ev.target as HTMLInputElement; // the details pane's title input
+    const title = input.value.trim();
     if (!title) {
-      ev.target.value = this.detailTodo?.title || "";
+      input.value = this.detailTodo?.title || "";
       return;
     }
-    ev.target.value = title;
+    input.value = title;
     this._updateTodos((todos) => todos.map((todo) => (todo.id === id ? { ...todo, title } : todo)));
   }
 
-  onTitleKeydown(ev) {
+  onTitleKeydown(ev: KeyboardEvent): void {
+    const input = ev.currentTarget as HTMLInputElement; // the details pane's title input
     if (ev.key === "Enter") {
       ev.preventDefault();
-      ev.currentTarget.blur();
+      input.blur();
     } else if (ev.key === "Escape") {
-      ev.currentTarget.value = this.detailTodo?.title || "";
-      ev.currentTarget.blur();
+      input.value = this.detailTodo?.title || "";
+      input.blur();
     }
   }
 
-  remove(id) {
+  remove(id: string): void {
     if (this.detailTodoId() === id) this.closeTodo();
     this._updateTodos((todos) => todos.filter((todo) => todo.id !== id));
   }
 
-  clearCompleted() {
+  clearCompleted(): void {
     if (this.detailTodo?.done) this.closeTodo();
     this._updateTodos((todos) => todos.filter((todo) => !todo.done));
   }
@@ -502,10 +564,10 @@ export class TodoScreen extends Component {
   // ── drag-and-drop resequencing ───────────────────────────────────────────────
   // Projects use the same live-reordering interaction as todo rows. Their order
   // is only persisted on drop; Escape restores the grab-time order.
-  onListDragStart(ev, list) {
+  onListDragStart(ev: PointerEvent, list: TodoList): void {
     const original = this.lists();
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".todo-rail-item"),
+      row: (ev.target as HTMLElement).closest<HTMLElement>(".todo-rail-item"), // the rail handle
       onMove: (e) => this._listDragMove(e, list.id),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -519,8 +581,8 @@ export class TodoScreen extends Component {
     this.listDragId.set(list.id);
   }
 
-  _listDragMove(ev, id) {
-    const rows = [...(this.railEl()?.querySelectorAll(".todo-rail-item") || [])];
+  _listDragMove(ev: PointerEvent, id: string): void {
+    const rows = [...(this.railEl()?.querySelectorAll<HTMLElement>(".todo-rail-item") || [])];
     const to = dropIndex(
       ev,
       rows.filter((row) => row.dataset.listId !== id),
@@ -538,10 +600,10 @@ export class TodoScreen extends Component {
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the list as the pointer crosses its neighbours' midlines. Drop
   // persists the order; Escape restores the grab-time order.
-  onDragStart(ev, todo) {
+  onDragStart(ev: PointerEvent, todo: Todo): void {
     const original = this.list.todos; // grab-time order, restored on Escape
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".todo-row"),
+      row: (ev.target as HTMLElement).closest<HTMLElement>(".todo-row"), // the row handle
       onMove: (e) => this._dragMove(e, todo.id),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -555,7 +617,7 @@ export class TodoScreen extends Component {
     this.dragId.set(todo.id);
   }
 
-  _dragMove(ev, id) {
+  _dragMove(ev: PointerEvent, id: string): void {
     const rows = [...(this.listEl()?.querySelectorAll(".todo-row") || [])];
     const to = dropIndex(
       ev,
@@ -580,8 +642,9 @@ export class TodoScreen extends Component {
   // inert), so the card's own click can't open the details: startRowDrag calls
   // preventDefault on pointerdown, which suppresses the compatibility click.
   // Instead a press that never travels past a few pixels is treated as a click.
-  onCardDragStart(ev, todo) {
-    if (ev.target.closest(".todo-star")) return; // the star keeps its own click
+  onCardDragStart(ev: PointerEvent, todo: Todo): void {
+    const target = ev.target as HTMLElement; // an element inside the kanban card
+    if (target.closest(".todo-star")) return; // the star keeps its own click
     const original = this.list.todos; // grab-time order + stages, restored on Escape
     // the grab-time todo: every move re-derives the dragged card from THIS, so the
     // result depends only on where it lands. Deriving from the live todo instead
@@ -591,7 +654,7 @@ export class TodoScreen extends Component {
     const from = { x: ev.clientX, y: ev.clientY };
     let moved = false;
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".kanban-card"),
+      row: target.closest<HTMLElement>(".kanban-card"),
       onMove: (e) => {
         if (!moved && (Math.abs(e.clientX - from.x) > 4 || Math.abs(e.clientY - from.y) > 4))
           moved = true;
@@ -612,8 +675,8 @@ export class TodoScreen extends Component {
     this.dragId.set(todo.id);
   }
 
-  _cardDragMove(ev, id) {
-    const cols = [...(this.boardEl()?.querySelectorAll(".kanban-col") || [])];
+  _cardDragMove(ev: PointerEvent, id: string): void {
+    const cols = [...(this.boardEl()?.querySelectorAll<HTMLElement>(".kanban-col") || [])];
     // the column under the pointer (by X), else the nearest one so a drag that
     // strays past the board's edge still resolves to the closest column
     let col = cols.find((c) => {
@@ -622,7 +685,7 @@ export class TodoScreen extends Component {
     });
     if (!col && cols.length) {
       col = cols.reduce((best, c) => {
-        const cx = (r) => r.left + r.width / 2;
+        const cx = (r: DOMRect): number => r.left + r.width / 2;
         return Math.abs(cx(c.getBoundingClientRect()) - ev.clientX) <
           Math.abs(cx(best.getBoundingClientRect()) - ev.clientX)
           ? c
@@ -630,11 +693,13 @@ export class TodoScreen extends Component {
       });
     }
     if (!col) return;
-    const stage = col.dataset.stage;
+    const stage = col.dataset.stage as TodoStage; // data-stage is rendered from KANBAN_STAGES
     this.dragOverStage.set(stage);
     // insert index among the target column's OTHER cards (the dimmed dragged card
     // is excluded, as dropIndex expects)
-    const cards = [...col.querySelectorAll(".kanban-card")].filter((c) => c.dataset.todoId !== id);
+    const cards = [...col.querySelectorAll<HTMLElement>(".kanban-card")].filter(
+      (c) => c.dataset.todoId !== id,
+    );
     const to = dropIndex(ev, cards);
     const todos = this.list.todos;
     const from = todos.findIndex((t) => t.id === id);
@@ -644,7 +709,7 @@ export class TodoScreen extends Component {
     // map the column-relative insert index to a global array index via the anchor
     // card it lands before (or the end of the column's run)
     const members = without.filter((t) => this.stageOf(t) === stage);
-    let at;
+    let at: number;
     if (to >= members.length) {
       const last = members[members.length - 1];
       at = last ? without.findIndex((t) => t.id === last.id) + 1 : without.length;
@@ -655,21 +720,22 @@ export class TodoScreen extends Component {
     next.splice(at, 0, moved);
     // skip the write when nothing actually changed (order + stage identical) — the
     // move fires on every pointermove, and a no-op set would churn the render
-    const sig = (arr) => arr.map((t) => `${t.id}:${t.done ? 1 : 0}:${t.status || ""}`).join(",");
+    const sig = (arr: Todo[]): string =>
+      arr.map((t) => `${t.id}:${t.done ? 1 : 0}:${t.status || ""}`).join(",");
     if (sig(next) === sig(todos)) return;
     this.lists.set(this.lists().map((l) => (l.id === this.list.id ? { ...l, todos: next } : l)));
   }
 
-  _updateTodos(fn) {
+  _updateTodos(fn: (todos: Todo[]) => Todo[]): void {
     this._updateList(this.list.id, (l) => ({ ...l, todos: fn(l.todos) }));
   }
 
-  _updateList(id, fn) {
+  _updateList(id: string, fn: (l: TodoList) => TodoList): void {
     this.lists.set(this.lists().map((l) => (l.id === id ? fn(l) : l)));
     this._save();
   }
 
-  _save() {
+  _save(): void {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({ lists: this.lists(), selected: this.selected() }),

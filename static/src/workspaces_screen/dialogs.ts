@@ -12,7 +12,9 @@ import {
 } from "../core/config.ts";
 import { newWorkspaceId } from "../core/config_plugin.ts";
 import { RemoteBranchDialog } from "../core/dialogs.ts";
+import type { RemoteBranchPick } from "../core/dialogs.ts";
 import {
+  errorMessage,
   formatBytes,
   postJSON,
   repoBranchList,
@@ -20,14 +22,108 @@ import {
   fetchReviewPrompt,
 } from "../core/utils.ts";
 import { cascadeRemoveDescendants } from "../core/workspace_plugin.ts";
+import type {
+  CheckoutConfig,
+  RepoConfig,
+  TemplateConfig,
+  WorkspaceConfig,
+} from "../core/config.ts";
+import type { ConfigPlugin } from "../core/config_plugin.ts";
+import type { CodePlugin } from "../core/code_plugin.ts";
+import type { DatabasePlugin } from "../core/database_plugin.ts";
+import type { DialogField, DialogPlugin } from "../core/dialog_plugin.ts";
+import type { EventLogPlugin } from "../core/event_log_plugin.ts";
+import type { BranchInfo, ForwardPortRow } from "../core/observed_models.ts";
+import type { ServerPlugin } from "../core/server_plugin.ts";
+import type { PullRequest } from "../core/models.ts";
+import type { WorkspaceLike, WorkspacePlugin } from "../core/workspace_plugin.ts";
+import type { ClaudePlugin } from "./claude_plugin.ts";
 
 import { Component, onMounted, onWillUnmount, signal, t, useProps, xml } from "@odoo/owl";
+import type { PluginInstance, Type } from "@odoo/owl";
+
+// the plugin bundle the create/delete flows drive (a screen's _dialogPlugins());
+// each flow takes the Pick of it that it actually uses
+export interface WorkspacePlugins {
+  config: PluginInstance<typeof ConfigPlugin>;
+  dialogs: PluginInstance<typeof DialogPlugin>;
+  db: PluginInstance<typeof DatabasePlugin>;
+  code: PluginInstance<typeof CodePlugin>;
+  eventLog: PluginInstance<typeof EventLogPlugin>;
+  wt: PluginInstance<typeof WorkspacePlugin>;
+}
+
+// one PR to resolve + fetch into a configured repo ({repo, pull: {github, number}})
+export interface PrTarget {
+  repo: Pick<RepoConfig, "id" | "path">;
+  pull: { github: string; number: number };
+}
+
+// a resolvePrBranches success: the PR's head branch, fetched into `repo`
+export interface ResolvedPrBranch {
+  repo: Pick<RepoConfig, "id" | "path">;
+  branch: string;
+  ok: true;
+}
+
+// one database dump a runbot batch left behind (backend RunbotService dumps)
+export interface RunbotDump {
+  build?: string;
+  slot: string; // the build's name, e.g. "Enterprise Run"
+  db: string; // "all" | "base" | …
+  url: string;
+  size?: number;
+}
+
+// what the create form opens prefilled with (startCreateWorkspace)
+export interface CreatePrefill {
+  name?: string;
+  config?: string; // repoBranchList-formatted checkouts
+  db?: string;
+  args?: string;
+  demoData?: boolean;
+  template?: string;
+  category?: string;
+  createBranches?: boolean;
+  parent?: string;
+  location?: string;
+  createVenv?: boolean;
+  dumps?: RunbotDump[];
+}
+
+// /api/runbot/bundle-info's reply
+interface BundleInfo {
+  name: string;
+  branches?: { github: string; branch: string }[];
+  prs?: { github: string; number: number }[];
+  dumps?: RunbotDump[];
+}
+
+// the source step's result (WorkspaceSourceDialog), null when cancelled
+export type WorkspaceSource =
+  | { source: "template"; template: string; dumps: RunbotDump[] }
+  | { source: "bundle"; info: BundleInfo }
+  | null;
+
+// _fetchWithOverwritePrompt's outcome
+interface FetchOutcome {
+  ok: boolean;
+  error?: string;
+}
+
+// a postJSON rejection whose reply flagged a non-fast-forward fetch
+function isNonFf(e: unknown): boolean {
+  const data: unknown = e instanceof Error && "data" in e ? e.data : undefined;
+  return typeof data === "object" && data !== null && "non_ff" in data && !!data.non_ff;
+}
 
 // the Category select options for the create/edit dialogs (shown only when the
 // workspace-categories setting is on; the empty placeholder = uncategorized).
 // "archived" is always offered last, so an archived workspace's Edit dialog can
 // show — and keep — its real category.
-export function categoryOptions(config) {
+export function categoryOptions(config: {
+  config: { workspace_categories?: { id: string }[] };
+}): { value: string; label: string }[] {
   const opts = (config.config.workspace_categories || []).map((c) => ({
     value: c.id,
     label: c.id,
@@ -45,10 +141,15 @@ export function categoryOptions(config) {
 // toggling an unrelated repo's checkbox or editing the name — only a repo with
 // no config entry yet (the user manually ticking one beyond what was fetched)
 // gets `branch` stamped as a best-effort guess.
-const configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting = false) => {
+const configFromRepos = (
+  repoIds: string[],
+  branch: string,
+  currentConfig = "",
+  preserveExisting = false,
+): string => {
   const existing = preserveExisting
     ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch]))
-    : {};
+    : ({} as Record<string, string>); // an empty repo -> branch map
   return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
 };
 
@@ -58,24 +159,29 @@ const configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting =
 // local copy rather than just failing the whole flow outright. `source` is only
 // used in the confirmation message (a remote name, or a "owner/repo" slug).
 // `attempt(force)` does the actual fetch. Returns {ok, error?}.
-async function _fetchWithOverwritePrompt(dialogs, branch, source, attempt) {
+async function _fetchWithOverwritePrompt(
+  dialogs: PluginInstance<typeof DialogPlugin>,
+  branch: string,
+  source: string,
+  attempt: (force: boolean) => Promise<unknown>,
+): Promise<FetchOutcome> {
   try {
     await attempt(false);
     return { ok: true };
   } catch (e) {
-    if (!e.data?.non_ff) return { ok: false, error: e.message };
+    if (!isNonFf(e)) return { ok: false, error: errorMessage(e) };
     const proceed = await dialogs.open({
       title: "Branch has diverged",
       message: `the local ${branch} has diverged from ${source} (it was likely rebased or force-pushed) — overwrite the local copy with the remote's?`,
       okLabel: "Overwrite",
       cancelLabel: "Skip",
     });
-    if (!proceed) return { ok: false, error: e.message };
+    if (!proceed) return { ok: false, error: errorMessage(e) };
     try {
       await attempt(true);
       return { ok: true };
     } catch (e2) {
-      return { ok: false, error: e2.message };
+      return { ok: false, error: errorMessage(e2) };
     }
   }
 }
@@ -85,7 +191,10 @@ async function _fetchWithOverwritePrompt(dialogs, branch, source, attempt) {
 // remote-branch search) starts from. Only works when the branch actually lives
 // on `pull_remote` itself — see fetchPrHead for PR targets, where that isn't
 // guaranteed.
-async function fetchRemoteBranch(dialogs, { path, branch, pull_remote }) {
+async function fetchRemoteBranch(
+  dialogs: PluginInstance<typeof DialogPlugin>,
+  { path, branch, pull_remote }: { path: string; branch: string; pull_remote: string },
+): Promise<FetchOutcome> {
   return _fetchWithOverwritePrompt(dialogs, branch, pull_remote || "origin", (force) =>
     postJSON("/api/code/remote-branch/fetch", { path, branch, pull_remote, force }),
   );
@@ -101,7 +210,15 @@ async function fetchRemoteBranch(dialogs, { path, branch, pull_remote }) {
 // fork, a forward-port opened against the canonical repo while the local
 // checkout points at a company fork, or a colleague's WIP pushed to a shared
 // staging remote instead of the repo itself.
-async function fetchPrHead(dialogs, { path, github, number, branch }) {
+async function fetchPrHead(
+  dialogs: PluginInstance<typeof DialogPlugin>,
+  {
+    path,
+    github,
+    number,
+    branch,
+  }: { path: string; github: string; number: number; branch: string },
+): Promise<FetchOutcome> {
   return _fetchWithOverwritePrompt(dialogs, branch, github, (force) =>
     postJSON("/api/code/remote-branch/fetch-pr", { path, github, number, branch, force }),
   );
@@ -117,27 +234,34 @@ async function fetchPrHead(dialogs, { path, github, number, branch }) {
 // own directory (backend GitService.sync_pr_worktree). Best-effort per repo — one repo
 // failing to sync is reported but doesn't block the others or the review itself.
 // targets: [{repo, pull: {github, number}}], same shape resolvePrBranches consumes.
-export async function syncReviewWorktree(plugins, ws, targets) {
+export async function syncReviewWorktree(
+  plugins: Pick<WorkspacePlugins, "dialogs" | "wt" | "eventLog">,
+  ws: WorkspaceLike,
+  targets: PrTarget[],
+): Promise<void> {
   const { dialogs, wt, eventLog } = plugins;
   const worktreeByRepo = Object.fromEntries(wt.wtRepos(ws).map((r) => [r.repo, r]));
-  const failed = [];
+  const failed: string[] = [];
   await Promise.all(
     targets.map(async ({ repo, pull }) => {
       const wtr = worktreeByRepo[repo.id];
       if (!wtr) return;
       const eid = eventLog.begin(`syncing PR #${pull.number} (${repo.id})`);
       try {
-        const r = await postJSON("/api/code/remote-branch/sync-pr", {
-          path: wtr.worktreePath,
-          github: pull.github,
-          number: pull.number,
-          repo: repo.id,
-        });
+        const r = await postJSON<{ ok: boolean; error?: string }>(
+          "/api/code/remote-branch/sync-pr",
+          {
+            path: wtr.worktreePath,
+            github: pull.github,
+            number: pull.number,
+            repo: repo.id,
+          },
+        );
         eventLog.finish(eid, r.ok ? "done" : "error");
         if (!r.ok) failed.push(`${repo.id}: ${r.error}`);
       } catch (e) {
         eventLog.finish(eid, "error");
-        failed.push(`${repo.id}: ${e.message}`);
+        failed.push(`${repo.id}: ${errorMessage(e)}`);
       }
     }),
   );
@@ -150,7 +274,10 @@ export async function syncReviewWorktree(plugins, ws, targets) {
 // the config, plus db / args / demo data.
 // the branch a template names itself after — its enterprise checkout's, else its
 // community one's. Also what its base version (and so its runbot bundle) derives from.
-export function templateBranch(tpl) {
+// the template fields the prefill reads (a full TemplateConfig, or a partial one)
+type TemplateLike = Pick<TemplateConfig, "id" | "checkouts"> & Partial<TemplateConfig>;
+
+export function templateBranch(tpl: Pick<TemplateConfig, "checkouts"> | null | undefined): string {
   if (!tpl) return "";
   return (
     tpl.checkouts.find((c) => c.repo === "enterprise")?.branch ||
@@ -159,7 +286,7 @@ export function templateBranch(tpl) {
   );
 }
 
-export function templatePrefill(tpl) {
+export function templatePrefill(tpl: TemplateLike | null | undefined): CreatePrefill {
   if (!tpl) return {};
   const branch = templateBranch(tpl);
   return {
@@ -178,12 +305,12 @@ export function templatePrefill(tpl) {
 // picked up from a pasted bundle URL. Best-effort: runbot being slow or having no
 // bundle for that base just means the create form doesn't offer the restore, which
 // is a far better outcome than blocking the whole flow on it.
-async function baseVersionDumps(branch) {
+async function baseVersionDumps(branch: string): Promise<RunbotDump[]> {
   // "— start blank —" picks no template, so there's no branch to derive a base from
   const base = branch ? baseBranchOf(branch) : "";
   if (!base) return [];
   try {
-    const res = await postJSON("/api/runbot/dumps", { branch: base });
+    const res = await postJSON<{ dumps?: RunbotDump[] }>("/api/runbot/dumps", { branch: base });
     return res.dumps || [];
   } catch {
     return [];
@@ -234,32 +361,36 @@ export class WorkspaceSourceDialog extends Component {
       </div>
     </div>`;
 
-  props = useProps({ done: t.function(), templates: t.any() });
+  props = useProps({
+    done: t.function<[WorkspaceSource], void>(),
+    templates: t.any() as Type<TemplateConfig[]>, // config.config.templates — not validated at runtime
+  });
+
   source = signal("template");
   template = signal("");
   url = signal("");
   busy = signal(false);
   error = signal("");
 
-  setup() {
+  setup(): void {
     this.template.set(this.props.templates[0]?.id ?? "");
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.done(null);
     };
     onMounted(() => document.addEventListener("keydown", onKey));
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
   }
 
-  done(result) {
+  done(result: WorkspaceSource): void {
     this.props.done(result);
   }
 
-  get canContinue() {
+  get canContinue(): boolean {
     if (this.busy()) return false;
     return this.source() === "template" || !!this.url().trim();
   }
 
-  async continue_() {
+  async continue_(): Promise<void> {
     if (!this.canContinue) return;
     this.busy.set(true);
     this.error.set("");
@@ -273,10 +404,12 @@ export class WorkspaceSourceDialog extends Component {
         const dumps = await baseVersionDumps(templateBranch(tpl));
         return this.done({ source: "template", template: this.template(), dumps });
       }
-      const info = await postJSON("/api/runbot/bundle-info", { url: this.url().trim() });
+      const info = await postJSON<BundleInfo>("/api/runbot/bundle-info", {
+        url: this.url().trim(),
+      });
       this.done({ source: "bundle", info });
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set(errorMessage(e));
     } finally {
       this.busy.set(false);
     }
@@ -288,9 +421,9 @@ export class WorkspaceSourceDialog extends Component {
 // (from the remote that carries them — the canonical repo, or the shared dev
 // fork for colleagues' work), so the form opens with everything in place and
 // "Create branches" off.
-export async function startNewWorkspaceWizard(plugins) {
+export async function startNewWorkspaceWizard(plugins: WorkspacePlugins): Promise<void> {
   const { config, dialogs, code, eventLog } = plugins;
-  const res = await dialogs.openComponent(WorkspaceSourceDialog, {
+  const res = await dialogs.openComponent<WorkspaceSource>(WorkspaceSourceDialog, {
     templates: config.config.templates || [],
   });
   if (!res) return;
@@ -311,7 +444,7 @@ export async function startNewWorkspaceWizard(plugins) {
   // gets matched (and ticked) like any other repo; the backend tries that branch
   // first and only falls back to forking from the base series when it doesn't
   // actually exist there.
-  const matches = [];
+  const matches: { repo: RepoConfig; branch: string; remote: string }[] = [];
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
     const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
@@ -373,7 +506,11 @@ export async function startNewWorkspaceWizard(plugins) {
 // when its database didn't — the user can retry from the Databases screen rather
 // than redo the whole creation. The plugin logs the timed row; this only adds the
 // failure dialog, since nothing else would surface it (the form is already gone).
-async function restoreRunbotDump({ db, dialogs }, url, dbName) {
+async function restoreRunbotDump(
+  { db, dialogs }: Pick<WorkspacePlugins, "db" | "dialogs">,
+  url: string,
+  dbName: string,
+): Promise<void> {
   const error = await db.restoreRunbotDump(url, dbName);
   if (error) dialogs.error("Restoring the runbot database failed", error);
 }
@@ -386,7 +523,10 @@ async function restoreRunbotDump({ db, dialogs }, url, dbName) {
 // `parent` isn't a form field — it's implicit from how the create flow was
 // invoked (e.g. a forward-port row's "sub workspace" button) and is passed
 // straight into the created workspace.
-export async function startCreateWorkspace(plugins, prefill = {}) {
+export async function startCreateWorkspace(
+  plugins: WorkspacePlugins,
+  prefill: CreatePrefill = {},
+): Promise<void> {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   await db.load(); // populate the "Clone db" select
   const templates = config.config.templates || [];
@@ -399,7 +539,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   // branch the "Search branches…" action just fetched, while the form is
   // still open.
   code.loadBranches();
-  const hasLocalBranch = (repo, branch) =>
+  const hasLocalBranch = (repo: string, branch: string): boolean =>
     code
       .branchRepos()
       .find((r) => r.id === repo)
@@ -491,7 +631,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         placeholder: "name (e.g. master-mytask)",
         onChange: (newName, currentValues, oldValues) => {
           const forkingFresh = currentValues.createBranches !== false;
-          const updates = {
+          const updates: { config: string; demoData?: boolean; db?: string } = {
             config: configFromRepos(
               currentValues.repos || [],
               newName.trim(),
@@ -566,11 +706,13 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
         type: "action",
         label: "Search local/remote branches…",
         run: async (values) => {
-          const res = await dialogs.openComponent(RemoteBranchDialog, { repoIds: values.repos });
+          const res = await dialogs.openComponent<RemoteBranchPick | null>(RemoteBranchDialog, {
+            repoIds: values.repos,
+          });
           if (!res) return null;
           const { pathByRepo, pullRemoteByRepo } = code.groups();
           const toFetch = res.repos.filter((r) => !hasLocalBranch(r, res.branch) && pathByRepo[r]);
-          const fetchedNow = [];
+          const fetchedNow: string[] = [];
           for (const repoId of toFetch) {
             const r = await fetchRemoteBranch(dialogs, {
               path: pathByRepo[repoId],
@@ -608,7 +750,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       // launches the server itself (launch_mode "external")
       ...(config.config.launch_mode === "external"
         ? []
-        : [
+        : ([
             {
               key: "args",
               type: "text",
@@ -616,9 +758,9 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
               value: prefill.args ?? "",
               placeholder: "-i sale_management",
             },
-          ]),
+          ] satisfies DialogField[])),
       ...(config.config.workspace_categories_enabled
-        ? [
+        ? ([
             {
               key: "category",
               type: "select",
@@ -627,7 +769,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
               options: categoryOptions(config),
               value: prefill.category ?? "",
             },
-          ]
+          ] satisfies DialogField[])
         : []),
       {
         key: "cloneDb",
@@ -644,7 +786,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       // an empty one — the whole point of picking up a colleague's bundle is usually
       // to reproduce something on their data. Bundle sources only (see dumpOptions).
       ...(dumpOptions.length
-        ? [
+        ? ([
             {
               key: "restoreDump",
               type: "check-select",
@@ -657,20 +799,20 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
                   ? "downloaded from runbot and restored after the workspace is created — this can take a while"
                   : null,
             },
-          ]
+          ] satisfies DialogField[])
         : []),
       // same story as Start args: feeds --without-demo regardless of local vs.
       // docker launch — unused only under launch_mode "external"
       ...(config.config.launch_mode === "external"
         ? []
-        : [
+        : ([
             {
               key: "demoData",
               type: "checkbox",
               label: "Demo data",
               value: prefill.demoData ?? defaultDemoData(prefill.name || ""),
             },
-          ]),
+          ] satisfies DialogField[])),
       {
         key: "createBranches",
         type: "checkbox",
@@ -698,14 +840,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
       // (workspace_plugin.ts createWorktree) — a Docker container brings its own
       // Python env, so this is local-mode-only, unlike Start args/Demo data above
       ...(config.config.launch_mode === "local"
-        ? [
+        ? ([
             {
               key: "createVenv",
               type: "checkbox",
               label: "Create venv from requirements.txt (worktree)",
               value: prefill.createVenv ?? false,
             },
-          ]
+          ] satisfies DialogField[])
         : []),
     ],
   });
@@ -727,7 +869,7 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
   // git failure the moment the typed/picked branch already existed locally
   // (worktree_add/create_branch both refuse to recreate one) — attach it
   // instead, and only fork what's genuinely new.
-  const forkRepos = new Set();
+  const forkRepos = new Set<string>();
   if (res.createBranches) {
     for (const c of checkouts) if (!hasLocalBranch(c.repo, c.branch)) forkRepos.add(c.repo);
   } else if (verifiedRepos) {
@@ -829,8 +971,14 @@ export async function startCreateWorkspace(plugins, prefill = {}) {
 // `<target>-<source>-<n>-fw` (e.g. master-saas-19.4-…-fw) — not the matrix's bare
 // target label (`row.branch` = "master"). So match a child of this parent whose
 // checkout branch is a forward port onto this row's target.
-export function findSubWorkspace(config, parentWs, row) {
-  const isFwOnto = (branch) =>
+export function findSubWorkspace<
+  W extends Pick<WorkspaceConfig, "id"> & { parent?: string; checkouts?: CheckoutConfig[] },
+>(
+  config: { config: { workspaces?: W[] } },
+  parentWs: { id: string },
+  row: { branch: string },
+): W | null {
+  const isFwOnto = (branch: unknown) =>
     typeof branch === "string" && branch.startsWith(`${row.branch}-`) && branch.endsWith("-fw");
   return (
     (config.config.workspaces || []).find(
@@ -846,13 +994,19 @@ export function findSubWorkspace(config, parentWs, row) {
 // failures. A repo whose branch doesn't exist upstream yet just fails its own
 // fetch — the flow proceeds with whichever succeeded. Returns the successfully-
 // fetched {repo, branch} entries, or null if every target failed.
-export async function resolvePrBranches(plugins, targets) {
+export async function resolvePrBranches(
+  plugins: Pick<WorkspacePlugins, "code" | "dialogs" | "eventLog">,
+  targets: PrTarget[],
+): Promise<ResolvedPrBranch[] | null> {
   const { code, dialogs, eventLog } = plugins;
   const results = await Promise.all(
     targets.map(async ({ repo, pull }) => {
       const eid = eventLog.begin(`fetching PR #${pull.number} (${repo.id})`);
       try {
-        const head = await postJSON("/api/prs/head", { repo: pull.github, number: pull.number });
+        const head = await postJSON<{ branch?: string }>("/api/prs/head", {
+          repo: pull.github,
+          number: pull.number,
+        });
         const branch = head.branch;
         if (!branch) throw new Error("could not resolve the PR's head branch");
         // fetched straight from pull.github (the PR's own repo) — not any
@@ -867,10 +1021,10 @@ export async function resolvePrBranches(plugins, targets) {
         });
         if (!r.ok) throw new Error(r.error);
         eventLog.finish(eid, "done");
-        return { repo, branch, ok: true };
+        return { repo, branch, ok: true as const };
       } catch (e) {
         eventLog.finish(eid, "error");
-        return { repo, ok: false, error: e.message };
+        return { repo, ok: false as const, error: errorMessage(e) };
       }
     }),
   );
@@ -881,7 +1035,7 @@ export async function resolvePrBranches(plugins, targets) {
       failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
     );
   }
-  const got = results.filter((r) => r.ok);
+  const got = results.filter((r): r is ResolvedPrBranch => r.ok);
   if (!got.length) return null;
   await code.refreshBranches(new Set(got.map((g) => g.repo.id)));
   return got;
@@ -895,14 +1049,18 @@ export async function resolvePrBranches(plugins, targets) {
 // sub-workspace was already created for this row, this just opens it instead.
 // plugins: { config, dialogs, db, code, eventLog, wt }. parentWs: the workspace (plain
 // blob) the button was clicked from. row: a forwardPortChains row — { branch, cells }.
-export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) {
+export async function createSubWorkspaceFromForwardPort(
+  plugins: WorkspacePlugins,
+  parentWs: WorkspaceLike,
+  row: ForwardPortRow,
+): Promise<unknown> {
   const { config, dialogs, wt } = plugins;
   const existing = findSubWorkspace(config, parentWs, row);
   if (existing) {
     wt.select(existing.id);
     return;
   }
-  const repoFor = (slug) => {
+  const repoFor = (slug: string): RepoConfig | null => {
     const exact = (config.config.repos || []).find((r) => r.github === slug);
     if (exact) return exact;
     const name = slug.split("/")[1];
@@ -910,7 +1068,7 @@ export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) 
   };
   // one {repo, pull} per cell that both maps to a configured repo and has a PR (a
   // "waiting" cell — no PR yet — is skipped)
-  const targets = [];
+  const targets: PrTarget[] = [];
   for (const cell of row.cells || []) {
     const repo = repoFor(cell.repository);
     const pull = (cell.pulls || [])[0];
@@ -944,7 +1102,10 @@ export async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) 
 // that task's linked branches. Same branch-resolution dance as a forward-port
 // sub-workspace, minus the parent: this always creates a new top-level workspace.
 // targets: [{repo, pull: {github, number}}], one per repo the task spans.
-export async function createWorkspaceFromPRs(plugins, targets) {
+export async function createWorkspaceFromPRs(
+  plugins: WorkspacePlugins,
+  targets: PrTarget[],
+): Promise<void> {
   const got = await resolvePrBranches(plugins, targets);
   if (!got) return;
   const name = got[0].branch;
@@ -974,10 +1135,13 @@ export const REVIEW_CATEGORY = "review";
 // targets: [{repo, pull: {github, number}}], one per repo the task spans.
 // Returns the workspace id (new or pre-existing) on success, or a falsy value on
 // failure — callers use this both as a truthy check and to resolve the record.
-export async function createReviewWorkspace(plugins, targets) {
+export async function createReviewWorkspace(
+  plugins: Pick<WorkspacePlugins, "config" | "code" | "dialogs" | "eventLog" | "wt">,
+  targets: PrTarget[],
+): Promise<string | false | null> {
   const { config } = plugins;
   if (!targets.length) return null;
-  const findExisting = (name) =>
+  const findExisting = (name: string) =>
     (config.config.workspaces || []).find((w) => w.category === REVIEW_CATEGORY && w.name === name);
   // Any workspace at all (not just a review one) already checked out on this
   // branch — e.g. a regular workspace someone has open on it for other reasons.
@@ -988,7 +1152,8 @@ export async function createReviewWorkspace(plugins, targets) {
   // fetch left to do — just reuse it for the review instead of attempting a
   // second worktree for the same branch, which `git worktree add` would refuse
   // outright.
-  const findExistingAny = (name) => (config.config.workspaces || []).find((w) => w.name === name);
+  const findExistingAny = (name: string) =>
+    (config.config.workspaces || []).find((w) => w.name === name);
   // Resolve just the primary target's head branch first — a read-only lookup, no
   // fetch — so a review workspace already tracking this task can be reused WITHOUT
   // ever touching git. resolvePrBranches' fetchRemoteBranch would otherwise try to
@@ -998,7 +1163,7 @@ export async function createReviewWorkspace(plugins, targets) {
   // again, or the auto-hook firing a second time) — a brand-new task has nothing
   // to find here and just falls through to the full resolve below.
   try {
-    const head = await postJSON("/api/prs/head", {
+    const head = await postJSON<{ branch?: string }>("/api/prs/head", {
       repo: targets[0].pull.github,
       number: targets[0].pull.number,
     });
@@ -1034,8 +1199,8 @@ export async function createReviewWorkspace(plugins, targets) {
     return existing.id;
   }
   const checkouts = got.map((g) => ({ repo: g.repo.id, branch: g.branch }));
-  const forkRepos = new Set();
-  const startPointByRepo = {};
+  const forkRepos = new Set<string>();
+  const startPointByRepo: Record<string, string> = {};
   // Claude always needs a main-repo (community) checkout to run in (its cwd —
   // see ClaudePlugin._dirsFor) — a bundle-only PR (no sibling branch in the main
   // repo, e.g. an enterprise-only change) would otherwise leave the review
@@ -1095,7 +1260,10 @@ const REVIEW_SCORE_INSTRUCTION = `Finally, on its own line at the very end of yo
 // reply to disk (backend/server.py's ClaudeManager) so it's still there — in that
 // same Claude tab — after a goo restart, unlike an ordinary chat turn.
 // plugins: needs a `claude` key (ClaudePlugin) alongside the usual bundle.
-export async function runClaudeReview(plugins, ws) {
+export async function runClaudeReview(
+  plugins: { claude: PluginInstance<typeof ClaudePlugin> },
+  ws: WorkspaceLike & Pick<WorkspaceConfig, "name">,
+): Promise<void> {
   const template = await fetchReviewPrompt();
   const repos = (ws.checkouts || []).map((c) => c.repo).join(", ");
   const prompt = `${REVIEW_SAFETY_PREAMBLE}\n\n${template}\n\n${REVIEW_SCORE_INSTRUCTION}`
@@ -1110,15 +1278,17 @@ export async function runClaudeReview(plugins, ws) {
 // construction, so "activating" is just recording it as the loaded workspace —
 // no git, no dirty-tree guard (nothing gets checked out). If a workspace for
 // these exact branches already exists, it is selected instead of duplicated.
-export async function adoptCurrentCheckout(plugins) {
+export async function adoptCurrentCheckout(
+  plugins: WorkspacePlugins & { server: PluginInstance<typeof ServerPlugin> },
+): Promise<unknown> {
   const { config, dialogs, code, eventLog, wt, server } = plugins;
-  const fail = (message) =>
+  const fail = (message: string) =>
     dialogs.open({ title: "Adopt current checkout", message, okLabel: "OK", cancelLabel: null });
 
   // fresh local git state, scoped to the server repos (no PR/runbot/mergebot)
   await code.loadBranches(new Set(["community", "enterprise"]));
   const byId = Object.fromEntries(code.branchRepos().map((r) => [r.id, r]));
-  const checkouts = [];
+  const checkouts: CheckoutConfig[] = [];
   for (const id of ["community", "enterprise"]) {
     const cur = byId[id]?.current;
     if (cur && cur !== "(detached)") checkouts.push({ repo: id, branch: cur });
@@ -1130,7 +1300,7 @@ export async function adoptCurrentCheckout(plugins) {
 
   // make `ws` the loaded workspace without touching git; a main server running
   // another workspace must stop first (same semantics as activate())
-  const makeLoaded = async (ws) => {
+  const makeLoaded = async (ws: Pick<WorkspaceConfig, "id" | "name">): Promise<void> => {
     const s = server.status();
     const busy = s.state === "running" || s.state === "starting";
     const activeId = server.loadedWorkspaceId();
@@ -1199,16 +1369,31 @@ export async function adoptCurrentCheckout(plugins) {
 // close its open PRs and drop its database. (Worktree workspaces go through
 // wt.remove — the backend owns their on-disk cleanup.)
 export async function deleteWorkspaceDialog(
-  ws,
-  { config, code, db, eventLog, repoMap, isActive, dialogs, wt, server },
-) {
+  ws: WorkspaceLike,
+  {
+    config,
+    code,
+    db,
+    eventLog,
+    repoMap,
+    isActive,
+    dialogs,
+    wt,
+    server,
+  }: WorkspacePlugins & {
+    server: PluginInstance<typeof ServerPlugin>;
+    // repo id -> its local branches by name (the Workspaces screen's repoMap)
+    repoMap: Record<string, { branches: Map<string, BranchInfo> } | undefined>;
+    isActive: boolean;
+  },
+): Promise<void> {
   if (isActive) return; // the loaded workspace cannot be deleted
   const descendants = descendantWorkspaces(config.config.workspaces || [], ws.id);
   const groups = code.groups();
   // deletable branches: present locally and not a base/primary branch
   const branches = (ws.checkouts || [])
     .map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) }))
-    .filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch))
+    .filter((x): x is typeof x & { b: BranchInfo } => !!x.b && !BASE_BRANCH_RE.test(x.branch))
     .map((x) => ({
       repo: x.repo,
       branch: x.branch,
@@ -1221,10 +1406,13 @@ export async function deleteWorkspaceDialog(
       pr: groups.prIndex[`${repo}:${branch}`],
       github: groups.githubByRepo[repo],
     }))
-    .filter((x) => x.pr && x.pr.state === "open" && x.github)
+    .filter(
+      (x): x is { pr: PullRequest; github: string } =>
+        !!x.pr && x.pr.state === "open" && !!x.github,
+    )
     .map((x) => ({ github: x.github, number: x.pr.number }));
 
-  const fields = [];
+  const fields: DialogField[] = [];
   if (branches.length)
     fields.push({
       key: "delBranches",
@@ -1272,7 +1460,7 @@ export async function deleteWorkspaceDialog(
   // these are independent network/git ops (close PRs, delete branches per repo,
   // drop the db) — fire them concurrently rather than one slow await after another.
   // Each helper handles its own errors and never rejects, so Promise.all is safe.
-  const ops = [];
+  const ops: Promise<unknown>[] = [];
   if (res.closePrs) for (const p of prs) ops.push(code.closePrNoConfirm(p.github, p.number));
   if (res.delBranches)
     for (const b of branches)

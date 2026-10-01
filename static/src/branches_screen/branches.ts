@@ -21,6 +21,58 @@ import { Panel } from "../core/panel.ts";
 import { RecordList, recordset } from "../core/recordset.ts";
 import { CommitsDialog, pushBranchesDialog } from "../core/dialogs.ts";
 import { ActionsCell, MergebotCell, PrCell, RepoCell } from "./cells.ts";
+import type { PullRequest } from "../core/models.ts";
+import type { PrRef } from "../core/code_plugin.ts";
+import type { DialogField } from "../core/dialog_plugin.ts";
+import type { ActionMenuDetail, MenuAction } from "../core/menus.ts";
+
+// the fields both row kinds carry
+interface BranchRowBase {
+  id: string;
+  branch: string;
+  repo: string;
+  github: string;
+  date: string;
+  subject: string;
+}
+
+// kind "local": a per-repo local branch, with its PRs (prIndex / prsIndex join)
+export interface LocalBranchRow extends BranchRowBase {
+  kind: "local";
+  path: string;
+  push_remote: string;
+  remote: boolean;
+  base: boolean; // a base branch (master, saas-*, …)
+  active: boolean; // checked out in its repo
+  dirty: boolean; // checked out AND the working tree is dirty
+  repoDirty: boolean; // the repo's working tree (its current branch)
+  pr: PullRequest | undefined; // the principal PR — open if any, else most recently updated
+  prs: PullRequest[]; // every PR on this branch (open + closed), open/latest first
+}
+
+// kind "pr": an authored PR whose branch has no local checkout anywhere
+export interface PrOnlyRow extends BranchRowBase {
+  kind: "pr";
+  pr: PullRequest;
+}
+
+export type BranchRow = LocalBranchRow | PrOnlyRow;
+
+// one branch name's group of rows
+interface BranchRowGroup {
+  name: string;
+  rows: BranchRow[];
+  updateSum: number; // combined last-update time (ms) across its rows
+}
+
+// the props every rich cell gets (cellProps)
+export interface BranchCellProps {
+  row: BranchRow;
+  screen: BranchesScreen;
+}
+
+// a local row whose principal PR is open on a known GitHub repo
+type LocalRowWithPr = LocalBranchRow & { pr: PullRequest };
 
 export class BranchesScreen extends Component {
   static components = { SearchBox, Panel, RecordList };
@@ -87,7 +139,7 @@ export class BranchesScreen extends Component {
   repoFilter = signal(""); // "" = all repositories
   search = signal("");
   statusFilter = signal("unmerged"); // merge status; "" = all, "unmerged" = still in flight
-  selected = signal(new Set()); // branch names ticked for batch actions
+  selected = signal(new Set<string>()); // branch names ticked for batch actions
   sortDir = signal("desc"); // groups by combined last-update time; "asc" | "desc"
   sortKey = signal("update"); // the one sortable column (kept as state for the header API)
 
@@ -95,18 +147,18 @@ export class BranchesScreen extends Component {
   // One group per branch name; each carries its rows and is "active" when the
   // branch is checked out in any repo. A branch's PR rides its local row (prIndex
   // join); authored PRs with no local branch anywhere become PR-only rows.
-  groups = computed(() => {
+  groups = computed((): BranchRowGroup[] => {
     const { prIndex, prsIndex, pathByRepo, githubByRepo, pushRemoteByRepo } = this.code.groups();
     const repoFilter = this.repoFilter();
     const q = this.search().trim().toLowerCase();
-    const byBranch = new Map();
-    const push = (name, row) => {
+    const byBranch = new Map<string, BranchRow[]>();
+    const push = (name: string, row: BranchRow): void => {
       if (!byBranch.has(name)) byBranch.set(name, []);
-      byBranch.get(name).push(row);
+      byBranch.get(name)!.push(row); // set just above when missing
     };
     // local-branch keys (unfiltered), so a filtered-out local row never
     // resurfaces as a duplicate PR-only row
-    const local = new Set();
+    const local = new Set<string>();
     for (const repo of this.code.branchRepos())
       for (const b of repo.branches || []) local.add(`${repo.id}:${b.name}`);
     for (const repo of this.code.branchRepos()) {
@@ -115,8 +167,7 @@ export class BranchesScreen extends Component {
       for (const b of repo.branches) {
         const pr = prIndex[`${repo.id}:${b.name}`];
         const prs = prsIndex[`${repo.id}:${b.name}`] || (pr ? [pr] : []);
-        const hay =
-          `${b.name} ${repo.id}` + prs.map((p) => ` ${p.title} #${p.number}`).join("");
+        const hay = `${b.name} ${repo.id}` + prs.map((p) => ` ${p.title} #${p.number}`).join("");
         if (q && !hay.toLowerCase().includes(q)) continue;
         push(b.name, {
           kind: "local",
@@ -161,7 +212,7 @@ export class BranchesScreen extends Component {
     }
     // within a group: config repo order (odoo before enterprise), local rows first
     const repoOrder = (this.config.config.repos || []).map((r) => r.id);
-    const rank = (r) => {
+    const rank = (r: BranchRow): number => {
       const i = repoOrder.indexOf(r.repo);
       return i === -1 ? repoOrder.length : i; // unknown repos sort last
     };
@@ -172,7 +223,7 @@ export class BranchesScreen extends Component {
         name,
         rows: rows
           .slice()
-          .sort((a, b) => (a.kind === "pr") - (b.kind === "pr") || rank(a) - rank(b)),
+          .sort((a, b) => Number(a.kind === "pr") - Number(b.kind === "pr") || rank(a) - rank(b)),
         // combined last-update time for the branch (sum across its rows)
         updateSum: rows.reduce((s, r) => s + (Date.parse(r.date) || 0), 0),
       }))
@@ -184,25 +235,25 @@ export class BranchesScreen extends Component {
   // rows matches. "merged" reads GitHub's terminal state (or mergebot's); a local
   // branch without a PR counts as unmerged (in-flight work). "error"/"blocked"
   // are mergebot states that only exist on still-open PRs, which we do scrape.
-  _matchesStatus(g, status) {
+  _matchesStatus(g: BranchRowGroup, status: string): boolean {
     if (!status) return true;
     if (status === "unmerged") return g.rows.some((r) => !r.pr || !this._isMerged(r.pr));
     if (status === "merged") return g.rows.some((r) => r.pr && this._isMerged(r.pr));
     return g.rows.some((r) => r.pr && this.mbState(r.pr) === status);
   }
 
-  _isMerged(pr) {
+  _isMerged(pr: PullRequest): boolean {
     return this.mbState(pr) === "merged" || pr.state === "merged" || pr.state === "closed";
   }
 
-  mbState(pr) {
+  mbState(pr: PrRef): string {
     return this.code.mergebot()[`${pr.github}#${pr.number}`] || "";
   }
 
   // ── RecordList wiring ──
-  rows = () => this.groups().flatMap((g) => g.rows);
-  groupByBranch = (r) => r.branch;
-  rowClassFn = (r) => ({
+  rows = (): BranchRow[] => this.groups().flatMap((g) => g.rows);
+  groupByBranch = (r: BranchRow): string => r.branch;
+  rowClassFn = (r: BranchRow): Record<string, boolean> => ({
     active: r.kind === "local" && r.active,
     "row-sel": this.selected().has(r.branch),
   });
@@ -213,7 +264,7 @@ export class BranchesScreen extends Component {
     toggle: () => this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc"),
   };
 
-  _cell = (row) => ({ row, screen: this });
+  _cell = (row: BranchRow): BranchCellProps => ({ row, screen: this });
   rs = recordset(this.rows, [
     { name: "repo", label: "Repository", component: RepoCell, cellProps: this._cell },
     {
@@ -236,7 +287,7 @@ export class BranchesScreen extends Component {
     { name: "act", label: "", component: ActionsCell, cellProps: this._cell },
   ]);
 
-  setup() {
+  setup(): void {
     this.code.load();
     // mergebot for the listed PRs, via CodePlugin (session-deduped; a forced
     // load() arms the refresh scope so the next pass re-scrapes)
@@ -248,9 +299,9 @@ export class BranchesScreen extends Component {
 
   // the open PRs across all rows in mergebot's {github, number} shape. Terminal
   // PRs (merged/closed) never need a scrape; external repos aren't on mergebot.
-  _mbPrs() {
-    const out = [];
-    const seen = new Set();
+  _mbPrs(): PrRef[] {
+    const out: PrRef[] = [];
+    const seen = new Set<string>();
     for (const r of this.rows()) {
       const pr = r.pr;
       if (!pr || pr.state !== "open" || !pr.github || this.code.isExternalRepo(pr.github)) continue;
@@ -262,42 +313,45 @@ export class BranchesScreen extends Component {
     return out;
   }
 
-  async refresh() {
+  async refresh(): Promise<void> {
     await this.code.load(true);
   }
 
   // ── selection (group-level: a Set of branch names) ──
-  toggleSelect(name) {
+  toggleSelect(name: string): void {
     const sel = new Set(this.selected());
-    sel.has(name) ? sel.delete(name) : sel.add(name);
+    if (sel.has(name)) sel.delete(name);
+    else sel.add(name);
     this.selected.set(sel);
   }
 
-  get allSelected() {
+  get allSelected(): boolean {
     const groups = this.groups();
     const sel = this.selected();
     return groups.length > 0 && groups.every((g) => sel.has(g.name));
   }
 
-  toggleSelectAll() {
+  toggleSelectAll(): void {
     this.selected.set(this.allSelected ? new Set() : new Set(this.groups().map((g) => g.name)));
   }
 
   // selected branch groups that are still visible (a filter may hide some)
-  get selectedGroups() {
+  get selectedGroups(): BranchRowGroup[] {
     const sel = this.selected();
     return this.groups().filter((g) => sel.has(g.name));
   }
 
   // the selected groups' local branches (what batch Delete operates on)
-  get selectedLocalRows() {
-    return this.selectedGroups.flatMap((g) => g.rows.filter((r) => r.kind === "local"));
+  get selectedLocalRows(): LocalBranchRow[] {
+    return this.selectedGroups.flatMap((g) =>
+      g.rows.filter((r): r is LocalBranchRow => r.kind === "local"),
+    );
   }
 
   // the selected groups' open PRs, deduped (what batch Close operates on)
-  get selectedOpenPrs() {
-    const out = [];
-    const seen = new Set();
+  get selectedOpenPrs(): PullRequest[] {
+    const out: PullRequest[] = [];
+    const seen = new Set<string>();
     for (const g of this.selectedGroups)
       for (const r of g.rows) {
         const pr = r.pr;
@@ -313,16 +367,18 @@ export class BranchesScreen extends Component {
   // batch-delete every selected branch in each repo where it can be removed
   // (only the checked-out branch is skipped). Open PRs on the selected branches
   // can be closed first via a checkbox.
-  async deleteSelected() {
+  async deleteSelected(): Promise<void> {
     const groups = this.selectedGroups.filter((g) => g.rows.some((r) => r.kind === "local"));
     if (!groups.length) return;
     const all = this.selectedLocalRows;
     const rows = all.filter((r) => !this.deleteBlocked(r));
     const skipped = all.length - rows.length;
-    const prs = rows.filter((r) => r.pr && r.pr.state === "open" && r.github);
+    const prs = rows.filter(
+      (r): r is LocalRowWithPr => !!r.pr && r.pr.state === "open" && !!r.github,
+    );
     const remoteRows = rows.filter((r) => r.remote && !r.base);
     const what = groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
-    const fields = [];
+    const fields: DialogField[] = [];
     if (remoteRows.length)
       fields.push({
         key: "delRemote",
@@ -359,7 +415,7 @@ export class BranchesScreen extends Component {
   }
 
   // confirm, then close every selected open PR
-  async closeSelected() {
+  async closeSelected(): Promise<void> {
     const prs = this.selectedOpenPrs;
     if (!prs.length) return;
     const res = await this.dialogs.open({
@@ -378,14 +434,14 @@ export class BranchesScreen extends Component {
   // single-row delete, confirmed via the dialog. When the branch has an open PR
   // it can be closed first; targets that reference this exact branch can be
   // removed in the same step.
-  async deleteRow(r) {
+  async deleteRow(r: LocalBranchRow): Promise<void> {
     if (this.deleteBlocked(r)) return;
     const canRemote = r.remote && !r.base; // pushed, non-base: removable on the remote
     const hasPr = !!(r.pr && r.pr.state === "open" && r.github);
     const targets = (this.config.config.workspaces || []).filter((w) =>
       (w.checkouts || []).some((c) => c.repo === r.repo && c.branch === r.branch),
     );
-    const fields = [];
+    const fields: DialogField[] = [];
     if (canRemote)
       fields.push({
         key: "delRemote",
@@ -397,7 +453,7 @@ export class BranchesScreen extends Component {
       fields.push({
         key: "closePr",
         type: "checkbox",
-        label: `Close PR #${r.pr.number}`,
+        label: `Close PR #${r.pr!.number}`, // hasPr: r.pr is set
         value: true,
       });
     for (const t of targets)
@@ -416,7 +472,7 @@ export class BranchesScreen extends Component {
     });
     if (!res) return;
     // close the PR before deleting the branch, then drop the branch
-    if (hasPr && res.closePr) await this.code.closePrNoConfirm(r.github, r.pr.number);
+    if (hasPr && res.closePr) await this.code.closePrNoConfirm(r.github, r.pr!.number); // hasPr: r.pr is set
     await this.code.deleteBranchNoConfirm(r.branch, r.repo, r.path, !!res.delRemote);
     // remove any workspaces the user opted to delete (canonical write — full
     // records spread so stable ports survive)
@@ -454,7 +510,7 @@ export class BranchesScreen extends Component {
   }
 
   // repositories present in the loaded data (for the filter dropdown)
-  get repos() {
+  get repos(): string[] {
     return [
       ...new Set([
         ...this.code.branchRepos().map((r) => r.id),
@@ -463,9 +519,9 @@ export class BranchesScreen extends Component {
     ];
   }
 
-  get count() {
+  get count(): string {
     let branches = 0;
-    const prs = new Set();
+    const prs = new Set<string>();
     for (const r of this.rows()) {
       if (r.kind === "local") branches++;
       if (r.pr) prs.add(`${r.pr.github}#${r.pr.number}`);
@@ -474,16 +530,16 @@ export class BranchesScreen extends Component {
   }
 
   // per-repo PR load errors (branch-scan errors surface via code.error())
-  get errors() {
+  get errors(): ReturnType<typeof this.code.prRepos> {
     return this.code.prRepos().filter((r) => r.error);
   }
 
-  openPr(row) {
+  openPr(row: LocalBranchRow): void {
     this.code.eventLog.add(`opening PR for ${row.branch} (${row.repo})`);
     window.open(this.code.prCreateUrl(row.repo, row.github, row.branch), "_blank");
   }
 
-  hasRowMenu(row) {
+  hasRowMenu(row: BranchRow): boolean {
     if (row.kind === "local") return true;
     return !!(row.pr && row.pr.state === "open" && row.pr.github);
   }
@@ -491,20 +547,22 @@ export class BranchesScreen extends Component {
   // build the per-row action list and open the floating kebab menu anchored to
   // the clicked button (see ActionMenu). Local rows get the full branch menu;
   // PR-only rows (no local branch) just Close PR.
-  openRowMenu(ev, r) {
-    const rect = ev.currentTarget.getBoundingClientRect();
+  openRowMenu(ev: MouseEvent, r: BranchRow): void {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the row's kebab button
     if (r.kind === "pr") {
-      const actions = [
+      const actions: MenuAction[] = [
         {
           label: "Close PR",
           danger: true,
           onClick: () => this.code.closePr(r.pr.github, r.pr.number),
         },
       ];
-      appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+      appBus.dispatchEvent(
+        new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+      );
       return;
     }
-    const actions = [{ label: "Commits", onClick: () => this.openCommits(r) }];
+    const actions: MenuAction[] = [{ label: "Commits", onClick: () => this.openCommits(r) }];
     if (!r.remote && !r.base)
       actions.push({
         label: "Push",
@@ -517,7 +575,7 @@ export class BranchesScreen extends Component {
       actions.push({
         label: "Close PR",
         danger: true,
-        onClick: () => this.code.closePr(r.github, r.pr.number),
+        onClick: () => this.code.closePr(r.github, r.pr!.number), // checked just above
       });
     const coBlocked = this.checkoutBlocked(r);
     actions.push({
@@ -539,24 +597,26 @@ export class BranchesScreen extends Component {
       title: delBlocked || "",
       onClick: () => this.deleteRow(r),
     });
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+    );
   }
 
   // why a branch can't be checked out ("" = allowed): already checked out, or the
   // repo's working tree is dirty (a checkout would fail / lose changes)
-  checkoutBlocked(row) {
+  checkoutBlocked(row: LocalBranchRow): string {
     if (row.active) return "this branch is already checked out";
     if (row.repoDirty) return "commit or stash changes first — the working tree is dirty";
     return "";
   }
 
-  checkout(row) {
+  checkout(row: LocalBranchRow): void {
     if (this.checkoutBlocked(row)) return;
     // the backend announces the checkout as a timed SSE event — no pre-log
     this.code.checkout([{ repo: row.repo, path: row.path, branch: row.branch }]);
   }
 
-  pushBranch(row) {
+  pushBranch(row: LocalBranchRow): Promise<boolean> {
     return pushBranchesDialog(
       this.code,
       this.dialogs,
@@ -569,7 +629,7 @@ export class BranchesScreen extends Component {
   }
 
   // show the last commits on this branch (in a floating dialog)
-  openCommits(row) {
+  openCommits(row: LocalBranchRow): void {
     if (!row.path) return;
     this.dialogs.openComponent(CommitsDialog, {
       path: row.path,
@@ -580,7 +640,7 @@ export class BranchesScreen extends Component {
   }
 
   // create a new branch based on this one (git branch <new> <branch> — no checkout)
-  async duplicateBranch(row) {
+  async duplicateBranch(row: LocalBranchRow): Promise<void> {
     const res = await this.dialogs.open({
       title: `Duplicate "${row.branch}" (${row.repo})`,
       fields: [
@@ -601,12 +661,12 @@ export class BranchesScreen extends Component {
 
   // why a branch can't be deleted ("" = deletable). Deleting closes an open PR
   // (it removes the head branch), so require closing the PR first.
-  deleteBlocked(row) {
+  deleteBlocked(row: LocalBranchRow): string {
     if (row.active) return "cannot delete the checked-out branch";
     return ""; // an open PR no longer blocks: the delete dialog offers to close it
   }
 
-  get stamp() {
+  get stamp(): string {
     if (this.code.loading()) return "refreshing…";
     return this.code.at() ? `updated ${timeAgo(new Date(this.code.at()).toISOString())}` : "";
   }

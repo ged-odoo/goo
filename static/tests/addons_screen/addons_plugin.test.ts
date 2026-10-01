@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { signal } from "@odoo/owl";
 import { AddonsPlugin } from "../../src/addons_screen/addons_plugin.ts";
+import type { AddonModule } from "../../src/addons_screen/addons_plugin.ts";
+import type { RunSnapshot } from "../../src/core/runtime_models.ts";
+import type { WorktreeRepo } from "../../src/core/workspace_plugin.ts";
 import { ConfigPlugin } from "../../src/core/config_plugin.ts";
 import { StorePlugin } from "../../src/core/store_plugin.ts";
 import { ServerPlugin } from "../../src/core/server_plugin.ts";
@@ -9,24 +12,39 @@ import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { WorkspacePlugin } from "../../src/core/workspace_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
 
-function jsonOk(data) {
+function jsonOk(data: object) {
   return { ok: true, json: async () => ({ ok: true, ...data }) };
 }
 
-function setup({ dialogAnswer = true, runs = [] } = {}) {
+function mod(fields: Partial<AddonModule> & { name: string }): AddonModule {
+  return {
+    repo: "community",
+    category: "",
+    summary: "",
+    application: false,
+    installable: true,
+    state: null,
+    ...fields,
+  };
+}
+
+function setup({
+  dialogAnswer = true,
+  runs = [] as RunSnapshot[],
+}: { dialogAnswer?: boolean; runs?: RunSnapshot[] } = {}) {
   const fakeConfig = {
     config: { repos: [{ id: "community", path: "/main/community" }] },
     workspace: vi.fn(() => ({ touchActivity: vi.fn() })),
   };
   const fakeStore = {
     runs: signal(runs),
-    latestRunOfKind: (kind, slot) =>
+    latestRunOfKind: (kind: string, slot: string) =>
       runs.find((r) => r.kind === kind && (r.server ?? "main") === slot) || null,
   };
   const fakeServer = { onLog: vi.fn() };
   const fakeEventLog = { add: vi.fn() };
   const fakeDialogs = { open: vi.fn(async () => dialogAnswer) };
-  const fakeWorktree = { wtRepos: vi.fn(() => []) };
+  const fakeWorktree = { wtRepos: vi.fn((): Partial<WorktreeRepo>[] => []) };
   const harness = createPluginHarness([
     [ConfigPlugin, fakeConfig],
     [StorePlugin, fakeStore],
@@ -54,7 +72,12 @@ describe("AddonsPlugin", () => {
       vi.fn(async () => jsonOk({ modules: [{ name: "sale" }] })),
     );
     const { plugin } = setup();
-    const ws = { id: "main", db: "mydb", location: "main", checkouts: [{ repo: "community" }] };
+    const ws = {
+      id: "main",
+      db: "mydb",
+      location: "main",
+      checkouts: [{ repo: "community", branch: "master" }],
+    };
     await plugin.load(ws);
     expect(plugin.slot("main").modules()).toEqual([{ name: "sale" }]);
     expect(plugin.slot("main").loadedDb()).toBe("mydb");
@@ -107,9 +130,9 @@ describe("AddonsPlugin", () => {
     const { plugin } = setup();
     const s = plugin.slot("main");
     s.modules.set([
-      { name: "sale", summary: "", category: "", state: "installed", application: true },
-      { name: "sale_stock", summary: "", category: "", state: "uninstalled", application: true },
-      { name: "base", summary: "", category: "", state: "installed", application: false },
+      mod({ name: "sale", state: "installed", application: true }),
+      mod({ name: "sale_stock", state: "uninstalled", application: true }),
+      mod({ name: "base", state: "installed", application: false }),
     ]);
     plugin.appOnly.set(true);
     expect(s.filtered().shown.map((m) => m.name)).toEqual(["sale", "sale_stock"]);
@@ -169,22 +192,22 @@ describe("AddonsPlugin", () => {
     const s = plugin.slot("main");
     s.pending.set(true);
     s.lastWs = { id: "main", db: "mydb", location: "main", checkouts: [] };
-    plugin._onRun("main", { id: 1, kind: "install", state: "running" });
+    plugin._onRun("main", { id: "1", kind: "install", state: "running" });
     expect(s.pending()).toBe(false);
     expect(s.status()).toBe("installing…");
-    plugin._onRun("main", { id: 1, kind: "install", state: "done", returncode: 0 });
+    plugin._onRun("main", { id: "1", kind: "install", state: "done", returncode: 0 });
     expect(s.status()).toBe("done");
   });
 
   it("_onRun ignores a finished run it never saw start (e.g. after a page reload)", () => {
     const { plugin } = setup();
     const s = plugin.slot("main");
-    plugin._onRun("main", { id: 99, kind: "install", state: "done", returncode: 0 });
+    plugin._onRun("main", { id: "99", kind: "install", state: "done", returncode: 0 });
     expect(s.status()).toBe(""); // untouched -- announced never matched
   });
 
   it("runningFor() reflects a currently-running run for that slot", () => {
-    const runs = [{ id: 1, kind: "install", server: "main", state: "running" }];
+    const runs = [{ id: "1", kind: "install", server: "main", state: "running" }];
     const { plugin } = setup({ runs });
     expect(plugin.runningFor("main")).toBe(true);
     expect(plugin.runningFor("wt-1")).toBe(false);

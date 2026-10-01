@@ -11,7 +11,9 @@ import { ServerPlugin } from "../core/server_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { EventLogPlugin } from "../core/event_log_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
-import { postJSON, parseReviewScore } from "../core/utils.ts";
+import type { ClaudeEvent } from "../core/server_plugin.ts";
+import type { WorkspaceLike } from "../core/workspace_plugin.ts";
+import { postJSON, parseReviewScore, errorMessage } from "../core/utils.ts";
 
 import { Plugin, usePlugin, signal } from "@odoo/owl";
 
@@ -28,6 +30,49 @@ export const CLAUDE_MODELS = [
   { value: "haiku", label: "Haiku" },
 ];
 
+// one transcript entry: a "user" prompt (added here), or an SSE-relayed
+// "assistant" / "tool" / "error" item (a ClaudeEvent as-is)
+export interface ChatItem {
+  role?: string;
+  text?: string;
+  tool?: string;
+  [key: string]: unknown;
+}
+
+// one target's conversation; state is "idle" | "running" (the backend's string)
+interface Convo {
+  items: ChatItem[];
+  state: string;
+}
+
+// /api/workspace/claude/history's reply
+interface HistoryReply {
+  items?: ChatItem[];
+  state?: string;
+}
+
+// /api/workspace/claude/review's reply (fields absent when nothing is saved)
+interface ReviewReply {
+  text?: string;
+  version?: number | null;
+  versions?: number[];
+  created?: number | null;
+}
+
+// fetchReview's normalized result
+export interface ReviewVersion {
+  text: string;
+  version: number | null;
+  versions: number[];
+  created: number | null;
+}
+
+// where a Claude run works: its cwd + the extra allowed dirs
+interface ClaudeDirs {
+  cwd: string;
+  addDirs: string[];
+}
+
 export class ClaudePlugin extends Plugin {
   static sequence = 6; // after WorkspacePlugin (5), whose wtRepos() it reuses
 
@@ -36,38 +81,38 @@ export class ClaudePlugin extends Plugin {
   worktree = usePlugin(WorkspacePlugin);
   eventLog = usePlugin(EventLogPlugin);
   dialogs = usePlugin(DialogPlugin);
-  convos = signal({}); // targetId -> { items: [...], state: "idle"|"running" }
+  convos = signal<Record<string, Convo>>({}); // targetId -> { items: [...], state: "idle"|"running" }
   models = CLAUDE_MODELS;
   model = signal(this.config.getState("claude_model", "")); // chosen model, persisted
-  _primed = new Set(); // targets whose transcript we've fetched from the backend
+  _primed = new Set<string>(); // targets whose transcript we've fetched from the backend
 
-  setup() {
+  setup(): void {
     this.server.onClaude((d) => this.apply(d));
   }
 
-  setModel(v) {
+  setModel(v: string | null | undefined): void {
     this.model.set(v || "");
     this.config.setState("claude_model", v || "");
   }
 
-  _get(id) {
+  _get(id: string): Convo {
     return this.convos()[id] || { items: [], state: "idle" };
   }
 
-  _set(id, next) {
+  _set(id: string, next: Convo): void {
     this.convos.set({ ...this.convos(), [id]: next });
   }
 
-  _append(id, item) {
+  _append(id: string, item: ChatItem): void {
     const c = this._get(id);
     this._set(id, { ...c, items: [...c.items, item] });
   }
 
-  items(id) {
+  items(id: string): ChatItem[] {
     return this._get(id).items;
   }
 
-  running(id) {
+  running(id: string): boolean {
     return this._get(id).state === "running";
   }
 
@@ -79,8 +124,8 @@ export class ClaudePlugin extends Plugin {
   // found across the conversation (a later re-review after changes wins), or
   // null if none was ever reported (an older review, a non-review chat, or
   // Claude just didn't comply).
-  reviewScore(id) {
-    let score = null;
+  reviewScore(id: string): number | null {
+    let score: number | null = null;
     for (const item of this.items(id)) {
       if (item.role !== "assistant" || !item.text) continue;
       const s = parseReviewScore(item.text);
@@ -91,7 +136,7 @@ export class ClaudePlugin extends Plugin {
 
   // a live chat item pushed from the backend (assistant text, tool activity, result,
   // or error). The final "result" ends the turn — flip back to idle.
-  apply(d) {
+  apply(d: ClaudeEvent | null | undefined): void {
     if (!d || !d.workspace) return;
     const id = d.workspace;
     if (d.role === "result") {
@@ -105,12 +150,12 @@ export class ClaudePlugin extends Plugin {
 
   // fetch the transcript once per target (after a reload the backend still holds it);
   // skip if we already have live items so an in-flight turn isn't clobbered
-  async prime(id) {
+  async prime(id: string | null | undefined): Promise<void> {
     if (!id || this._primed.has(id)) return;
     this._primed.add(id);
     if (this._get(id).items.length) return;
     try {
-      const res = await postJSON("/api/workspace/claude/history", { workspace: id });
+      const res = await postJSON<HistoryReply>("/api/workspace/claude/history", { workspace: id });
       this._set(id, { items: res.items || [], state: res.state || "idle" });
     } catch {
       /* leave empty */
@@ -125,11 +170,11 @@ export class ClaudePlugin extends Plugin {
   // on" date). `version` omitted (or no longer on disk) falls back to the latest.
   // Always re-fetched (no once-guard like prime()), since this is opened on demand
   // rather than primed for every visible task.
-  async fetchReview(id, version) {
+  async fetchReview(id: string, version?: number | null): Promise<ReviewVersion> {
     try {
-      const body = { workspace: id };
+      const body: { workspace: string; version?: number } = { workspace: id };
       if (version != null) body.version = version;
-      const res = await postJSON("/api/workspace/claude/review", body);
+      const res = await postJSON<ReviewReply>("/api/workspace/claude/review", body);
       return {
         text: res.text || "",
         version: res.version ?? null,
@@ -146,7 +191,7 @@ export class ClaudePlugin extends Plugin {
   // main checkout paths. Returns { cwd, addDirs } or null (error already shown).
   // Note: removing a main-located workspace never CLAUDE.forgets its transcript
   // (only /api/workspace/remove does) — a harmless stale in-memory convo.
-  _dirsFor(tgt) {
+  _dirsFor(tgt: WorkspaceLike): ClaudeDirs | null {
     const mainRepoId = this.config.config.main_repo_id || "community";
     if (this.worktree.isWorktree(tgt)) {
       const repos = this.worktree.wtRepos(tgt);
@@ -172,7 +217,7 @@ export class ClaudePlugin extends Plugin {
     const addDirs = (tgt.checkouts || [])
       .filter((c) => c.repo !== mainRepoId)
       .map((c) => pathById[c.repo])
-      .filter(Boolean);
+      .filter((p): p is string => Boolean(p));
     return { cwd, addDirs };
   }
 
@@ -182,7 +227,11 @@ export class ClaudePlugin extends Plugin {
   // dialogs.ts's runClaudeReview) tells the backend to save this turn's reply to
   // disk on completion, so it survives a goo restart (an ordinary chat turn stays
   // in-memory only, as before).
-  async send(tgt, prompt, { review = false } = {}) {
+  async send(
+    tgt: WorkspaceLike,
+    prompt: string | null | undefined,
+    { review = false }: { review?: boolean } = {},
+  ): Promise<void> {
     const text = (prompt || "").trim();
     if (!text || this.running(tgt.id)) return;
     const dirs = this._dirsFor(tgt);
@@ -200,12 +249,12 @@ export class ClaudePlugin extends Plugin {
         review,
       });
     } catch (e) {
-      this._append(tgt.id, { role: "error", text: e.message });
+      this._append(tgt.id, { role: "error", text: errorMessage(e) });
       this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
     }
   }
 
-  async stop(tgt) {
+  async stop(tgt: WorkspaceLike): Promise<void> {
     try {
       await postJSON("/api/workspace/claude/stop", { workspace: tgt.id });
     } catch {

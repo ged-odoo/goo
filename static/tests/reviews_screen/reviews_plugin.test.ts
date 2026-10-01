@@ -1,15 +1,20 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { ReviewsPlugin } from "../../src/reviews_screen/reviews_plugin.ts";
+import type { ReviewEntry } from "../../src/core/config.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
 
 // ReviewsPlugin has no usePlugin() dependencies at all — constructible directly,
 // no harness needed (see static/tests/helpers/plugin_harness.ts's header).
 function makePlugin() {
-  return new ReviewsPlugin({});
+  return new ReviewsPlugin(NO_MANAGER);
 }
 
-function fakeConfig(reviews = []) {
-  return { config: { reviews }, updateConfig: vi.fn() };
+// fixtures carry only the entry fields each test exercises
+function fakeConfig(reviews: Partial<ReviewEntry>[] = []) {
+  return { config: { reviews: reviews as ReviewEntry[] }, updateConfig: vi.fn() };
 }
+
+// the fetch replies below are partial Responses: postJSON reads only ok/status/json()
 
 describe("ReviewsPlugin.loadPrInfo", () => {
   beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
@@ -24,17 +29,21 @@ describe("ReviewsPlugin.loadPrInfo", () => {
   it("force=true re-asks an already-held pair", async () => {
     const plugin = makePlugin();
     plugin.prInfo.set({ "odoo/odoo#1": { github: "odoo/odoo", number: 1, title: "old" } });
-    fetch.mockResolvedValue({
+    vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ prs: [{ github: "odoo/odoo", number: 1, title: "new" }] }),
-    });
+    } as Response);
     await plugin.loadPrInfo([{ github: "odoo/odoo", number: 1 }], true);
     expect(plugin.prInfo()["odoo/odoo#1"].title).toBe("new");
   });
 
   it("records the fetch error and clears loading on failure", async () => {
     const plugin = makePlugin();
-    fetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({ error: "boom" }) });
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "boom" }),
+    } as Response);
     await plugin.loadPrInfo([{ github: "odoo/odoo", number: 1 }]);
     expect(plugin.error()).toBe("boom");
     expect(plugin.loading()).toBe(false);
@@ -46,17 +55,17 @@ describe("ReviewsPlugin.fetchOne", () => {
 
   it("fetches and returns a not-yet-held pair", async () => {
     const plugin = makePlugin();
-    fetch.mockResolvedValue({
+    vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ prs: [{ github: "odoo/odoo", number: 1, title: "t" }] }),
-    });
+    } as Response);
     const pr = await plugin.fetchOne({ github: "odoo/odoo", number: 1 });
-    expect(pr.title).toBe("t");
+    expect(pr?.title).toBe("t");
   });
 
   it("returns null if the fetch never populated that key", async () => {
     const plugin = makePlugin();
-    fetch.mockResolvedValue({ ok: true, json: async () => ({ prs: [] }) });
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ prs: [] }) } as Response);
     expect(await plugin.fetchOne({ github: "odoo/odoo", number: 1 })).toBeNull();
   });
 });
@@ -72,17 +81,17 @@ describe("ReviewsPlugin.findSiblings", () => {
 
   it("returns [] on failure rather than throwing", async () => {
     const plugin = makePlugin();
-    fetch.mockRejectedValue(new Error("network down"));
-    expect(await plugin.findSiblings(["master-x"])).toEqual([]);
+    vi.mocked(fetch).mockRejectedValue(new Error("network down"));
+    expect(await plugin.findSiblings([{ github: "odoo/odoo", branch: "master-x" }])).toEqual([]);
   });
 
   it("seeds prInfo with the found PRs as a side effect", async () => {
     const plugin = makePlugin();
-    fetch.mockResolvedValue({
+    vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ prs: [{ github: "odoo/odoo", number: 1 }] }),
-    });
-    const prs = await plugin.findSiblings(["master-x"]);
+    } as Response);
+    const prs = await plugin.findSiblings([{ github: "odoo/odoo", branch: "master-x" }]);
     expect(prs).toHaveLength(1);
     expect(plugin.prInfo()["odoo/odoo#1"]).toEqual({ github: "odoo/odoo", number: 1 });
   });

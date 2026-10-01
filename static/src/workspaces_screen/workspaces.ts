@@ -17,8 +17,19 @@ import { ServerPlugin } from "../core/server_plugin.ts";
 import { StorePlugin } from "../core/store_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
+import type { WorkspaceConfig } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
+import type { MbCategory } from "../core/common.ts";
+import type {
+  ActionMenuDetail,
+  CiMenuDetail,
+  MbMenuDetail,
+  MbRow,
+  MenuAction,
+} from "../core/menus.ts";
 import { branchKey } from "../core/models.ts";
+import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
+import type { BranchInfo } from "../core/observed_models.ts";
 import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
@@ -50,7 +61,7 @@ const WORKSPACE_ORDER_OPTIONS = [
 ];
 const WORKSPACE_ORDERS = new Set(WORKSPACE_ORDER_OPTIONS.map((option) => option.value));
 
-function savedWorkspaceOrder() {
+function savedWorkspaceOrder(): string {
   try {
     const value = localStorage.getItem(WORKSPACE_ORDER_KEY) || "config";
     return WORKSPACE_ORDERS.has(value) ? value : "config";
@@ -62,13 +73,66 @@ function savedWorkspaceOrder() {
 // collapsed category groups (a browser-side view preference, like the ordering)
 const WORKSPACE_COLLAPSED_KEY = "goo-workspace-collapsed-categories";
 
-function savedCollapsedGroups() {
+function savedCollapsedGroups(): Set<string> {
   try {
-    const stored = JSON.parse(localStorage.getItem(WORKSPACE_COLLAPSED_KEY));
-    return new Set(Array.isArray(stored) ? stored : []);
+    const stored: unknown = JSON.parse(localStorage.getItem(WORKSPACE_COLLAPSED_KEY) ?? "null");
+    return new Set<string>(Array.isArray(stored) ? stored : []);
   } catch {
     return new Set();
   }
+}
+
+// one workspace checkout joined with its local + remote/PR state (wsRows)
+interface WsRow {
+  repo: string;
+  branch: string;
+  github: string;
+  present: boolean;
+  synced: boolean;
+  pr: PullRequest | null;
+}
+
+// a wsRows row whose branch carries a pull request on a known GitHub repo (prRows)
+type PrRow = WsRow & { pr: PullRequest };
+
+// the list's runbot/CI badge (wsCiStatus)
+interface CiBadge {
+  cls: string;
+  label: string;
+  title: string;
+  running?: boolean;
+  checks?: CiCheck[];
+}
+
+// a workspace's aggregate mergebot badge (mbStatus)
+interface MbStatus {
+  cls: MbCategory;
+  label: string;
+  url: string;
+  rows: (MbRow & { cls: MbCategory; url: string })[];
+}
+
+// a trailing list pill (listPills)
+interface ListPill {
+  key: string;
+  cls: string;
+  sym: string;
+  label: string;
+  title: string;
+}
+
+// repo id -> its live git state, as the Start guard reads it (repoMap)
+interface RepoMapEntry {
+  current: string;
+  dirty: boolean;
+  branches: Map<string, BranchInfo>;
+}
+
+// a category group of the list, its items nested by parent (listGroups)
+interface ListGroup {
+  id: string;
+  name: string;
+  items: { ws: WorkspaceConfig; depth: number }[];
 }
 
 export class WorkspacesScreen extends Component {
@@ -357,7 +421,7 @@ export class WorkspacesScreen extends Component {
     // falling back to the first in the user's saved ordering when it is gone —
     // removed, or belonging to another browser profile's config.
     const requested = this.wt.requestedSelection();
-    const inList = (id) => id && this.list.find((ws) => ws.id === id);
+    const inList = (id: string) => id && this.list.find((ws) => ws.id === id);
     const first = inList(requested) || inList(this.wt.selectedId()) || this.list[0];
     if (first) this.wt.select(first.id);
     this.wt.requestedSelection.set("");
@@ -440,8 +504,8 @@ export class WorkspacesScreen extends Component {
   }
 
   // every repo referenced by any workspace's checkouts (for the list-wide load)
-  _listRepoIds() {
-    const ids = new Set();
+  _listRepoIds(): Set<string> {
+    const ids = new Set<string>();
     for (const ws of this.config.config.workspaces || [])
       for (const c of ws.checkouts || []) ids.add(c.repo);
     return ids;
@@ -450,21 +514,23 @@ export class WorkspacesScreen extends Component {
   // Force-refresh only the selected workspace's repositories and widen the
   // one-shot runbot/mergebot scope to its configured + currently checked-out
   // branches. This is the same targeted refresh formerly owned by CodePane.
-  refreshWorkspace(ws) {
+  refreshWorkspace(ws: WorkspaceConfig) {
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
     if (!ids.size) return;
     return this.code.loadWorkspace(ws.id, ids, true, this._workspaceStatusScope(ws));
   }
 
-  _workspaceStatusScope(ws) {
+  _workspaceStatusScope(ws: WorkspaceConfig) {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     const groups = this.code.groups();
-    const branches = new Set();
-    const prs = new Set();
+    const branches = new Set<string>();
+    const prs = new Set<string>();
     for (const c of ws.checkouts || []) {
       const github = groups.githubByRepo[c.repo] || "";
       if (this.code.isExternalRepo(github)) continue;
-      for (const branch of new Set([c.branch, byId[c.repo]?.current].filter(Boolean))) {
+      for (const branch of new Set(
+        [c.branch, byId[c.repo]?.current].filter((b): b is string => !!b),
+      )) {
         branches.add(branch);
         const pr = groups.prIndex[branchKey(c.repo, branch)];
         if (pr && github) prs.add(`${github}#${pr.number}`);
@@ -473,7 +539,7 @@ export class WorkspacesScreen extends Component {
     return { branches, prs };
   }
 
-  workspaceRefreshTitle(ws) {
+  workspaceRefreshTitle(ws: WorkspaceConfig) {
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
     const at = this.code.workspaceRefreshedAt(ids);
     const last = at ? timeAgo(new Date(at).toISOString()) : "never";
@@ -482,7 +548,7 @@ export class WorkspacesScreen extends Component {
 
   // ── list badges (runbot/CI + mergebot), scoped to a workspace's checkouts ────
   // one row per checkout with its local + remote/PR state
-  wsRows(ws) {
+  wsRows(ws: WorkspaceConfig): WsRow[] {
     const repos = this.repoMap;
     const groups = this.code.groups();
     return (ws.checkouts || []).map(({ repo, branch }) => {
@@ -512,8 +578,8 @@ export class WorkspacesScreen extends Component {
 
   // branches needing the scraped runbot fallback: present, ours, pushed (or a base
   // branch), and not already covered by a PR's GitHub CI rollup
-  _runbotBranches() {
-    const seen = new Set();
+  _runbotBranches(): string[] {
+    const seen = new Set<string>();
     for (const ws of this._polledWorkspaces()) {
       for (const row of this.wsRows(ws)) {
         if (!row.present || this.code.isExternalRepo(row.github)) continue;
@@ -527,9 +593,9 @@ export class WorkspacesScreen extends Component {
   }
 
   // the unique {github, number} of every PR across the polled workspaces (for mergebot)
-  _prs() {
-    const seen = new Set();
-    const prs = [];
+  _prs(): { github: string; number: number }[] {
+    const seen = new Set<string>();
+    const prs: { github: string; number: number }[] = [];
     for (const ws of this._polledWorkspaces()) {
       for (const row of this.prRows(ws)) {
         if (this.code.isExternalRepo(row.github)) continue;
@@ -556,14 +622,14 @@ export class WorkspacesScreen extends Component {
 
   // a bundle is per branch name (shared across a workspace's repos): prefer the
   // feature (non-base) branch, else the base
-  bundleBranch(ws) {
+  bundleBranch(ws: WorkspaceConfig): string {
     const branches = (ws.checkouts || []).map((c) => c.branch).filter(Boolean);
     return branches.find((b) => !BASE_BRANCH_RE.test(b)) || branches[0] || "";
   }
 
   // the present row representing the workspace's bundle (bundle-branch row, else the
   // first present one) — drives the single CI badge
-  bundleRow(ws) {
+  bundleRow(ws: WorkspaceConfig): WsRow | null {
     const present = this.wsRows(ws).filter((r) => r.present);
     const branch = this.bundleBranch(ws);
     return present.find((r) => r.branch === branch) || present[0] || null;
@@ -572,17 +638,19 @@ export class WorkspacesScreen extends Component {
   // every checkout row of the workspace whose branch carries a pull request. A
   // workspace's change can live in one repo only (an enterprise-only PR) or in
   // several, so anything PR-derived reads all of them, never just the bundle row.
-  prRows(ws) {
-    return this.wsRows(ws).filter((r) => r.pr && r.github);
+  prRows(ws: WorkspaceConfig): PrRow[] {
+    return this.wsRows(ws).filter((r): r is PrRow => !!r.pr && !!r.github);
   }
 
   // the workspace's runbot/CI badge, rolled up over *all* its PRs (worst wins);
   // falls back to the scraped runbot bundle when no PR reports checks.
-  wsCiStatus(ws) {
-    const rows = this.prRows(ws).filter((r) => r.pr.ci && (r.pr.ci.checks || []).length);
+  wsCiStatus(ws: WorkspaceConfig): CiBadge | null {
+    const rows = this.prRows(ws).filter(
+      (r): r is PrRow & { pr: { ci: CiRollup } } => !!r.pr.ci && !!(r.pr.ci.checks || []).length,
+    );
     if (rows.length) {
       const multi = rows.length > 1;
-      const checks = [];
+      const checks: CiCheck[] = [];
       let failed = false;
       let settledOk = true; // every PR either green or merged
       let pending = false;
@@ -603,7 +671,7 @@ export class WorkspacesScreen extends Component {
         for (const c of ci.checks)
           checks.push(multi ? { ...c, context: `${row.repo}: ${c.context}` } : c);
       }
-      let badge;
+      let badge: CiBadge;
       if (failed) badge = { cls: "fail", label: "ko", title: "a CI check failed" };
       else if (settledOk) badge = { cls: "pass", label: "ok", title: "all CI checks passing" };
       else if (pending) badge = { cls: "run", label: "running", title: "CI running" };
@@ -618,7 +686,7 @@ export class WorkspacesScreen extends Component {
     const s = this.code.runbot()[row.branch] || null;
     const result = (s && s.result) || "";
     const running = !!(s && s.running);
-    let badge;
+    let badge: CiBadge;
     if (result === "success") badge = { cls: "pass", label: "ok", title: "passing" };
     else if (result === "failure") badge = { cls: "fail", label: "ko", title: "failing" };
     else if (running) badge = { cls: "run", label: "running", title: "running" };
@@ -630,9 +698,15 @@ export class WorkspacesScreen extends Component {
 
   // aggregate mergebot status for a workspace: the most-blocking state across its PRs
   // that have a scraped state. The rows drive the per-repository hover breakdown.
-  mbStatus(ws) {
-    const rows = [];
-    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+  mbStatus(ws: WorkspaceConfig): MbStatus | null {
+    const rows: MbStatus["rows"] = [];
+    const RANK: Record<MbCategory, number> = {
+      blocked: 0,
+      progress: 1,
+      ready: 2,
+      merged: 3,
+      other: 4,
+    };
     for (const row of this.prRows(ws)) {
       const state = this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
       if (!state) continue;
@@ -649,7 +723,7 @@ export class WorkspacesScreen extends Component {
     return { cls: worst.cls, label: worst.state, url: rows[0].url, rows };
   }
 
-  runbotUrl(ws) {
+  runbotUrl(ws: WorkspaceConfig): string {
     const branch = this.bundleBranch(ws);
     const scraped = branch && this.code.runbot()[branch]?.url;
     if (scraped) return scraped;
@@ -660,23 +734,23 @@ export class WorkspacesScreen extends Component {
     return "";
   }
 
-  showCiMenu(ev, checks) {
+  showCiMenu(ev: MouseEvent, checks: CiCheck[] | undefined): void {
     if (!checks || !checks.length) return;
-    const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(new CustomEvent("ci-menu", { detail: { rect, checks } }));
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the hovered CI badge
+    appBus.dispatchEvent(new CustomEvent<CiMenuDetail>("ci-menu", { detail: { rect, checks } }));
   }
 
-  hideCiMenu() {
+  hideCiMenu(): void {
     appBus.dispatchEvent(new CustomEvent("ci-menu-hide"));
   }
 
-  showMbMenu(ev, rows) {
+  showMbMenu(ev: MouseEvent, rows: MbRow[] | undefined): void {
     if (!rows || !rows.length) return;
-    const rect = ev.currentTarget.getBoundingClientRect();
-    appBus.dispatchEvent(new CustomEvent("mb-menu", { detail: { rect, rows } }));
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the hovered mergebot badge
+    appBus.dispatchEvent(new CustomEvent<MbMenuDetail>("mb-menu", { detail: { rect, rows } }));
   }
 
-  hideMbMenu() {
+  hideMbMenu(): void {
     appBus.dispatchEvent(new CustomEvent("mb-menu-hide"));
   }
 
@@ -684,13 +758,13 @@ export class WorkspacesScreen extends Component {
   // the lifecycle dot only shows when it says something: a live server keeps its
   // state colour, a worktree / the loaded workspace gets the solid "active" dot.
   // An idle, unloaded workspace shows nothing rather than a meaningless grey dot.
-  hasDot(ws) {
+  hasDot(ws: WorkspaceConfig) {
     return this.isLive(ws) || this.isWt(ws) || this.isLoaded(ws);
   }
 
   // one chip per checkout: accent when the repo sits on one of our feature
   // branches (what the workspace actually works on), dim on a base branch
-  repoChips(ws) {
+  repoChips(ws: WorkspaceConfig) {
     return this.wsRows(ws).map((r) => ({
       repo: r.repo,
       label: r.repo.slice(0, 3),
@@ -700,8 +774,8 @@ export class WorkspacesScreen extends Component {
   }
 
   // the trailing CI + mergebot pills; a workspace with neither reads as "no PR"
-  listPills(ws) {
-    const pills = [];
+  listPills(ws: WorkspaceConfig): ListPill[] {
+    const pills: ListPill[] = [];
     const ci = this.wsCiStatus(ws);
     if (ci && ci.cls !== "unknown") {
       const failed = (ci.checks || []).filter((c) => c.state === "failure").length;
@@ -750,20 +824,20 @@ export class WorkspacesScreen extends Component {
 
   // compact relative age ("16m", "3d") of the last intentional action on the
   // workspace — the same timestamp the "recently used" order sorts on
-  listAge(ws) {
+  listAge(ws: WorkspaceConfig): string {
     const ts = ws.last_activity || ws.created_at;
     if (!ts) return "";
     const rel = timeAgo(ts);
     return rel === "just now" ? "now" : rel.replace(" ago", "");
   }
 
-  ageTitle(ws) {
+  ageTitle(ws: WorkspaceConfig): string {
     if (ws.last_activity) return "last used " + this.fmtWhen(ws.last_activity);
     return ws.created_at ? "created " + this.fmtWhen(ws.created_at) : "";
   }
 
   // ── list / selection ─────────────────────────────────────────────────────────
-  setOrder(value) {
+  setOrder(value: string): void {
     value = WORKSPACE_ORDERS.has(value) ? value : "config";
     this.order.set(value);
     try {
@@ -773,14 +847,14 @@ export class WorkspacesScreen extends Component {
     }
   }
 
-  chooseOrder(value) {
+  chooseOrder(value: string): void {
     this.setOrder(value);
     this.orderMenuOpen.set(false);
     const first = this.list[0];
     if (first) this.wt.select(first.id);
   }
 
-  get orderLabel() {
+  get orderLabel(): string {
     return (
       WORKSPACE_ORDER_OPTIONS.find((option) => option.value === this.order())?.short || "Order"
     );
@@ -788,7 +862,7 @@ export class WorkspacesScreen extends Component {
 
   // reads the canonical `workspaces` array — it carries `location` and the stable
   // `port` (the legacy `targets` view drops both by design)
-  get list() {
+  get list(): WorkspaceConfig[] {
     const all = this.config.config.workspaces || []; // every workspace, config order
     const q = this.query().trim().toLowerCase();
     const rows = (
@@ -813,14 +887,26 @@ export class WorkspacesScreen extends Component {
         return bTime - aTime || a.index - b.index;
       });
     } else if (order === "mergebot") {
-      const rank = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
-      const statusRank = new Map(rows.map(({ ws }) => [ws.id, rank[this.mbStatus(ws)?.cls] ?? 5]));
-      rows.sort((a, b) => statusRank.get(a.ws.id) - statusRank.get(b.ws.id) || a.index - b.index);
+      const rank: Record<MbCategory, number> = {
+        blocked: 0,
+        progress: 1,
+        ready: 2,
+        merged: 3,
+        other: 4,
+      };
+      const statusRank = new Map(
+        rows.map(({ ws }) => {
+          const cls = this.mbStatus(ws)?.cls;
+          return [ws.id, (cls && rank[cls]) ?? 5];
+        }),
+      );
+      // every row's id is in statusRank (built from these same rows just above)
+      rows.sort((a, b) => statusRank.get(a.ws.id)! - statusRank.get(b.ws.id)! || a.index - b.index);
     }
     return rows.map(({ ws }) => ws);
   }
 
-  get categoriesEnabled() {
+  get categoriesEnabled(): boolean {
     return !!this.config.config.workspace_categories_enabled;
   }
 
@@ -829,24 +915,25 @@ export class WorkspacesScreen extends Component {
   // anonymous group — the template renders a header only for named groups.
   // "archived" is reserved: its group always renders last (after uncategorized),
   // and — unlike the other categories — even when categories are disabled.
-  get listGroups() {
+  get listGroups(): ListGroup[] {
     const list = this.list;
     const archived = list.filter((ws) => ws.category === ARCHIVED_CATEGORY);
     const active = list.filter((ws) => ws.category !== ARCHIVED_CATEGORY);
-    let groups;
+    let groups: { id: string; name: string; items: WorkspaceConfig[] }[];
     if (!this.categoriesEnabled) {
       groups = [{ id: "", name: "", items: active }];
     } else {
       const cats = (this.config.config.workspace_categories || [])
         .map((c) => c.id)
         .filter((c) => c !== ARCHIVED_CATEGORY); // reserved — never in config order
-      const byCat = new Map(cats.map((c) => [c, []]));
-      const rest = []; // no category, or one that was removed from the list
+      const byCat = new Map(cats.map((c): [string, WorkspaceConfig[]] => [c, []]));
+      const rest: WorkspaceConfig[] = []; // no category, or one that was removed from the list
       for (const ws of active) {
-        if (byCat.has(ws.category)) byCat.get(ws.category).push(ws);
+        const bucket = byCat.get(ws.category);
+        if (bucket) bucket.push(ws);
         else rest.push(ws);
       }
-      groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) }));
+      groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) ?? [] }));
       if (rest.length) groups.push({ id: "\0none", name: "uncategorized", items: rest });
     }
     if (archived.length)
@@ -858,7 +945,7 @@ export class WorkspacesScreen extends Component {
       .map((g) => ({ ...g, items: nestByParent(g.items) }));
   }
 
-  isArchived(ws) {
+  isArchived(ws: WorkspaceConfig): boolean {
     return ws.category === ARCHIVED_CATEGORY;
   }
 
@@ -866,7 +953,7 @@ export class WorkspacesScreen extends Component {
   // config) — they just live in the always-last "archived" group and are skipped
   // by the list's runbot/mergebot polling. Unarchive returns to uncategorized.
   // Either way the whole sub-workspace subtree comes along (Workspace.setCategory).
-  toggleArchived(ws) {
+  toggleArchived(ws: WorkspaceConfig) {
     if (this.archiveBlocked(ws)) return;
     this.config.workspace(ws.id)?.setCategory(this.isArchived(ws) ? "" : ARCHIVED_CATEGORY);
   }
@@ -874,13 +961,13 @@ export class WorkspacesScreen extends Component {
   // the loaded workspace is the active one — shelving what currently occupies the
   // main checkout would hide it away. Unarchiving stays allowed either way, so one
   // archived elsewhere (or before it was activated) can always be brought back.
-  archiveBlocked(ws) {
+  archiveBlocked(ws: WorkspaceConfig): boolean {
     return !this.isArchived(ws) && this.isLoaded(ws);
   }
 
   // how many sub-workspaces this archive/unarchive carries along — unarchiving only
   // lifts the ones actually shelved with it (Workspace.setCategory)
-  archiveCascadeCount(ws) {
+  archiveCascadeCount(ws: WorkspaceConfig): number {
     const subs = descendantWorkspaces(this.config.config.workspaces || [], ws.id);
     return this.isArchived(ws)
       ? subs.filter((w) => w.category === ARCHIVED_CATEGORY).length
@@ -888,7 +975,7 @@ export class WorkspacesScreen extends Component {
   }
 
   // the kebab tooltip, naming the cascade so it isn't a surprise
-  archiveTitle(ws) {
+  archiveTitle(ws: WorkspaceConfig): string {
     if (this.archiveBlocked(ws)) return "the active workspace cannot be archived";
     const n = this.archiveCascadeCount(ws);
     const also = n ? `, with its ${n} sub-workspace${n === 1 ? "" : "s"}` : "";
@@ -897,11 +984,11 @@ export class WorkspacesScreen extends Component {
       : `move it to the archived group${also} (keeps branches, db and settings)`;
   }
 
-  isCollapsed(id) {
+  isCollapsed(id: string): boolean {
     return this.collapsedGroups().has(id);
   }
 
-  toggleGroup(id) {
+  toggleGroup(id: string): void {
     const next = new Set(this.collapsedGroups());
     if (!next.delete(id)) next.add(id);
     this.collapsedGroups.set(next);
@@ -912,37 +999,37 @@ export class WorkspacesScreen extends Component {
     }
   }
 
-  get sel() {
+  get sel(): WorkspaceConfig | null {
     return (this.config.config.workspaces || []).find((w) => w.id === this.wt.selectedId()) || null;
   }
 
-  isWt(ws) {
+  isWt(ws: WorkspaceConfig): boolean {
     return ws.location === "worktree";
   }
 
   // An activation rewrites the shared checkout, so the whole detail view is stale
   // while it runs — it blocks regardless of which workspace is selected, which also
   // stops a second activation being started underneath the first.
-  get activating() {
+  get activating(): boolean {
     return !!this.server.activatingId();
   }
 
-  get activatingLabel() {
+  get activatingLabel(): string {
     const id = this.server.activatingId();
     const ws = (this.config.config.workspaces || []).find((w) => w.id === id);
     return ws ? `Activating ${ws.name}…` : "Activating…";
   }
 
-  branchOf(ws) {
+  branchOf(ws: WorkspaceConfig): string {
     return (ws.checkouts && ws.checkouts[0] && ws.checkouts[0].branch) || "";
   }
 
-  checkoutsLabel(ws) {
+  checkoutsLabel(ws: WorkspaceConfig): string {
     return repoBranchList.format(ws.checkouts || []);
   }
 
   // Details tab timestamps: absolute local date-time + relative ("2 days ago")
-  fmtWhen(ts) {
+  fmtWhen(ts: string): string {
     const t = Date.parse(ts || "");
     if (!t) return "—";
     const abs = new Date(t).toLocaleString(undefined, {
@@ -955,26 +1042,26 @@ export class WorkspacesScreen extends Component {
   // ── per-location server state ────────────────────────────────────────────────
   // the workspace occupying the main checkout: the running main server's, else the
   // last activated one (a browser-side fact — see targets_screen isActive)
-  get activeId() {
+  get activeId(): string | null | undefined {
     return this.server.loadedWorkspaceId();
   }
 
-  isLoaded(ws) {
+  isLoaded(ws: WorkspaceConfig): boolean {
     return !this.isWt(ws) && ws.id === this.activeId;
   }
 
   // ── checkout drift (intent vs reality, loaded main-located workspaces only) ──
   // the loaded workspace claims the main checkout; a manual `git checkout` in a
   // terminal silently breaks that claim. driftOf lists the mismatched checkouts.
-  driftOf(ws) {
+  driftOf(ws: WorkspaceConfig) {
     return this.isLoaded(ws) ? this.store.drift(ws) : [];
   }
 
-  isDrifted(ws) {
+  isDrifted(ws: WorkspaceConfig): boolean {
     return this.driftOf(ws).length > 0;
   }
 
-  driftText(ws) {
+  driftText(ws: WorkspaceConfig): string {
     return this.driftOf(ws)
       .map((c) => `${c.repo} is on ${c.current || "?"}, expected ${c.branch}`)
       .join(" · ");
@@ -983,23 +1070,23 @@ export class WorkspacesScreen extends Component {
   // whether runs (tests/addons) and Claude can act on this workspace here: a
   // worktree always (its own checkout), a main-located one only when loaded AND
   // not drifted — running against code that isn't the workspace's would mislead
-  canRunHere(ws) {
+  canRunHere(ws: WorkspaceConfig): boolean {
     return this.isWt(ws) || (this.isLoaded(ws) && !this.isDrifted(ws));
   }
 
   // the hint shown in a gated pane (tests / addons / claude) when it can't run here
-  runHint(ws, hint) {
+  runHint(ws: WorkspaceConfig, hint: string): string {
     if (this.isDrifted(ws))
       return "The main checkout no longer matches this workspace — Restore its branches first (see the drift banner on the Code tab).";
     return hint;
   }
 
   // serverFor: the main slot when it runs this workspace, else its own entry
-  stateOf(ws) {
+  stateOf(ws: WorkspaceConfig): string {
     return this.store.serverFor(ws)?.state || "stopped";
   }
 
-  portOf(ws) {
+  portOf(ws: WorkspaceConfig): number | null {
     if (this.isWt(ws)) return this.wt.port(ws) || ws.port || null;
     return this.stateOf(ws) !== "stopped" ? 8069 : null;
   }
@@ -1008,13 +1095,13 @@ export class WorkspacesScreen extends Component {
   // manage one: "local" is the only mode goo allocates a TCP port in (same
   // guard as the wt-head-port badge above); "docker" routes by container name,
   // "external" owns its own port goo has no say in.
-  locationLabel(ws) {
+  locationLabel(ws: WorkspaceConfig): string {
     if (ws.location !== "worktree") return "Main checkout";
     const port = this.config.config.launch_mode === "local" ? this.portOf(ws) : null;
     return port ? `Own worktree · port ${port}` : "Own worktree";
   }
 
-  dotClass(ws) {
+  dotClass(ws: WorkspaceConfig): string {
     return "wt-dot-" + this.stateOf(ws);
   }
 
@@ -1022,28 +1109,28 @@ export class WorkspacesScreen extends Component {
   // worktree workspace or the loaded (active) one gets a solid black dot, and any
   // other (stopped, inactive) workspace stays faint. Checkout drift no longer
   // recolours the dot — it surfaces as a "drift" badge next to the name instead.
-  listDotClass(ws) {
+  listDotClass(ws: WorkspaceConfig): string {
     if (this.isLive(ws)) return this.dotClass(ws);
     if (this.isWt(ws) || this.isLoaded(ws)) return "wt-dot-active";
     return this.dotClass(ws);
   }
 
-  isLive(ws) {
+  isLive(ws: WorkspaceConfig): boolean {
     const s = this.stateOf(ws);
     return s === "running" || s === "starting";
   }
 
-  get isRunning() {
+  get isRunning(): boolean {
     return !!this.sel && this.stateOf(this.sel) === "running";
   }
 
-  get startLabel() {
+  get startLabel(): string {
     return this.sel && this.stateOf(this.sel) === "starting" ? "Starting…" : "Start";
   }
 
   // repo id -> { current, dirty, branches } from the live git state (Start guard)
-  get repoMap() {
-    const map = {};
+  get repoMap(): Record<string, RepoMapEntry> {
+    const map: Record<string, RepoMapEntry> = {};
     for (const repo of this.code.branchRepos()) {
       map[repo.id] = {
         current: repo.current,
@@ -1057,7 +1144,7 @@ export class WorkspacesScreen extends Component {
   // why Start is blocked for a main-located workspace ("" = it can start). The
   // loaded workspace can always (re)start; switching to another one requires all
   // its branches locally + clean working trees (activate() silently no-ops else).
-  _startBlocked(ws) {
+  _startBlocked(ws: WorkspaceConfig): string {
     if (this.isLive(ws)) return "already running";
     if (this.isDrifted(ws))
       return "the main checkout drifted away from this workspace — Restore its branches first";
@@ -1071,11 +1158,11 @@ export class WorkspacesScreen extends Component {
     return "";
   }
 
-  canStart(ws) {
+  canStart(ws: WorkspaceConfig): boolean {
     return !this._startBlocked(ws);
   }
 
-  startTitle(ws) {
+  startTitle(ws: WorkspaceConfig): string {
     const blocked = this._startBlocked(ws);
     if (blocked) return blocked;
     if (this.isWt(ws)) return "start this workspace's server on its own port";
@@ -1088,7 +1175,7 @@ export class WorkspacesScreen extends Component {
   // main-located only: check out this workspace's branches + make it the loaded
   // workspace, without starting the main server. Blocked for the same reasons a
   // cold Start is (missing/dirty branches), and a no-op once it's the loaded one.
-  _activateBlocked(ws) {
+  _activateBlocked(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return "worktree workspaces don't share the main checkout";
     if (this.isLoaded(ws)) return "already the loaded workspace";
     const repos = this.repoMap;
@@ -1100,18 +1187,18 @@ export class WorkspacesScreen extends Component {
     return "";
   }
 
-  canActivate(ws) {
+  canActivate(ws: WorkspaceConfig): boolean {
     return !this._activateBlocked(ws);
   }
 
-  activateTitle(ws) {
+  activateTitle(ws: WorkspaceConfig): string {
     return (
       this._activateBlocked(ws) ||
       "check out this workspace's branches and make it the loaded workspace (without starting the server)"
     );
   }
 
-  async activate(ws) {
+  async activate(ws: WorkspaceConfig) {
     if (!this.canActivate(ws)) return;
     await this.config.workspace(ws.id)?.activate();
   }
@@ -1119,7 +1206,7 @@ export class WorkspacesScreen extends Component {
   // ── drift reconciliation (the strip's Restore / Adopt buttons) ────────────────
   // Restore: the workspace is right, the terminal detour was temporary — re-check
   // out its branches (stopping the server if it runs). Same guards as activate.
-  restoreBlocked(ws) {
+  restoreBlocked(ws: WorkspaceConfig): string {
     const repos = this.repoMap;
     const cos = ws.checkouts || [];
     if (!cos.every(({ repo, branch }) => repos[repo]?.branches.has(branch)))
@@ -1129,7 +1216,7 @@ export class WorkspacesScreen extends Component {
     return "";
   }
 
-  restoreTitle(ws) {
+  restoreTitle(ws: WorkspaceConfig): string {
     return (
       this.restoreBlocked(ws) ||
       (this.isLive(ws)
@@ -1138,7 +1225,7 @@ export class WorkspacesScreen extends Component {
     );
   }
 
-  async restore(ws) {
+  async restore(ws: WorkspaceConfig) {
     if (this.restoreBlocked(ws)) return;
     await this.config.workspace(ws.id)?.activate({ restore: true });
   }
@@ -1146,7 +1233,7 @@ export class WorkspacesScreen extends Component {
   // Adopt: what's checked out is the new truth. If it exactly matches another
   // main-located workspace, switching to that one is the honest move; otherwise
   // rewrite this workspace's checkouts to the actual branches.
-  adoptTarget(ws) {
+  adoptTarget(ws: WorkspaceConfig): WorkspaceConfig | null {
     const repos = this.repoMap;
     return (
       (this.config.config.workspaces || []).find(
@@ -1159,11 +1246,11 @@ export class WorkspacesScreen extends Component {
     );
   }
 
-  switchToMatch(other) {
+  switchToMatch(other: WorkspaceConfig) {
     return this.config.workspace(other.id)?.activate();
   }
 
-  adopt(ws) {
+  adopt(ws: WorkspaceConfig): void {
     const repos = this.repoMap;
     this.config.workspace(ws.id)?.applyEdit({
       name: ws.name,
@@ -1181,7 +1268,7 @@ export class WorkspacesScreen extends Component {
   // workspace. Named after the drifted feature branch; "create branches" defaults
   // off (the branches exist — they're checked out). Activating it (the dialog's
   // default) also resolves the drift: the new workspace matches reality.
-  saveDriftAsWorkspace(ws) {
+  saveDriftAsWorkspace(ws: WorkspaceConfig) {
     const repos = this.repoMap;
     const checkouts = (ws.checkouts || []).map(({ repo, branch }) => ({
       repo,
@@ -1201,7 +1288,7 @@ export class WorkspacesScreen extends Component {
   }
 
   // ── actions ──────────────────────────────────────────────────────────────────
-  async start(ws) {
+  async start(ws: WorkspaceConfig) {
     if (!this.canStart(ws)) return;
     if (this.isWt(ws)) return this.wt.startServer(ws);
     // loading = today's activate flow: checks out the branches, records the
@@ -1211,7 +1298,7 @@ export class WorkspacesScreen extends Component {
     await this.server.start(ws.id);
   }
 
-  stop(ws) {
+  stop(ws: WorkspaceConfig) {
     return this.isWt(ws) ? this.wt.stopServer(ws) : this.server.stop();
   }
 
@@ -1219,9 +1306,9 @@ export class WorkspacesScreen extends Component {
   // database first (a fresh install, matching whatever Start args/on_create_args
   // are configured), or open an odoo-bin shell REPL against this workspace
   // without starting the server at all
-  openStartMenu(ev, ws) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    const actions = [
+  openStartMenu(ev: MouseEvent, ws: WorkspaceConfig) {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the Start caret
+    const actions: MenuAction[] = [
       { label: "Open shell", onClick: () => this.openShell(ws) },
       {
         label: "Drop database & start",
@@ -1233,13 +1320,15 @@ export class WorkspacesScreen extends Component {
         onClick: () => this.startWithDrop(ws),
       },
     ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+    );
   }
 
   // an interactive odoo-bin shell REPL popup for this workspace's db/addons —
   // independent of whether its server is running (its own process/container,
   // same TerminalDialog + /api/shell as the Code tab's per-repo terminal)
-  openShell(ws) {
+  openShell(ws: WorkspaceConfig): void {
     this.config.workspace(ws.id)?.touchActivity();
     this.dialogs.openComponent(TerminalDialog, { workspace: ws.id, label: `${ws.name} shell` });
   }
@@ -1247,7 +1336,7 @@ export class WorkspacesScreen extends Component {
   // Start, but drop the database first — a fresh install from this workspace's
   // Start args, matching what a normal Start would do against a never-initialized
   // db (see _odoo_bin_invocation's on_create_args / is_new handling)
-  async startWithDrop(ws) {
+  async startWithDrop(ws: WorkspaceConfig) {
     if (!this.canStart(ws) || !this.dbExists(ws)) return;
     const res = await this.dialogs.open({
       title: `Drop "${ws.db}" and start?`,
@@ -1269,35 +1358,35 @@ export class WorkspacesScreen extends Component {
     await this.start(ws);
   }
 
-  openTerminalPane(ws) {
+  openTerminalPane(ws: WorkspaceConfig): void {
     this.pane.set("terminal");
     if (this.termUrl) this.config.workspace(ws.id)?.touchActivity();
   }
 
-  odooUrl(ws) {
+  odooUrl(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return `http://localhost:8069/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}`;
   }
 
-  testsUrl(ws) {
+  testsUrl(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return this.wt.testsUrl(ws);
     return `http://localhost:8069/dev/autologin?to=${encodeURIComponent(
       "/web/tests?debug=assets&timeout=500000&manual=true",
     )}`;
   }
 
-  open(url) {
+  open(url: string): void {
     if (url) window.open(url, "_blank", "noopener");
   }
 
-  openWorkspaceUrl(ws, url) {
+  openWorkspaceUrl(ws: WorkspaceConfig, url: string): void {
     if (!url) return;
     this.config.workspace(ws.id)?.touchActivity();
     this.open(url);
   }
 
   // run a header-menu action then close the overflow menu
-  headMenu(fn) {
+  headMenu(fn: () => unknown): void {
     this.menuOpen.set(false);
     fn();
   }
@@ -1306,22 +1395,22 @@ export class WorkspacesScreen extends Component {
   // guarded: the db must exist and the workspace's server must be stopped — the
   // server runs ON that database, so dropping under it is forbidden rather than
   // silently stopping it
-  dbExists(ws) {
+  dbExists(ws: WorkspaceConfig): boolean {
     return !!ws.db && this.db.databases().some((d) => d.name === ws.db);
   }
 
-  canDropDb(ws) {
+  canDropDb(ws: WorkspaceConfig): boolean {
     return this.dbExists(ws) && !this.isLive(ws);
   }
 
-  dropDbTitle(ws) {
+  dropDbTitle(ws: WorkspaceConfig): string {
     if (!ws.db) return "no database set for this workspace";
     if (!this.dbExists(ws)) return `database "${ws.db}" does not exist`;
     if (this.isLive(ws)) return "stop the server first — it is running on this database";
     return `drop database "${ws.db}"`;
   }
 
-  async dropDb(ws) {
+  async dropDb(ws: WorkspaceConfig) {
     if (!this.canDropDb(ws)) return;
     // goo's own "in use" guard (canDropDb → isLive) only ever sees ITS OWN
     // subprocess/container — under launch_mode "external" a server launched by
@@ -1348,18 +1437,18 @@ export class WorkspacesScreen extends Component {
       });
   }
 
-  removeBlocked(ws) {
+  removeBlocked(ws: WorkspaceConfig): boolean {
     if (this.isWt(ws)) return this.isLive(ws);
     return this.isLoaded(ws);
   }
 
-  removeTitle(ws) {
+  removeTitle(ws: WorkspaceConfig): string {
     if (this.isWt(ws))
       return this.isLive(ws) ? "stop the server first" : "remove the worktree + workspace";
     return this.isLoaded(ws) ? "the loaded workspace cannot be removed" : "remove the workspace";
   }
 
-  async remove(ws) {
+  async remove(ws: WorkspaceConfig) {
     if (this.removeBlocked(ws)) return;
     if (this.isWt(ws)) return this.wt.remove(ws);
     // main-located: the shared delete dialog (branches / PRs / db cleanup)
@@ -1379,7 +1468,7 @@ export class WorkspacesScreen extends Component {
   }
 
   // ── terminal gating: never show another workspace's server PTY ───────────────
-  get termUrl() {
+  get termUrl(): string {
     const ws = this.sel;
     if (!ws) return "";
     if (this.isWt(ws)) {
@@ -1391,13 +1480,14 @@ export class WorkspacesScreen extends Component {
     return this.isLoaded(ws) ? `ws://${location.host}/api/terminal?workspace=main` : "";
   }
 
-  get termHint() {
-    if (this.isWt(this.sel)) return "Start this workspace's server to attach a terminal.";
+  get termHint(): string {
+    if (this.sel && this.isWt(this.sel))
+      return "Start this workspace's server to attach a terminal.";
     return "This workspace isn't loaded — the main terminal belongs to the loaded workspace.";
   }
 
   // ── edit dialog (both locations) ─────────────────────────────────────────────
-  async edit(ws) {
+  async edit(ws: WorkspaceConfig) {
     const res = await this.dialogs.open({
       title: `Edit "${ws.name}"`,
       okLabel: "Save",
@@ -1424,7 +1514,7 @@ export class WorkspacesScreen extends Component {
           ? [
               {
                 key: "category",
-                type: "select",
+                type: "select" as const,
                 label: "Category",
                 placeholder: "— none —",
                 options: categoryOptions(this.config),

@@ -5,6 +5,7 @@ import {
   worstStatusKey,
   taskFullyMerged,
 } from "../../src/reviews_screen/cells.ts";
+import type { MergebotView } from "../../src/reviews_screen/cells.ts";
 
 describe("isMerged", () => {
   it("is true when mergebot's own scraped state says merged, even if GitHub state doesn't", () => {
@@ -63,7 +64,10 @@ describe("worstStatusKey", () => {
 });
 
 describe("taskFullyMerged", () => {
-  function fakeCode(mergebot, mbForwardPorts) {
+  function fakeCode(
+    mergebot: Record<string, string>,
+    mbForwardPorts: ReturnType<MergebotView["mbForwardPorts"]>,
+  ): MergebotView {
     return { mergebot: () => mergebot, mbForwardPorts: () => mbForwardPorts };
   }
 

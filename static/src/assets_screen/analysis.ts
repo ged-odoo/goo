@@ -5,13 +5,36 @@
 // the (db-scoped) AssetsPlugin — this is just the view.
 
 import { Component, usePlugin, useProps, signal, t, xml } from "@odoo/owl";
+import type { StaticComponentProperties, Type } from "@odoo/owl";
 import { AssetsPlugin } from "./assets_plugin.ts";
+import type { BundleFile } from "./assets_plugin.ts";
 import { SearchBox } from "../core/common.ts";
 import { formatBytes } from "../core/utils.ts";
+
+// a finalized tree node: a path segment (or the js/css/xml top level) + its summed size
+export interface TreeNode {
+  name: string;
+  size: number;
+  children: TreeNode[];
+}
+
+// a tree node while it's being built: children keyed by path segment
+interface BuildNode {
+  name: string;
+  size: number;
+  children: Record<string, BuildNode>;
+}
+
+// one row of the flat view: a file path + its (merged) minified size
+interface FlatFile {
+  path: string;
+  bytes: number;
+}
 
 // One node of the tree: a path segment (folder) or a leaf file, with its
 // aggregated minified size. Recursive; top-level (depth 0) nodes open by default.
 export class BundleNode extends Component {
+  declare static components: StaticComponentProperties["components"]; // set below (recursive)
   static template = xml`
     <div class="bnode">
       <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
@@ -24,18 +47,19 @@ export class BundleNode extends Component {
       </t>
     </div>`;
 
-  props = useProps({ node: t.any(), depth: t.any() });
+  // not validated at runtime
+  props = useProps({ node: t.any() as Type<TreeNode>, depth: t.any() as Type<number> });
   open = signal(false);
 
-  setup() {
+  setup(): void {
     if (this.props.depth === 0) this.open.set(true);
   }
 
-  toggle() {
+  toggle(): void {
     if (this.props.node.children.length) this.open.set(!this.open());
   }
 
-  fmt(n) {
+  fmt(n: number): string {
     return formatBytes(n);
   }
 }
@@ -43,7 +67,7 @@ BundleNode.components = { BundleNode };
 
 // the bundle base name an attachment belongs to, e.g. "web.assets_web.min.js" or
 // "web.assets_web.css.map" -> "web.assets_web"
-export function bundleBase(name) {
+export function bundleBase(name: string): string {
   return name.replace(/\.map$/, "").replace(/(\.min)?\.(js|css|xml)$/, "");
 }
 
@@ -85,14 +109,14 @@ export class AssetsAnalysis extends Component {
 
   // the analyzed attachment's name, e.g. "web.assets_web.min.js" — the .min asset
   // the breakdown was scoped to, so it reads as the row that was clicked
-  get analysisTitle() {
+  get analysisTitle(): string {
     const d = this.assets.bundleData();
     if (!d) return "";
     return `${d.name}.min.${d.kind === "css" ? "css" : "js"}`;
   }
 
   // total minified size across the analyzed bundle's js + css + xml
-  get analysisTotal() {
+  get analysisTotal(): string {
     const d = this.assets.bundleData();
     if (!d) return "";
     const all = [...(d.js || []), ...(d.css || []), ...(d.xml || [])];
@@ -103,11 +127,11 @@ export class AssetsAnalysis extends Component {
   // largest first. Same path can occur more than once (e.g. a template and its
   // registerTemplateExtension share their base template's name) — merge those into
   // one row (sizes summed), matching how the tree view aggregates by path already.
-  get flat() {
+  get flat(): FlatFile[] {
     const d = this.assets.bundleData();
     if (!d) return [];
     const q = this.treeSearch().trim().toLowerCase();
-    const byPath = new Map();
+    const byPath = new Map<string, number>();
     for (const [path, bytes] of [...(d.js || []), ...(d.css || []), ...(d.xml || [])]) {
       byPath.set(path, (byPath.get(path) || 0) + bytes);
     }
@@ -119,19 +143,20 @@ export class AssetsAnalysis extends Component {
 
   // the analyzed bundle aggregated into a tree: top level is js/css/xml, then each
   // path segment, sizes summed up the tree; children sorted largest first
-  get tree() {
+  get tree(): TreeNode[] {
     const d = this.assets.bundleData();
     if (!d) return [];
     const q = this.treeSearch().trim().toLowerCase();
-    const top = [];
-    for (const [label, files] of [
+    const top: BuildNode[] = [];
+    const groups: [string, BundleFile[]][] = [
       ["js", d.js],
       ["css", d.css],
       ["xml", d.xml],
-    ]) {
+    ];
+    for (const [label, files] of groups) {
       const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
       if (!matched.length) continue;
-      const root = { name: label, size: 0, children: {} };
+      const root: BuildNode = { name: label, size: 0, children: {} };
       for (const [path, bytes] of matched) {
         root.size += bytes;
         let node = root;
@@ -143,7 +168,7 @@ export class AssetsAnalysis extends Component {
       }
       top.push(root);
     }
-    const finalize = (n) => ({
+    const finalize = (n: BuildNode): TreeNode => ({
       name: n.name,
       size: n.size,
       children: Object.values(n.children)
@@ -153,7 +178,7 @@ export class AssetsAnalysis extends Component {
     return top.map(finalize).sort((a, b) => b.size - a.size);
   }
 
-  fmtSize(n) {
+  fmtSize(n: number): string {
     return formatBytes(n || 0);
   }
 }

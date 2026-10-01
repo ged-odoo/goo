@@ -24,6 +24,7 @@ import { ClaudePlugin } from "../workspaces_screen/claude_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { RouterPlugin } from "../core/router_plugin.ts";
 import { ICONS, m, useDragResize } from "../core/common.ts";
+import type { DragResize } from "../core/common.ts";
 import { mdToHtml, parseReviewScore, reviewScoreClass } from "../core/utils.ts";
 
 export class ReviewPanel extends Component {
@@ -63,10 +64,10 @@ export class ReviewPanel extends Component {
     </div>`;
 
   props = useProps({
-    done: t.function(),
+    done: t.function<[null], void>(),
     workspaceId: t.string(),
     label: t.string(),
-    onReviewAgain: t.function(),
+    onReviewAgain: t.function<[], Promise<void>>(),
   });
 
   claude = usePlugin(ClaudePlugin);
@@ -75,12 +76,13 @@ export class ReviewPanel extends Component {
   prevIcon = m(ICONS.chevronLeft);
   nextIcon = m(ICONS.chevronRight);
   text = signal("");
-  version = signal(null);
-  versions = signal([]);
-  created = signal(null);
+  version = signal<number | null>(null);
+  versions = signal<number[]>([]);
+  created = signal<number | null>(null); // epoch seconds
   loading = signal(true);
+  declare drag: DragResize; // set in setup()
 
-  setup() {
+  setup(): void {
     this.drag = useDragResize({
       w: 640,
       h: 620,
@@ -99,14 +101,14 @@ export class ReviewPanel extends Component {
       if (wasRunning && !running) this.load();
       wasRunning = running;
     });
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") this.done(null);
     };
     document.addEventListener("keydown", onKey);
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
   }
 
-  async load(version) {
+  async load(version?: number | null): Promise<void> {
     this.loading.set(true);
     try {
       const res = await this.claude.fetchReview(this.props.workspaceId, version);
@@ -123,7 +125,7 @@ export class ReviewPanel extends Component {
   // backend/server.py's ClaudeManager.review_text), as a locale date/time string —
   // "" if unknown. Mainly useful once there's more than one version to tell apart,
   // but shown for a single review too.
-  createdLabel() {
+  createdLabel(): string {
     const c = this.created();
     if (!c) return "";
     return new Date(c * 1000).toLocaleString(undefined, {
@@ -135,7 +137,7 @@ export class ReviewPanel extends Component {
   // rendered once per text change, not cached — reviews are short enough that
   // re-parsing on every render is a non-issue, and a signal-backed getter would
   // just be more code for the same effect.
-  html() {
+  html(): ReturnType<typeof markup> {
     return markup(mdToHtml(this.text()));
   }
 
@@ -143,52 +145,54 @@ export class ReviewPanel extends Component {
   // shown version's text — same "Score: N/100" convention as the group-header
   // badge (ClaudePlugin.reviewScore), just read off this panel's own fetched text
   // instead of the live conversation.
-  score() {
+  score(): number | null {
     return parseReviewScore(this.text());
   }
 
-  scoreClass() {
-    return reviewScoreClass(this.score());
+  scoreClass(): string {
+    // only rendered under the header's `score() !== null` guard
+    return reviewScoreClass(this.score()!);
   }
 
-  running() {
+  running(): boolean {
     return this.claude.running(this.props.workspaceId);
   }
 
-  _pagerIndex() {
-    return this.versions().indexOf(this.version());
+  _pagerIndex(): number {
+    const v = this.version();
+    return v === null ? -1 : this.versions().indexOf(v);
   }
 
-  hasPrev() {
+  hasPrev(): boolean {
     return this._pagerIndex() > 0;
   }
 
-  hasNext() {
+  hasNext(): boolean {
     const i = this._pagerIndex();
     return i >= 0 && i < this.versions().length - 1;
   }
 
-  pagerLabel() {
+  pagerLabel(): string {
     const i = this._pagerIndex();
     return i < 0 ? "" : `${i + 1}/${this.versions().length}`;
   }
 
-  prevVersion() {
+  prevVersion(): void {
     const i = this._pagerIndex();
     if (i > 0) this.load(this.versions()[i - 1]);
   }
 
-  nextVersion() {
+  nextVersion(): void {
     const i = this._pagerIndex();
     if (i >= 0 && i < this.versions().length - 1) this.load(this.versions()[i + 1]);
   }
 
-  async reviewAgain() {
+  async reviewAgain(): Promise<void> {
     if (this.running()) return;
     await this.props.onReviewAgain();
   }
 
-  done(result) {
+  done(result: null): void {
     this.props.done(result);
   }
 
@@ -196,7 +200,7 @@ export class ReviewPanel extends Component {
   // the original prompt, etc.) — this panel only ever shows one saved review
   // version's text. Closes the panel first since the dialog container stays
   // mounted across screen navigation and would otherwise keep floating there.
-  continueToChat() {
+  continueToChat(): void {
     this.wt.selectOnOpen(this.props.workspaceId);
     this.wt.requestedPane.set("claude");
     this.router.go("workspaces");
