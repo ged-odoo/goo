@@ -4,6 +4,18 @@ import { ICONS, m } from "../core/common.ts";
 import { Panel } from "../core/panel.ts";
 import { CHART_COLORS, CHART_ZOOM_OPTIONS, loadChartJs } from "../nightly_screen/nightly.ts";
 
+// the slice of a Chart.js instance this screen touches (window.Chart itself is untyped)
+interface MemoryChart {
+  destroy(): void;
+  resetZoom(): void;
+}
+
+// the tooltip context Chart.js passes the label callback (the fields read here)
+interface TooltipContext {
+  dataset: { label: string };
+  parsed: { y: number };
+}
+
 export class MemoryScreen extends Component {
   static components = { Panel };
   static template = xml`
@@ -76,11 +88,11 @@ export class MemoryScreen extends Component {
   canvas = signal.ref(HTMLElement);
   chevronIcon = m(ICONS.chevron);
   uploadIcon = m(ICONS.push);
-  _chart = null;
+  _chart: MemoryChart | null = null;
   _focusRowIndex = -1; // index to focus on the next patch, once its DOM exists
   sidebarCollapsed = signal(false);
 
-  setup() {
+  setup(): void {
     loadChartJs()
       .then(() => this._redraw())
       .catch(() => {});
@@ -99,20 +111,20 @@ export class MemoryScreen extends Component {
     });
   }
 
-  hasUrls() {
+  hasUrls(): boolean {
     return this.memory.builds().some((b) => b.url.trim() || b.content);
   }
 
-  toggleSidebar() {
+  toggleSidebar(): void {
     this.sidebarCollapsed.set(!this.sidebarCollapsed());
   }
 
-  _focusRow(idx) {
-    const rows = document.querySelectorAll(".mem-build-row .mem-label-input");
+  _focusRow(idx: number): void {
+    const rows = document.querySelectorAll<HTMLInputElement>(".mem-build-row .mem-label-input");
     rows[idx]?.focus();
   }
 
-  addBuild() {
+  addBuild(): void {
     const builds = this.memory.builds();
     const emptyIdx = builds.findIndex((b) => !b.label.trim() && !b.url.trim() && !b.fileName);
     if (emptyIdx !== -1) {
@@ -125,33 +137,35 @@ export class MemoryScreen extends Component {
     this._focusRowIndex = builds.length; // the new row lands right after the old ones
   }
 
-  onFilePicked(idx, ev) {
-    const file = ev.target.files[0];
-    ev.target.value = ""; // allow re-picking the same file later
+  onFilePicked(idx: number, ev: Event): void {
+    const input = ev.target as HTMLInputElement; // the row's <input type="file">
+    const file = input.files?.[0];
+    input.value = ""; // allow re-picking the same file later
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => this.memory.setBuildFile(idx, file.name, reader.result);
+    // readAsText() below: the result is the file's text
+    reader.onload = () => this.memory.setBuildFile(idx, file.name, reader.result as string);
     reader.readAsText(file);
   }
 
-  toggleMobile() {
+  toggleMobile(): void {
     this.memory.withMobile.set(!this.memory.withMobile());
   }
 
-  async fetchBatch() {
+  async fetchBatch(): Promise<void> {
     await this.memory.fetchBatch();
   }
 
-  onBatchKeydown(ev) {
+  onBatchKeydown(ev: KeyboardEvent): void {
     if (ev.key === "Enter") this.fetchBatch();
   }
 
-  async draw() {
+  async draw(): Promise<void> {
     await this.memory.load();
     this._redraw();
   }
 
-  _redraw() {
+  _redraw(): void {
     if (!window.Chart || !this.canvas()) return;
     if (this._chart) {
       this._chart.destroy();
@@ -162,9 +176,10 @@ export class MemoryScreen extends Component {
     const builds = Object.keys(data[0]).filter((k) => k !== "suite");
     const datasets = builds.map((build, i) => ({
       label: build,
-      data: data.map((d) =>
-        d[build] != null ? Math.round((d[build] / 1024 / 1024) * 100) / 100 : null,
-      ),
+      data: data.map((d) => {
+        const used = d[build] as number | undefined; // every key but "suite" is a build's used bytes
+        return used != null ? Math.round((used / 1024 / 1024) * 100) / 100 : null;
+      }),
       borderColor: CHART_COLORS[i % CHART_COLORS.length],
       backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + "33",
       borderWidth: 1.5,
@@ -180,7 +195,11 @@ export class MemoryScreen extends Component {
         animation: false,
         plugins: {
           legend: { position: "top" },
-          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y} MB` } },
+          tooltip: {
+            callbacks: {
+              label: (ctx: TooltipContext) => `${ctx.dataset.label}: ${ctx.parsed.y} MB`,
+            },
+          },
           zoom: CHART_ZOOM_OPTIONS,
         },
         scales: {
@@ -191,7 +210,7 @@ export class MemoryScreen extends Component {
     });
   }
 
-  resetZoom() {
+  resetZoom(): void {
     this._chart?.resetZoom();
   }
 }

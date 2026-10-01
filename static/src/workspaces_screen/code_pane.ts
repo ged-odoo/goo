@@ -8,7 +8,9 @@ import {
   t,
   xml,
 } from "@odoo/owl";
+import type { Type } from "@odoo/owl";
 import { CodePlugin } from "../core/code_plugin.ts";
+import type { Commit } from "../core/code_plugin.ts";
 import { ConfigPlugin } from "../core/config_plugin.ts";
 import { DatabasePlugin } from "../core/database_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
@@ -16,15 +18,85 @@ import { EventLogPlugin } from "../core/event_log_plugin.ts";
 import { StorePlugin } from "../core/store_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { BASE_BRANCH_RE, baseBranchOf } from "../core/config.ts";
+import type { WorkspaceConfig } from "../core/config.ts";
 import { DirtyBadge, ICONS, editCommitMessage, m } from "../core/common.ts";
 import { pushBranchesDialog } from "../core/dialogs.ts";
 import { TerminalDialog } from "../core/terminal.ts";
 import { branchKey } from "../core/models.ts";
-import { timeAgo } from "../core/utils.ts";
+import type { PullRequest } from "../core/models.ts";
+import type { ForwardPortPull, ForwardPortRow, RepoState } from "../core/observed_models.ts";
+import { errorMessage, timeAgo } from "../core/utils.ts";
 import { createSubWorkspaceFromForwardPort, findSubWorkspace } from "./dialogs.ts";
 import { CommitHistory } from "./history.ts";
 
 // ─────────────────────────── Code pane ───────────────────────────
+
+// one shown repository (CodePane.repos): its config joined with live git state + PRs
+export interface RepoEntry {
+  id: string;
+  current: string;
+  dirty: boolean;
+  subject: string;
+  remote: boolean;
+  date: string;
+  ahead: number;
+  behind: number;
+  base: string;
+  error: string;
+  github: string;
+  path: string;
+  pull_remote: string;
+  push_remote: string;
+  pr: PullRequest | null;
+  prs: PullRequest[];
+  canPr: boolean;
+}
+
+// one checkout card (CodePane.checkoutRows) — also the row CommitHistory edits
+export interface CheckoutRow {
+  key: string;
+  repo: string;
+  branch: string;
+  checkedOut: boolean;
+  dirty: boolean;
+  missing: boolean;
+  remote: boolean;
+  synced: boolean;
+  subject: string;
+  sha: string;
+  when: string;
+  pr: PullRequest | null;
+  prs: PullRequest[];
+  github: string;
+  path: string;
+  push_remote: string;
+  base: string;
+  behind: number;
+  ahead: number;
+  canRebase: boolean;
+  canPush: boolean;
+  entry: RepoEntry | null;
+}
+
+// the open commit-history editor's pre-loaded payload (CodePane.history)
+interface HistoryPayload {
+  row: CheckoutRow;
+  commits: Commit[];
+  diff: string;
+  conflict: string;
+  seq: number;
+}
+
+// a merged checkout PR's forward-port matrix (CodePane.forwardPortChains)
+type LinkedForwardPortRow = ForwardPortRow & { mergebotUrl: string };
+interface ForwardPortChain {
+  key: string;
+  repo: string;
+  github: string;
+  number: number;
+  rows: LinkedForwardPortRow[];
+  multiRepo: boolean;
+}
 
 // The selected workspace's code view: one unified row per checkout — repo + branch,
 // sync health (with an inline Rebase when behind), last commit, its PR (number /
@@ -155,7 +227,7 @@ export class CodePane extends Component {
       </t>
     </div>`;
 
-  props = useProps({ ws: t.any() });
+  props = useProps({ ws: t.any() as Type<WorkspaceConfig> }); // not validated at runtime
   code = usePlugin(CodePlugin);
   store = usePlugin(StorePlugin);
   config = usePlugin(ConfigPlugin);
@@ -169,12 +241,12 @@ export class CodePane extends Component {
   copyIcon = m(ICONS.copy); // the heading's "N prs" link-copier
   menuId = signal(""); // key of the checkout whose action menu is open ("" = none)
   prsCopied = signal(false); // transient "copied" label on the PR-link copier
-  rPlusPosts = signal({}); // "github#number" -> "posting" | "posted"
+  rPlusPosts = signal<Record<string, "posting" | "posted">>({}); // "github#number" -> "posting" | "posted"
   // the open commit-history editor's payload ({row, commits, diff, conflict, seq},
   // null = the checkout grid). Loaded fully by openHistory BEFORE being set, so
   // CommitHistory's first frame is complete; seq keys the component so a reload
   // remounts it fresh.
-  history = signal(null);
+  history = signal<HistoryPayload | null>(null);
   _historySequence = 0;
   _historyPendingKey = "";
 
@@ -190,18 +262,18 @@ export class CodePane extends Component {
     });
   }
 
-  toggleMenu(id) {
+  toggleMenu(id: string): void {
     this.menuId.set(this.menuId() === id ? "" : id);
   }
 
   // this workspace's id when it's a worktree, else "" — the signal every
   // mutation call below uses to target its OWN branch state (composite-keyed
   // WorktreeRepoStatus) instead of the main checkout's.
-  get wsId() {
+  get wsId(): string {
     return this.isWt ? this.props.ws.id : "";
   }
 
-  get isWt() {
+  get isWt(): boolean {
     return this.wt.isWorktree(this.props.ws);
   }
 
@@ -209,7 +281,7 @@ export class CodePane extends Component {
   // joined with live git state (current branch, sync counts) and their PRs. A
   // worktree workspace's live state comes from ITS OWN branch-state row (fetched
   // at its own directory, never the main checkout's) — see wsId/CodePlugin.loadWorktreeBranches.
-  get repos() {
+  get repos(): RepoEntry[] {
     const groups = this.code.groups();
     const repoIds = new Set((this.props.ws.checkouts || []).map((c) => c.repo));
     const isWt = this.isWt;
@@ -218,8 +290,11 @@ export class CodePane extends Component {
     return this.config.config.repos
       .filter((r) => repoIds.has(r.id))
       .map((r) => {
-        const b = (isWt ? this.store.worktreeRepoStatus(this.wsId, r.id) : byId[r.id]) || {};
+        const b: Partial<RepoState> =
+          (isWt ? this.store.worktreeRepoStatus(this.wsId, r.id) : byId?.[r.id]) || {};
         const current = b.current || "";
+        // the current branch's own entry (RepoState keeps no separate head_* fields)
+        const head = (b.branches || []).find((x) => x.name === current);
         const github = groups.githubByRepo[r.id] || "";
         const pr = groups.prIndex[`${r.id}:${current}`] || null;
         const prs = groups.prsIndex[`${r.id}:${current}`] || (pr ? [pr] : []);
@@ -227,9 +302,9 @@ export class CodePane extends Component {
           id: r.id,
           current,
           dirty: !!b.dirty,
-          subject: b.head_subject || "",
-          remote: !!b.head_remote, // the current branch has a remote-tracking ref
-          date: b.head_date || "",
+          subject: head?.subject || "",
+          remote: !!head?.remote, // the current branch has a remote-tracking ref
+          date: head?.date || "",
           ahead: b.ahead || 0, // commits ahead of the base (target) branch
           behind: b.behind || 0, // commits behind the base (target) branch
           base: baseBranchOf(current),
@@ -241,18 +316,18 @@ export class CodePane extends Component {
           pr, // the principal PR — open if any, else most recently updated — used for actions
           prs, // every PR on this branch (open + closed), open/latest first — for display
           // a work branch that's pushed and PR-less can have a PR opened for it
-          canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current)),
+          canPr: !!(current && head?.remote && github && !pr && !BASE_BRANCH_RE.test(current)),
         };
       });
   }
 
   // per-checkout sync health text/tooltip (only shown when the checkout is actually
   // the repo's current branch, so the behind/ahead counts describe THIS branch)
-  syncTextRow(r) {
+  syncTextRow(r: CheckoutRow): string {
     return r.behind ? `${r.behind} behind` : "up to date";
   }
 
-  syncTitleRow(r) {
+  syncTitleRow(r: CheckoutRow): string {
     if (r.behind) {
       const ahead = r.ahead ? ` · ${r.ahead} ahead` : "";
       return `${r.behind} commit${r.behind === 1 ? "" : "s"} behind ${r.base}${ahead}`;
@@ -261,18 +336,18 @@ export class CodePane extends Component {
   }
 
   // fetch+rebase a single repo's current branch onto its canonical base branch
-  canRebaseRepo(r) {
+  canRebaseRepo(r: RepoEntry): boolean {
     return !!r.current && !r.dirty && !r.error && !!r.path;
   }
 
-  rebaseRepoTitle(r) {
+  rebaseRepoTitle(r: RepoEntry): string {
     if (r.error) return r.error;
     if (r.dirty) return "commit or stash changes first — the working tree is dirty";
     if (!r.path) return "no local path configured for this repository";
     return `fetch and rebase ${r.current} onto ${r.pull_remote}/${baseBranchOf(r.current)}`;
   }
 
-  async rebaseRepo(r) {
+  async rebaseRepo(r: RepoEntry): Promise<void> {
     if (!this.canRebaseRepo(r)) return;
     this.touchActivity();
     await this.code.rebase(
@@ -285,7 +360,7 @@ export class CodePane extends Component {
   // branch name (git push <remote> <branch>), so this works whether or not it's
   // checked out — the guard is only that the branch exists locally and is not a
   // base branch (those are never pushed).
-  pushRowTitle(r) {
+  pushRowTitle(r: CheckoutRow): string {
     if (r.entry?.error) return r.entry.error;
     if (!r.path) return "no local path configured for this repository";
     if (this.isBaseBranch(r.branch)) return "base branches cannot be pushed";
@@ -293,7 +368,7 @@ export class CodePane extends Component {
     return `push ${r.branch} to the ${r.push_remote} remote`;
   }
 
-  async pushRow(r) {
+  async pushRow(r: CheckoutRow): Promise<void> {
     if (!r.canPush) return;
     const pushed = await pushBranchesDialog(
       this.code,
@@ -307,7 +382,7 @@ export class CodePane extends Component {
     if (pushed) this.touchActivity();
   }
 
-  async pushForceRow(r) {
+  async pushForceRow(r: CheckoutRow): Promise<void> {
     if (!r.canPush) return;
     const pushed = await pushBranchesDialog(
       this.code,
@@ -323,7 +398,7 @@ export class CodePane extends Component {
   }
 
   // every shown repository whose current branch can be fetched + rebased
-  get rebasableRepos() {
+  get rebasableRepos(): RepoEntry[] {
     return this.repos.filter((r) => this.canRebaseRepo(r));
   }
 
@@ -333,16 +408,16 @@ export class CodePane extends Component {
   // checkout for a main-location workspace, or the worktree's own directory for a
   // worktree one (workspaceView/checkoutRows resolve `matches` against whichever
   // is correct — see StorePlugin.workspaceView).
-  get wsCheckedOut() {
+  get wsCheckedOut(): boolean {
     const rows = this.checkoutRows;
     return rows.length > 0 && rows.every((r) => r.checkedOut);
   }
 
-  canRebaseAll() {
+  canRebaseAll(): boolean {
     return this.wsCheckedOut && this.rebasableRepos.length > 0;
   }
 
-  rebaseAllTitle() {
+  rebaseAllTitle(): string {
     if (!this.wsCheckedOut)
       return "this workspace is not active — load it first, so rebasing applies to its branches";
     const repos = this.rebasableRepos;
@@ -356,7 +431,7 @@ export class CodePane extends Component {
 
   // fetch + rebase every shown repo's current branch onto its base, in one call
   // (guarded on wsCheckedOut: current branches == this workspace's branches)
-  async rebaseAll() {
+  async rebaseAll(): Promise<void> {
     if (!this.wsCheckedOut) return;
     const repos = this.rebasableRepos.map((r) => ({
       repo: r.id,
@@ -373,20 +448,20 @@ export class CodePane extends Component {
   // every work-branch checkout with something to push — base branches are excluded
   // (canPush), and so are branches already in sync with their remote: "push all"
   // means publishing local changes, not re-pushing what's already there
-  get pushableRows() {
+  get pushableRows(): CheckoutRow[] {
     return this.checkoutRows.filter((r) => r.canPush && !r.synced);
   }
 
-  canPushAll() {
+  canPushAll(): boolean {
     return this.pushableRows.length > 0;
   }
 
   // spell out each branch's destination — checkouts may push to different remotes
-  _pushList(rows) {
+  _pushList(rows: CheckoutRow[]): string {
     return rows.map((r) => `${r.branch} (${r.repo}) to ${r.push_remote}`).join(", ");
   }
 
-  pushAllTitle() {
+  pushAllTitle(): string {
     const rows = this.pushableRows;
     if (!rows.length) {
       return this.checkoutRows.some((r) => r.canPush)
@@ -397,7 +472,7 @@ export class CodePane extends Component {
   }
 
   // push every work-branch checkout to its repo's push remote, one confirm for the batch
-  async pushAll() {
+  async pushAll(): Promise<void> {
     const rows = this.pushableRows;
     if (!rows.length) return;
     const pushed = await pushBranchesDialog(
@@ -412,7 +487,7 @@ export class CodePane extends Component {
     if (pushed) this.touchActivity();
   }
 
-  pushAllForceTitle() {
+  pushAllForceTitle(): string {
     const rows = this.pushableRows;
     if (!rows.length) {
       return this.checkoutRows.some((r) => r.canPush)
@@ -423,7 +498,7 @@ export class CodePane extends Component {
   }
 
   // force-push every work-branch checkout to its repo's push remote, one confirm for the batch
-  async pushAllForce() {
+  async pushAllForce(): Promise<void> {
     const rows = this.pushableRows;
     if (!rows.length) return;
     const pushed = await pushBranchesDialog(
@@ -440,11 +515,11 @@ export class CodePane extends Component {
   }
 
   // local checkout folders of every shown repo, for "Edit" (open them all at once)
-  get editorPaths() {
+  get editorPaths(): string[] {
     return this.repos.map((r) => r.path).filter(Boolean);
   }
 
-  editAllTitle() {
+  editAllTitle(): string {
     const n = this.editorPaths.length;
     if (!n) return "no local repository folders to open";
     const editor = (this.config.config.editor || "code").trim();
@@ -452,7 +527,7 @@ export class CodePane extends Component {
   }
 
   // open every shown repo's folder in the configured editor, all in one window
-  openAllEditors() {
+  openAllEditors(): void {
     const paths = this.editorPaths;
     if (paths.length) {
       this.touchActivity();
@@ -461,13 +536,13 @@ export class CodePane extends Component {
   }
 
   // open a modal bash terminal in this repo's directory
-  openTerminal(r) {
+  openTerminal(r: RepoEntry): void {
     if (!r.path) return;
     this.touchActivity();
     this.dialogs.openComponent(TerminalDialog, { path: r.path, label: r.id });
   }
 
-  openRepoEditor(r) {
+  openRepoEditor(r: CheckoutRow): void {
     if (!r.path) return;
     this.touchActivity();
     this.code.openEditor(r.path, r.repo);
@@ -476,7 +551,7 @@ export class CodePane extends Component {
   // Load the branch history + its head diff behind the still-visible checkout
   // table, then set `history` last as the single visibility gate. This avoids an
   // empty intermediate history render while the two git requests are in flight.
-  async openHistory(r) {
+  async openHistory(r: CheckoutRow): Promise<void> {
     if (!r.path || !r.sha) return;
     if (this._historyPendingKey === r.key) return;
     this.touchActivity();
@@ -514,13 +589,13 @@ export class CodePane extends Component {
       });
     } catch (e) {
       if (sequence !== this._historySequence) return;
-      this.dialogs.error("Could not load commit history", e.message);
+      this.dialogs.error("Could not load commit history", errorMessage(e));
     } finally {
       if (sequence === this._historySequence) this._historyPendingKey = "";
     }
   }
 
-  closeHistory() {
+  closeHistory(): void {
     this._historySequence++;
     this.history.set(null);
   }
@@ -528,7 +603,7 @@ export class CodePane extends Component {
   // after a history rewrite (apply/abort): refresh this repo's branch state — a
   // rebase changes shas/subjects the checkout card also shows — and re-open the
   // history, which remounts CommitHistory with the fresh commits
-  reloadHistory() {
+  reloadHistory(): Promise<unknown> | undefined {
     const row = this.history()?.row;
     if (!row) return;
     const refresh = this.isWt
@@ -538,21 +613,21 @@ export class CodePane extends Component {
   }
 
   // open GitHub's PR-creation page for this repo's current branch
-  openPr(r) {
+  openPr(r: RepoEntry): void {
     this.touchActivity();
     this.eventLog.add(`opening PR for ${r.current} (${r.id})`);
     window.open(this.code.prCreateUrl(r.id, r.github, r.current), "_blank");
   }
 
   // mark this checkout's draft PR ready for review (gh pr ready)
-  readyPr(r) {
+  readyPr(r: CheckoutRow): Promise<unknown> | undefined {
     if (!r.pr || !r.github) return;
     this.touchActivity();
     return this.code.readyPr(r.github, r.pr.number);
   }
 
   // post "robodoo r+" on this checkout's PR to approve it for merge
-  postRPlusRow(r) {
+  postRPlusRow(r: CheckoutRow): Promise<unknown> | undefined {
     if (!r.pr || !r.github) return;
     this.touchActivity();
     return this.code.postRPlus(r.github, r.pr.number);
@@ -562,7 +637,7 @@ export class CodePane extends Component {
   // rich repo entry (for the actions menu). Sync + rebase/push are only meaningful
   // when this checkout is the repo's current branch (c.matches) — the behind/ahead
   // counts and the repo's actions are for whatever is actually checked out.
-  get checkoutRows() {
+  get checkoutRows(): CheckoutRow[] {
     const view = this.store.workspaceView(this.props.ws);
     const isWt = this.isWt;
     const wsId = this.wsId;
@@ -573,7 +648,7 @@ export class CodePane extends Component {
     const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
     const { prIndex, prsIndex } = this.code.groups();
     return (view.checkouts || []).map((c) => {
-      const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo.get(c.repo);
+      const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo?.get(c.repo);
       const b = (git?.branches || []).find((x) => x.name === c.branch);
       const entry = entryByRepo.get(c.repo) || null;
       const checkedOut = !!c.matches;
@@ -608,8 +683,8 @@ export class CodePane extends Component {
 
   // the checkouts' pull request links, in row order and deduplicated (a base-branch
   // checkout never has one). Backs the heading's "N prs" copier.
-  get checkoutPrLinks() {
-    const seen = new Set();
+  get checkoutPrLinks(): string[] {
+    const seen = new Set<string>();
     for (const r of this.checkoutRows) {
       if (!r.pr || this.isBaseBranch(r.branch)) continue;
       const url = r.pr.url || this.code.pullRequestUrl(r.github, r.pr.number);
@@ -618,13 +693,13 @@ export class CodePane extends Component {
     return [...seen];
   }
 
-  get prCountLabel() {
+  get prCountLabel(): string {
     const n = this.checkoutPrLinks.length;
     return `${n} pr${n === 1 ? "" : "s"}`;
   }
 
   // space-separated so the whole set pastes as one shareable line in a chat message
-  copyPrLinks() {
+  copyPrLinks(): void {
     navigator.clipboard?.writeText(this.checkoutPrLinks.join(" "));
     this.prsCopied.set(true);
     setTimeout(() => this.prsCopied.set(false), 1400);
@@ -632,11 +707,11 @@ export class CodePane extends Component {
 
   // One matrix per merged checkout PR. Rows are already sliced by the backend so
   // only branches after the workspace's target are shown (including empty ones).
-  get forwardPortChains() {
+  get forwardPortChains(): ForwardPortChain[] {
     const states = this.code.mergebot();
     const matrices = this.code.mbForwardPorts();
-    const chains = [];
-    const seenMatrices = new Set();
+    const chains: ForwardPortChain[] = [];
+    const seenMatrices = new Set<string>();
     for (const row of this.checkoutRows) {
       if (!row.pr || !row.github) continue;
       const key = `${row.github}#${row.pr.number}`;
@@ -677,27 +752,27 @@ export class CodePane extends Component {
     };
   }
 
-  createSubWorkspace(row) {
+  createSubWorkspace(row: LinkedForwardPortRow) {
     return createSubWorkspaceFromForwardPort(this._dialogPlugins(), this.props.ws, row);
   }
 
-  subWorkspaceFor(row) {
+  subWorkspaceFor(row: LinkedForwardPortRow) {
     return findSubWorkspace(this.config, this.props.ws, row);
   }
 
-  rPlusKey(pull) {
+  rPlusKey(pull: ForwardPortPull): string {
     return `${pull.github}#${pull.number}`;
   }
 
-  hasMissingRPlus(pull) {
+  hasMissingRPlus(pull: ForwardPortPull): boolean {
     return `${pull.status || ""} ${pull.detail || ""}`.toLowerCase().includes("missing r+");
   }
 
-  rPlusState(pull) {
+  rPlusState(pull: ForwardPortPull): string {
     return this.rPlusPosts()[this.rPlusKey(pull)] || "";
   }
 
-  async postRPlus(pull) {
+  async postRPlus(pull: ForwardPortPull): Promise<void> {
     const key = this.rPlusKey(pull);
     if (this.rPlusPosts()[key]) return;
     this.rPlusPosts.set({ ...this.rPlusPosts(), [key]: "posting" });
@@ -709,28 +784,28 @@ export class CodePane extends Component {
   }
 
   // fetch + rebase this checkout's branch (its repo entry) onto its base
-  rebaseCheckout(r) {
+  rebaseCheckout(r: CheckoutRow): void {
     if (r.entry) this.rebaseRepo(r.entry);
   }
 
-  isBaseBranch(branch) {
+  isBaseBranch(branch: string): boolean {
     return BASE_BRANCH_RE.test(branch);
   }
 
   // run a menu action then close the checkout's actions menu
-  menuAct(fn) {
+  menuAct(fn: () => unknown): void {
     this.menuId.set("");
     fn();
   }
 
-  touchActivity() {
+  touchActivity(): void {
     this.config.workspace(this.props.ws.id)?.touchActivity();
   }
 
   // prompt for a message (the shared textarea editor — also used by the dirty
   // badge's own Commit entry and CommitsDialog's reword affordance) then stage
   // everything and commit with it
-  async commitDialog(r) {
+  async commitDialog(r: CheckoutRow) {
     const message = await editCommitMessage(this.dialogs, {
       title: `Commit — ${r.repo}`,
       okLabel: "Commit",
@@ -740,7 +815,7 @@ export class CodePane extends Component {
     return this.code.commit(r.path, r.repo, message, this.wsId);
   }
 
-  wipCommit(r) {
+  wipCommit(r: CheckoutRow): Promise<void> {
     this.touchActivity();
     return this.code.wipCommit(r.path, r.repo, this.wsId);
   }
@@ -749,7 +824,7 @@ export class CodePane extends Component {
   // bodies up front) — fetch the full message on demand for an edit/amend dialog's
   // prefill, so a multi-line message isn't silently truncated to its first line;
   // falls back to the subject alone if the fetch fails
-  async _fullCommitMessage(r) {
+  async _fullCommitMessage(r: CheckoutRow): Promise<string> {
     try {
       return await this.code.commitMessage(r.path, r.sha);
     } catch {
@@ -758,7 +833,7 @@ export class CodePane extends Component {
   }
 
   // stage all changes and fold them into HEAD with a (possibly edited) message
-  async amendDialog(r) {
+  async amendDialog(r: CheckoutRow) {
     const message = await editCommitMessage(this.dialogs, {
       title: `Amend commit — ${r.repo}`,
       initialMessage: await this._fullCommitMessage(r),
@@ -769,14 +844,14 @@ export class CodePane extends Component {
     return this.code.amendCommit(r.path, r.repo, message, this.wsId);
   }
 
-  discard(r) {
+  discard(r: CheckoutRow) {
     this.touchActivity();
     return this.code.discard(r.path, r.repo, this.wsId);
   }
 
   // the PR's GitHub state for the pill: open / draft / closed / merged (the
   // runbot/CI signal lives in the workspace header, not per card)
-  prState(pr) {
+  prState(pr: PullRequest): string {
     return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 }

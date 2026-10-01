@@ -28,19 +28,36 @@ import {
   REVIEW_CATEGORY,
 } from "../workspaces_screen/dialogs.ts";
 import { ActionsCell } from "../branches_screen/cells.ts";
+import type { ReviewRow } from "./cells.ts";
+import type { SiblingPr } from "./reviews_plugin.ts";
+import type { PrRef } from "../core/code_plugin.ts";
+import type { RepoConfig, WorkspaceConfig } from "../core/config.ts";
+import type { PrTarget } from "../workspaces_screen/dialogs.ts";
+import type { ActionMenuDetail, MenuAction } from "../core/menus.ts";
+import type { ForwardPortRow } from "../core/observed_models.ts";
 import {
   ForwardPortsCell,
   isMerged,
   PrCell,
   STATUS_META,
   StatusCell,
+  type StatusKey,
   statusKey,
   taskFullyMerged,
   worstStatusKey,
 } from "./cells.ts";
 
+// a workspace target whose PR's repo is configured with a local checkout
+type RepoTarget = PrTarget & { repo: RepoConfig };
+
+// a task: the tracked rows sharing one branch name
+interface ReviewGroup {
+  key: string; // the branch
+  rows: ReviewRow[];
+}
+
 // a pasted GitHub PR URL or "owner/repo#123" shorthand → {github, number}, or null
-export function parsePrRef(text) {
+export function parsePrRef(text: string): PrRef | null {
   const url = /github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/.exec(text);
   if (url) return { github: url[1], number: Number(url[2]) };
   const short = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(text.trim());
@@ -129,7 +146,7 @@ export class ReviewsScreen extends Component {
 
   // one row per tracked {id, github, number}, enriched with fetched PR info +
   // review status once they've loaded (loaded=false until then).
-  allRows = computed(() => {
+  allRows = computed((): ReviewRow[] => {
     const tracked = this.config.config.reviews || [];
     const prInfo = this.reviews.prInfo();
     const reviewStatus = this.reviews.reviewStatus();
@@ -155,11 +172,12 @@ export class ReviewsScreen extends Component {
 
   // grouped by branch, filtered group-wise (a task stays visible if ANY of its
   // PRs matches the selected status) — same pattern as Branches & PRs.
-  groupsView = computed(() => {
-    const byBranch = new Map();
+  groupsView = computed((): ReviewGroup[] => {
+    const byBranch = new Map<string, ReviewRow[]>();
     for (const row of this.allRows()) {
-      if (!byBranch.has(row.branch)) byBranch.set(row.branch, []);
-      byBranch.get(row.branch).push(row);
+      let group = byBranch.get(row.branch);
+      if (!group) byBranch.set(row.branch, (group = []));
+      group.push(row);
     }
     const status = this.statusFilter();
     return [...byBranch.entries()]
@@ -167,15 +185,15 @@ export class ReviewsScreen extends Component {
       .filter((g) => !status || g.rows.some((r) => this._statusKey(r) === status));
   });
 
-  rows = () => this.groupsView().flatMap((g) => g.rows);
-  groupByBranch = (row) => row.branch;
+  rows = (): ReviewRow[] => this.groupsView().flatMap((g) => g.rows);
+  groupByBranch = (row: ReviewRow): string => row.branch;
 
   // every forward-port pull across every merged tracked row — their own
   // mergebot/review status needs its own fetch, since the tracked row's own
   // fetch only covers the row's own PR, not what its forward-port matrix names.
-  forwardPortPairs = computed(() => {
-    const seen = new Set();
-    const pairs = [];
+  forwardPortPairs = computed((): PrRef[] => {
+    const seen = new Set<string>();
+    const pairs: PrRef[] = [];
     for (const row of this.allRows()) {
       const key = `${row.github}#${row.number}`;
       if (!isMerged(row, this.code.mergebot()[key] || "")) continue;
@@ -191,7 +209,7 @@ export class ReviewsScreen extends Component {
     return pairs;
   });
 
-  _cell = (row) => ({ row, screen: this });
+  _cell = (row: ReviewRow): { row: ReviewRow; screen: ReviewsScreen } => ({ row, screen: this });
   rs = recordset(this.rows, [
     { name: "repo", label: "Repo", get: (r) => this._repoLabel(r.github) },
     { name: "pr", label: "PR", component: PrCell, cellProps: this._cell },
@@ -200,7 +218,7 @@ export class ReviewsScreen extends Component {
     { name: "act", label: "", component: ActionsCell, cellProps: this._cell },
   ]);
 
-  setup() {
+  setup(): void {
     useEffect(() => {
       const tracked = this.config.config.reviews || [];
       if (!tracked.length) return;
@@ -229,44 +247,44 @@ export class ReviewsScreen extends Component {
     });
   }
 
-  _statusKey(row) {
+  _statusKey(row: ReviewRow): StatusKey {
     const key = `${row.github}#${row.number}`;
     return statusKey(row, this.code.mergebot()[key] || "", this.code.mbDetails()[key] || "");
   }
 
-  _repoLabel(github) {
+  _repoLabel(github: string): string {
     const repo = (this.config.config.repos || []).find((r) => r.github === github);
     return repo ? repo.id : github;
   }
 
   // worst-of across a group's rows, in STATUS_META's precedence order
-  rollup(rows) {
+  rollup(rows: ReviewRow[]): { label: string; cls: string } {
     return STATUS_META[worstStatusKey(rows.map((r) => this._statusKey(r)))];
   }
 
   // a task (group of rows) is "important" if any of its PRs is flagged
-  isImportant(rows) {
+  isImportant(rows: ReviewRow[]): boolean {
     return rows.some((r) => r.important);
   }
 
-  toggleImportant(rows) {
+  toggleImportant(rows: ReviewRow[]): void {
     this.reviews.toggleImportant(
       this.config,
       rows.map((r) => r.id),
     );
   }
 
-  get count() {
+  get count(): string {
     const n = (this.config.config.reviews || []).length;
     return `${n} PR${n === 1 ? "" : "s"}`;
   }
 
-  get stamp() {
+  get stamp(): string {
     if (this.reviews.loading()) return "refreshing…";
     return this.reviews.at() ? `updated ${timeAgo(new Date(this.reviews.at()).toISOString())}` : "";
   }
 
-  async addPr() {
+  async addPr(): Promise<void> {
     const text = this.addPrText().trim();
     if (!text) return;
     const ref = parsePrRef(text);
@@ -285,7 +303,7 @@ export class ReviewsScreen extends Component {
     if (branch && this.config.config.auto_workspace_on_review) {
       const targets = [ref, ...siblings]
         .map((p) => ({ repo: this._repoFor(p.github), pull: p }))
-        .filter((t) => t.repo && t.repo.path);
+        .filter((t): t is RepoTarget => !!(t.repo && t.repo.path));
       if (targets.length) {
         const wsId =
           this.reviewWorkspaceFor(branch)?.id ||
@@ -302,15 +320,16 @@ export class ReviewsScreen extends Component {
   // — so adding one PR of a multi-repo task picks up the rest automatically.
   // Returns the resolved branch (null if it couldn't be resolved at all) and
   // the newly-tracked siblings, so addPr can also drive auto-workspace-creation.
-  async discoverSiblings(ref) {
+  async discoverSiblings(ref: PrRef): Promise<{ branch: string | null; siblings: SiblingPr[] }> {
     const info = await this.reviews.fetchOne(ref);
     if (!info?.branch) return { branch: null, siblings: [] };
     const otherRepos = (this.config.config.repos || []).filter(
       (r) => r.github && r.github !== ref.github,
     );
+    const branch = info.branch;
     if (!otherRepos.length) return { branch: info.branch, siblings: [] };
     const siblings = await this.reviews.findSiblings(
-      otherRepos.map((r) => ({ github: r.github, branch: info.branch })),
+      otherRepos.map((r) => ({ github: r.github, branch })),
     );
     const added = siblings.filter((s) => this.reviews.track(this.config, s.github, s.number));
     if (added.length)
@@ -320,7 +339,7 @@ export class ReviewsScreen extends Component {
     return { branch: info.branch, siblings: added };
   }
 
-  async refresh() {
+  async refresh(): Promise<void> {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
@@ -345,25 +364,25 @@ export class ReviewsScreen extends Component {
 
   // a row's repo — resolved from its github slug against configured repos (a
   // tracked PR whose repo isn't configured locally has no checkout to branch)
-  _repoFor(github) {
+  _repoFor(github: string): RepoConfig | null {
     return (this.config.config.repos || []).find((r) => r.github === github) || null;
   }
 
   // {repo, pull} targets for a set of rows, dropping any whose repo isn't
   // configured locally — shared by createTaskWorkspace and reviewGroup.
-  _targetsFor(rows) {
+  _targetsFor(rows: ReviewRow[]): RepoTarget[] {
     return rows
       .map((row) => ({
         repo: this._repoFor(row.github),
         pull: { github: row.github, number: row.number },
       }))
-      .filter((t) => t.repo && t.repo.path);
+      .filter((t): t is RepoTarget => !!(t.repo && t.repo.path));
   }
 
   // the review workspace already tracking this task's branch, if any — a plain
   // synchronous lookup (no priming/network) so the group-header button can color
   // itself "ready" without an N-groups history fetch on every render.
-  reviewWorkspaceFor(branch) {
+  reviewWorkspaceFor(branch: string | undefined): WorkspaceConfig | null {
     return (
       (this.config.config.workspaces || []).find(
         (w) => w.category === REVIEW_CATEGORY && w.name === branch,
@@ -377,14 +396,14 @@ export class ReviewsScreen extends Component {
   // conversation has been primed at least once (setup()'s priming effect does
   // this for every visible task) — after that it stays current via the global
   // SSE "claude" listener (ClaudePlugin.apply), with no polling needed here.
-  reviewStateFor(branch) {
+  reviewStateFor(branch: string | undefined): "none" | "running" | "done" {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws) return "none";
     if (this.claude.running(ws.id)) return "running";
     return this.claude.items(ws.id).length ? "done" : "none";
   }
 
-  reviewTitleFor(branch) {
+  reviewTitleFor(branch: string): string {
     const state = this.reviewStateFor(branch);
     if (state === "running") return "Claude is reviewing this task…";
     if (state === "done") {
@@ -399,16 +418,16 @@ export class ReviewsScreen extends Component {
   // Claude's own merge-readiness guess (0-100) for a finished review, or null if
   // none was reported (see ClaudePlugin.reviewScore) — the little colored badge
   // next to the review icon once a review is "done".
-  reviewScoreFor(branch) {
+  reviewScoreFor(branch: string): number | null {
     const ws = this.reviewWorkspaceFor(branch);
     return ws ? this.claude.reviewScore(ws.id) : null;
   }
 
-  scoreClass(score) {
+  scoreClass(score: number): string {
     return reviewScoreClass(score);
   }
 
-  async createRowWorkspace(row) {
+  async createRowWorkspace(row: ReviewRow): Promise<void> {
     const repo = this._repoFor(row.github);
     if (!repo || !repo.path) {
       await this.dialogs.open({
@@ -424,7 +443,7 @@ export class ReviewsScreen extends Component {
     ]);
   }
 
-  async createTaskWorkspace(rows) {
+  async createTaskWorkspace(rows: ReviewRow[]): Promise<void> {
     const targets = this._targetsFor(rows);
     if (!targets.length) return;
     return createWorkspaceFromPRs(this._dialogPlugins(), targets);
@@ -436,7 +455,7 @@ export class ReviewsScreen extends Component {
   // (the group-header icon / task menu's explicit "Review" action, which always
   // wants a review) and addPr's auto-review hook (which only wants one when
   // config.auto_claude_review is on — the caller gates that, not this helper).
-  async _runReviewIfNeeded(wsId, branch) {
+  async _runReviewIfNeeded(wsId: string, branch: string | undefined): Promise<void> {
     await this.claude.prime(wsId);
     if (this.reviewStateFor(branch) === "none") {
       const ws = (this.config.config.workspaces || []).find((w) => w.id === wsId);
@@ -449,12 +468,12 @@ export class ReviewsScreen extends Component {
   // failure — an error is already surfaced by resolvePrBranches/createWorktree).
   // Shared by the group-header icon (onReviewIconClick, stays on this screen) and
   // reviewGroup (the task menu's "Review" action, which navigates afterward).
-  async _startReview(rows) {
+  async _startReview(rows: ReviewRow[]): Promise<string | null> {
     const branch = rows[0]?.branch;
     // fast path: the group's rows already carry their resolved branch name (no
     // fetch needed) — reuse an existing review workspace straight away rather
     // than going through createReviewWorkspace's own (network) pre-check.
-    let wsId = this.reviewWorkspaceFor(branch)?.id;
+    let wsId: string | false | null | undefined = this.reviewWorkspaceFor(branch)?.id;
     if (!wsId) {
       const targets = this._targetsFor(rows);
       if (!targets.length) return null;
@@ -468,7 +487,7 @@ export class ReviewsScreen extends Component {
   // the task menu's "Review" action: same as the group-header icon, but always
   // lands on the workspace's own Claude tab afterward — "running" shows the
   // live in-progress conversation, "done" shows the finished answer.
-  async reviewGroup(rows) {
+  async reviewGroup(rows: ReviewRow[]): Promise<void> {
     const wsId = await this._startReview(rows);
     if (!wsId) return;
     this.wt.selectOnOpen(wsId);
@@ -483,7 +502,7 @@ export class ReviewsScreen extends Component {
   // in a side panel (openReviewPanel) instead of jumping to the Claude tab —
   // that panel's own "Continue to chat with claude" button is the escape hatch
   // for anyone who wants the full transcript.
-  async onReviewIconClick(rows) {
+  async onReviewIconClick(rows: ReviewRow[]): Promise<void> {
     const state = this.reviewStateFor(rows[0]?.branch);
     if (state === "running") return;
     if (state === "done") return this.openReviewPanel(rows[0].branch);
@@ -493,7 +512,7 @@ export class ReviewsScreen extends Component {
   // open the task's saved review markdown in a floating side panel, straight from
   // disk (ClaudePlugin.fetchReview) — a quick read that doesn't navigate away
   // from this screen the way reviewGroup's "open the Claude tab" does.
-  openReviewPanel(branch) {
+  openReviewPanel(branch: string): void {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws) return;
     this.dialogs.openComponent(ReviewPanel, {
@@ -511,7 +530,7 @@ export class ReviewsScreen extends Component {
   // tracked PRs' current heads first (syncReviewWorktree) — otherwise this would
   // just re-review whatever was already checked out, missing any commits pushed
   // since the workspace was created or since the last review.
-  async _rerunReview(branch) {
+  async _rerunReview(branch: string): Promise<void> {
     const ws = this.reviewWorkspaceFor(branch);
     if (!ws || this.claude.running(ws.id)) return;
     const rows = this.allRows().filter((r) => r.branch === branch);
@@ -521,14 +540,14 @@ export class ReviewsScreen extends Component {
 
   // how many tasks are fully merged (base PR(s) + every forward port) — drives
   // the top bar's "Untrack all merged" button, both its visibility and count.
-  get mergedTaskCount() {
+  get mergedTaskCount(): number {
     return this.groupsView().filter((g) => taskFullyMerged(g.rows, this.code)).length;
   }
 
   // untracking a task that isn't fully merged yet means goo stops following
   // it through review/merge — worth a pause. A fully-merged task has nothing
   // left to lose, so it skips the prompt.
-  async _confirmUntrack(rows) {
+  async _confirmUntrack(rows: ReviewRow[]): Promise<boolean> {
     if (taskFullyMerged(rows, this.code)) return true;
     const n = rows.length;
     const res = await this.dialogs.open({
@@ -541,7 +560,7 @@ export class ReviewsScreen extends Component {
     return !!res;
   }
 
-  async untrackGroup(rows) {
+  async untrackGroup(rows: ReviewRow[]): Promise<void> {
     if (!(await this._confirmUntrack(rows))) return;
     this.reviews.untrackMany(
       this.config,
@@ -552,7 +571,7 @@ export class ReviewsScreen extends Component {
 
   // bulk-drop every task that's fully merged (base PR(s) + every forward port)
   // — the top bar's "Untrack all merged" button.
-  async untrackAllMerged() {
+  async untrackAllMerged(): Promise<void> {
     const groups = this.groupsView().filter((g) => taskFullyMerged(g.rows, this.code));
     if (!groups.length) return;
     const n = groups.length;
@@ -576,7 +595,7 @@ export class ReviewsScreen extends Component {
   // multi-repo task untracked one row at a time via untrackRow) or when the
   // workspace is busy (removeSilently itself no-ops then) — the untrack action
   // was already confirmed, so this stays silent, same as cascade child removal.
-  async _removeWorkspaceIfOrphaned(branch) {
+  async _removeWorkspaceIfOrphaned(branch: string | undefined): Promise<void> {
     if (!branch) return;
     if (this.allRows().some((r) => r.branch === branch)) return;
     const ws = this.reviewWorkspaceFor(branch);
@@ -586,9 +605,9 @@ export class ReviewsScreen extends Component {
   // a task's (group header's) menu: Create workspace always; Open on GitHub /
   // Open on mergebot only for a single-PR task (ambiguous which PR otherwise —
   // the row's own kebab covers that case); Untrack drops every PR in the task.
-  openGroupMenu(ev, rows) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    const actions = [
+  openGroupMenu(ev: MouseEvent, rows: ReviewRow[]): void {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the group's kebab
+    const actions: MenuAction[] = [
       { label: "Create workspace", onClick: () => this.createTaskWorkspace(rows) },
       { label: "Review", onClick: () => this.reviewGroup(rows) },
     ];
@@ -605,23 +624,25 @@ export class ReviewsScreen extends Component {
       danger: true,
       onClick: () => this.untrackGroup(rows),
     });
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+    );
   }
 
-  hasRowMenu() {
+  hasRowMenu(): boolean {
     return true;
   }
 
   // a forward-port branch's menu: one Create workspace spanning every repo the
   // branch's PRs are in, plus per-PR Open on GitHub / Open on mergebot / Send
   // r+ (repo-suffixed only when the branch spans more than one repo).
-  openForwardPortMenu(ev, row, fp) {
-    const rect = ev.currentTarget.getBoundingClientRect();
+  openForwardPortMenu(ev: MouseEvent, row: ReviewRow, fp: ForwardPortRow): void {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the branch badge
     const pulls = (fp.cells || []).flatMap((c) => c.pulls || []);
     const targets = pulls
       .map((p) => ({ repo: this._repoFor(p.github), pull: { github: p.github, number: p.number } }))
-      .filter((t) => t.repo && t.repo.path);
-    const actions = [];
+      .filter((t): t is RepoTarget => !!(t.repo && t.repo.path));
+    const actions: MenuAction[] = [];
     if (targets.length)
       actions.push({
         label: "Create workspace",
@@ -642,12 +663,14 @@ export class ReviewsScreen extends Component {
         onClick: () => this.code.postRPlus(p.github, p.number),
       });
     }
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+    );
   }
 
-  openRowMenu(ev, row) {
-    const rect = ev.currentTarget.getBoundingClientRect();
-    const actions = [
+  openRowMenu(ev: MouseEvent, row: ReviewRow): void {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the row's kebab
+    const actions: MenuAction[] = [
       { label: "Create workspace", onClick: () => this.createRowWorkspace(row) },
       { label: "Open on GitHub", onClick: () => window.open(row.url, "_blank") },
     ];
@@ -661,10 +684,12 @@ export class ReviewsScreen extends Component {
       danger: true,
       onClick: () => this.untrackRow(row),
     });
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+    );
   }
 
-  async untrackRow(row) {
+  async untrackRow(row: ReviewRow): Promise<void> {
     if (!(await this._confirmUntrack([row]))) return;
     this.reviews.untrack(this.config, row.id);
     await this._removeWorkspaceIfOrphaned(row.branch);

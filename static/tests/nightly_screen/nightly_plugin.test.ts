@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { NightlyPlugin } from "../../src/nightly_screen/nightly_plugin.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
 
-function jsonOk(data) {
+function jsonOk(data: Record<string, unknown>) {
   return { ok: true, json: async () => ({ ok: true, ...data }) };
 }
 
@@ -11,7 +12,7 @@ describe("NightlyPlugin", () => {
       "fetch",
       vi.fn(async () => jsonOk({ versions: ["18.0"], nights: [{ date: "2026-01-01" }] })),
     );
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     await plugin.load();
     expect(plugin.versions()).toEqual(["18.0"]);
     expect(plugin.nights()).toEqual([{ date: "2026-01-01" }]);
@@ -23,21 +24,23 @@ describe("NightlyPlugin", () => {
       "fetch",
       vi.fn(async () => ({ ok: false, json: async () => ({ error: "down" }) })),
     );
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     await plugin.load();
     expect(plugin.error()).toBe("down");
   });
 
   it("skips a second concurrent load()", async () => {
-    let resolveFirst;
+    let resolveFirst = (): void => {
+      throw new Error("fetch was not called");
+    };
     const fetchMock = vi.fn(
       () =>
-        new Promise((resolve) => {
+        new Promise<ReturnType<typeof jsonOk>>((resolve) => {
           resolveFirst = () => resolve(jsonOk({ versions: [], nights: [] }));
         }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     const p1 = plugin.load();
     const p2 = plugin.load();
     resolveFirst();
@@ -48,7 +51,7 @@ describe("NightlyPlugin", () => {
   it("skips re-fetching a narrower or equal window that's already covered this session", async () => {
     const fetchMock = vi.fn(async () => jsonOk({ versions: [], nights: [] }));
     vi.stubGlobal("fetch", fetchMock);
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     await plugin.load(false, 14);
     await plugin.load(false, 7);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -57,7 +60,7 @@ describe("NightlyPlugin", () => {
   it("re-fetches when force=true or a wider window is requested", async () => {
     const fetchMock = vi.fn(async () => jsonOk({ versions: [], nights: [] }));
     vi.stubGlobal("fetch", fetchMock);
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     await plugin.load(false, 7);
     await plugin.load(true, 7);
     await plugin.load(false, 14);
@@ -69,7 +72,7 @@ describe("NightlyPlugin", () => {
       jsonOk({ errors: [{ message: "boom" }], metrics: { peak: 1 } }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     const r1 = await plugin.fetchErrors("http://build/1");
     const r2 = await plugin.fetchErrors("http://build/1");
     expect(r1).toBe(r2); // same cached object, not just equal
@@ -82,7 +85,7 @@ describe("NightlyPlugin", () => {
       "fetch",
       vi.fn(async () => jsonOk({})),
     );
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     const result = await plugin.fetchErrors("http://build/2");
     expect(result).toEqual({ errors: [], metrics: {} });
   });
@@ -92,7 +95,7 @@ describe("NightlyPlugin", () => {
       "fetch",
       vi.fn(async () => jsonOk({ errors: [{ message: "x", timeout: true }] })),
     );
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     await plugin.fetchErrors("http://build/3");
     expect(plugin.timeoutUrls().has("http://build/3")).toBe(true);
   });
@@ -102,7 +105,7 @@ describe("NightlyPlugin", () => {
       "fetch",
       vi.fn(async () => jsonOk({ errors: [{ message: "x" }] })),
     );
-    const plugin = new NightlyPlugin({});
+    const plugin = new NightlyPlugin(NO_MANAGER);
     await plugin.fetchErrors("http://build/4");
     expect(plugin.timeoutUrls().has("http://build/4")).toBe(false);
   });

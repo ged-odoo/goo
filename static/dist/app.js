@@ -5982,7 +5982,11 @@ async function pushBranchesDialog(code, dialogs, branches, { title, message, for
 // static/src/branches_screen/cells.ts
 var RepoCell = class extends Component {
   static components = { DirtyBadge };
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any(),
+    // the t.any() props are not validated at runtime
+    screen: t.any()
+  });
   code = usePlugin(CodePlugin);
   externalIcon = m(ICONS.external);
   static template = xml`
@@ -6001,7 +6005,11 @@ var RepoCell = class extends Component {
   }
 };
 var PrCell = class extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any(),
+    // the t.any() props are not validated at runtime
+    screen: t.any()
+  });
   static template = xml`
     <span class="brg-pr">
       <t t-if="this.prs.length">
@@ -6014,14 +6022,18 @@ var PrCell = class extends Component {
     </span>`;
   get prs() {
     const row = this.props.row;
-    return row.prs || (row.pr ? [row.pr] : []);
+    return row.kind === "local" ? row.prs : [row.pr];
   }
   stateOf(pr) {
     return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 };
 var MergebotCell = class extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any(),
+    // the t.any() props are not validated at runtime
+    screen: t.any()
+  });
   code = usePlugin(CodePlugin);
   static template = xml`
     <span class="brg-pr">
@@ -6045,7 +6057,11 @@ var MergebotCell = class extends Component {
   }
 };
 var ActionsCell = class extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any(),
+    // the t.any() props are not validated at runtime
+    screen: t.any()
+  });
   kebabIcon = m(ICONS.kebab);
   static template = xml`
     <span class="brg-act">
@@ -6206,7 +6222,7 @@ var BranchesScreen = class extends Component {
     const status = this.statusFilter();
     return [...byBranch.entries()].map(([name, rows]) => ({
       name,
-      rows: rows.slice().sort((a, b) => (a.kind === "pr") - (b.kind === "pr") || rank(a) - rank(b)),
+      rows: rows.slice().sort((a, b) => Number(a.kind === "pr") - Number(b.kind === "pr") || rank(a) - rank(b)),
       // combined last-update time for the branch (sum across its rows)
       updateSum: rows.reduce((s, r) => s + (Date.parse(r.date) || 0), 0)
     })).filter((g) => this._matchesStatus(g, status)).sort((a, b) => (a.updateSum - b.updateSum) * dir);
@@ -6289,7 +6305,8 @@ var BranchesScreen = class extends Component {
   // ── selection (group-level: a Set of branch names) ──
   toggleSelect(name) {
     const sel = new Set(this.selected());
-    sel.has(name) ? sel.delete(name) : sel.add(name);
+    if (sel.has(name)) sel.delete(name);
+    else sel.add(name);
     this.selected.set(sel);
   }
   get allSelected() {
@@ -6307,7 +6324,9 @@ var BranchesScreen = class extends Component {
   }
   // the selected groups' local branches (what batch Delete operates on)
   get selectedLocalRows() {
-    return this.selectedGroups.flatMap((g) => g.rows.filter((r) => r.kind === "local"));
+    return this.selectedGroups.flatMap(
+      (g) => g.rows.filter((r) => r.kind === "local")
+    );
   }
   // the selected groups' open PRs, deduped (what batch Close operates on)
   get selectedOpenPrs() {
@@ -6333,7 +6352,9 @@ var BranchesScreen = class extends Component {
     const all = this.selectedLocalRows;
     const rows = all.filter((r) => !this.deleteBlocked(r));
     const skipped = all.length - rows.length;
-    const prs = rows.filter((r) => r.pr && r.pr.state === "open" && r.github);
+    const prs = rows.filter(
+      (r) => !!r.pr && r.pr.state === "open" && !!r.github
+    );
     const remoteRows = rows.filter((r) => r.remote && !r.base);
     const what = groups.length === 1 ? `branch "${groups[0].name}"` : `${groups.length} branches`;
     const fields2 = [];
@@ -6405,6 +6426,7 @@ var BranchesScreen = class extends Component {
         key: "closePr",
         type: "checkbox",
         label: `Close PR #${r.pr.number}`,
+        // hasPr: r.pr is set
         value: true
       });
     for (const t2 of targets)
@@ -6496,7 +6518,9 @@ var BranchesScreen = class extends Component {
           onClick: () => this.code.closePr(r.pr.github, r.pr.number)
         }
       ];
-      appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions: actions2 } }));
+      appBus.dispatchEvent(
+        new CustomEvent("action-menu", { detail: { rect, actions: actions2 } })
+      );
       return;
     }
     const actions = [{ label: "Commits", onClick: () => this.openCommits(r) }];
@@ -6513,6 +6537,7 @@ var BranchesScreen = class extends Component {
         label: "Close PR",
         danger: true,
         onClick: () => this.code.closePr(r.github, r.pr.number)
+        // checked just above
       });
     const coBlocked = this.checkoutBlocked(r);
     actions.push({
@@ -6534,7 +6559,9 @@ var BranchesScreen = class extends Component {
       title: delBlocked || "",
       onClick: () => this.deleteRow(r)
     });
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent("action-menu", { detail: { rect, actions } })
+    );
   }
   // why a branch can't be checked out ("" = allowed): already checked out, or the
   // repo's working tree is dirty (a checkout would fail / lose changes)
@@ -6708,7 +6735,7 @@ var ListEditor = class extends Component {
   msgText = signal("");
   msgCls = signal("");
   dragIndex = signal(-1);
-  // row being dragged (-1 = none); only set for reorderable specs
+  // set while a row drag is in progress
   setup() {
     this.load();
     onWillUnmount(() => this._dragStop?.(true));
@@ -6729,6 +6756,7 @@ var ListEditor = class extends Component {
     const original = this.rows();
     const stop = startRowDrag(ev, {
       row: ev.target.closest(".edit-row"),
+      // the row handle
       onMove: (e) => this._dragMove(e),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -6756,8 +6784,9 @@ var ListEditor = class extends Component {
     this.dragIndex.set(to);
   }
   load() {
+    const stored = this.config.config[this.spec.key];
     this.rows.set(
-      this.config.config[this.spec.key].map((item) => {
+      stored.map((item) => {
         const r = {};
         for (const f of this.spec.fields)
           r[f.key] = f.type === "checkbox" ? !!item[f.key] : f.format ? f.format(item[f.key]) : item[f.key] || "";
@@ -6796,7 +6825,8 @@ var ListEditor = class extends Component {
       if (seen.has(keyVal)) return;
       seen.add(keyVal);
       const item = {};
-      for (const f of this.spec.fields) item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
+      for (const f of this.spec.fields)
+        item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
       for (const k of this.spec.carry || []) if (row[k]) item[k] = row[k];
       if (this.spec.prepare) this.spec.prepare(item);
       items.push(item);
@@ -6833,6 +6863,7 @@ var TabsEditor = class extends Component {
   // drag-time order override: `rows` derives from config, which must only be
   // written once (on drop) — during the drag the template renders this instead
   dragRows = signal(null);
+  // set while a row drag is in progress
   setup() {
     onWillUnmount(() => this._dragStop?.(true));
   }
@@ -6864,6 +6895,7 @@ var TabsEditor = class extends Component {
   onDragStart(ev, row) {
     const stop = startRowDrag(ev, {
       row: ev.target.closest(".edit-row"),
+      // the row handle
       onMove: (e) => this._dragMove(e),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -6945,7 +6977,6 @@ var LinksEditor = class extends Component {
     </div>`;
   config = usePlugin(ConfigPlugin);
   items = signal([]);
-  // [{label, href, _id} | {label, children:[{label, href, _id}], _id}]
   dragId = signal(0);
   // _id of the dragged row (0 = none)
   overId = signal(0);
@@ -6955,6 +6986,7 @@ var LinksEditor = class extends Component {
   overEnd = signal(false);
   // trailing "top level" zone hovered
   _nextId = 1;
+  // set while a row drag is in progress
   setup() {
     this.load();
     onWillUnmount(() => this._dragStop?.(true));
@@ -6967,7 +6999,8 @@ var LinksEditor = class extends Component {
     this.items.set(
       (this.config.config.links || []).map((n) => {
         const node = { ...n, _id: this._nextId++ };
-        if (this.isMenu(n)) node.children = n.children.map((c) => ({ ...c, _id: this._nextId++ }));
+        if (this.isMenu(n))
+          node.children = n.children.map((c) => ({ ...c, _id: this._nextId++ }));
         return node;
       })
     );
@@ -7019,6 +7052,7 @@ var LinksEditor = class extends Component {
   onDragStart(ev, id) {
     const stop = startRowDrag(ev, {
       row: ev.target.closest(".edit-row"),
+      // the row handle
       onMove: (e) => this._dragMove(e),
       onEnd: (commit) => this._dragEnd(commit)
     });
@@ -7321,7 +7355,7 @@ var ConfigScreen = class extends Component {
   // reactive config blob, so it's fetched/saved through its own tiny endpoint
   // (core/utils.ts fetchReviewPrompt/saveReviewPrompt) rather than updateConfig.
   reviewPromptText = signal("");
-  _reviewPromptTimer = null;
+  _reviewPromptTimer = void 0;
   // editor lives in Miscellaneous, not this grid; the rest are filtered to the
   // active launch_mode (a field with no `modes` — none left today besides
   // editor — would show in every mode)
@@ -7358,10 +7392,10 @@ var ConfigScreen = class extends Component {
     try {
       const response = await fetch("/api/rust-bundler", { cache: "no-store" });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || response.status);
+      if (!response.ok) throw new Error(data.error || String(response.status));
       this.rustStatus.set(data);
     } catch (error) {
-      this.rustStatus.set({ error: error.message });
+      this.rustStatus.set({ error: errorMessage(error) });
     }
   }
   async installRustBundler() {
@@ -7372,8 +7406,8 @@ var ConfigScreen = class extends Component {
       const result = await postJSON("/api/rust-bundler/install");
       this.rustStatus.set(result);
     } catch (error) {
-      this.rustStatus.set({ ...this.rustStatus(), building: false, error: error.message });
-      this.dialogs.error("Rust bundler build failed", error.message);
+      this.rustStatus.set({ ...this.rustStatus(), building: false, error: errorMessage(error) });
+      this.dialogs.error("Rust bundler build failed", errorMessage(error));
     } finally {
       this.rustBuilding.set(false);
     }
@@ -7385,7 +7419,7 @@ var ConfigScreen = class extends Component {
     this.upToDate.set(false);
     const r = await this.update.check();
     this.checking.set(false);
-    if (r.behind > 0) {
+    if (r.behind && r.behind > 0) {
       const n = r.behind;
       this.eventLog.add(
         `checked for updates \u2014 ${n} commit${n === 1 ? "" : "s"} behind origin/master`
@@ -7467,18 +7501,19 @@ var ConfigScreen = class extends Component {
     this.backupMsg.set("Exported.");
   }
   async importData(ev) {
-    const file = ev.target.files[0];
-    ev.target.value = "";
+    const input = ev.target;
+    const file = input.files[0];
+    input.value = "";
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!data || typeof data !== "object" || !data.config)
+      if (!data || typeof data !== "object" || !("config" in data) || !data.config)
         throw new Error("not a goo config backup");
       await this.config.importSnapshot(data);
       this.backupMsg.set("Imported, reloading\u2026");
       setTimeout(() => location.reload(), 700);
     } catch (e) {
-      this.backupMsg.set(`Import failed: ${e.message}`);
+      this.backupMsg.set(`Import failed: ${errorMessage(e)}`);
     }
   }
 };
@@ -7921,7 +7956,9 @@ var DatabasesScreen = class extends Component {
   // sorted, view-ready rows — recomputed only when the db list / active db change
   rows = computed(() => {
     const activeDb = this.db.activeDb;
-    return [...this.db.databases()].sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0)).map((d) => ({
+    return [...this.db.databases()].sort(
+      (a, b) => (Date.parse(b.last_update ?? "") || 0) - (Date.parse(a.last_update ?? "") || 0)
+    ).map((d) => ({
       name: d.name,
       active: d.name === activeDb,
       version: d.odoo_version,
@@ -7949,7 +7986,8 @@ var DatabasesScreen = class extends Component {
   }
   toggleSelect(name) {
     const sel = new Set(this.selected());
-    sel.has(name) ? sel.delete(name) : sel.add(name);
+    if (sel.has(name)) sel.delete(name);
+    else sel.add(name);
     this.selected.set(sel);
   }
   // per-database actions in the floating kebab menu (shared ActionMenu). Clone,
@@ -7979,7 +8017,9 @@ var DatabasesScreen = class extends Component {
         onClick: () => this.dropDb(d)
       }
     ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent("action-menu", { detail: { rect, actions } })
+    );
   }
   get _selectableDbs() {
     return this.rows().filter((d) => !d.active);
@@ -8523,7 +8563,7 @@ var MemoryPlugin = class extends Plugin {
         this.setBuilds([...existing, ...res.builds]);
       }
     } catch (e) {
-      this.batchError.set(e.message || "failed to fetch batch builds");
+      this.batchError.set(errorMessage(e) || "failed to fetch batch builds");
     } finally {
       this.batchLoading.set(false);
     }
@@ -8540,7 +8580,7 @@ var MemoryPlugin = class extends Plugin {
       });
       this.data.set(res.data || []);
     } catch (e) {
-      this.error.set(e.message || "failed to load memory data");
+      this.error.set(errorMessage(e) || "failed to load memory data");
     } finally {
       this.loading.set(false);
     }
@@ -8562,7 +8602,8 @@ var NightlyPlugin = class extends Plugin {
   timeoutUrls = signal(/* @__PURE__ */ new Set());
   // URLs whose builds contain a timeout error
   async fetchErrors(url) {
-    if (this._errorsCache.has(url)) return this._errorsCache.get(url);
+    const cached = this._errorsCache.get(url);
+    if (cached) return cached;
     const res = await postJSON("/api/nightly/errors", { url });
     const result = { errors: res.errors || [], metrics: res.metrics || {} };
     this._errorsCache.set(url, result);
@@ -8579,13 +8620,16 @@ var NightlyPlugin = class extends Plugin {
     this.loading.set(true);
     this.error.set("");
     try {
-      const res = await postJSON("/api/nightly", { refresh: !!force, max_nights: maxNights });
+      const res = await postJSON("/api/nightly", {
+        refresh: !!force,
+        max_nights: maxNights
+      });
       this.versions.set(res.versions || []);
       this.nights.set(res.nights || []);
       this._maxNights = maxNights;
       this.at.set(Date.now());
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set(errorMessage(e));
     } finally {
       this.loading.set(false);
     }
@@ -8913,7 +8957,7 @@ var NightlyScreen = class extends Component {
         const canvas = this.chartRef(gm.id)();
         if (!canvas) continue;
         const { labels, datasets } = this._chartData(gm);
-        let chart = this._charts.get(gm.id);
+        const chart = this._charts.get(gm.id);
         if (chart) {
           chart.data.labels = labels;
           chart.data.datasets = datasets;
@@ -9006,13 +9050,14 @@ var NightlyScreen = class extends Component {
         loading: false,
         error: ""
       };
-      if (this.popover()?.url === url) this.popover.set({ ...this.popover(), ...patch });
+      const cur = this.popover();
+      if (cur?.url === url) this.popover.set({ ...cur, ...patch });
       this.pinnedPopovers.set(
         this.pinnedPopovers().map((p) => p.url === url ? { ...p, ...patch } : p)
       );
     } catch (e) {
-      if (this.popover()?.url === url)
-        this.popover.set({ ...this.popover(), loading: false, error: e.message });
+      const cur = this.popover();
+      if (cur?.url === url) this.popover.set({ ...cur, loading: false, error: errorMessage(e) });
     } finally {
       this.graphCacheBust.set(this.graphCacheBust() + 1);
     }
@@ -9100,8 +9145,12 @@ var NightlyScreen = class extends Component {
     return this.activeGraphMetrics.some((gm) => !NB_COUNT_METRICS.has(gm.id));
   }
   chartRef(id) {
-    if (!this._chartRefs.has(id)) this._chartRefs.set(id, signal.ref());
-    return this._chartRefs.get(id);
+    let ref = this._chartRefs.get(id);
+    if (!ref) {
+      ref = signal.ref();
+      this._chartRefs.set(id, ref);
+    }
+    return ref;
   }
   async _loadRecentGraphData() {
     await this._loadGraphData(this.nightly.nights().slice(0, 7));
@@ -9133,7 +9182,8 @@ var NightlyScreen = class extends Component {
     await Promise.all(workers);
   }
   _getMetricValue(metricId, build) {
-    if (NB_COUNT_METRICS.has(metricId)) return build.counts ? build.counts[metricId] : null;
+    const counts = build.counts;
+    if (NB_COUNT_METRICS.has(metricId)) return counts ? counts[metricId] : null;
     const agg = this._aggregateMetricsForBuild(build.url);
     return agg ? agg[metricId] : null;
   }
@@ -9162,7 +9212,7 @@ var NightlyScreen = class extends Component {
       ]) {
         if (!enabled) continue;
         const data = nights.map((n) => {
-          const b = (n.versions[v] || {})[kind];
+          const b = n.versions[v]?.[kind];
           return b ? this._getMetricValue(gm.id, b) : null;
         });
         if (data.every((d) => d == null)) continue;
@@ -9181,6 +9231,7 @@ var NightlyScreen = class extends Component {
     });
     return { labels, datasets };
   }
+  // the Chart.js config object (handed to the untyped window.Chart)
   _chartConfig(gm, labels, datasets) {
     return {
       type: "line",
@@ -9191,12 +9242,17 @@ var NightlyScreen = class extends Component {
         plugins: {
           legend: { position: "top", labels: { boxWidth: 20, font: { size: 10 } } },
           tooltip: {
-            callbacks: { label: (ctx) => `${ctx.dataset.label}: ${gm.fmt(ctx.parsed.y)}` }
+            callbacks: {
+              label: (ctx) => `${ctx.dataset.label}: ${gm.fmt(ctx.parsed.y)}`
+            }
           }
         },
         scales: {
           x: { ticks: { maxRotation: 90, font: { size: 9 } } },
-          y: { title: { display: true, text: gm.label }, ticks: { callback: (v) => gm.fmt(v) } }
+          y: {
+            title: { display: true, text: gm.label },
+            ticks: { callback: (v) => gm.fmt(v) }
+          }
         }
       }
     };
@@ -9313,8 +9369,9 @@ var MemoryScreen = class extends Component {
     this._focusRowIndex = builds.length;
   }
   onFilePicked(idx, ev) {
-    const file = ev.target.files[0];
-    ev.target.value = "";
+    const input = ev.target;
+    const file = input.files?.[0];
+    input.value = "";
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => this.memory.setBuildFile(idx, file.name, reader.result);
@@ -9344,9 +9401,10 @@ var MemoryScreen = class extends Component {
     const builds = Object.keys(data[0]).filter((k) => k !== "suite");
     const datasets = builds.map((build, i) => ({
       label: build,
-      data: data.map(
-        (d) => d[build] != null ? Math.round(d[build] / 1024 / 1024 * 100) / 100 : null
-      ),
+      data: data.map((d) => {
+        const used = d[build];
+        return used != null ? Math.round(used / 1024 / 1024 * 100) / 100 : null;
+      }),
       borderColor: CHART_COLORS[i % CHART_COLORS.length],
       backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + "33",
       borderWidth: 1.5,
@@ -9362,7 +9420,11 @@ var MemoryScreen = class extends Component {
         animation: false,
         plugins: {
           legend: { position: "top" },
-          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y} MB` } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y} MB`
+            }
+          },
           zoom: CHART_ZOOM_OPTIONS
         },
         scales: {
@@ -9544,7 +9606,6 @@ var MbMenu = class extends Component {
 var CiPlugin = class extends Plugin {
   static sequence = 4;
   days = signal([]);
-  // [{date, batches, merged, failed, killed, pending, prs_merged}]
   awaiting = signal(null);
   // PRs approved but not yet staged (null = unknown)
   loading = signal(false);
@@ -9558,13 +9619,16 @@ var CiPlugin = class extends Plugin {
     this.loading.set(true);
     this.error.set("");
     try {
-      const res = await postJSON("/api/ci/merge-stats", { refresh: !!force, days });
+      const res = await postJSON("/api/ci/merge-stats", {
+        refresh: !!force,
+        days
+      });
       this.days.set(res.days || []);
       this.awaiting.set(res.awaiting ?? null);
       this._window = days;
       this.at.set(Date.now());
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set(errorMessage(e));
     } finally {
       this.loading.set(false);
     }
@@ -9659,7 +9723,8 @@ var CiScreen = class extends Component {
   }
   get totals() {
     const t2 = { batches: 0, merged: 0, failed: 0, killed: 0, pending: 0, prs_merged: 0 };
-    for (const d of this.ci.days()) for (const k in t2) t2[k] += d[k] || 0;
+    const keys = Object.keys(t2);
+    for (const d of this.ci.days()) for (const k of keys) t2[k] += d[k] || 0;
     return t2;
   }
   // hours the day has run: a full 24 for a completed day, the UTC hours elapsed so
@@ -9856,7 +9921,7 @@ var ClaudePlugin = class extends Plugin {
       this.dialogs.error("Cannot run Claude", "no main repo configured");
       return null;
     }
-    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== mainRepoId).map((c) => pathById[c.repo]).filter(Boolean);
+    const addDirs = (tgt.checkouts || []).filter((c) => c.repo !== mainRepoId).map((c) => pathById[c.repo]).filter((p) => Boolean(p));
     return { cwd, addDirs };
   }
   // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
@@ -9883,7 +9948,7 @@ var ClaudePlugin = class extends Plugin {
         review
       });
     } catch (e) {
-      this._append(tgt.id, { role: "error", text: e.message });
+      this._append(tgt.id, { role: "error", text: errorMessage(e) });
       this._set(tgt.id, { ...this._get(tgt.id), state: "idle" });
     }
   }
@@ -9923,14 +9988,17 @@ var ReviewsPlugin = class extends Plugin {
     this.loading.set(true);
     this.error.set("");
     try {
-      const res = await postJSON("/api/prs/info", { prs: todo, refresh: force });
+      const res = await postJSON("/api/prs/info", {
+        prs: todo,
+        refresh: force
+      });
       const byKey = Object.fromEntries(
         (res.prs || []).map((pr) => [`${pr.github}#${pr.number}`, pr])
       );
       this.prInfo.set({ ...have, ...byKey });
       this.at.set(Date.now());
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set(errorMessage(e));
     } finally {
       keys.forEach((k) => this._pending.delete(k));
       this.loading.set(false);
@@ -9947,7 +10015,10 @@ var ReviewsPlugin = class extends Plugin {
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this._pending.add(`rs:${k}`));
     try {
-      const res = await postJSON("/api/prs/review-status", { prs: todo, refresh: force });
+      const res = await postJSON(
+        "/api/prs/review-status",
+        { prs: todo, refresh: force }
+      );
       this.reviewStatus.set({ ...have, ...res.statuses || {} });
     } catch {
     } finally {
@@ -9969,7 +10040,9 @@ var ReviewsPlugin = class extends Plugin {
   async findSiblings(branches) {
     if (!branches.length) return [];
     try {
-      const res = await postJSON("/api/prs/for-branches", { branches });
+      const res = await postJSON("/api/prs/for-branches", {
+        branches
+      });
       const prs = res.prs || [];
       if (prs.length) {
         const byKey = Object.fromEntries(prs.map((pr) => [`${pr.github}#${pr.number}`, pr]));
@@ -10064,7 +10137,9 @@ var ReviewPanel = class extends Component {
   version = signal(null);
   versions = signal([]);
   created = signal(null);
+  // epoch seconds
   loading = signal(true);
+  // set in setup()
   setup() {
     this.drag = useDragResize({
       w: 640,
@@ -10131,7 +10206,8 @@ var ReviewPanel = class extends Component {
     return this.claude.running(this.props.workspaceId);
   }
   _pagerIndex() {
-    return this.versions().indexOf(this.version());
+    const v = this.version();
+    return v === null ? -1 : this.versions().indexOf(v);
   }
   hasPrev() {
     return this._pagerIndex() > 0;
@@ -10172,6 +10248,10 @@ var ReviewPanel = class extends Component {
 };
 
 // static/src/workspaces_screen/dialogs.ts
+function isNonFf(e) {
+  const data = e instanceof Error && "data" in e ? e.data : void 0;
+  return typeof data === "object" && data !== null && "non_ff" in data && !!data.non_ff;
+}
 function categoryOptions(config) {
   const opts = (config.config.workspace_categories || []).map((c) => ({
     value: c.id,
@@ -10190,19 +10270,19 @@ async function _fetchWithOverwritePrompt(dialogs, branch, source, attempt) {
     await attempt(false);
     return { ok: true };
   } catch (e) {
-    if (!e.data?.non_ff) return { ok: false, error: e.message };
+    if (!isNonFf(e)) return { ok: false, error: errorMessage(e) };
     const proceed = await dialogs.open({
       title: "Branch has diverged",
       message: `the local ${branch} has diverged from ${source} (it was likely rebased or force-pushed) \u2014 overwrite the local copy with the remote's?`,
       okLabel: "Overwrite",
       cancelLabel: "Skip"
     });
-    if (!proceed) return { ok: false, error: e.message };
+    if (!proceed) return { ok: false, error: errorMessage(e) };
     try {
       await attempt(true);
       return { ok: true };
     } catch (e2) {
-      return { ok: false, error: e2.message };
+      return { ok: false, error: errorMessage(e2) };
     }
   }
 }
@@ -10214,7 +10294,12 @@ async function fetchRemoteBranch(dialogs, { path, branch, pull_remote }) {
     (force) => postJSON("/api/code/remote-branch/fetch", { path, branch, pull_remote, force })
   );
 }
-async function fetchPrHead(dialogs, { path, github, number, branch }) {
+async function fetchPrHead(dialogs, {
+  path,
+  github,
+  number,
+  branch
+}) {
   return _fetchWithOverwritePrompt(
     dialogs,
     branch,
@@ -10232,17 +10317,20 @@ async function syncReviewWorktree(plugins, ws, targets) {
       if (!wtr) return;
       const eid = eventLog.begin(`syncing PR #${pull.number} (${repo.id})`);
       try {
-        const r = await postJSON("/api/code/remote-branch/sync-pr", {
-          path: wtr.worktreePath,
-          github: pull.github,
-          number: pull.number,
-          repo: repo.id
-        });
+        const r = await postJSON(
+          "/api/code/remote-branch/sync-pr",
+          {
+            path: wtr.worktreePath,
+            github: pull.github,
+            number: pull.number,
+            repo: repo.id
+          }
+        );
         eventLog.finish(eid, r.ok ? "done" : "error");
         if (!r.ok) failed.push(`${repo.id}: ${r.error}`);
       } catch (e) {
         eventLog.finish(eid, "error");
-        failed.push(`${repo.id}: ${e.message}`);
+        failed.push(`${repo.id}: ${errorMessage(e)}`);
       }
     })
   );
@@ -10314,7 +10402,11 @@ var WorkspaceSourceDialog = class extends Component {
         </div>
       </div>
     </div>`;
-  props = useProps({ done: t.function(), templates: t.any() });
+  props = useProps({
+    done: t.function(),
+    templates: t.any()
+    // config.config.templates — not validated at runtime
+  });
   source = signal("template");
   template = signal("");
   url = signal("");
@@ -10345,10 +10437,12 @@ var WorkspaceSourceDialog = class extends Component {
         const dumps = await baseVersionDumps(templateBranch(tpl));
         return this.done({ source: "template", template: this.template(), dumps });
       }
-      const info = await postJSON("/api/runbot/bundle-info", { url: this.url().trim() });
+      const info = await postJSON("/api/runbot/bundle-info", {
+        url: this.url().trim()
+      });
       this.done({ source: "bundle", info });
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set(errorMessage(e));
     } finally {
       this.busy.set(false);
     }
@@ -10544,7 +10638,9 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         type: "action",
         label: "Search local/remote branches\u2026",
         run: async (values) => {
-          const res2 = await dialogs.openComponent(RemoteBranchDialog, { repoIds: values.repos });
+          const res2 = await dialogs.openComponent(RemoteBranchDialog, {
+            repoIds: values.repos
+          });
           if (!res2) return null;
           const { pathByRepo, pullRemoteByRepo } = code.groups();
           const toFetch = res2.repos.filter((r) => !hasLocalBranch(r, res2.branch) && pathByRepo[r]);
@@ -10768,7 +10864,10 @@ async function resolvePrBranches(plugins, targets) {
     targets.map(async ({ repo, pull }) => {
       const eid = eventLog.begin(`fetching PR #${pull.number} (${repo.id})`);
       try {
-        const head = await postJSON("/api/prs/head", { repo: pull.github, number: pull.number });
+        const head = await postJSON("/api/prs/head", {
+          repo: pull.github,
+          number: pull.number
+        });
         const branch = head.branch;
         if (!branch) throw new Error("could not resolve the PR's head branch");
         const r = await fetchPrHead(dialogs, {
@@ -10782,7 +10881,7 @@ async function resolvePrBranches(plugins, targets) {
         return { repo, branch, ok: true };
       } catch (e) {
         eventLog.finish(eid, "error");
-        return { repo, ok: false, error: e.message };
+        return { repo, ok: false, error: errorMessage(e) };
       }
     })
   );
@@ -10988,11 +11087,21 @@ async function adoptCurrentCheckout(plugins) {
   await makeLoaded(ws);
   wt.select(ws.id);
 }
-async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, isActive, dialogs, wt, server }) {
+async function deleteWorkspaceDialog(ws, {
+  config,
+  code,
+  db,
+  eventLog,
+  repoMap,
+  isActive,
+  dialogs,
+  wt,
+  server
+}) {
   if (isActive) return;
   const descendants = descendantWorkspaces(config.config.workspaces || [], ws.id);
   const groups = code.groups();
-  const branches = (ws.checkouts || []).map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) })).filter((x) => x.b && !BASE_BRANCH_RE.test(x.branch)).map((x) => ({
+  const branches = (ws.checkouts || []).map(({ repo, branch }) => ({ repo, branch, b: repoMap[repo]?.branches.get(branch) })).filter((x) => !!x.b && !BASE_BRANCH_RE.test(x.branch)).map((x) => ({
     repo: x.repo,
     branch: x.branch,
     path: groups.pathByRepo[x.repo],
@@ -11001,7 +11110,9 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
   const prs = (ws.checkouts || []).map(({ repo, branch }) => ({
     pr: groups.prIndex[`${repo}:${branch}`],
     github: groups.githubByRepo[repo]
-  })).filter((x) => x.pr && x.pr.state === "open" && x.github).map((x) => ({ github: x.github, number: x.pr.number }));
+  })).filter(
+    (x) => !!x.pr && x.pr.state === "open" && !!x.github
+  ).map((x) => ({ github: x.github, number: x.pr.number }));
   const fields2 = [];
   if (branches.length)
     fields2.push({
@@ -11068,7 +11179,11 @@ function isMerged(row, mbState) {
   return row.state === "merged" || mbState === "merged";
 }
 var PrCell2 = class extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  // { row, screen } — ReviewsScreen._cell (neither validated at runtime)
+  props = useProps({
+    row: t.any(),
+    screen: t.any()
+  });
   code = usePlugin(CodePlugin);
   static template = xml`
     <span class="rev-pr">
@@ -11121,7 +11236,11 @@ function taskFullyMerged(rows, code) {
   });
 }
 var StatusCell = class extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  // { row, screen } — ReviewsScreen._cell (neither validated at runtime)
+  props = useProps({
+    row: t.any(),
+    screen: t.any()
+  });
   code = usePlugin(CodePlugin);
   static template = xml`
     <span t-if="this.row.loaded" class="dash-pr-state" t-att-class="this.meta.cls" t-out="this.meta.label"/>
@@ -11143,7 +11262,11 @@ var StatusCell = class extends Component {
   }
 };
 var ForwardPortsCell = class extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  // { row, screen } — ReviewsScreen._cell (neither validated at runtime)
+  props = useProps({
+    row: t.any(),
+    screen: t.any()
+  });
   code = usePlugin(CodePlugin);
   reviews = usePlugin(ReviewsPlugin);
   static template = xml`
@@ -11300,8 +11423,9 @@ var ReviewsScreen = class extends Component {
   groupsView = computed(() => {
     const byBranch = /* @__PURE__ */ new Map();
     for (const row of this.allRows()) {
-      if (!byBranch.has(row.branch)) byBranch.set(row.branch, []);
-      byBranch.get(row.branch).push(row);
+      let group = byBranch.get(row.branch);
+      if (!group) byBranch.set(row.branch, group = []);
+      group.push(row);
     }
     const status = this.statusFilter();
     return [...byBranch.entries()].map(([key, rows]) => ({ key, rows })).filter((g) => !status || g.rows.some((r) => this._statusKey(r) === status));
@@ -11404,7 +11528,7 @@ var ReviewsScreen = class extends Component {
     this.addPrNote.set("");
     const { branch, siblings } = await this.discoverSiblings(ref);
     if (branch && this.config.config.auto_workspace_on_review) {
-      const targets = [ref, ...siblings].map((p) => ({ repo: this._repoFor(p.github), pull: p })).filter((t2) => t2.repo && t2.repo.path);
+      const targets = [ref, ...siblings].map((p) => ({ repo: this._repoFor(p.github), pull: p })).filter((t2) => !!(t2.repo && t2.repo.path));
       if (targets.length) {
         const wsId = this.reviewWorkspaceFor(branch)?.id || await createReviewWorkspace(this._dialogPlugins(), targets);
         if (wsId && this.config.config.auto_claude_review) {
@@ -11424,9 +11548,10 @@ var ReviewsScreen = class extends Component {
     const otherRepos = (this.config.config.repos || []).filter(
       (r) => r.github && r.github !== ref.github
     );
+    const branch = info.branch;
     if (!otherRepos.length) return { branch: info.branch, siblings: [] };
     const siblings = await this.reviews.findSiblings(
-      otherRepos.map((r) => ({ github: r.github, branch: info.branch }))
+      otherRepos.map((r) => ({ github: r.github, branch }))
     );
     const added = siblings.filter((s) => this.reviews.track(this.config, s.github, s.number));
     if (added.length)
@@ -11467,7 +11592,7 @@ var ReviewsScreen = class extends Component {
     return rows.map((row) => ({
       repo: this._repoFor(row.github),
       pull: { github: row.github, number: row.number }
-    })).filter((t2) => t2.repo && t2.repo.path);
+    })).filter((t2) => !!(t2.repo && t2.repo.path));
   }
   // the review workspace already tracking this task's branch, if any — a plain
   // synchronous lookup (no priming/network) so the group-header button can color
@@ -11687,7 +11812,9 @@ var ReviewsScreen = class extends Component {
       danger: true,
       onClick: () => this.untrackGroup(rows)
     });
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent("action-menu", { detail: { rect, actions } })
+    );
   }
   hasRowMenu() {
     return true;
@@ -11698,7 +11825,7 @@ var ReviewsScreen = class extends Component {
   openForwardPortMenu(ev, row, fp) {
     const rect = ev.currentTarget.getBoundingClientRect();
     const pulls = (fp.cells || []).flatMap((c) => c.pulls || []);
-    const targets = pulls.map((p) => ({ repo: this._repoFor(p.github), pull: { github: p.github, number: p.number } })).filter((t2) => t2.repo && t2.repo.path);
+    const targets = pulls.map((p) => ({ repo: this._repoFor(p.github), pull: { github: p.github, number: p.number } })).filter((t2) => !!(t2.repo && t2.repo.path));
     const actions = [];
     if (targets.length)
       actions.push({
@@ -11720,7 +11847,9 @@ var ReviewsScreen = class extends Component {
         onClick: () => this.code.postRPlus(p.github, p.number)
       });
     }
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent("action-menu", { detail: { rect, actions } })
+    );
   }
   openRowMenu(ev, row) {
     const rect = ev.currentTarget.getBoundingClientRect();
@@ -11738,7 +11867,9 @@ var ReviewsScreen = class extends Component {
       danger: true,
       onClick: () => this.untrackRow(row)
     });
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent("action-menu", { detail: { rect, actions } })
+    );
   }
   async untrackRow(row) {
     if (!await this._confirmUntrack([row])) return;
@@ -11939,7 +12070,7 @@ function storedState() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY3) || "null");
     const cleanTodos = (todos) => (Array.isArray(todos) ? todos : []).filter(
-      (item) => item && typeof item.id === "string" && typeof item.title === "string"
+      (item) => typeof item === "object" && item !== null && "id" in item && typeof item.id === "string" && "title" in item && typeof item.title === "string"
     );
     const cleanList = (l) => ({
       id: l.id,
@@ -11951,10 +12082,13 @@ function storedState() {
       const list2 = { ...cleanList({ id: uid(), name: "Todo" }), todos: cleanTodos(raw) };
       return { lists: [list2], selected: list2.id };
     }
-    if (raw && Array.isArray(raw.lists)) {
-      const lists = raw.lists.filter((l) => l && typeof l.id === "string" && typeof l.name === "string").map(cleanList);
+    if (typeof raw === "object" && raw !== null && "lists" in raw && Array.isArray(raw.lists)) {
+      const lists = raw.lists.filter(
+        (l) => typeof l === "object" && l !== null && "id" in l && typeof l.id === "string" && "name" in l && typeof l.name === "string"
+      ).map(cleanList);
       if (lists.length) {
-        const selected = lists.some((l) => l.id === raw.selected) ? raw.selected : lists[0].id;
+        const sel = "selected" in raw ? raw.selected : void 0;
+        const selected = typeof sel === "string" && lists.some((l) => l.id === sel) ? sel : lists[0].id;
         return { lists, selected };
       }
     }
@@ -12122,6 +12256,7 @@ var TodoScreen = class extends Component {
   kebabIcon = m(ICONS.kebab);
   listIcon = m(ICONS.list);
   kanbanIcon = m(ICONS.kanban);
+  // the grab-time kanban card
   setup() {
     const closeMenu = () => this.menuOpen() && this.menuOpen.set(false);
     onMounted(() => document.addEventListener("click", closeMenu));
@@ -12150,7 +12285,7 @@ var TodoScreen = class extends Component {
     ev.preventDefault();
     const layout = this.layoutEl();
     const mainEl = layout?.querySelector(".todo-main");
-    if (!mainEl) return;
+    if (!layout || !mainEl) return;
     const startX = ev.clientX;
     const startWidth = mainEl.getBoundingClientRect().width;
     const original = this.mainWidth();
@@ -12174,7 +12309,9 @@ var TodoScreen = class extends Component {
       else this.mainWidth.set(original);
     };
     const up = () => stop(true);
-    const key = (e) => e.key === "Escape" && stop(false);
+    const key = (e) => {
+      if (e.key === "Escape") stop(false);
+    };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("keydown", key);
@@ -12213,7 +12350,11 @@ var TodoScreen = class extends Component {
   // the three columns, each with the selected list's todos for that stage in array
   // order (so kanban and list share one ordering)
   get kanbanColumns() {
-    const labels = { backlog: "Backlog", ongoing: "Ongoing", done: "Done" };
+    const labels = {
+      backlog: "Backlog",
+      ongoing: "Ongoing",
+      done: "Done"
+    };
     return KANBAN_STAGES.map((stage) => ({
       stage,
       label: labels[stage],
@@ -12334,21 +12475,23 @@ var TodoScreen = class extends Component {
     );
   }
   updateTitle(id, ev) {
-    const title = ev.target.value.trim();
+    const input = ev.target;
+    const title = input.value.trim();
     if (!title) {
-      ev.target.value = this.detailTodo?.title || "";
+      input.value = this.detailTodo?.title || "";
       return;
     }
-    ev.target.value = title;
+    input.value = title;
     this._updateTodos((todos) => todos.map((todo) => todo.id === id ? { ...todo, title } : todo));
   }
   onTitleKeydown(ev) {
+    const input = ev.currentTarget;
     if (ev.key === "Enter") {
       ev.preventDefault();
-      ev.currentTarget.blur();
+      input.blur();
     } else if (ev.key === "Escape") {
-      ev.currentTarget.value = this.detailTodo?.title || "";
-      ev.currentTarget.blur();
+      input.value = this.detailTodo?.title || "";
+      input.blur();
     }
   }
   remove(id) {
@@ -12366,6 +12509,7 @@ var TodoScreen = class extends Component {
     const original = this.lists();
     const stop = startRowDrag(ev, {
       row: ev.target.closest(".todo-rail-item"),
+      // the rail handle
       onMove: (e) => this._listDragMove(e, list.id),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -12400,6 +12544,7 @@ var TodoScreen = class extends Component {
     const original = this.list.todos;
     const stop = startRowDrag(ev, {
       row: ev.target.closest(".todo-row"),
+      // the row handle
       onMove: (e) => this._dragMove(e, todo.id),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -12436,13 +12581,14 @@ var TodoScreen = class extends Component {
   // preventDefault on pointerdown, which suppresses the compatibility click.
   // Instead a press that never travels past a few pixels is treated as a click.
   onCardDragStart(ev, todo) {
-    if (ev.target.closest(".todo-star")) return;
+    const target = ev.target;
+    if (target.closest(".todo-star")) return;
     const original = this.list.todos;
     this._dragOrigin = original.find((t2) => t2.id === todo.id);
     const from = { x: ev.clientX, y: ev.clientY };
     let moved = false;
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".kanban-card"),
+      row: target.closest(".kanban-card"),
       onMove: (e) => {
         if (!moved && (Math.abs(e.clientX - from.x) > 4 || Math.abs(e.clientY - from.y) > 4))
           moved = true;
@@ -12477,7 +12623,9 @@ var TodoScreen = class extends Component {
     if (!col) return;
     const stage = col.dataset.stage;
     this.dragOverStage.set(stage);
-    const cards = [...col.querySelectorAll(".kanban-card")].filter((c) => c.dataset.todoId !== id);
+    const cards = [...col.querySelectorAll(".kanban-card")].filter(
+      (c) => c.dataset.todoId !== id
+    );
     const to = dropIndex(ev, cards);
     const todos = this.list.todos;
     const from = todos.findIndex((t2) => t2.id === id);
@@ -12556,14 +12704,19 @@ var ClaudeChat = class extends Component {
         </div>
       </div>
     </div>`;
-  props = useProps({ target: t.any(), inMain: t.boolean().optional() });
+  props = useProps({
+    target: t.any(),
+    // the workspace chatted about — not validated at runtime
+    inMain: t.boolean().optional()
+  });
   claude = usePlugin(ClaudePlugin);
   scroll = signal.ref(HTMLElement);
-  ta = signal.ref(HTMLElement);
+  ta = signal.ref(HTMLTextAreaElement);
   setup() {
     onMounted(() => this.claude.prime(this.props.target.id));
     useEffect(() => {
-      void this.items.length, this.running;
+      void this.items.length;
+      void this.running;
       const el = this.scroll();
       if (el) el.scrollTop = el.scrollHeight;
     });
@@ -12699,6 +12852,7 @@ var CommitHistory = class extends Component {
   // row: the checkout row being edited; commits/diff/conflict: the pre-loaded
   // payload (head commit selected, its diff, any already-stuck-rebase message);
   // onClose: back to the checkout grid; reload: re-fetch + remount after a rewrite
+  // (all t.any(): not validated at runtime — the types name what CodePane passes)
   props = useProps({
     row: t.any(),
     commits: t.any(),
@@ -12772,7 +12926,7 @@ var CommitHistory = class extends Component {
       const diff = await this.code.commitDiff(this.props.row.path, commit.sha);
       if (sequence === this._diffSequence) this.historyDiff.set(diff);
     } catch (e) {
-      if (sequence === this._diffSequence) this.historyDiffError.set(e.message);
+      if (sequence === this._diffSequence) this.historyDiffError.set(errorMessage(e));
     } finally {
       if (sequence === this._diffSequence) this.historyDiffLoading.set(false);
     }
@@ -12787,13 +12941,13 @@ var CommitHistory = class extends Component {
     return !!commit?.ahead && !this.isHistorySquashed(commit.sha);
   }
   historySubject(commit) {
-    return this.historyMessageEdits()[commit?.sha]?.subject ?? commit?.subject ?? "";
+    return (commit ? this.historyMessageEdits()[commit.sha] : void 0)?.subject ?? commit?.subject ?? "";
   }
   historyBody(commit) {
-    return this.historyMessageEdits()[commit?.sha]?.body ?? commit?.body ?? "";
+    return (commit ? this.historyMessageEdits()[commit.sha] : void 0)?.body ?? commit?.body ?? "";
   }
   updateHistoryMessage(commit, field, value) {
-    if (!this.isHistoryCommitEditable(commit) || this.historyApplying() || this.historyConflict()) {
+    if (!commit || !this.isHistoryCommitEditable(commit) || this.historyApplying() || this.historyConflict()) {
       return;
     }
     const next = {
@@ -12808,12 +12962,13 @@ var CommitHistory = class extends Component {
   }
   saveHistoryMessageOnBlur(ev) {
     if (this._historyActionActive) return;
-    if (ev.relatedTarget && ev.currentTarget.contains(ev.relatedTarget)) return;
+    const zone = ev.currentTarget;
+    if (ev.relatedTarget && zone.contains(ev.relatedTarget)) return;
     if (!Object.keys(this.historyMessageEdits()).length || !this.historyPlanValid) return;
     this.applyHistoryPlan();
   }
   async dropHistoryCommit(commit) {
-    if (!this.isHistoryCommitEditable(commit) || this.historyApplying() || this.historyConflict() || this.historyStructureDirty) {
+    if (!commit || !this.isHistoryCommitEditable(commit) || this.historyApplying() || this.historyConflict() || this.historyStructureDirty) {
       return;
     }
     this._historyActionActive = true;
@@ -12862,7 +13017,7 @@ var CommitHistory = class extends Component {
     const byId = new Map(this.props.commits.map((c) => [c.sha, c]));
     const tail = this.props.commits.filter((c) => !c.ahead);
     return [
-      ...this.historyPlanIds().map((sha) => byId.get(sha)).filter(Boolean),
+      ...this.historyPlanIds().map((sha) => byId.get(sha)).filter((c) => !!c),
       ...tail
     ];
   }
@@ -12929,6 +13084,7 @@ var CommitHistory = class extends Component {
     if (this.historyApplying() || this.historyConflict()) return;
     const original = this.historyPlanIds();
     const stop = startRowDrag(ev, {
+      // target: the drag handle inside the row (a DOM element)
       row: ev.target.closest(".ws-history-row"),
       onMove: (e) => this._historyDragMove(e, commit.sha),
       onEnd: (didCommit) => {
@@ -12940,7 +13096,9 @@ var CommitHistory = class extends Component {
     this.historyDragSha.set(commit.sha);
   }
   _historyDragMove(ev, sha) {
-    const rows = [...this.historyListEl()?.querySelectorAll(".ws-history-row-ahead") || []];
+    const rows = [
+      ...this.historyListEl()?.querySelectorAll(".ws-history-row-ahead") || []
+    ];
     const to = dropIndex(
       ev,
       rows.filter((r) => !r.classList.contains("dragging"))
@@ -12971,10 +13129,11 @@ var CommitHistory = class extends Component {
         squash: this.historySquashSet().has(sha),
         drop: this.historyDropSet().has(sha)
       };
-      if (edits[sha]) {
-        entry.message = edits[sha].body ? `${edits[sha].subject.trim()}
+      const edit = edits[sha];
+      if (edit) {
+        entry.message = edit.body ? `${edit.subject.trim()}
 
-${edits[sha].body}` : edits[sha].subject.trim();
+${edit.body}` : edit.subject.trim();
       }
       return entry;
     });
@@ -12984,9 +13143,9 @@ ${edits[sha].body}` : edits[sha].subject.trim();
       await this.props.reload();
     } catch (e) {
       if (e.inProgress) {
-        this.historyConflict.set(e.message);
+        this.historyConflict.set(errorMessage(e));
       } else {
-        this.dialogs.error("Edit history failed", e.message);
+        this.dialogs.error("Edit history failed", errorMessage(e));
       }
     } finally {
       this.historyApplying.set(false);
@@ -13000,7 +13159,7 @@ ${edits[sha].body}` : edits[sha].subject.trim();
       this.historyConflict.set("");
       await this.props.reload();
     } catch (e) {
-      this.dialogs.error("Abort failed", e.message);
+      this.dialogs.error("Abort failed", errorMessage(e));
     } finally {
       this.historyApplying.set(false);
     }
@@ -13146,6 +13305,7 @@ var CodePane = class extends Component {
       </t>
     </div>`;
   props = useProps({ ws: t.any() });
+  // not validated at runtime
   code = usePlugin(CodePlugin);
   store = usePlugin(StorePlugin);
   config = usePlugin(ConfigPlugin);
@@ -13207,8 +13367,9 @@ var CodePane = class extends Component {
     const wtDir = isWt ? this.wt.dirPath(this.props.ws) : "";
     const byId = isWt ? null : Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
     return this.config.config.repos.filter((r) => repoIds.has(r.id)).map((r) => {
-      const b = (isWt ? this.store.worktreeRepoStatus(this.wsId, r.id) : byId[r.id]) || {};
+      const b = (isWt ? this.store.worktreeRepoStatus(this.wsId, r.id) : byId?.[r.id]) || {};
       const current = b.current || "";
+      const head = (b.branches || []).find((x) => x.name === current);
       const github = groups.githubByRepo[r.id] || "";
       const pr = groups.prIndex[`${r.id}:${current}`] || null;
       const prs = groups.prsIndex[`${r.id}:${current}`] || (pr ? [pr] : []);
@@ -13216,10 +13377,10 @@ var CodePane = class extends Component {
         id: r.id,
         current,
         dirty: !!b.dirty,
-        subject: b.head_subject || "",
-        remote: !!b.head_remote,
+        subject: head?.subject || "",
+        remote: !!head?.remote,
         // the current branch has a remote-tracking ref
-        date: b.head_date || "",
+        date: head?.date || "",
         ahead: b.ahead || 0,
         // commits ahead of the base (target) branch
         behind: b.behind || 0,
@@ -13235,7 +13396,7 @@ var CodePane = class extends Component {
         prs,
         // every PR on this branch (open + closed), open/latest first — for display
         // a work branch that's pushed and PR-less can have a PR opened for it
-        canPr: !!(current && b.head_remote && github && !pr && !BASE_BRANCH_RE.test(current))
+        canPr: !!(current && head?.remote && github && !pr && !BASE_BRANCH_RE.test(current))
       };
     });
   }
@@ -13472,7 +13633,7 @@ var CodePane = class extends Component {
       });
     } catch (e) {
       if (sequence !== this._historySequence) return;
-      this.dialogs.error("Could not load commit history", e.message);
+      this.dialogs.error("Could not load commit history", errorMessage(e));
     } finally {
       if (sequence === this._historySequence) this._historyPendingKey = "";
     }
@@ -13520,7 +13681,7 @@ var CodePane = class extends Component {
     const entryByRepo = new Map(this.repos.map((r) => [r.id, r]));
     const { prIndex, prsIndex } = this.code.groups();
     return (view.checkouts || []).map((c) => {
-      const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo.get(c.repo);
+      const git = isWt ? this.store.worktreeRepoStatus(wsId, c.repo) : gitByRepo?.get(c.repo);
       const b = (git?.branches || []).find((x) => x.name === c.branch);
       const entry = entryByRepo.get(c.repo) || null;
       const checkedOut = !!c.matches;
@@ -13748,10 +13909,12 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
         // run id we've seen running this session
         finishedRun: null,
         // run id we've finalized (once per run)
-        lastWs: null
+        lastWs: null,
         // the workspace last loaded into this slot (for the post-run refresh)
+        // filtered + sorted modules — recomputed only when the slot's modules/filters change
+        // (computed is lazy: `rec` is initialized by the time the getter first runs)
+        filtered: computed(() => this._filtered(rec))
       };
-      rec.filtered = computed(() => this._filtered(rec));
       this._slots.set(id, rec);
     }
     return this._slots.get(id);
@@ -13775,7 +13938,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   currentRun(slotId = "main") {
     const i = this.store.latestRunOfKind("install", slotId);
     const u = this.store.latestRunOfKind("upgrade", slotId);
-    return [i, u].filter(Boolean).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null;
+    return [i, u].filter((r) => Boolean(r)).sort((a, b) => (b.started_at || 0) - (a.started_at || 0))[0] || null;
   }
   // a run is active on a slot — optimistic between clicking Install/Upgrade and the
   // backend's first "run" event, then driven by the run's state
@@ -13790,7 +13953,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
       return this.worktree.wtRepos(ws).map((r) => ({ id: r.repo, path: r.worktreePath }));
     }
     const pathById = Object.fromEntries(this.config.config.repos.map((r) => [r.id, r.path]));
-    return (ws.checkouts || []).map((c) => ({ id: c.repo, path: pathById[c.repo] })).filter((r) => r.path);
+    return (ws.checkouts || []).map((c) => ({ id: c.repo, path: pathById[c.repo] })).filter((r) => Boolean(r.path));
   }
   // load a workspace's module list (own db + repos) into its slot
   async load(ws) {
@@ -13814,7 +13977,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
       s.loadedDb.set(db);
     } catch (e) {
       if (s.lastWs?.db !== db) return;
-      s.error.set(e.message);
+      s.error.set(errorMessage(e));
       s.erroredDb.set(db);
     } finally {
       s.loading.set(false);
@@ -13832,7 +13995,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
       return !q || mod.name.toLowerCase().includes(q) || mod.summary.toLowerCase().includes(q) || mod.category.toLowerCase().includes(q);
     });
     matched.sort(
-      (a, b) => (b.state === "installed") - (a.state === "installed") || a.name.localeCompare(b.name)
+      (a, b) => Number(b.state === "installed") - Number(a.state === "installed") || a.name.localeCompare(b.name)
     );
     return { total: matched.length, shown: matched.slice(0, _AddonsPlugin.MAX_ROWS) };
   }
@@ -13883,7 +14046,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
       });
     } catch (e) {
       s.pending.set(false);
-      s.status.set(`failed to start: ${e.message}`);
+      s.status.set(`failed to start: ${errorMessage(e)}`);
     }
   }
 };
@@ -13935,7 +14098,7 @@ var AssetsPlugin = class extends Plugin {
       this.loadedDb.set(db);
       this.at.set(Date.now());
     } catch (e) {
-      if (this.selectedDb() === db) this.error.set(e.message);
+      if (this.selectedDb() === db) this.error.set(errorMessage(e));
     } finally {
       this.loading.set(false);
     }
@@ -13956,8 +14119,8 @@ var AssetsPlugin = class extends Plugin {
       await this.load(true);
     } catch (e) {
       this.eventLog.finish(eid, "error");
-      this.error.set(e.message);
-      this.dialogs.error("Generate asset bundles failed", e.message);
+      this.error.set(errorMessage(e));
+      this.dialogs.error("Generate asset bundles failed", errorMessage(e));
     } finally {
       this.generating.set(false);
     }
@@ -13974,10 +14137,15 @@ var AssetsPlugin = class extends Plugin {
     this.bundleData.set({ name: bundle, kind, js: [], css: [], xml: [] });
     try {
       const filestore = this.config.config.filestore || "";
-      const data = await postJSON("/api/assets/breakdown", { db, bundle, filestore, kind });
+      const data = await postJSON("/api/assets/breakdown", {
+        db,
+        bundle,
+        filestore,
+        kind
+      });
       this.bundleData.set({ name: bundle, kind, js: data.js, css: data.css, xml: data.xml });
     } catch (e) {
-      this.analyzeError.set(e.message);
+      this.analyzeError.set(errorMessage(e));
     } finally {
       this.analyzing.set(false);
     }
@@ -13990,6 +14158,7 @@ var AssetsPlugin = class extends Plugin {
 
 // static/src/assets_screen/analysis.ts
 var BundleNode = class extends Component {
+  // set below (recursive)
   static template = xml`
     <div class="bnode">
       <div class="bnode-row" t-att-class="{leaf: !this.props.node.children.length}" t-att-style="'padding-left:' + (this.props.depth * 14 + 10) + 'px'" t-on-click="() => this.toggle()">
@@ -14001,6 +14170,7 @@ var BundleNode = class extends Component {
         <BundleNode t-foreach="this.props.node.children" t-as="c" t-key="c.name" node="c" depth="this.props.depth + 1"/>
       </t>
     </div>`;
+  // not validated at runtime
   props = useProps({ node: t.any(), depth: t.any() });
   open = signal(false);
   setup() {
@@ -14088,11 +14258,12 @@ var AssetsAnalysis = class extends Component {
     if (!d) return [];
     const q = this.treeSearch().trim().toLowerCase();
     const top = [];
-    for (const [label, files] of [
+    const groups = [
       ["js", d.js],
       ["css", d.css],
       ["xml", d.xml]
-    ]) {
+    ];
+    for (const [label, files] of groups) {
       const matched = (files || []).filter(([p]) => !q || p.toLowerCase().includes(q));
       if (!matched.length) continue;
       const root = { name: label, size: 0, children: {} };
@@ -14158,6 +14329,7 @@ var TestsPane = class extends Component {
       </div>
       <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
     </div>`;
+  // the workspace — not validated at runtime
   props = useProps({ ws: t.any() });
   tests = usePlugin(TestsPlugin);
   server = usePlugin(ServerPlugin);
@@ -14204,8 +14376,9 @@ var TestsPane = class extends Component {
     else this.wt.stopServer(this.props.ws);
   }
   onPreset(ev) {
-    const v = ev.target.value;
-    ev.target.value = "";
+    const sel = ev.target;
+    const v = sel.value;
+    sel.value = "";
     if (v) this.tags.set(v);
   }
   toggleAuto() {
@@ -14257,6 +14430,7 @@ var AddonsPane = class extends Component {
       <LogConsole t-if="this.addons.runActive(this.slotId) or this.addons.runningFor(this.slotId)"
                   t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
     </div>`;
+  // the workspace — not validated at runtime
   props = useProps({ ws: t.any() });
   addons = usePlugin(AddonsPlugin);
   config = usePlugin(ConfigPlugin);
@@ -14331,6 +14505,7 @@ var AssetsPane = class extends Component {
         </div>
       </t>
     </div>`;
+  // the workspace — not validated at runtime
   props = useProps({ ws: t.any() });
   assets = usePlugin(AssetsPlugin);
   config = usePlugin(ConfigPlugin);
@@ -14445,22 +14620,20 @@ var TerminalPane = class extends Component {
   host = signal.ref(HTMLElement);
   _dispose = null;
   setup() {
-    useEffect(
-      () => {
-        const el = this.host();
-        if (!el) return;
-        let live = true;
-        attachXterm(el, this.props.url, true).then(
-          (dispose) => live ? this._dispose = dispose : dispose()
-        );
-        return () => {
-          live = false;
-          this._dispose?.();
-          this._dispose = null;
-        };
-      },
-      () => [this.props.url]
-    );
+    useEffect(() => {
+      const el = this.host();
+      if (!el) return;
+      let live = true;
+      attachXterm(el, this.props.url, true).then((dispose) => {
+        if (live) this._dispose = dispose;
+        else dispose();
+      });
+      return () => {
+        live = false;
+        this._dispose?.();
+        this._dispose = null;
+      };
+    });
   }
 };
 
@@ -14485,7 +14658,7 @@ function savedWorkspaceOrder() {
 var WORKSPACE_COLLAPSED_KEY = "goo-workspace-collapsed-categories";
 function savedCollapsedGroups() {
   try {
-    const stored = JSON.parse(localStorage.getItem(WORKSPACE_COLLAPSED_KEY));
+    const stored = JSON.parse(localStorage.getItem(WORKSPACE_COLLAPSED_KEY) ?? "null");
     return new Set(Array.isArray(stored) ? stored : []);
   } catch {
     return /* @__PURE__ */ new Set();
@@ -14846,7 +15019,9 @@ var WorkspacesScreen = class extends Component {
     for (const c of ws.checkouts || []) {
       const github = groups.githubByRepo[c.repo] || "";
       if (this.code.isExternalRepo(github)) continue;
-      for (const branch of new Set([c.branch, byId[c.repo]?.current].filter(Boolean))) {
+      for (const branch of new Set(
+        [c.branch, byId[c.repo]?.current].filter((b) => !!b)
+      )) {
         branches.add(branch);
         const pr = groups.prIndex[branchKey(c.repo, branch)];
         if (pr && github) prs.add(`${github}#${pr.number}`);
@@ -14947,12 +15122,14 @@ var WorkspacesScreen = class extends Component {
   // workspace's change can live in one repo only (an enterprise-only PR) or in
   // several, so anything PR-derived reads all of them, never just the bundle row.
   prRows(ws) {
-    return this.wsRows(ws).filter((r) => r.pr && r.github);
+    return this.wsRows(ws).filter((r) => !!r.pr && !!r.github);
   }
   // the workspace's runbot/CI badge, rolled up over *all* its PRs (worst wins);
   // falls back to the scraped runbot bundle when no PR reports checks.
   wsCiStatus(ws) {
-    const rows = this.prRows(ws).filter((r) => r.pr.ci && (r.pr.ci.checks || []).length);
+    const rows = this.prRows(ws).filter(
+      (r) => !!r.pr.ci && !!(r.pr.ci.checks || []).length
+    );
     if (rows.length) {
       const multi = rows.length > 1;
       const checks = [];
@@ -14998,7 +15175,13 @@ var WorkspacesScreen = class extends Component {
   // that have a scraped state. The rows drive the per-repository hover breakdown.
   mbStatus(ws) {
     const rows = [];
-    const RANK = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
+    const RANK = {
+      blocked: 0,
+      progress: 1,
+      ready: 2,
+      merged: 3,
+      other: 4
+    };
     for (const row of this.prRows(ws)) {
       const state = this.code.mergebot()[`${row.github}#${row.pr.number}`] || "";
       if (!state) continue;
@@ -15152,8 +15335,19 @@ var WorkspacesScreen = class extends Component {
         return bTime - aTime || a.index - b.index;
       });
     } else if (order === "mergebot") {
-      const rank = { blocked: 0, progress: 1, ready: 2, merged: 3, other: 4 };
-      const statusRank = new Map(rows.map(({ ws }) => [ws.id, rank[this.mbStatus(ws)?.cls] ?? 5]));
+      const rank = {
+        blocked: 0,
+        progress: 1,
+        ready: 2,
+        merged: 3,
+        other: 4
+      };
+      const statusRank = new Map(
+        rows.map(({ ws }) => {
+          const cls = this.mbStatus(ws)?.cls;
+          return [ws.id, (cls && rank[cls]) ?? 5];
+        })
+      );
       rows.sort((a, b) => statusRank.get(a.ws.id) - statusRank.get(b.ws.id) || a.index - b.index);
     }
     return rows.map(({ ws }) => ws);
@@ -15178,10 +15372,11 @@ var WorkspacesScreen = class extends Component {
       const byCat = new Map(cats.map((c) => [c, []]));
       const rest = [];
       for (const ws of active) {
-        if (byCat.has(ws.category)) byCat.get(ws.category).push(ws);
+        const bucket = byCat.get(ws.category);
+        if (bucket) bucket.push(ws);
         else rest.push(ws);
       }
-      groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) }));
+      groups = cats.map((c) => ({ id: c, name: c, items: byCat.get(c) ?? [] }));
       if (rest.length) groups.push({ id: "\0none", name: "uncategorized", items: rest });
     }
     if (archived.length)
@@ -15486,7 +15681,9 @@ var WorkspacesScreen = class extends Component {
         onClick: () => this.startWithDrop(ws)
       }
     ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent("action-menu", { detail: { rect, actions } })
+    );
   }
   // an interactive odoo-bin shell REPL popup for this workspace's db/addons —
   // independent of whether its server is running (its own process/container,
@@ -15620,7 +15817,8 @@ var WorkspacesScreen = class extends Component {
     return this.isLoaded(ws) ? `ws://${location.host}/api/terminal?workspace=main` : "";
   }
   get termHint() {
-    if (this.isWt(this.sel)) return "Start this workspace's server to attach a terminal.";
+    if (this.sel && this.isWt(this.sel))
+      return "Start this workspace's server to attach a terminal.";
     return "This workspace isn't loaded \u2014 the main terminal belongs to the loaded workspace.";
   }
   // ── edit dialog (both locations) ─────────────────────────────────────────────

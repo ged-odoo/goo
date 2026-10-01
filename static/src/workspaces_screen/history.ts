@@ -17,12 +17,21 @@ import {
   t,
   xml,
 } from "@odoo/owl";
+import type { Type } from "@odoo/owl";
 import { CodePlugin } from "../core/code_plugin.ts";
+import type { Commit, RebasePlanStep, RewriteHistoryError } from "../core/code_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
 import { ICONS, m } from "../core/common.ts";
 import { TerminalDialog } from "../core/terminal.ts";
 import { startRowDrag, dropIndex } from "../core/drag.ts";
-import { timeAgo } from "../core/utils.ts";
+import { errorMessage, timeAgo } from "../core/utils.ts";
+import type { CheckoutRow } from "./code_pane.ts";
+
+// a pending commit-message edit (title + body), keyed by sha in historyMessageEdits
+interface MessageEdit {
+  subject: string;
+  body: string;
+}
 
 export class CommitHistory extends Component {
   static template = xml`
@@ -126,13 +135,14 @@ export class CommitHistory extends Component {
   // row: the checkout row being edited; commits/diff/conflict: the pre-loaded
   // payload (head commit selected, its diff, any already-stuck-rebase message);
   // onClose: back to the checkout grid; reload: re-fetch + remount after a rewrite
+  // (all t.any(): not validated at runtime — the types name what CodePane passes)
   props = useProps({
-    row: t.any(),
-    commits: t.any(),
-    diff: t.any(),
-    conflict: t.any(),
-    onClose: t.any(),
-    reload: t.any(),
+    row: t.any() as Type<CheckoutRow>,
+    commits: t.any() as Type<Commit[]>,
+    diff: t.any() as Type<string>,
+    conflict: t.any() as Type<string>,
+    onClose: t.any() as Type<() => void>,
+    reload: t.any() as Type<() => Promise<unknown> | undefined>,
   });
 
   code = usePlugin(CodePlugin);
@@ -147,13 +157,13 @@ export class CommitHistory extends Component {
   // props.commits); historySquashSet marks a sha as folding into whichever entry
   // ends up directly BELOW it (older) once historyPlanIds is applied. Nothing here
   // touches git until applyHistoryPlan() sends the whole thing as one rebase.
-  historyPlanIds = signal([]);
-  historySquashSet = signal(new Set());
-  historyDropSet = signal(new Set());
+  historyPlanIds = signal<string[]>([]);
+  historySquashSet = signal(new Set<string>());
+  historyDropSet = signal(new Set<string>());
   // sha -> {subject, body}; only entries that differ from git are retained.
   // Message edits travel with the reorder/squash plan and are applied by the
   // same interactive rebase, so editing never invalidates the pending shas.
-  historyMessageEdits = signal({});
+  historyMessageEdits = signal<Record<string, MessageEdit>>({});
   historyMenuSha = signal("");
   historyDragSha = signal(""); // sha of the row being dragged ("" = none)
   historyApplying = signal(false);
@@ -174,7 +184,7 @@ export class CommitHistory extends Component {
     const closeMenu = () => {
       if (this.historyMenuSha()) this.historyMenuSha.set("");
     };
-    const onKeydown = (ev) => {
+    const onKeydown = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
       if (this.historyMenuSha()) this.historyMenuSha.set("");
       else this.props.onClose();
@@ -188,11 +198,11 @@ export class CommitHistory extends Component {
     });
   }
 
-  toggleHistoryMenu(sha) {
+  toggleHistoryMenu(sha: string): void {
     this.historyMenuSha.set(this.historyMenuSha() === sha ? "" : sha);
   }
 
-  async selectHistoryCommit(commit) {
+  async selectHistoryCommit(commit: Commit | null): Promise<void> {
     if (!commit || (commit.sha === this.historySelected() && this.historyDiff())) return;
     this.historySelected.set(commit.sha);
     this.historyDiff.set("");
@@ -203,37 +213,48 @@ export class CommitHistory extends Component {
       const diff = await this.code.commitDiff(this.props.row.path, commit.sha);
       if (sequence === this._diffSequence) this.historyDiff.set(diff);
     } catch (e) {
-      if (sequence === this._diffSequence) this.historyDiffError.set(e.message);
+      if (sequence === this._diffSequence) this.historyDiffError.set(errorMessage(e));
     } finally {
       if (sequence === this._diffSequence) this.historyDiffLoading.set(false);
     }
   }
 
-  get historyCommit() {
+  get historyCommit(): Commit | null {
     return this.props.commits.find((commit) => commit.sha === this.historySelected()) || null;
   }
 
-  get historyCommitEditable() {
+  get historyCommitEditable(): boolean {
     return this.isHistoryCommitEditable(this.historyCommit);
   }
 
-  isHistoryCommitEditable(commit) {
+  isHistoryCommitEditable(commit: Commit | null): boolean {
     return !!commit?.ahead && !this.isHistorySquashed(commit.sha);
   }
 
-  historySubject(commit) {
-    return this.historyMessageEdits()[commit?.sha]?.subject ?? commit?.subject ?? "";
+  historySubject(commit: Commit | null): string {
+    return (
+      (commit ? this.historyMessageEdits()[commit.sha] : undefined)?.subject ??
+      commit?.subject ??
+      ""
+    );
   }
 
-  historyBody(commit) {
-    return this.historyMessageEdits()[commit?.sha]?.body ?? commit?.body ?? "";
+  historyBody(commit: Commit | null): string {
+    return (
+      (commit ? this.historyMessageEdits()[commit.sha] : undefined)?.body ?? commit?.body ?? ""
+    );
   }
 
-  updateHistoryMessage(commit, field, value) {
-    if (!this.isHistoryCommitEditable(commit) || this.historyApplying() || this.historyConflict()) {
+  updateHistoryMessage(commit: Commit | null, field: keyof MessageEdit, value: string): void {
+    if (
+      !commit ||
+      !this.isHistoryCommitEditable(commit) ||
+      this.historyApplying() ||
+      this.historyConflict()
+    ) {
       return;
     }
-    const next = {
+    const next: MessageEdit = {
       subject: this.historySubject(commit),
       body: this.historyBody(commit),
       [field]: value,
@@ -244,18 +265,21 @@ export class CommitHistory extends Component {
     this.historyMessageEdits.set(edits);
   }
 
-  saveHistoryMessageOnBlur(ev) {
+  saveHistoryMessageOnBlur(ev: FocusEvent): void {
     // Title + body are one editing zone: tabbing/clicking from one to the other
     // must not trigger two rebases. Leaving the zone applies the pending message
     // (and any reorder/squash plan it belongs to) as one atomic history rewrite.
     if (this._historyActionActive) return;
-    if (ev.relatedTarget && ev.currentTarget.contains(ev.relatedTarget)) return;
+    // currentTarget: the .ws-history-message-zone the focusout handler is bound to
+    const zone = ev.currentTarget as HTMLElement;
+    if (ev.relatedTarget && zone.contains(ev.relatedTarget as Node)) return;
     if (!Object.keys(this.historyMessageEdits()).length || !this.historyPlanValid) return;
     this.applyHistoryPlan();
   }
 
-  async dropHistoryCommit(commit) {
+  async dropHistoryCommit(commit: Commit | null): Promise<void> {
     if (
+      !commit ||
       !this.isHistoryCommitEditable(commit) ||
       this.historyApplying() ||
       this.historyConflict() ||
@@ -286,17 +310,17 @@ export class CommitHistory extends Component {
     await this.applyHistoryPlan();
   }
 
-  shortCommitDate(date) {
+  shortCommitDate(date: string): string {
     return date ? timeAgo(date) : "—";
   }
 
-  fullCommitDate(date) {
+  fullCommitDate(date: string): string {
     if (!date) return "—";
     const value = new Date(date);
     return Number.isNaN(value.getTime()) ? date : value.toLocaleString();
   }
 
-  get historyDiffLines() {
+  get historyDiffLines(): { id: number; text: string; cls: string }[] {
     return this.historyDiff()
       .split("\n")
       .filter((text) => !text.startsWith("diff --git ") && !text.startsWith("index "))
@@ -315,34 +339,34 @@ export class CommitHistory extends Component {
   // order, followed by the frozen inherited tail in its original (untouched)
   // order — ahead commits are always the top segment of props.commits, so
   // this only ever reshuffles within that segment, never past it
-  get historyOrderedCommits() {
+  get historyOrderedCommits(): Commit[] {
     const byId = new Map(this.props.commits.map((c) => [c.sha, c]));
     const tail = this.props.commits.filter((c) => !c.ahead);
     return [
       ...this.historyPlanIds()
         .map((sha) => byId.get(sha))
-        .filter(Boolean),
+        .filter((c): c is Commit => !!c),
       ...tail,
     ];
   }
 
-  get historyAheadCount() {
+  get historyAheadCount(): number {
     return this.historyPlanIds().length;
   }
 
   // any commit but the oldest ahead one can squash into whatever ends up
   // directly below it
-  canSquashHistory(sha) {
+  canSquashHistory(sha: string): boolean {
     const ids = this.historyPlanIds();
     const i = ids.indexOf(sha);
     return i >= 0 && i < ids.length - 1;
   }
 
-  isHistorySquashed(sha) {
+  isHistorySquashed(sha: string): boolean {
     return this.historySquashSet().has(sha);
   }
 
-  toggleHistorySquash(sha) {
+  toggleHistorySquash(sha: string): void {
     if (this.historyApplying() || this.historyConflict() || !this.canSquashHistory(sha)) return;
     const s = new Set(this.historySquashSet());
     if (s.has(sha)) s.delete(sha);
@@ -357,11 +381,11 @@ export class CommitHistory extends Component {
     this.historySquashSet.set(s);
   }
 
-  get historyDirty() {
+  get historyDirty(): boolean {
     return this.historyStructureDirty || Object.keys(this.historyMessageEdits()).length > 0;
   }
 
-  get historyStructureDirty() {
+  get historyStructureDirty(): boolean {
     const original = this.props.commits.filter((c) => c.ahead).map((c) => c.sha);
     return (
       this.historyPlanIds().join("\0") !== original.join("\0") ||
@@ -370,16 +394,16 @@ export class CommitHistory extends Component {
     );
   }
 
-  get historyPlanValid() {
+  get historyPlanValid(): boolean {
     return Object.values(this.historyMessageEdits()).every((edit) => edit.subject.trim());
   }
 
-  get historyPlanSummary() {
+  get historyPlanSummary(): string {
     const total = this.historyPlanIds().length;
     const squashed = this.historySquashSet().size;
     const dropped = this.historyDropSet().size;
     const edited = Object.keys(this.historyMessageEdits()).length;
-    const changes = [];
+    const changes: string[] = [];
     if (squashed) changes.push(`${total} commits → ${total - squashed}`);
     else if (
       this.historyPlanIds().join("\0") !==
@@ -395,7 +419,7 @@ export class CommitHistory extends Component {
     return changes.join(" · ");
   }
 
-  resetHistoryPlan() {
+  resetHistoryPlan(): void {
     this.historyPlanIds.set(this.props.commits.filter((c) => c.ahead).map((c) => c.sha));
     this.historySquashSet.set(new Set());
     this.historyDropSet.set(new Set());
@@ -406,11 +430,12 @@ export class CommitHistory extends Component {
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the ahead rows as the pointer crosses their midlines. Drop just
   // updates the pending plan (git untouched until Apply); Escape restores it.
-  onHistoryRowDragStart(ev, commit) {
+  onHistoryRowDragStart(ev: PointerEvent, commit: Commit): void {
     if (this.historyApplying() || this.historyConflict()) return;
     const original = this.historyPlanIds();
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".ws-history-row"),
+      // target: the drag handle inside the row (a DOM element)
+      row: (ev.target as HTMLElement).closest<HTMLElement>(".ws-history-row"),
       onMove: (e) => this._historyDragMove(e, commit.sha),
       onEnd: (didCommit) => {
         this.historyDragSha.set("");
@@ -421,8 +446,10 @@ export class CommitHistory extends Component {
     this.historyDragSha.set(commit.sha);
   }
 
-  _historyDragMove(ev, sha) {
-    const rows = [...(this.historyListEl()?.querySelectorAll(".ws-history-row-ahead") || [])];
+  _historyDragMove(ev: PointerEvent, sha: string): void {
+    const rows = [
+      ...(this.historyListEl()?.querySelectorAll<HTMLElement>(".ws-history-row-ahead") || []),
+    ];
     const to = dropIndex(
       ev,
       rows.filter((r) => !r.classList.contains("dragging")),
@@ -442,7 +469,7 @@ export class CommitHistory extends Component {
   // the panel switches to a persistent banner offering to abort it or open a
   // terminal to resolve it by hand, rather than a dismissable popup that could
   // be closed while a rebase sits half-applied.
-  async applyHistoryPlan() {
+  async applyHistoryPlan(): Promise<void> {
     if (
       this.historyApplying() ||
       this.historyConflict() ||
@@ -454,15 +481,14 @@ export class CommitHistory extends Component {
     const row = this.props.row;
     const edits = this.historyMessageEdits();
     const plan = [...this.historyPlanIds()].reverse().map((sha) => {
-      const entry = {
+      const entry: RebasePlanStep = {
         sha,
         squash: this.historySquashSet().has(sha),
         drop: this.historyDropSet().has(sha),
       };
-      if (edits[sha]) {
-        entry.message = edits[sha].body
-          ? `${edits[sha].subject.trim()}\n\n${edits[sha].body}`
-          : edits[sha].subject.trim();
+      const edit = edits[sha];
+      if (edit) {
+        entry.message = edit.body ? `${edit.subject.trim()}\n\n${edit.body}` : edit.subject.trim();
       }
       return entry;
     });
@@ -474,17 +500,18 @@ export class CommitHistory extends Component {
       // commits, so "back to checkouts" isn't stale
       await this.props.reload();
     } catch (e) {
-      if (e.inProgress) {
-        this.historyConflict.set(e.message);
+      // rewriteHistory throws a RewriteHistoryError (postJSON's error + the conflict flag)
+      if ((e as RewriteHistoryError).inProgress) {
+        this.historyConflict.set(errorMessage(e));
       } else {
-        this.dialogs.error("Edit history failed", e.message);
+        this.dialogs.error("Edit history failed", errorMessage(e));
       }
     } finally {
       this.historyApplying.set(false);
     }
   }
 
-  async abortHistoryConflict() {
+  async abortHistoryConflict(): Promise<void> {
     if (this.historyApplying()) return;
     this.historyApplying.set(true);
     try {
@@ -492,7 +519,7 @@ export class CommitHistory extends Component {
       this.historyConflict.set("");
       await this.props.reload();
     } catch (e) {
-      this.dialogs.error("Abort failed", e.message);
+      this.dialogs.error("Abort failed", errorMessage(e));
     } finally {
       this.historyApplying.set(false);
     }
@@ -501,12 +528,12 @@ export class CommitHistory extends Component {
   // let the user resolve the conflict by hand (git status / add / rebase
   // --continue or --abort); the banner stays up until they either abort here
   // or reopen the history (which reloads and drops the banner once resolved)
-  openHistoryConflictTerminal() {
+  openHistoryConflictTerminal(): void {
     const row = this.props.row;
     this.dialogs.openComponent(TerminalDialog, { path: row.path, label: `${row.repo} history` });
   }
 
-  get historyDiffStats() {
+  get historyDiffStats(): { added: number; deleted: number } {
     let added = 0;
     let deleted = 0;
     for (const line of this.historyDiff().split("\n")) {

@@ -1,11 +1,20 @@
 import { Component, onWillUnmount, usePlugin, signal, useEffect, xml } from "@odoo/owl";
+import type { Signal } from "@odoo/owl";
 import { NightlyPlugin } from "./nightly_plugin.ts";
+import type {
+  BuildError,
+  Night,
+  NightlyBuild,
+  NightlyVersionBuilds,
+  SuiteMetric,
+} from "./nightly_plugin.ts";
 import { ICONS, loadScript, m } from "../core/common.ts";
 import { Panel } from "../core/panel.ts";
+import { errorMessage } from "../core/utils.ts";
 
-export let _chartJsReady = null;
+export let _chartJsReady: Promise<void> | null = null;
 
-export function loadChartJs() {
+export function loadChartJs(): Promise<void> {
   if (!_chartJsReady) {
     _chartJsReady = loadScript("/static/lib/chart/chart.umd.min.js", () => window.Chart)
       .then(() =>
@@ -47,7 +56,18 @@ export const CHART_COLORS = [
   "#bab0ac",
 ];
 
-export const GRAPH_METRICS = [
+type CountMetricId = "ok" | "warning" | "failed";
+type GraphMetricId = CountMetricId | "tests" | "assertions" | "avg_mem" | "max_mem" | "time";
+// a build's value per graph metric (missing when the build doesn't report it)
+type MetricValues = Partial<Record<GraphMetricId, number>>;
+
+interface GraphMetric {
+  id: GraphMetricId;
+  label: string;
+  fmt: (v: number) => string;
+}
+
+export const GRAPH_METRICS: GraphMetric[] = [
   { id: "ok", label: "Passing builds", fmt: (v) => String(Math.round(v)) },
   { id: "warning", label: "Warning builds", fmt: (v) => String(Math.round(v)) },
   { id: "failed", label: "Failed builds", fmt: (v) => String(Math.round(v)) },
@@ -70,7 +90,57 @@ export const GRAPH_METRICS = [
   },
 ];
 
-export const NB_COUNT_METRICS = new Set(["ok", "warning", "failed"]);
+export const NB_COUNT_METRICS = new Set<GraphMetricId>(["ok", "warning", "failed"]);
+
+type BuildKind = keyof NightlyVersionBuilds;
+
+interface CellKind {
+  kind: BuildKind;
+  letter: string;
+  label: string;
+  build: NightlyBuild | null;
+}
+
+// one suite's metrics as the popover lists them
+interface MetricRow extends SuiteMetric {
+  suite: string;
+  label: string; // Desktop | Mobile
+}
+
+interface PopoverState {
+  url: string;
+  label: string;
+  top: number;
+  left: number;
+  errors: BuildError[];
+  metrics: MetricRow[];
+  loading: boolean;
+  error: string;
+}
+
+interface PinnedPopover extends PopoverState {
+  id: string;
+}
+
+// the Chart.js line dataset goo builds per version+edition
+interface ChartDataset {
+  label: string;
+  data: (number | null | undefined)[];
+  borderColor: string;
+  backgroundColor: string;
+  borderDash: readonly number[];
+  borderWidth: number;
+  pointRadius: number;
+  spanGaps: boolean;
+  tension: number;
+}
+
+// the slice of a Chart.js instance goo touches (window.Chart itself is untyped)
+interface ChartInstance {
+  data: { labels: string[]; datasets: ChartDataset[] };
+  update(): void;
+  destroy(): void;
+}
 
 export class NightlyScreen extends Component {
   static components = { Panel };
@@ -300,22 +370,22 @@ export class NightlyScreen extends Component {
     `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" width="12" height="12"><path d="M1 1l10 10M11 1L1 11"/></svg>`,
   );
 
-  popover = signal(null);
-  pinnedPopovers = signal([]);
-  _badgeRect = null;
-  _drag = null;
+  popover = signal<PopoverState | null>(null);
+  pinnedPopovers = signal<PinnedPopover[]>([]);
+  _badgeRect: DOMRect | null = null;
+  _drag: { id: string; offsetX: number; offsetY: number } | null = null;
 
   graphMode = signal(false);
-  graphVersionSel = signal(new Set());
+  graphVersionSel = signal(new Set<string>());
   graphShowCommunity = signal(true);
   graphShowEnterprise = signal(true);
-  graphMetricSel = signal(new Set());
+  graphMetricSel = signal(new Set<GraphMetricId>());
   graphCacheBust = signal(0); // bumped to force the chart-sync effect to re-run
   chartJsReady = signal(false);
-  _charts = new Map(); // metric id -> live Chart.js instance
-  _chartRefs = new Map(); // metric id -> signal.ref()
+  _charts = new Map<GraphMetricId, ChartInstance>(); // metric id -> live Chart.js instance
+  _chartRefs = new Map<GraphMetricId, Signal<HTMLElement | null>>(); // metric id -> signal.ref()
 
-  setup() {
+  setup(): void {
     this.nightly.load().then(() => this._checkFreshness());
     loadChartJs()
       .then(() => this.chartJsReady.set(true))
@@ -350,7 +420,7 @@ export class NightlyScreen extends Component {
         const canvas = this.chartRef(gm.id)();
         if (!canvas) continue;
         const { labels, datasets } = this._chartData(gm);
-        let chart = this._charts.get(gm.id);
+        const chart = this._charts.get(gm.id);
         if (chart) {
           chart.data.labels = labels;
           chart.data.datasets = datasets;
@@ -365,22 +435,23 @@ export class NightlyScreen extends Component {
     });
   }
 
-  _closePopover = (ev) => {
-    if (this.popover() && !ev.target.closest(".nb-popover-float, .nb-build"))
+  _closePopover = (ev: MouseEvent): void => {
+    // a document click's target is the clicked element
+    if (this.popover() && !(ev.target as Element).closest(".nb-popover-float, .nb-build"))
       this.popover.set(null);
   };
 
-  _onKey = (ev) => {
+  _onKey = (ev: KeyboardEvent): void => {
     if (ev.key === "Escape") this.popover.set(null);
   };
 
-  _startDrag = (ev, id) => {
+  _startDrag = (ev: MouseEvent, id: string): void => {
     const p = this.pinnedPopovers().find((pp) => pp.id === id);
     if (!p) return;
     this._drag = { id, offsetX: ev.clientX - p.left, offsetY: ev.clientY - p.top };
   };
 
-  _onMouseMove = (ev) => {
+  _onMouseMove = (ev: MouseEvent): void => {
     if (!this._drag) return;
     const { id, offsetX, offsetY } = this._drag;
     this.pinnedPopovers.set(
@@ -390,11 +461,11 @@ export class NightlyScreen extends Component {
     );
   };
 
-  _onMouseUp = () => {
+  _onMouseUp = (): void => {
     this._drag = null;
   };
 
-  _checkFreshness() {
+  _checkFreshness(): void {
     const nights = this.nightly.nights();
     if (!nights.length) return;
     const yesterday = new Date();
@@ -402,8 +473,8 @@ export class NightlyScreen extends Component {
     if (new Date(nights[0].date) < yesterday) this.nightly.load(true, 7);
   }
 
-  _clampPopover() {
-    const el = document.querySelector(".nb-popover-float");
+  _clampPopover(): void {
+    const el = document.querySelector<HTMLElement>(".nb-popover-float");
     const p = this.popover();
     if (!el || !p) return;
     const rect = el.getBoundingClientRect();
@@ -415,24 +486,24 @@ export class NightlyScreen extends Component {
     if (top !== p.top || left !== p.left) this.popover.set({ ...p, top, left });
   }
 
-  pin() {
+  pin(): void {
     const p = this.popover();
     if (!p) return;
     this.pinnedPopovers.set([...this.pinnedPopovers(), { ...p, id: `${p.url}:${Date.now()}` }]);
     this.popover.set(null);
   }
 
-  unpin(id) {
+  unpin(id: string): void {
     this.pinnedPopovers.set(this.pinnedPopovers().filter((p) => p.id !== id));
   }
 
-  async openPopover(ev, url, label) {
+  async openPopover(ev: MouseEvent, url: string, label: string): Promise<void> {
     ev.stopPropagation();
     if (this.popover()?.url === url) {
       this.popover.set(null);
       return;
     }
-    const rect = ev.currentTarget.getBoundingClientRect();
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the .nb-build badge
     this._badgeRect = rect;
     this.popover.set({
       url,
@@ -453,20 +524,21 @@ export class NightlyScreen extends Component {
         loading: false,
         error: "",
       };
-      if (this.popover()?.url === url) this.popover.set({ ...this.popover(), ...patch });
+      const cur = this.popover();
+      if (cur?.url === url) this.popover.set({ ...cur, ...patch });
       this.pinnedPopovers.set(
         this.pinnedPopovers().map((p) => (p.url === url ? { ...p, ...patch } : p)),
       );
     } catch (e) {
-      if (this.popover()?.url === url)
-        this.popover.set({ ...this.popover(), loading: false, error: e.message });
+      const cur = this.popover();
+      if (cur?.url === url) this.popover.set({ ...cur, loading: false, error: errorMessage(e) });
     } finally {
       this.graphCacheBust.set(this.graphCacheBust() + 1);
     }
   }
 
-  _buildMetrics(raw) {
-    const entries = Object.entries(raw || {}).map(([suite, metric]) => ({
+  _buildMetrics(raw: Record<string, SuiteMetric> | undefined): MetricRow[] {
+    const entries: MetricRow[] = Object.entries(raw || {}).map(([suite, metric]) => ({
       suite,
       label: suite.toLowerCase().includes("mobile") ? "Mobile" : "Desktop",
       ...metric,
@@ -475,29 +547,29 @@ export class NightlyScreen extends Component {
     return entries;
   }
 
-  fmtMem(bytes) {
+  fmtMem(bytes: number | null | undefined): string {
     return bytes == null ? "" : `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   }
 
-  fmtTime(sec) {
+  fmtTime(sec: number | null | undefined): string {
     if (sec == null) return "";
     const mins = Math.floor(sec / 60);
     return mins ? `${mins}m ${Math.round(sec % 60)}s` : `${Math.round(sec)}s`;
   }
 
-  get visibleNights() {
+  get visibleNights(): Night[] {
     return this.nightly.nights();
   }
 
-  refresh() {
+  refresh(): void {
     this.nightly.load(true, 7);
   }
 
-  loadMoreNights() {
+  loadMoreNights(): void {
     this.nightly.load(false, this.nightly.nights().length + 7);
   }
 
-  get stamp() {
+  get stamp(): string {
     if (this.nightly.loading()) return "loading…";
     if (!this.nightly.at()) return "";
     const secs = Math.floor((Date.now() - this.nightly.at()) / 1000);
@@ -506,7 +578,7 @@ export class NightlyScreen extends Component {
     return `loaded ${Math.floor(secs / 60)}m ago`;
   }
 
-  statusCls(status) {
+  statusCls(status: string): string {
     if (status === "success") return "nb-ok";
     if (status === "warning") return "nb-warn";
     if (status === "danger") return "nb-fail";
@@ -514,15 +586,15 @@ export class NightlyScreen extends Component {
     return "nb-none";
   }
 
-  badgeCls(b) {
+  badgeCls(b: NightlyBuild): string {
     return this.nightly.timeoutUrls().has(b.url) ? "nb-timeout" : this.statusCls(b.status);
   }
 
-  shortVersion(v) {
+  shortVersion(v: string): string {
     return v.startsWith("saas-") ? v.slice(5) : v;
   }
 
-  cellKinds(night, v) {
+  cellKinds(night: Night, v: string): CellKind[] | null {
     const vdata = night.versions[v];
     if (!vdata) return null;
     return [
@@ -533,7 +605,7 @@ export class NightlyScreen extends Component {
 
   // ── graph mode ─────────────────────────────────────────────────────────
 
-  toggleGraph() {
+  toggleGraph(): void {
     const next = !this.graphMode();
     this.graphMode.set(next);
     if (next) {
@@ -542,48 +614,52 @@ export class NightlyScreen extends Component {
     }
   }
 
-  toggleGraphVersion(v) {
+  toggleGraphVersion(v: string): void {
     const s = new Set(this.graphVersionSel());
     if (s.has(v)) s.delete(v);
     else s.add(v);
     this.graphVersionSel.set(s);
   }
 
-  toggleGraphMetric(id) {
+  toggleGraphMetric(id: GraphMetricId): void {
     const s = new Set(this.graphMetricSel());
     if (s.has(id)) s.delete(id);
     else s.add(id);
     this.graphMetricSel.set(s);
   }
 
-  get activeGraphMetrics() {
+  get activeGraphMetrics(): GraphMetric[] {
     return GRAPH_METRICS.filter((gm) => this.graphMetricSel().has(gm.id));
   }
 
-  get graphNeedsDetailedMetrics() {
+  get graphNeedsDetailedMetrics(): boolean {
     return this.activeGraphMetrics.some((gm) => !NB_COUNT_METRICS.has(gm.id));
   }
 
-  chartRef(id) {
-    if (!this._chartRefs.has(id)) this._chartRefs.set(id, signal.ref());
-    return this._chartRefs.get(id);
+  chartRef(id: GraphMetricId): Signal<HTMLElement | null> {
+    let ref = this._chartRefs.get(id);
+    if (!ref) {
+      ref = signal.ref();
+      this._chartRefs.set(id, ref);
+    }
+    return ref;
   }
 
-  async _loadRecentGraphData() {
+  async _loadRecentGraphData(): Promise<void> {
     await this._loadGraphData(this.nightly.nights().slice(0, 7));
   }
 
-  async loadMoreGraphNights() {
+  async loadMoreGraphNights(): Promise<void> {
     const prevCount = this.nightly.nights().length;
     await this.nightly.load(false, prevCount + 7);
     await this._loadGraphData(this.nightly.nights().slice(prevCount));
   }
 
-  async _loadGraphData(nights) {
-    const urls = new Set();
+  async _loadGraphData(nights: Night[]): Promise<void> {
+    const urls = new Set<string>();
     for (const night of nights) {
       for (const vdata of Object.values(night.versions || {})) {
-        for (const kind of ["community", "enterprise"]) {
+        for (const kind of ["community", "enterprise"] as const) {
           const b = vdata[kind];
           if (b && !this.nightly._errorsCache.has(b.url)) urls.add(b.url);
         }
@@ -591,7 +667,7 @@ export class NightlyScreen extends Component {
     }
     const queue = [...urls];
     const workers = Array.from({ length: Math.min(8, queue.length) }, async () => {
-      let url;
+      let url: string | undefined;
       while ((url = queue.pop()) !== undefined) {
         await this.nightly.fetchErrors(url).catch(() => {});
         this.graphCacheBust.set(this.graphCacheBust() + 1);
@@ -600,13 +676,14 @@ export class NightlyScreen extends Component {
     await Promise.all(workers);
   }
 
-  _getMetricValue(metricId, build) {
-    if (NB_COUNT_METRICS.has(metricId)) return build.counts ? build.counts[metricId] : null;
+  _getMetricValue(metricId: GraphMetricId, build: NightlyBuild): number | null | undefined {
+    const counts: MetricValues | undefined = build.counts;
+    if (NB_COUNT_METRICS.has(metricId)) return counts ? counts[metricId] : null;
     const agg = this._aggregateMetricsForBuild(build.url);
     return agg ? agg[metricId] : null;
   }
 
-  _aggregateMetricsForBuild(url) {
+  _aggregateMetricsForBuild(url: string): MetricValues | null {
     const cached = this.nightly._errorsCache.get(url);
     const suites = cached ? Object.values(cached.metrics || {}) : [];
     if (!suites.length) return null;
@@ -619,20 +696,20 @@ export class NightlyScreen extends Component {
     };
   }
 
-  _chartData(gm) {
+  _chartData(gm: GraphMetric): { labels: string[]; datasets: ChartDataset[] } {
     const nights = [...this.nightly.nights()].reverse(); // chronological
     const labels = nights.map((n) => n.date.slice(5));
-    const datasets = [];
+    const datasets: ChartDataset[] = [];
     this.nightly.versions().forEach((v, vi) => {
       if (!this.graphVersionSel().has(v)) return;
       const color = CHART_COLORS[vi % CHART_COLORS.length];
       for (const [kind, enabled, dash, label] of [
         ["community", this.graphShowCommunity(), [], "Community"],
         ["enterprise", this.graphShowEnterprise(), [5, 3], "Enterprise"],
-      ]) {
+      ] as const) {
         if (!enabled) continue;
         const data = nights.map((n) => {
-          const b = (n.versions[v] || {})[kind];
+          const b = n.versions[v]?.[kind];
           return b ? this._getMetricValue(gm.id, b) : null;
         });
         if (data.every((d) => d == null)) continue;
@@ -652,7 +729,8 @@ export class NightlyScreen extends Component {
     return { labels, datasets };
   }
 
-  _chartConfig(gm, labels, datasets) {
+  // the Chart.js config object (handed to the untyped window.Chart)
+  _chartConfig(gm: GraphMetric, labels: string[], datasets: ChartDataset[]): object {
     return {
       type: "line",
       data: { labels, datasets },
@@ -662,12 +740,18 @@ export class NightlyScreen extends Component {
         plugins: {
           legend: { position: "top", labels: { boxWidth: 20, font: { size: 10 } } },
           tooltip: {
-            callbacks: { label: (ctx) => `${ctx.dataset.label}: ${gm.fmt(ctx.parsed.y)}` },
+            callbacks: {
+              label: (ctx: { dataset: { label: string }; parsed: { y: number } }) =>
+                `${ctx.dataset.label}: ${gm.fmt(ctx.parsed.y)}`,
+            },
           },
         },
         scales: {
           x: { ticks: { maxRotation: 90, font: { size: 9 } } },
-          y: { title: { display: true, text: gm.label }, ticks: { callback: (v) => gm.fmt(v) } },
+          y: {
+            title: { display: true, text: gm.label },
+            ticks: { callback: (v: number) => gm.fmt(v) },
+          },
         },
       },
     };

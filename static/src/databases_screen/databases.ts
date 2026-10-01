@@ -6,6 +6,23 @@ import { ConfigPlugin } from "../core/config_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { ICONS, appBus, m } from "../core/common.ts";
 import { Panel } from "../core/panel.ts";
+import type { ActionMenuDetail, MenuAction } from "../core/menus.ts";
+
+// one view-ready table row (see `rows` below)
+interface DbRow {
+  name: string;
+  active: boolean;
+  version: string | null;
+  enterprise: boolean;
+  demoData: boolean;
+  created: string | null;
+  createdAgo: string | null;
+  createdTitle: string;
+  last: string | null;
+  lastAgo: string | null;
+  lastTitle: string;
+  size: string;
+}
 
 export class DatabasesScreen extends Component {
   static components = { Panel };
@@ -71,12 +88,14 @@ export class DatabasesScreen extends Component {
   wt = usePlugin(WorkspacePlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
-  selected = signal(new Set()); // database names ticked for batch actions
+  selected = signal(new Set<string>()); // database names ticked for batch actions
   // sorted, view-ready rows — recomputed only when the db list / active db change
-  rows = computed(() => {
+  rows = computed((): DbRow[] => {
     const activeDb = this.db.activeDb;
     return [...this.db.databases()]
-      .sort((a, b) => (Date.parse(b.last_update) || 0) - (Date.parse(a.last_update) || 0))
+      .sort(
+        (a, b) => (Date.parse(b.last_update ?? "") || 0) - (Date.parse(a.last_update ?? "") || 0),
+      )
       .map((d) => ({
         name: d.name,
         active: d.name === activeDb,
@@ -93,23 +112,24 @@ export class DatabasesScreen extends Component {
       }));
   });
 
-  setup() {
+  setup(): void {
     this.db.load();
   }
 
-  get stamp() {
+  get stamp(): string {
     if (this.db.loading()) return "refreshing…";
     return this.db.at() ? `updated ${timeAgo(new Date(this.db.at()).toISOString())}` : "";
   }
 
-  get count() {
+  get count(): string {
     const n = this.rows().length;
     return `${n} database${n === 1 ? "" : "s"}`;
   }
 
-  toggleSelect(name) {
+  toggleSelect(name: string): void {
     const sel = new Set(this.selected());
-    sel.has(name) ? sel.delete(name) : sel.add(name);
+    if (sel.has(name)) sel.delete(name);
+    else sel.add(name);
     this.selected.set(sel);
   }
 
@@ -117,10 +137,10 @@ export class DatabasesScreen extends Component {
   // rename and drop all need the source db to have no active connections. Rename
   // and drop stay disabled on the active db; Clone is allowed — it stops the
   // server (releasing connections), clones, then restarts.
-  openRowMenu(ev, d) {
-    const rect = ev.currentTarget.getBoundingClientRect();
+  openRowMenu(ev: MouseEvent, d: DbRow): void {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect(); // the kebab button
     const busyTitle = d.active ? "stop the server first (no active connections allowed)" : "";
-    const actions = [
+    const actions: MenuAction[] = [
       {
         label: "Clone",
         title: d.active ? "stops the server to clone, then restarts it" : "",
@@ -140,26 +160,28 @@ export class DatabasesScreen extends Component {
         onClick: () => this.dropDb(d),
       },
     ];
-    appBus.dispatchEvent(new CustomEvent("action-menu", { detail: { rect, actions } }));
+    appBus.dispatchEvent(
+      new CustomEvent<ActionMenuDetail>("action-menu", { detail: { rect, actions } }),
+    );
   }
 
-  get _selectableDbs() {
+  get _selectableDbs(): DbRow[] {
     return this.rows().filter((d) => !d.active);
   }
 
-  get allSelected() {
+  get allSelected(): boolean {
     const sel = this.selected();
     const selectable = this._selectableDbs;
     return selectable.length > 0 && selectable.every((d) => sel.has(d.name));
   }
 
-  toggleSelectAll() {
+  toggleSelectAll(): void {
     this.selected.set(
       this.allSelected ? new Set() : new Set(this._selectableDbs.map((d) => d.name)),
     );
   }
 
-  get selectedCount() {
+  get selectedCount(): number {
     return this.rows().filter((d) => this.selected().has(d.name) && !d.active).length;
   }
 
@@ -168,7 +190,7 @@ export class DatabasesScreen extends Component {
   // (always "not active" in that mode), so a db an external container is actively
   // serving would otherwise look perfectly safe to drop/rename. Spot-check right
   // before the destructive op instead of eagerly polling docker for every row.
-  async _externalUseWarning(names) {
+  async _externalUseWarning(names: string[]): Promise<string> {
     if (this.config.config.launch_mode !== "external") return "";
     const results = await Promise.all(names.map((n) => this.wt.checkDbInUse(n)));
     const inUse = names.filter((_, i) => results[i]?.running);
@@ -177,7 +199,7 @@ export class DatabasesScreen extends Component {
     return ` An external server appears to be running against ${many ? "these databases" : `"${inUse[0]}"`} right now — this may break ${many ? "them" : "it"}.`;
   }
 
-  async dropSelected() {
+  async dropSelected(): Promise<void> {
     const dbs = this._selectableDbs.filter((d) => this.selected().has(d.name));
     if (!dbs.length) return;
     const n = dbs.length;
@@ -193,7 +215,7 @@ export class DatabasesScreen extends Component {
   }
 
   // confirm via the dialog, then drop; report any failure in a dialog too
-  async dropDb(d) {
+  async dropDb(d: DbRow): Promise<void> {
     const warning = await this._externalUseWarning([d.name]);
     const res = await this.dialogs.open({
       title: `Drop "${d.name}"?`,
@@ -212,7 +234,7 @@ export class DatabasesScreen extends Component {
   }
 
   // valid db name: letters/digits then letters/digits/._- (mirrors the backend)
-  _badName(name) {
+  _badName(name: string): string {
     if (!name) return "a name is required";
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
       return "use letters, digits, . _ - (not starting with -)";
@@ -224,7 +246,7 @@ export class DatabasesScreen extends Component {
   // ask for a target name, then clone; report any failure in a dialog. Cloning the
   // active db requires exclusive access (postgres createdb -T), so the server is
   // stopped first and restarted afterwards.
-  async cloneDb(d) {
+  async cloneDb(d: DbRow): Promise<void> {
     const res = await this.dialogs.open({
       title: `Clone "${d.name}"`,
       message: d.active
@@ -256,7 +278,7 @@ export class DatabasesScreen extends Component {
   }
 
   // ask for a new name, then rename; report any failure in a dialog
-  async renameDb(d) {
+  async renameDb(d: DbRow): Promise<void> {
     const warning = await this._externalUseWarning([d.name]);
     const res = await this.dialogs.open({
       title: `Rename "${d.name}"`,

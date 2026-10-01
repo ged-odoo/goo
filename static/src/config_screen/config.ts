@@ -15,8 +15,55 @@ import { EventLogPlugin } from "../core/event_log_plugin.ts";
 import { UpdatePlugin } from "../core/update_plugin.ts";
 import { ICONS, NAV, m, mergedTabIds } from "../core/common.ts";
 import { startRowDrag, dropIndex } from "../core/drag.ts";
-import { postJSON, repoBranchList, fetchReviewPrompt, saveReviewPrompt } from "../core/utils.ts";
+import type { StopDrag } from "../core/drag.ts";
+import {
+  errorMessage,
+  postJSON,
+  repoBranchList,
+  fetchReviewPrompt,
+  saveReviewPrompt,
+} from "../core/utils.ts";
+import type { Config, ConfigInput, NavLink, StateInput } from "../core/config.ts";
 import { Panel } from "../core/panel.ts";
+
+// ── ListEditor specs (see SPECS at the bottom) ─────────────────────────────────
+
+// the config lists a ListEditor edits
+type ListKey = "repos" | "docker_images" | "templates" | "workspace_categories" | "test_presets";
+
+// a stored list record / one saved by the editor, read and written by field key
+type EditItem = Record<string, unknown>;
+// an editor row: a field's input value (text, or a checkbox's boolean) + carried keys
+type EditRow = Record<string, unknown>;
+
+// one editable field of a list record
+interface ListField {
+  key: string;
+  name: string;
+  placeholder?: string;
+  className?: string;
+  title?: string;
+  optional?: boolean; // may be left blank
+  row?: number; // card layout: which labeled row it sits on (default 1)
+  default?: string | boolean; // a new row's value
+  type?: "checkbox";
+  // stored value <-> input text, for fields that aren't plain strings (method
+  // syntax: each spec's own value type, e.g. string[] or CheckoutConfig[])
+  format?(v: unknown): string;
+  parse?(s: string): unknown;
+}
+
+interface ListSpec {
+  key: ListKey;
+  title: string;
+  itemName: string;
+  card?: boolean; // one card per record, fields grouped by `row`
+  reorderable?: boolean; // drag handle on each row
+  carry?: string[]; // non-edited keys that must survive a round-trip
+  fields: ListField[];
+  prepare?(item: EditItem): void; // fills in derived keys right before saving
+  validate(items: EditItem[], config: Config): string | null; // an error, or null
+}
 
 export class ListEditor extends Component {
   static template = xml`
@@ -68,34 +115,35 @@ export class ListEditor extends Component {
   props = useProps({ kind: t.string() });
   config = usePlugin(ConfigPlugin);
   spec = SPECS[this.props.kind];
-  rows = signal([]);
+  rows = signal<EditRow[]>([]);
   rowsEl = signal.ref(HTMLElement);
   msgText = signal("");
   msgCls = signal("");
   dragIndex = signal(-1); // row being dragged (-1 = none); only set for reorderable specs
-  setup() {
+  declare _dragStop?: StopDrag | null; // set while a row drag is in progress
+  setup(): void {
     this.load();
     // never leak the drag ghost / window listeners if we unmount mid-drag
     onWillUnmount(() => this._dragStop?.(true));
   }
 
   // card layout: the spec's fields grouped by their `row` (default 1), order kept
-  get cardRows() {
-    const rows = new Map();
+  get cardRows(): ListField[][] {
+    const rows = new Map<number, ListField[]>();
     for (const f of this.spec.fields) {
       const r = f.row || 1;
       if (!rows.has(r)) rows.set(r, []);
-      rows.get(r).push(f);
+      rows.get(r)!.push(f); // set just above when missing
     }
     return [...rows.values()];
   }
 
   // shared pointer drag (core/drag.ts): ghost follows the cursor, the dimmed
   // row live-reorders under it; drop persists, Escape restores the grab order
-  onDragStart(ev, i) {
+  onDragStart(ev: PointerEvent, i: number): void {
     const original = this.rows(); // grab-time order, restored on Escape
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".edit-row"),
+      row: (ev.target as HTMLElement).closest<HTMLElement>(".edit-row"), // the row handle
       onMove: (e) => this._dragMove(e),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -109,7 +157,7 @@ export class ListEditor extends Component {
     this.dragIndex.set(i);
   }
 
-  _dragMove(ev) {
+  _dragMove(ev: PointerEvent): void {
     const from = this.dragIndex();
     if (from < 0) return;
     const others = [...(this.rowsEl()?.querySelectorAll(".edit-row") || [])].filter(
@@ -124,10 +172,12 @@ export class ListEditor extends Component {
     this.dragIndex.set(to);
   }
 
-  load() {
+  load(): void {
+    // each config list is an array of plain JSON records, read here by field key
+    const stored = this.config.config[this.spec.key] as unknown as EditItem[];
     this.rows.set(
-      this.config.config[this.spec.key].map((item) => {
-        const r = {};
+      stored.map((item) => {
+        const r: EditRow = {};
         for (const f of this.spec.fields)
           r[f.key] =
             f.type === "checkbox"
@@ -142,18 +192,18 @@ export class ListEditor extends Component {
     );
   }
 
-  addRow() {
-    const r = {};
+  addRow(): void {
+    const r: EditRow = {};
     for (const f of this.spec.fields) r[f.key] = f.default ?? "";
     this.rows.set([...this.rows(), r]);
   }
 
-  removeRow(i) {
+  removeRow(i: number): void {
     this.rows.set(this.rows().filter((_, j) => j !== i));
     this.saveAuto();
   }
 
-  flash(text, isError) {
+  flash(text: string, isError: boolean): void {
     this.msgText.set(text);
     this.msgCls.set(isError ? "error" : "ok");
     if (!isError) setTimeout(() => this.msgText.set(""), 2000);
@@ -162,20 +212,22 @@ export class ListEditor extends Component {
   // auto-save: silently skips rows with incomplete required fields so mid-edit
   // keystrokes don't flash errors; still surfaces spec-level errors (e.g. missing
   // "community" repo) and duplicate-key errors.
-  saveAuto() {
-    const items = [];
-    const seen = new Set();
+  saveAuto(): void {
+    const items: EditItem[] = [];
+    const seen = new Set<unknown>();
     for (const row of this.rows()) {
-      const raw = {};
+      const raw: Record<string, string | boolean> = {};
       for (const f of this.spec.fields)
-        raw[f.key] = f.type === "checkbox" ? !!row[f.key] : (row[f.key] || "").trim();
+        raw[f.key] =
+          f.type === "checkbox" ? !!row[f.key] : ((row[f.key] as string | undefined) || "").trim(); // a text field holds its input's text
       if (this.spec.fields.every((f) => !raw[f.key])) continue; // skip blank rows
       if (this.spec.fields.some((f) => !f.optional && !raw[f.key])) continue; // skip incomplete rows silently
       const keyVal = raw[this.spec.fields[0].key];
       if (seen.has(keyVal)) return; // duplicate — abort silently
       seen.add(keyVal);
-      const item = {};
-      for (const f of this.spec.fields) item[f.key] = f.parse ? f.parse(raw[f.key]) : raw[f.key];
+      const item: EditItem = {};
+      for (const f of this.spec.fields)
+        item[f.key] = f.parse ? f.parse(raw[f.key] as string) : raw[f.key]; // parse is only on text fields
       for (const k of this.spec.carry || []) if (row[k]) item[k] = row[k];
       if (this.spec.prepare) this.spec.prepare(item);
       items.push(item);
@@ -183,12 +235,20 @@ export class ListEditor extends Component {
     const err = this.spec.validate(items, this.config.config);
     if (err) return this.flash(err, true);
     this.msgText.set("");
-    this.config.updateConfig({ [this.spec.key]: items });
+    // the spec's key names a config list of these records
+    this.config.updateConfig({ [this.spec.key]: items } as ConfigInput);
   }
 }
 
 // Show/hide and reorder the sidebar tabs. Stored in config.tabs as [{id, visible}]
 // in display order; NAV is the source of tab metadata (label/icon) and defaults.
+
+// one Tabs-editor row: a NAV tab + whether it shows
+interface TabRow {
+  id: string;
+  label: string;
+  visible: boolean;
+}
 
 export class TabsEditor extends Component {
   static template = xml`
@@ -215,20 +275,21 @@ export class TabsEditor extends Component {
   dragId = signal(""); // id of the tab row being dragged ("" = none)
   // drag-time order override: `rows` derives from config, which must only be
   // written once (on drop) — during the drag the template renders this instead
-  dragRows = signal(null);
+  dragRows = signal<TabRow[] | null>(null);
+  declare _dragStop?: StopDrag | null; // set while a row drag is in progress
 
-  setup() {
+  setup(): void {
     onWillUnmount(() => this._dragStop?.(true));
   }
 
-  get viewRows() {
+  get viewRows(): TabRow[] {
     return this.dragRows() || this.rows;
   }
 
   // configured order, with any NAV tab missing from config slotted in at its
   // natural position (see mergedTabIds, so a newly-added tab shows up next to its
   // neighbours). Config is always visible; new tabs default to visible.
-  get rows() {
+  get rows(): TabRow[] {
     const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
     const configured = this.config.config.tabs || [];
     const cfg = Object.fromEntries(configured.map((t) => [t.id, t]));
@@ -240,20 +301,20 @@ export class TabsEditor extends Component {
     }));
   }
 
-  _save(rows) {
+  _save(rows: TabRow[]): void {
     this.config.updateConfig({ tabs: rows.map((r) => ({ id: r.id, visible: r.visible })) });
   }
 
-  toggle(id, visible) {
+  toggle(id: string, visible: boolean): void {
     if (id === "config") return; // can't hide Config (no way back otherwise)
     this._save(this.rows.map((r) => (r.id === id ? { ...r, visible } : r)));
   }
 
   // shared pointer drag (core/drag.ts): ghost follows the cursor, the dimmed
   // row live-reorders under it; drop writes the order to config once
-  onDragStart(ev, row) {
+  onDragStart(ev: PointerEvent, row: TabRow): void {
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".edit-row"),
+      row: (ev.target as HTMLElement).closest<HTMLElement>(".edit-row"), // the row handle
       onMove: (e) => this._dragMove(e),
       onEnd: (commit) => {
         this._dragStop = null;
@@ -269,7 +330,7 @@ export class TabsEditor extends Component {
     this.dragId.set(row.id);
   }
 
-  _dragMove(ev) {
+  _dragMove(ev: PointerEvent): void {
     const cur = this.dragRows();
     if (!cur) return;
     const others = [...(this.rowsEl()?.querySelectorAll(".edit-row") || [])].filter(
@@ -290,6 +351,23 @@ export class TabsEditor extends Component {
 // body to move it inside (or onto a row to place it before that row). Saved to
 // config.links as [{label, href} | {label, children:[{label, href}]}]. Editor-only
 // `_id`s give drag/drop a stable identity and are stripped on save.
+
+// an editor node: a link, or a menu (has `children`) of links
+interface EditLink {
+  _id: number;
+  label: string;
+  href?: string;
+  children?: EditLink[];
+}
+
+type EditMenu = EditLink & { children: EditLink[] };
+
+// a node's row location (see LinksEditor._locate)
+interface LinkLoc {
+  container: EditLink[];
+  index: number;
+  node: EditLink;
+}
 
 export class LinksEditor extends Component {
   static template = xml`
@@ -343,44 +421,48 @@ export class LinksEditor extends Component {
     </div>`;
 
   config = usePlugin(ConfigPlugin);
-  items = signal([]); // [{label, href, _id} | {label, children:[{label, href, _id}], _id}]
+  items = signal<EditLink[]>([]);
   dragId = signal(0); // _id of the dragged row (0 = none)
   overId = signal(0); // row hovered as a "drop before" target
   overInto = signal(0); // menu whose body is hovered (drop inside)
   overEnd = signal(false); // trailing "top level" zone hovered
   _nextId = 1;
+  declare _dragStop?: StopDrag | null; // set while a row drag is in progress
 
-  setup() {
+  setup(): void {
     this.load();
     // never leak the drag ghost / window listeners if we unmount mid-drag
     onWillUnmount(() => this._dragStop?.(true));
   }
 
-  isMenu(n) {
+  isMenu<T extends NavLink | EditLink>(n: T): n is T & { children: NonNullable<T["children"]> } {
     return Array.isArray(n.children);
   }
 
-  load() {
+  load(): void {
     this._nextId = 1;
     this.items.set(
       (this.config.config.links || []).map((n) => {
-        const node = { ...n, _id: this._nextId++ };
-        if (this.isMenu(n)) node.children = n.children.map((c) => ({ ...c, _id: this._nextId++ }));
+        // a menu's NavLink children are swapped for EditLinks right below (and a
+        // child is a plain link: menus are depth 1)
+        const node = { ...n, _id: this._nextId++ } as EditLink;
+        if (this.isMenu(n))
+          node.children = n.children.map((c) => ({ ...c, _id: this._nextId++ }) as EditLink);
         return node;
       }),
     );
   }
 
   // mutate a node field in place (no re-render → no cursor jump); persisted on change
-  edit(node, key, value) {
+  edit(node: EditLink, key: "label" | "href", value: string): void {
     node[key] = value;
   }
 
-  addLink(menuId) {
+  addLink(menuId: number | null): void {
     const items = this.items();
-    const link = { label: "", href: "", _id: this._nextId++ };
+    const link: EditLink = { label: "", href: "", _id: this._nextId++ };
     if (menuId) {
-      const menu = items.find((n) => n._id === menuId && this.isMenu(n));
+      const menu = items.find((n): n is EditMenu => n._id === menuId && this.isMenu(n));
       if (menu) menu.children.push(link);
     } else {
       items.push(link);
@@ -388,11 +470,11 @@ export class LinksEditor extends Component {
     this.items.set([...items]);
   }
 
-  addMenu() {
+  addMenu(): void {
     this.items.set([...this.items(), { label: "", children: [], _id: this._nextId++ }]);
   }
 
-  remove(id) {
+  remove(id: number): void {
     const items = this.items();
     const loc = this._locate(items, id);
     if (loc) loc.container.splice(loc.index, 1);
@@ -402,7 +484,7 @@ export class LinksEditor extends Component {
 
   // {container, index, node} for the row with `id`, searching the top level then
   // every menu's children; null if not found
-  _locate(items, id) {
+  _locate(items: EditLink[], id: number): LinkLoc | null {
     const i = items.findIndex((n) => n._id === id);
     if (i >= 0) return { container: items, index: i, node: items[i] };
     for (const it of items) {
@@ -420,9 +502,9 @@ export class LinksEditor extends Component {
   // trailing top-level zone), so moving keeps the highlight semantics: the
   // pointer is hit-tested (the ghost is pointer-events:none, so
   // elementFromPoint sees through it) and the drop dispatches on what's lit.
-  onDragStart(ev, id) {
+  onDragStart(ev: PointerEvent, id: number): void {
     const stop = startRowDrag(ev, {
-      row: ev.target.closest(".edit-row"),
+      row: (ev.target as HTMLElement).closest<HTMLElement>(".edit-row"), // the row handle
       onMove: (e) => this._dragMove(e),
       onEnd: (commit) => this._dragEnd(commit),
     });
@@ -431,10 +513,10 @@ export class LinksEditor extends Component {
     this.dragId.set(id);
   }
 
-  _dragMove(ev) {
+  _dragMove(ev: PointerEvent): void {
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
     // a row wins over the menu body that contains it (the old stopPropagation)
-    const row = el?.closest(".edit-row");
+    const row = el?.closest<HTMLElement>(".edit-row");
     const rowId = row ? Number(row.dataset.id || 0) : 0;
     if (rowId && rowId !== this.dragId()) {
       this.overId.set(rowId);
@@ -442,7 +524,7 @@ export class LinksEditor extends Component {
       this.overEnd.set(false);
       return;
     }
-    const body = rowId ? null : el?.closest(".link-menu-body");
+    const body = rowId ? null : el?.closest<HTMLElement>(".link-menu-body");
     if (body) {
       this.overInto.set(Number(body.dataset.menuId || 0));
       this.overId.set(0);
@@ -454,7 +536,7 @@ export class LinksEditor extends Component {
     this.overInto.set(0);
   }
 
-  _dragEnd(commit) {
+  _dragEnd(commit: boolean): void {
     this._dragStop = null;
     const drag = this.dragId();
     const target = { row: this.overId(), into: this.overInto(), end: this.overEnd() };
@@ -470,7 +552,7 @@ export class LinksEditor extends Component {
 
   // place the dragged node immediately before the target row, in the target's
   // container (top level or a menu). Menus can't nest (depth 1).
-  _moveBefore(dragId, targetId) {
+  _moveBefore(dragId: number, targetId: number): void {
     if (!dragId || dragId === targetId) return;
     const items = this.items();
     const src = this._locate(items, dragId);
@@ -478,18 +560,20 @@ export class LinksEditor extends Component {
     if (!src || !tgt) return;
     if (this.isMenu(src.node) && tgt.container !== items) return; // no menu inside a menu
     src.container.splice(src.index, 1);
-    const t = this._locate(items, targetId); // re-locate: removal may have shifted indices
+    // re-locate: removal may have shifted indices. Still found: the removed node
+    // can't contain the target (a menu never drops before its own child, above)
+    const t = this._locate(items, targetId)!;
     t.container.splice(t.index, 0, src.node);
     this.items.set([...items]);
     this.save();
   }
 
   // move the dragged link into a menu (appended); ignored for menus (depth 1)
-  _moveInto(dragId, menuId) {
+  _moveInto(dragId: number, menuId: number): void {
     if (!dragId) return;
     const items = this.items();
     const src = this._locate(items, dragId);
-    const menu = items.find((n) => n._id === menuId && this.isMenu(n));
+    const menu = items.find((n): n is EditMenu => n._id === menuId && this.isMenu(n));
     if (!src || !menu || this.isMenu(src.node)) return;
     src.container.splice(src.index, 1);
     menu.children.push(src.node);
@@ -498,7 +582,7 @@ export class LinksEditor extends Component {
   }
 
   // move the dragged node to the end of the top level
-  _moveEnd(dragId) {
+  _moveEnd(dragId: number): void {
     if (!dragId) return;
     const items = this.items();
     const src = this._locate(items, dragId);
@@ -511,9 +595,9 @@ export class LinksEditor extends Component {
 
   // persist to config.links: strip _id, trim, drop blank top-level links and blank
   // child links (a menu is kept even when empty so a freshly-added one sticks)
-  save() {
-    const links = this.items()
-      .map((it) => {
+  save(): void {
+    const links: NavLink[] = this.items()
+      .map((it): NavLink => {
         if (this.isMenu(it)) {
           return {
             label: (it.label || "").trim(),
@@ -534,7 +618,18 @@ export class LinksEditor extends Component {
 // `modes`: which launch_mode(s) a field is actually read under — drives which
 // rows show in the Odoo settings block (see ConfigScreen.settingsFields).
 // Absent `modes` = shown regardless of launch_mode (e.g. editor, below).
-export const SETTINGS_FIELDS = [
+// the Config keys holding a plain string setting
+type StringSettingKey = {
+  [K in keyof Config]-?: Config[K] extends string ? K : never;
+}[keyof Config];
+
+interface SettingsField {
+  key: StringSettingKey;
+  name: string;
+  modes?: string[];
+}
+
+export const SETTINGS_FIELDS: SettingsField[] = [
   // local-only: only read building the odoo-bin command for a plain local
   // subprocess launch (backend/server.py build_odoo_cmd) — a Docker image
   // supplies its own env/interpreter, and "external" doesn't launch anything
@@ -586,6 +681,18 @@ export const SETTINGS_FIELDS = [
   { key: "docker_extra_run_args", name: "extra docker run args (optional)", modes: ["docker"] },
   { key: "editor", name: "editor command" },
 ];
+
+// the rust bundler's install state (GET /api/rust-bundler, and the install reply)
+interface RustStatus {
+  checking?: boolean; // a check is in flight
+  building?: boolean;
+  error?: string;
+  installed?: boolean;
+  current?: boolean; // the installed build matches expected_version
+  version?: string;
+  expected_version?: string;
+  restart_required?: boolean;
+}
 
 export class ConfigScreen extends Component {
   static components = { ListEditor, TabsEditor, LinksEditor, Panel };
@@ -737,37 +844,37 @@ export class ConfigScreen extends Component {
   upToDate = signal(false); // brief green check by the button when already up to date
   backupMsg = signal("");
   rustBuilding = signal(false);
-  rustStatus = signal({ checking: true });
-  settings = signal(this._loadSettings());
+  rustStatus = signal<RustStatus>({ checking: true });
+  settings = signal<Record<string, string>>(this._loadSettings());
   // the Claude review prompt template — a real .md file on disk, not part of the
   // reactive config blob, so it's fetched/saved through its own tiny endpoint
   // (core/utils.ts fetchReviewPrompt/saveReviewPrompt) rather than updateConfig.
   reviewPromptText = signal("");
-  _reviewPromptTimer = null;
+  _reviewPromptTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 
   // editor lives in Miscellaneous, not this grid; the rest are filtered to the
   // active launch_mode (a field with no `modes` — none left today besides
   // editor — would show in every mode)
-  get settingsFields() {
+  get settingsFields(): SettingsField[] {
     const mode = this.config.config.launch_mode;
     return SETTINGS_FIELDS.filter(
       (f) => f.key !== "editor" && (!f.modes || f.modes.includes(mode)),
     );
   }
 
-  setup() {
+  setup(): void {
     onMounted(() => this.checkRustBundler());
     onMounted(() => fetchReviewPrompt().then((c) => this.reviewPromptText.set(c)));
     onWillUnmount(() => clearTimeout(this._reviewPromptTimer));
   }
 
-  onReviewPromptInput(value) {
+  onReviewPromptInput(value: string): void {
     this.reviewPromptText.set(value);
     clearTimeout(this._reviewPromptTimer);
     this._reviewPromptTimer = setTimeout(() => saveReviewPrompt(this.reviewPromptText()), 800);
   }
 
-  get rustStatusText() {
+  get rustStatusText(): string {
     const status = this.rustStatus();
     if (status.checking) return "checking…";
     if (this.rustBuilding() || status.building) return "building in the configured environment…";
@@ -780,41 +887,41 @@ export class ConfigScreen extends Component {
     return `installed ${status.version}`;
   }
 
-  async checkRustBundler() {
+  async checkRustBundler(): Promise<void> {
     this.rustStatus.set({ checking: true });
     try {
       const response = await fetch("/api/rust-bundler", { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || response.status);
+      const data: RustStatus = await response.json();
+      if (!response.ok) throw new Error(data.error || String(response.status));
       this.rustStatus.set(data);
     } catch (error) {
-      this.rustStatus.set({ error: error.message });
+      this.rustStatus.set({ error: errorMessage(error) });
     }
   }
 
-  async installRustBundler() {
+  async installRustBundler(): Promise<void> {
     if (this.rustBuilding()) return;
     this.rustBuilding.set(true);
     this.rustStatus.set({ ...this.rustStatus(), building: true, error: "" });
     try {
-      const result = await postJSON("/api/rust-bundler/install");
+      const result = await postJSON<RustStatus>("/api/rust-bundler/install");
       this.rustStatus.set(result);
     } catch (error) {
-      this.rustStatus.set({ ...this.rustStatus(), building: false, error: error.message });
-      this.dialogs.error("Rust bundler build failed", error.message);
+      this.rustStatus.set({ ...this.rustStatus(), building: false, error: errorMessage(error) });
+      this.dialogs.error("Rust bundler build failed", errorMessage(error));
     } finally {
       this.rustBuilding.set(false);
     }
   }
 
   // manually re-check whether goo is behind origin/master, then report the result
-  async checkUpdate() {
+  async checkUpdate(): Promise<void> {
     if (this.checking()) return;
     this.checking.set(true);
     this.upToDate.set(false);
     const r = await this.update.check();
     this.checking.set(false);
-    if (r.behind > 0) {
+    if (r.behind && r.behind > 0) {
       const n = r.behind;
       this.eventLog.add(
         `checked for updates — ${n} commit${n === 1 ? "" : "s"} behind origin/master`,
@@ -835,30 +942,30 @@ export class ConfigScreen extends Component {
     );
   }
 
-  _loadSettings() {
+  _loadSettings(): Record<string, string> {
     const c = this.config.config;
     return Object.fromEntries(SETTINGS_FIELDS.map((f) => [f.key, c[f.key] || ""]));
   }
 
-  setSetting(key, val) {
+  setSetting(key: string, val: string): void {
     this.settings.set({ ...this.settings(), [key]: val });
   }
 
-  setLaunchMode(mode) {
+  setLaunchMode(mode: string): void {
     this.config.updateConfig({ launch_mode: mode });
   }
 
-  saveSettings() {
-    const patch = {};
+  saveSettings(): void {
+    const patch: Partial<Pick<Config, StringSettingKey>> = {};
     for (const f of SETTINGS_FIELDS) patch[f.key] = (this.settings()[f.key] || "").trim();
     this.config.updateConfig(patch);
   }
 
-  triggerImport() {
-    document.getElementById("goo-import-file").click();
+  triggerImport(): void {
+    document.getElementById("goo-import-file")!.click(); // the file input in this template
   }
 
-  async resetAll() {
+  async resetAll(): Promise<void> {
     const ok = await this.dialogs.open({
       title: "Reset the complete config to its initial state?",
       message:
@@ -872,7 +979,7 @@ export class ConfigScreen extends Component {
   }
 
   // pick a preset (presets.ts) and replace the whole config with it
-  async openPresets() {
+  async openPresets(): Promise<void> {
     const res = await this.dialogs.open({
       title: "Configuration presets",
       message:
@@ -895,7 +1002,7 @@ export class ConfigScreen extends Component {
     location.reload();
   }
 
-  exportData() {
+  exportData(): void {
     const blob = new Blob([JSON.stringify(this.config.snapshot(), null, 2)], {
       type: "application/json",
     });
@@ -907,19 +1014,21 @@ export class ConfigScreen extends Component {
     this.backupMsg.set("Exported.");
   }
 
-  async importData(ev) {
-    const file = ev.target.files[0];
-    ev.target.value = "";
+  async importData(ev: Event): Promise<void> {
+    const input = ev.target as HTMLInputElement; // the hidden type=file input
+    const file = input.files![0]; // a file input always has a FileList
+    input.value = "";
     if (!file) return;
     try {
-      const data = JSON.parse(await file.text());
-      if (!data || typeof data !== "object" || !data.config)
+      const data: unknown = JSON.parse(await file.text());
+      if (!data || typeof data !== "object" || !("config" in data) || !data.config)
         throw new Error("not a goo config backup");
-      await this.config.importSnapshot(data);
+      // a backup's {config, state} blobs — importSnapshot normalizes them like a boot payload
+      await this.config.importSnapshot(data as { config?: ConfigInput; state?: StateInput });
       this.backupMsg.set("Imported, reloading…");
       setTimeout(() => location.reload(), 700);
     } catch (e) {
-      this.backupMsg.set(`Import failed: ${e.message}`);
+      this.backupMsg.set(`Import failed: ${errorMessage(e)}`);
     }
   }
 }
@@ -932,7 +1041,7 @@ export class ConfigScreen extends Component {
 // escapes overflow-clipped containers (e.g. the scrolling branches table);
 // flips above the anchor when it would run off the bottom of the viewport.
 
-export const SPECS = {
+export const SPECS: Record<string, ListSpec> = {
   repos: {
     key: "repos",
     title: "Repositories",
@@ -1001,7 +1110,7 @@ export const SPECS = {
           "a repo outside the odoo CI ecosystem (e.g. odoo/owl) — skip its mergebot/runbot lookups",
       },
     ],
-    validate(repos, config) {
+    validate(repos: EditItem[], config: Config): string | null {
       const mainRepoId = config.main_repo_id || "community";
       if (!repos.find((r) => r.id === mainRepoId))
         return `a "${mainRepoId}" repository is required (odoo-bin lives there — see the "main repo id" setting above)`;
@@ -1019,7 +1128,7 @@ export const SPECS = {
     itemName: "image",
     card: true,
     carry: ["id"],
-    prepare(item) {
+    prepare(item: EditItem): void {
       if (!item.id) item.id = newWorkspaceId(); // a freshly added row
     },
     fields: [
@@ -1034,8 +1143,8 @@ export const SPECS = {
         name: "version prefixes",
         placeholder: "16.0,17.0",
         className: "w-flex",
-        format: (v) => (v || []).join(","),
-        parse: (s) =>
+        format: (v: string[] | undefined): string => (v || []).join(","),
+        parse: (s: string): string[] =>
           s
             .split(",")
             .map((x) => x.trim())
@@ -1070,7 +1179,7 @@ export const SPECS = {
         title: "used when no version prefix matches the workspace's branch",
       },
     ],
-    validate(items) {
+    validate(items: EditItem[]): string | null {
       const defaults = items.filter((i) => i.is_default);
       if (defaults.length > 1) return "only one Docker image may be marked default";
       if (items.length && !defaults.length) return "one Docker image must be marked default";
@@ -1083,7 +1192,7 @@ export const SPECS = {
     itemName: "template",
     reorderable: true, // drag the handle to reorder how templates appear in the New-workspace dialog
     carry: ["id"], // reconcile keys templates by id — edits must not mint new records
-    prepare(item) {
+    prepare(item: EditItem): void {
       if (!item.id) item.id = newWorkspaceId(); // a freshly added row
     },
     fields: [
@@ -1122,7 +1231,7 @@ export const SPECS = {
           "default category new workspaces from this template inherit (when categories are enabled)",
       },
     ],
-    validate() {
+    validate(): string | null {
       return null;
     },
   },
@@ -1140,7 +1249,7 @@ export const SPECS = {
         title: "group label shown in the Workspaces list (when categories are enabled)",
       },
     ],
-    validate() {
+    validate(): string | null {
       return null; // a category removed while still assigned just falls back to uncategorized
     },
   },
@@ -1157,7 +1266,7 @@ export const SPECS = {
         className: "w-flex",
       },
     ],
-    validate() {
+    validate(): string | null {
       return null;
     },
   },

@@ -4,6 +4,11 @@
 // / Assets screens in Phase 5.
 
 import { Component, usePlugin, useProps, signal, t, untrack, useEffect, xml } from "@odoo/owl";
+import type { Type } from "@odoo/owl";
+import type { AddonModule, AddonSlot, FilteredModules } from "../addons_screen/addons_plugin.ts";
+import type { AssetBundle } from "../assets_screen/assets_plugin.ts";
+import type { TestSlot } from "../core/tests_plugin.ts";
+import type { WorkspaceLike } from "../core/workspace_plugin.ts";
 import { AddonsPlugin } from "../addons_screen/addons_plugin.ts";
 import { AssetsPlugin } from "../assets_screen/assets_plugin.ts";
 import { ConfigPlugin } from "../core/config_plugin.ts";
@@ -56,7 +61,8 @@ export class TestsPane extends Component {
       <LogConsole t-key="this.props.ws.id" title="'Test output'" buffer="this.slot.output" bare="true"/>
     </div>`;
 
-  props = useProps({ ws: t.any() });
+  // the workspace — not validated at runtime
+  props = useProps({ ws: t.any() as Type<WorkspaceLike> });
   tests = usePlugin(TestsPlugin);
   server = usePlugin(ServerPlugin);
   config = usePlugin(ConfigPlugin);
@@ -69,25 +75,25 @@ export class TestsPane extends Component {
   // copy a `goo --test-tags …` command for the current tags (single-quoted so the
   // shell doesn't mangle globs). Main slot only — the CLI runs against the ACTIVE
   // workspace, which is wrong for a worktree workspace's pane.
-  copyCommand() {
+  copyCommand(): void {
     const tags = this.tags().trim();
     if (!tags) return;
     navigator.clipboard?.writeText(`goo --test-tags '${tags.replace(/'/g, "'\\''")}'`);
   }
 
-  get slotId() {
+  get slotId(): string {
     return slotFor(this.props.ws);
   }
 
-  get slot() {
+  get slot(): TestSlot {
     return this.tests.slot(this.slotId);
   }
 
-  get presets() {
+  get presets(): { tags: string }[] {
     return (this.config.config.test_presets || []).filter((p) => (p.tags || "").trim());
   }
 
-  get badge() {
+  get badge(): { label: string; cls: string } | null {
     const s = this.slot.status();
     if (s === "passed") return { label: "success", cls: "ok" };
     if (s.startsWith("failed")) return { label: "fail", cls: "fail" };
@@ -95,28 +101,29 @@ export class TestsPane extends Component {
     return null;
   }
 
-  run() {
+  run(): void {
     this.tests.run(this.tags(), this.props.ws, this.memcheck());
   }
 
-  toggleMemcheck() {
+  toggleMemcheck(): void {
     this.memcheck.set(!this.memcheck());
   }
 
   // stopping the slot's server kills the run; the backend finalizes it and
   // resumes the server the run had interrupted
-  stop() {
+  stop(): void {
     if (this.slotId === "main") this.server.stop();
     else this.wt.stopServer(this.props.ws);
   }
 
-  onPreset(ev) {
-    const v = ev.target.value;
-    ev.target.value = "";
+  onPreset(ev: Event): void {
+    const sel = ev.target as HTMLSelectElement; // the preset <select>'s change event
+    const v = sel.value;
+    sel.value = "";
     if (v) this.tags.set(v);
   }
 
-  toggleAuto() {
+  toggleAuto(): void {
     const b = this.slot.output;
     b.autoScroll.set(!b.autoScroll());
     if (b.autoScroll()) b.toBottom();
@@ -169,11 +176,12 @@ export class AddonsPane extends Component {
                   t-key="this.props.ws.id" title="'Install / upgrade output'" buffer="this.slot.output" extraClass="'addons-console'"/>
     </div>`;
 
-  props = useProps({ ws: t.any() });
+  // the workspace — not validated at runtime
+  props = useProps({ ws: t.any() as Type<WorkspaceLike> });
   addons = usePlugin(AddonsPlugin);
   config = usePlugin(ConfigPlugin);
 
-  setup() {
+  setup(): void {
     // load (and reload when the workspace's db changes) while mounted
     useEffect(() => {
       const db = this.props.ws.db;
@@ -182,28 +190,28 @@ export class AddonsPane extends Component {
     });
   }
 
-  get slotId() {
+  get slotId(): string {
     return slotFor(this.props.ws);
   }
 
-  get slot() {
+  get slot(): AddonSlot {
     return this.addons.slot(this.slotId);
   }
 
-  get view() {
+  get view(): FilteredModules {
     return this.slot.filtered();
   }
 
-  get count() {
+  get count(): string {
     const n = this.view.total;
     return `${n} module${n === 1 ? "" : "s"}`;
   }
 
-  toggleState(value) {
+  toggleState(value: string): void {
     this.addons.stateFilter.set(this.addons.stateFilter() === value ? "" : value);
   }
 
-  stateClass(mod) {
+  stateClass(mod: AddonModule): string {
     return (mod.state || "none").replace(/\s+/g, "-");
   }
 }
@@ -261,18 +269,19 @@ export class AssetsPane extends Component {
       </t>
     </div>`;
 
-  props = useProps({ ws: t.any() });
+  // the workspace — not validated at runtime
+  props = useProps({ ws: t.any() as Type<WorkspaceLike> });
   assets = usePlugin(AssetsPlugin);
   config = usePlugin(ConfigPlugin);
   search = signal("");
   showJs = signal(true); // include .js bundles
   showCss = signal(true); // include .css bundles
   showOther = signal(true); // include non-js/non-css assets (fonts, source maps, xml…)
-  sortKey = signal("size"); // "name" | "size"
-  sortDir = signal("desc"); // "asc" | "desc" — default: largest bundle first
-  copiedId = signal(null); // id of the row whose url was just copied (transient label)
+  sortKey = signal<string>("size"); // "name" | "size"
+  sortDir = signal<string>("desc"); // "asc" | "desc" — default: largest bundle first
+  copiedId = signal<AssetBundle["id"] | null>(null); // id of the row whose url was just copied (transient label)
 
-  setup() {
+  setup(): void {
     // point the (db-scoped) assets plugin at this workspace's db, closing any open
     // analysis from another workspace's pane. selectedDb is read/written UNTRACKED:
     // a t-key workspace switch briefly leaves the outgoing pane's effect alive (owl
@@ -292,22 +301,22 @@ export class AssetsPane extends Component {
 
   // only pass the workspace to generate() when its checkout differs from the main
   // one (a worktree) — the backend then builds the shell cmd from its copies
-  get wsForGenerate() {
+  get wsForGenerate(): WorkspaceLike | null {
     return this.props.ws.location === "worktree" ? this.props.ws : null;
   }
 
-  generate() {
+  generate(): Promise<void> {
     this.config.workspace(this.props.ws.id)?.touchActivity();
     return this.assets.generate(this.wsForGenerate);
   }
 
-  get mismatch() {
+  get mismatch(): boolean {
     return this.assets.loadedDb() !== this.props.ws.db;
   }
 
   // js / css / other, from the bundle's extension. Source maps (.js.map / .css.map)
   // and everything that isn't plain js/css (fonts, xml, …) count as "other".
-  kind(b) {
+  kind(b: AssetBundle): "js" | "css" | "other" {
     if (/\.map$/i.test(b.name)) return "other";
     if (/\.css$/i.test(b.name)) return "css";
     if (/\.js$/i.test(b.name)) return "js";
@@ -315,7 +324,7 @@ export class AssetsPane extends Component {
   }
 
   // search- and kind-filtered bundles, sorted by the active column
-  get bundles() {
+  get bundles(): AssetBundle[] {
     const q = this.search().trim().toLowerCase();
     const showJs = this.showJs();
     const showCss = this.showCss();
@@ -338,7 +347,7 @@ export class AssetsPane extends Component {
 
   // toggle direction when re-clicking the active column, else switch column with a
   // sensible default (names ascending A→Z, sizes descending largest-first)
-  sort(key) {
+  sort(key: string): void {
     if (this.sortKey() === key) {
       this.sortDir.set(this.sortDir() === "asc" ? "desc" : "asc");
     } else {
@@ -348,19 +357,19 @@ export class AssetsPane extends Component {
   }
 
   // " ▲" / " ▼" for the active sort column, else ""
-  sortArrow(key) {
+  sortArrow(key: string): string {
     if (this.sortKey() !== key) return "";
     return this.sortDir() === "asc" ? " ▲" : " ▼";
   }
 
-  base(name) {
+  base(name: string): string {
     return bundleBase(name);
   }
 
   // analyze the bundle this row belongs to (its per-file size breakdown), scoped to
   // the clicked attachment's kind so the total matches its row size: any .css/.css.map
   // → css, everything else (.min.js, .js.map, …) → js.
-  analyze(b) {
+  analyze(b: AssetBundle): void {
     this.config.workspace(this.props.ws.id)?.touchActivity();
     const kind = /\.css(\.map)?$/i.test(b.name) ? "css" : "js";
     this.assets.analyze(bundleBase(b.name), kind);
@@ -368,7 +377,7 @@ export class AssetsPane extends Component {
 
   // copy a bundle's /web/assets/… path to the clipboard, flipping its link to
   // "copied" for a moment
-  copyUrl(b) {
+  copyUrl(b: AssetBundle): void {
     navigator.clipboard?.writeText(b.url);
     this.copiedId.set(b.id);
     setTimeout(() => {
@@ -376,12 +385,12 @@ export class AssetsPane extends Component {
     }, 1400);
   }
 
-  get meta() {
+  get meta(): string {
     const n = this.bundles.length;
     return this.mismatch ? "" : `${n} bundle${n === 1 ? "" : "s"}`;
   }
 
-  size(b) {
+  size(b: AssetBundle): string {
     return formatBytes(b.size || 0);
   }
 }
@@ -396,24 +405,23 @@ export class TerminalPane extends Component {
 
   props = useProps({ url: t.string() });
   host = signal.ref(HTMLElement);
-  _dispose = null;
+  _dispose: (() => void) | null = null;
 
-  setup() {
-    useEffect(
-      () => {
-        const el = this.host();
-        if (!el) return;
-        let live = true;
-        attachXterm(el, this.props.url, true).then((dispose) =>
-          live ? (this._dispose = dispose) : dispose(),
-        );
-        return () => {
-          live = false;
-          this._dispose?.();
-          this._dispose = null;
-        };
-      },
-      () => [this.props.url],
-    );
+  setup(): void {
+    // re-runs (re-attaching) when the url changes: owl tracks the props.url read
+    useEffect(() => {
+      const el = this.host();
+      if (!el) return;
+      let live = true;
+      attachXterm(el, this.props.url, true).then((dispose) => {
+        if (live) this._dispose = dispose;
+        else dispose();
+      });
+      return () => {
+        live = false;
+        this._dispose?.();
+        this._dispose = null;
+      };
+    });
   }
 }

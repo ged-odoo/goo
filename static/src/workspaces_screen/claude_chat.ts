@@ -12,7 +12,10 @@ import {
   xml,
   markup,
 } from "@odoo/owl";
+import type { Type } from "@odoo/owl";
 import { ClaudePlugin } from "./claude_plugin.ts";
+import type { ChatItem } from "./claude_plugin.ts";
+import type { WorkspaceLike } from "../core/workspace_plugin.ts";
 import { mdToHtml } from "../core/utils.ts";
 
 export class ClaudeChat extends Component {
@@ -58,44 +61,49 @@ export class ClaudeChat extends Component {
       </div>
     </div>`;
 
-  props = useProps({ target: t.any(), inMain: t.boolean().optional() });
+  props = useProps({
+    target: t.any() as Type<WorkspaceLike>, // the workspace chatted about — not validated at runtime
+    inMain: t.boolean().optional(),
+  });
+
   claude = usePlugin(ClaudePlugin);
   scroll = signal.ref(HTMLElement);
-  ta = signal.ref(HTMLElement);
+  ta = signal.ref(HTMLTextAreaElement);
 
-  setup() {
+  setup(): void {
     onMounted(() => this.claude.prime(this.props.target.id));
     // follow the tail as items stream in (owl3's useEffect tracks the body itself —
     // the items/running reads below are what re-run it)
     useEffect(() => {
-      (void this.items.length, this.running);
+      void this.items.length;
+      void this.running;
       const el = this.scroll();
       if (el) el.scrollTop = el.scrollHeight;
     });
   }
 
-  get items() {
+  get items(): ChatItem[] {
     return this.claude.items(this.props.target.id);
   }
 
-  get running() {
+  get running(): boolean {
     return this.claude.running(this.props.target.id);
   }
 
   // rendered fresh per message on every render (no signal cache) — chat replies
   // are short enough that re-parsing is a non-issue, same call as ReviewPanel.html.
-  mdHtml(text) {
+  mdHtml(text: string | undefined): ReturnType<typeof markup> {
     return markup(mdToHtml(text));
   }
 
-  onKey(ev) {
+  onKey(ev: KeyboardEvent): void {
     if (ev.key === "Enter" && !ev.shiftKey) {
       ev.preventDefault();
       this.send();
     }
   }
 
-  send() {
+  send(): void {
     const el = this.ta();
     const text = el ? el.value : "";
     if (!text.trim() || this.running) return;
@@ -103,7 +111,7 @@ export class ClaudeChat extends Component {
     if (el) el.value = "";
   }
 
-  stop() {
+  stop(): void {
     this.claude.stop(this.props.target);
   }
 }

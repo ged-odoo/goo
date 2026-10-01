@@ -5,14 +5,21 @@
 // BranchesScreen instance (row actions live there).
 
 import { Component, usePlugin, xml, useProps, t } from "@odoo/owl";
+import type { Type } from "@odoo/owl";
 import { CodePlugin } from "../core/code_plugin.ts";
 import { DirtyBadge, ICONS, m, mbCategory } from "../core/common.ts";
+import type { PullRequest } from "../core/models.ts";
+import type { BranchRow, BranchesScreen } from "./branches.ts";
 
 // Repository: a GitHub branch link (+ dirty badge) for pushed local branches,
 // a plain label otherwise (dim for PR-only rows — there's no local branch).
 export class RepoCell extends Component {
   static components = { DirtyBadge };
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any() as Type<BranchRow>, // the t.any() props are not validated at runtime
+    screen: t.any() as Type<BranchesScreen>,
+  });
+
   code = usePlugin(CodePlugin);
   externalIcon = m(ICONS.external);
   static template = xml`
@@ -24,11 +31,11 @@ export class RepoCell extends Component {
       <DirtyBadge t-if="this.row.dirty" path="this.row.path" repo="this.row.repo"/>
     </span>`;
 
-  get row() {
+  get row(): BranchRow {
     return this.props.row;
   }
 
-  get linked() {
+  get linked(): string | false {
     return this.row.kind === "local" && this.row.remote && this.row.github;
   }
 }
@@ -36,7 +43,11 @@ export class RepoCell extends Component {
 // PR: "#number" link + state badge per PR on this branch (a branch can carry a
 // closed PR and its open successor at once), or a dash when there's none.
 export class PrCell extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any() as Type<BranchRow>, // the t.any() props are not validated at runtime
+    screen: t.any() as Type<BranchesScreen>,
+  });
+
   static template = xml`
     <span class="brg-pr">
       <t t-if="this.prs.length">
@@ -48,12 +59,12 @@ export class PrCell extends Component {
       <span t-else="" class="brg-dash">—</span>
     </span>`;
 
-  get prs() {
+  get prs(): PullRequest[] {
     const row = this.props.row;
-    return row.prs || (row.pr ? [row.pr] : []);
+    return row.kind === "local" ? row.prs : [row.pr]; // a PR-only row always has its PR
   }
 
-  stateOf(pr) {
+  stateOf(pr: PullRequest): string {
     return pr.draft && pr.state === "open" ? "draft" : pr.state;
   }
 }
@@ -61,7 +72,11 @@ export class PrCell extends Component {
 // Mergebot: the scraped state as a badge linking to the mergebot page, with the
 // unmet requirements ("Review, CI") in the tooltip when blocked.
 export class MergebotCell extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any() as Type<BranchRow>, // the t.any() props are not validated at runtime
+    screen: t.any() as Type<BranchesScreen>,
+  });
+
   code = usePlugin(CodePlugin);
   static template = xml`
     <span class="brg-pr">
@@ -72,19 +87,19 @@ export class MergebotCell extends Component {
       <span t-else="" class="brg-dash">—</span>
     </span>`;
 
-  get pr() {
+  get pr(): PullRequest | undefined {
     return this.props.row.pr;
   }
 
-  get state() {
+  get state(): string {
     return this.pr ? this.code.mergebot()[`${this.pr.github}#${this.pr.number}`] || "" : "";
   }
 
-  get detail() {
+  get detail(): string {
     return this.pr ? this.code.mbDetails()[`${this.pr.github}#${this.pr.number}`] || "" : "";
   }
 
-  get cls() {
+  get cls(): string {
     return mbCategory(this.state);
   }
 }
@@ -92,7 +107,11 @@ export class MergebotCell extends Component {
 // Actions: the row kebab, opening the shared floating ActionMenu (built by the
 // screen — local rows get the full branch menu, PR-only rows just Close PR).
 export class ActionsCell extends Component {
-  props = useProps({ row: t.any(), screen: t.any() });
+  props = useProps({
+    row: t.any() as Type<BranchRow>, // the t.any() props are not validated at runtime
+    screen: t.any() as Type<BranchesScreen>,
+  });
+
   kebabIcon = m(ICONS.kebab);
   static template = xml`
     <span class="brg-act">
