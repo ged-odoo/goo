@@ -61,7 +61,10 @@ export class ReviewsPlugin extends Plugin {
       const byKey = Object.fromEntries(
         (res.prs || []).map((pr) => [`${pr.github}#${pr.number}`, pr]),
       );
-      this.prInfo.set({ ...have, ...byKey });
+      // only write when something arrived: the screen's load effect reads prInfo, so
+      // re-setting it for a PR GitHub didn't return (deleted, wrong number) would
+      // re-run that effect, re-ask the same PR, and loop forever
+      if (Object.keys(byKey).length) this.prInfo.set({ ...have, ...byKey });
       this.at.set(Date.now());
     } catch (e) {
       this.error.set(errorMessage(e));
@@ -86,7 +89,9 @@ export class ReviewsPlugin extends Plugin {
         "/api/prs/review-status",
         { prs: todo, refresh: force },
       );
-      this.reviewStatus.set({ ...have, ...(res.statuses || {}) });
+      // same guard as loadPrInfo: no write (so no effect re-run) when nothing arrived
+      const statuses = res.statuses || {};
+      if (Object.keys(statuses).length) this.reviewStatus.set({ ...have, ...statuses });
     } catch {
       /* leave status blank on failure */
     } finally {
