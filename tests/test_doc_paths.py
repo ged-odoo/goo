@@ -17,7 +17,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # static/src/, `services/` under backend/), so resolve against those roots too
 CLAUDE_MD_ROOTS = ["", "static/src", "backend", "addons"]
 # not preceded by a path character: "addons/web/static/src/x.js" is Odoo's, not goo's
-CODE_REF_RE = re.compile(r"(?<![\w./-])((?:backend|static/src|static/tests)/[\w./-]*\.(?:py|js|ts))\b")
+CODE_REF_RE = re.compile(
+    r"(?<![\w./-])((?:backend|static/src|static/tests)/[\w./-]*\.(?:py|js|ts))\b"
+)
 # a bare file name in CLAUDE.md (`events.py`) must exist somewhere in the repo
 BARE_FILE_RE = re.compile(r"^[\w.-]+\.(?:py|js|ts|json|toml|md|sh|yml|yaml|html|css)$")
 CODE_DIRS = ["backend", "static/src", "static/tests", "tests"]
