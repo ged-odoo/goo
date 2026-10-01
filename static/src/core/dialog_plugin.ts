@@ -18,13 +18,72 @@ import {
   useProps,
   t,
 } from "@odoo/owl";
+import type { ComponentConstructor } from "@odoo/owl";
 
 let _seq = 0;
+
+// a form's live values, keyed by field key; each value's shape depends on its
+// field's type (string for text/select/check-select, boolean for checkbox,
+// string[] for repo-checks) and callers read them by the keys they declared
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous per-field values keyed by the caller's own spec
+export type DialogValues = Record<string, any>;
+
+export interface DialogOption {
+  value: string;
+  label: string;
+}
+
+export type DialogFieldType =
+  "text" | "textarea" | "checkbox" | "select" | "check-select" | "repo-checks" | "action";
+
+// one field of a Dialog form (see the spec description above `Dialog` below)
+export interface DialogField {
+  key: string;
+  type?: DialogFieldType; // default: a single-line text input
+  label?: string;
+  value?: DialogValues[string];
+  placeholder?: string;
+  rows?: number;
+  options?: DialogOption[];
+  onChange?: (
+    value: DialogValues[string],
+    values: DialogValues,
+    oldValues: DialogValues,
+  ) => DialogValues | null | undefined | void;
+  default?: string | ((values: DialogValues) => string);
+  hint?: (values: DialogValues) => string | null | undefined;
+  visible?: (values: DialogValues) => boolean;
+  run?: (
+    values: DialogValues,
+  ) => Promise<DialogValues | null | undefined> | DialogValues | null | undefined;
+}
+
+export interface DialogSpec {
+  title: string;
+  message?: string;
+  okLabel?: string;
+  cancelLabel?: string | null; // null hides the Discard button
+  cls?: string;
+  validate?: (values: DialogValues) => string;
+  fields?: DialogField[];
+}
+
+// an open dialog: the component class mounted with `props`
+export interface DialogEntry {
+  id: number;
+  Component: ComponentConstructor;
+  props: Record<string, unknown>;
+}
+
+export interface DialogHandle {
+  id: number;
+  close: () => void;
+}
 
 // ─────────────────────────── Dialog plugin ───────────────────────────
 
 export class DialogPlugin extends Plugin {
-  dialogs = signal.Array([]);
+  dialogs = signal.Array<DialogEntry>([]);
   // the mount location for the dialog container. Owned here; the main app binds
   // it with t-ref (via `usePlugin(DialogPlugin).root`) to a DOM node, and the
   // effect below mounts the container there once it exists.
@@ -46,7 +105,7 @@ export class DialogPlugin extends Plugin {
 
   // low-level: mount component `C` with `props`. Returns a handle whose
   // `close()` removes the dialog. Each dialog gets a unique id.
-  add(C, props = {}) {
+  add(C: ComponentConstructor, props: Record<string, unknown> = {}): DialogHandle {
     const id = ++_seq;
     const close = () => this.dialogs.set(this.dialogs().filter((d) => d.id !== id));
     this.dialogs.set([...this.dialogs(), { id, Component: C, props }]);
@@ -55,11 +114,14 @@ export class DialogPlugin extends Plugin {
 
   // promise-based: mount `C`, inject a `done(result)` prop that closes the
   // dialog and resolves the promise with `result`.
-  openComponent(C, props = {}) {
-    return new Promise((resolve) => {
+  openComponent<R = unknown>(
+    C: ComponentConstructor,
+    props: Record<string, unknown> = {},
+  ): Promise<R> {
+    return new Promise<R>((resolve) => {
       const handle = this.add(C, {
         ...props,
-        done: (result) => {
+        done: (result: R) => {
           handle.close();
           resolve(result);
         },
@@ -69,13 +131,13 @@ export class DialogPlugin extends Plugin {
 
   // the common case: a form/message dialog (see Dialog's spec shape below).
   // Resolves to the field values on OK, or null when discarded/escaped.
-  open(spec) {
-    return this.openComponent(Dialog, { spec });
+  open(spec: DialogSpec): Promise<DialogValues | null> {
+    return this.openComponent<DialogValues | null>(Dialog, { spec });
   }
 
   // the standard error modal (red header, OK only) — the one shape every
   // "X failed" path shows
-  error(title, message) {
+  error(title: string, message: string): Promise<DialogValues | null> {
     return this.open({ title, message, cls: "dialog-error", okLabel: "OK", cancelLabel: null });
   }
 }
@@ -186,37 +248,39 @@ export class Dialog extends Component {
       </div>
     </div>`;
 
-  props = useProps({ spec: t.any(), done: t.function() });
-  values = signal({});
+  props = useProps({ spec: t.any(), done: t.function<[DialogValues | null], void>() });
+  values = signal<DialogValues>({});
   touched = signal(false); // has the user edited a field? (gates the inline error)
-  actionBusy = signal(null); // key of the "action" field currently running, else null
+  actionBusy = signal<string | null>(null); // key of the "action" field currently running, else null
 
-  get spec() {
+  get spec(): DialogSpec {
     return this.props.spec;
   }
 
   // the current form's validation error ("" when valid). Reactive on `values`, so
   // it both disables the primary button and (once edited) shows the message —
   // an invalid form (e.g. a duplicate target name) can't be submitted at all.
-  get liveError() {
+  get liveError(): string {
     return this.spec.validate ? this.spec.validate(this.values()) : "";
   }
 
   setup() {
-    const vals = {};
+    const vals: DialogValues = {};
     for (const f of this.spec.fields || []) {
       if (f.type === "action") continue; // no value of its own
       vals[f.key] = f.value ?? (f.type === "checkbox" ? false : f.type === "repo-checks" ? [] : "");
     }
     this.values.set(vals);
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.done(null);
     };
     document.addEventListener("keydown", onKey);
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
     onMounted(() => {
       // focus + select the first text/textarea field once rendered
-      const inp = document.querySelector(".dialog input[type=text], .dialog textarea");
+      const inp = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        ".dialog input[type=text], .dialog textarea",
+      );
       if (inp) {
         inp.focus();
         inp.select();
@@ -224,14 +288,15 @@ export class Dialog extends Component {
     });
   }
 
-  done(result) {
+  done(result: DialogValues | null): void {
     this.props.done(result);
   }
 
-  setVal(key, v) {
+  setVal(key: string, v: DialogValues[string]): void {
     const oldValues = this.values();
     let values = { ...oldValues, [key]: v };
-    const field = this.spec.fields.find((f) => f.key === key);
+    // setVal is only reached from a rendered field, so the spec has fields
+    const field = this.spec.fields!.find((f) => f.key === key);
     if (field && field.onChange) {
       const updates = field.onChange(v, values, oldValues);
       if (updates) values = { ...values, ...updates };
@@ -243,7 +308,7 @@ export class Dialog extends Component {
   // a "check-select" field's value is "" (unchecked) or the selected option. Ticking
   // it on seeds a sensible choice — field.default(values), else the first option — so
   // the revealed select isn't empty; unticking clears it back to "".
-  toggleCheckSelect(field, checked) {
+  toggleCheckSelect(field: DialogField, checked: boolean): void {
     if (!checked) return this.setVal(field.key, "");
     const seed = typeof field.default === "function" ? field.default(this.values()) : field.default;
     this.setVal(field.key, seed || field.options?.[0]?.value || "");
@@ -251,8 +316,8 @@ export class Dialog extends Component {
 
   // a "repo-checks" field's value is the array of ticked option values; toggling
   // one re-derives dependent fields the same way any other field's onChange does
-  toggleRepoCheck(field, value, checked) {
-    const current = this.values()[field.key] || [];
+  toggleRepoCheck(field: DialogField, value: string, checked: boolean): void {
+    const current: string[] = this.values()[field.key] || [];
     const next = checked ? [...current, value] : current.filter((v) => v !== value);
     this.setVal(field.key, next);
   }
@@ -261,10 +326,11 @@ export class Dialog extends Component {
   // merged into the form's values (same as onChange's partial-update
   // convention), null/undefined (e.g. a nested dialog was cancelled) leaves
   // the form untouched.
-  async runAction(field) {
+  async runAction(field: DialogField): Promise<void> {
     this.actionBusy.set(field.key);
     try {
-      const updates = await field.run(this.values());
+      // only "action" fields render the button that calls this, and they carry run()
+      const updates = await field.run!(this.values());
       if (updates) {
         this.values.set({ ...this.values(), ...updates });
         this.touched.set(true);
@@ -274,11 +340,11 @@ export class Dialog extends Component {
     }
   }
 
-  onKey(ev) {
+  onKey(ev: KeyboardEvent): void {
     if (ev.key === "Enter") this.ok();
   }
 
-  ok() {
+  ok(): void {
     // Enter can still reach here while invalid (the button is disabled, not the
     // keystroke) — guard, and reveal the message if it was hidden.
     if (this.liveError) return this.touched.set(true);

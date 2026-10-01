@@ -29,20 +29,28 @@ if (typeof globalThis.owl?.Plugin !== "function") {
 // (`new EventSource("/api/events")`) — stub it so importing/constructing that
 // plugin doesn't throw. Live SSE wiring itself is out of scope for unit tests
 // (see CLAUDE.md's Gotchas — same precedent as excluding the backend PTY subsystem).
+type Listener = (ev: MessageEvent) => void;
+
 class FakeEventSource {
-  constructor(url) {
+  url: string;
+  listeners: Record<string, Listener[]>;
+  constructor(url: string) {
     this.url = url;
     this.listeners = {};
   }
-  addEventListener(type, cb) {
+
+  addEventListener(type: string, cb: Listener) {
     (this.listeners[type] ??= []).push(cb);
   }
-  removeEventListener(type, cb) {
+
+  removeEventListener(type: string, cb: Listener) {
     this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== cb);
   }
+
   close() {}
 }
-globalThis.EventSource ??= FakeEventSource;
+// implements only the members goo's code touches (no readyState/CONNECTING/…)
+globalThis.EventSource ??= FakeEventSource as unknown as typeof EventSource;
 
 // jsdom doesn't implement requestAnimationFrame.
 globalThis.requestAnimationFrame ??= (cb) => setTimeout(cb, 0);

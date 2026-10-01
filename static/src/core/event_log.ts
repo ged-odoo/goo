@@ -6,6 +6,7 @@ import { TestsPlugin } from "./tests_plugin.ts";
 import { ServerPlugin } from "./server_plugin.ts";
 import { WorkspacePlugin } from "./workspace_plugin.ts";
 import { ICONS, m, useDragResize } from "./common.ts";
+import type { DragResize } from "./common.ts";
 
 export class EventLog extends Component {
   static template = xml`
@@ -39,6 +40,7 @@ export class EventLog extends Component {
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true); // follow the tail as new events arrive
+  declare drag: DragResize; // set in setup()
   _lastCount = 0;
 
   setup() {
@@ -84,7 +86,7 @@ export class EventLog extends Component {
   // its console to the anchored line. The console unmounts when off-pane and its
   // element is re-hosted on return, so we wait (a few frames) for the row to
   // become laid out before revealing it.
-  jump(anchor) {
+  jump(anchor: string) {
     // anchors are main-slot rows — land on the LOADED workspace's Tests pane
     const loaded = this.server.loadedWorkspaceId();
     if (loaded) this.worktree.selectOnOpen(loaded);
@@ -107,7 +109,11 @@ export class EventLog extends Component {
 
   // chronological: oldest first, newest appended at the end
   get rows() {
-    const STATUS_TITLE = { pending: "in progress…", done: "done", error: "failed" };
+    const STATUS_TITLE: Record<string, string> = {
+      pending: "in progress…",
+      done: "done",
+      error: "failed",
+    };
     return this.log.entries().map((e) => {
       const d = new Date(e.at);
       return {
@@ -118,7 +124,7 @@ export class EventLog extends Component {
         anchor: e.anchor || "",
         level: e.level || "",
         status: e.status || "", // "" | pending | done | error (timed events)
-        statusTitle: STATUS_TITLE[e.status] || "",
+        statusTitle: STATUS_TITLE[e.status || ""] || "",
       };
     });
   }

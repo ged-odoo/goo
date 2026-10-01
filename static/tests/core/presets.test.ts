@@ -8,17 +8,17 @@ describe("PRESETS", () => {
   });
 
   it("normal is a pure DEFAULT_CONFIG reset (empty data, clears the data file)", () => {
-    const normal = PRESETS.find((p) => p.id === "normal");
+    const normal = PRESETS.find((p) => p.id === "normal")!;
     expect(normal.data).toEqual({});
     expect(normal.clearDataFile).toBe(true);
   });
 
   it("ged carries a full config override as a JSON-stringified localStorage blob", () => {
-    const ged = PRESETS.find((p) => p.id === "ged");
+    const ged = PRESETS.find((p) => p.id === "ged")!;
     expect(typeof ged.data["oo-config"]).toBe("string");
     const config = JSON.parse(ged.data["oo-config"]);
     expect(Array.isArray(config.repos)).toBe(true);
-    expect(config.repos.map((r) => r.id)).toEqual(
+    expect(config.repos.map((r: { id: string }) => r.id)).toEqual(
       expect.arrayContaining(["community", "enterprise", "owl"]),
     );
     expect(typeof ged.data["oo-last-target"]).toBe("string");

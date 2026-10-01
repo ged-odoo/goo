@@ -1,6 +1,51 @@
 import { Component, onMounted, signal, xml } from "@odoo/owl";
 import { appBus } from "./common.ts";
 
+// The appBus payloads that open these menus (dispatched by the screens as
+// `new CustomEvent(name, { detail })`): the anchor's rect + the items to list.
+
+// one "action-menu" entry
+export interface MenuAction {
+  label: string;
+  onClick?: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  title?: string;
+}
+
+export interface ActionMenuDetail {
+  rect: DOMRect;
+  actions: MenuAction[];
+}
+
+// one "ci-menu" row: a PR's CI check
+export interface CiCheck {
+  context: string;
+  state?: string; // success | failure | pending | … (unknown when unset)
+  url?: string;
+}
+
+export interface CiMenuDetail {
+  rect: DOMRect;
+  checks: CiCheck[];
+}
+
+// one "mb-menu" row: a repo's mergebot status
+export interface MbRow {
+  repo: string;
+  state: string;
+  detail?: string; // the unmet requirements, e.g. "Review, CI"
+  cls: string; // the badge color category (mbCategory)
+  url?: string;
+}
+
+export interface MbMenuDetail {
+  rect: DOMRect;
+  rows: MbRow[];
+}
+
+type Timer = ReturnType<typeof setTimeout>;
+
 export class ActionMenu extends Component {
   static template = xml`
     <div class="dash-menu action-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
@@ -10,13 +55,15 @@ export class ActionMenu extends Component {
     </div>`;
 
   open = signal(false);
-  actions = signal([]);
-  _el = null;
+  actions = signal<MenuAction[]>([]);
+  _el: HTMLElement | null = null;
 
   setup() {
     onMounted(() => {
-      this._el = document.querySelector(".action-menu");
-      appBus.addEventListener("action-menu", (e) => this.openMenu(e.detail));
+      this._el = document.querySelector<HTMLElement>(".action-menu");
+      appBus.addEventListener("action-menu", (e) =>
+        this.openMenu((e as CustomEvent<ActionMenuDetail>).detail),
+      );
       document.addEventListener("click", () => this.open.set(false));
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.open.set(false);
@@ -24,21 +71,22 @@ export class ActionMenu extends Component {
     });
   }
 
-  async openMenu({ rect, actions }) {
+  async openMenu({ rect, actions }: ActionMenuDetail) {
     this.actions.set(actions);
     this.open.set(true);
     await Promise.resolve(); // wait a tick so offsetWidth/Height reflect the items
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
+    const el = this._el!; // set in onMounted, before the listener that calls this
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
     // open below the anchor; flip above if it would overflow the viewport bottom
     let top = rect.bottom + 4;
     if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
+    el.style.top = `${top}px`;
     // right-align the menu to the kebab, clamped to the viewport
-    this._el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
   }
 
-  select(a) {
+  select(a: MenuAction) {
     if (a.disabled) return;
     this.open.set(false);
     a.onClick?.();
@@ -65,16 +113,18 @@ export class CiMenu extends Component {
     </div>`;
 
   open = signal(false);
-  checks = signal([]);
-  _el = null;
-  _closeTimer = null;
+  checks = signal<CiCheck[]>([]);
+  _el: HTMLElement | null = null;
+  _closeTimer: Timer | null = null;
 
   setup() {
     onMounted(() => {
-      this._el = document.querySelector(".ci-menu");
+      this._el = document.querySelector<HTMLElement>(".ci-menu");
       // opened on badge hover; lingers briefly on leave so the mouse can cross the
       // gap into the popover (to use its per-check build links)
-      appBus.addEventListener("ci-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener("ci-menu", (e) =>
+        this.openMenu((e as CustomEvent<CiMenuDetail>).detail),
+      );
       appBus.addEventListener("ci-menu-hide", () => this.scheduleClose());
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.close();
@@ -99,21 +149,23 @@ export class CiMenu extends Component {
     this.open.set(false);
   }
 
-  async openMenu({ rect, checks }) {
+  async openMenu({ rect, checks }: CiMenuDetail) {
     this.cancelClose(); // moving onto another badge cancels the pending close
     this.checks.set(checks);
     this.open.set(true);
     await Promise.resolve(); // let the list render so offsetWidth/Height are real
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
+    const el = this._el!; // set in onMounted, before the listener that calls this
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
     let top = rect.bottom + 4;
     if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+    el.style.top = `${top}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
 
-  stateLabel(state) {
-    return { success: "ok", failure: "ko", pending: "running" }[state] || "—";
+  stateLabel(state: string): string {
+    const labels: Record<string, string> = { success: "ok", failure: "ko", pending: "running" };
+    return labels[state] || "—";
   }
 }
 
@@ -137,16 +189,18 @@ export class MbMenu extends Component {
     </div>`;
 
   open = signal(false);
-  rows = signal([]);
-  _el = null;
-  _closeTimer = null;
+  rows = signal<MbRow[]>([]);
+  _el: HTMLElement | null = null;
+  _closeTimer: Timer | null = null;
 
   setup() {
     onMounted(() => {
-      this._el = document.querySelector(".mb-menu");
+      this._el = document.querySelector<HTMLElement>(".mb-menu");
       // opened on badge hover; lingers briefly on leave so the mouse can cross the
       // gap into the popover (to use its per-repo mergebot links)
-      appBus.addEventListener("mb-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener("mb-menu", (e) =>
+        this.openMenu((e as CustomEvent<MbMenuDetail>).detail),
+      );
       appBus.addEventListener("mb-menu-hide", () => this.scheduleClose());
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.close();
@@ -171,21 +225,22 @@ export class MbMenu extends Component {
     this.open.set(false);
   }
 
-  async openMenu({ rect, rows }) {
+  async openMenu({ rect, rows }: MbMenuDetail) {
     this.cancelClose(); // moving onto another badge cancels the pending close
     this.rows.set(rows);
     this.open.set(true);
     await Promise.resolve(); // let the list render so offsetWidth/Height are real
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
+    const el = this._el!; // set in onMounted, before the listener that calls this
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
     let top = rect.bottom + 4;
     if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+    el.style.top = `${top}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
 
   // "blocked · Review, CI" — the state word, plus the unmet requirements when present
-  label(r) {
+  label(r: MbRow): string {
     return r.detail ? `${r.state} · ${r.detail}` : r.state;
   }
 }

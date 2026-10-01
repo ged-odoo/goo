@@ -21,7 +21,7 @@ describe("PullRequest.from", () => {
       relation: "authored",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-02T00:00:00Z",
-      ci: { state: "success" },
+      ci: { overall: "success", runbot: "success", checks: [] },
     });
     expect(pr).toEqual({
       github: "odoo/odoo",
@@ -34,7 +34,7 @@ describe("PullRequest.from", () => {
       relation: "authored",
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-02T00:00:00Z",
-      ci: { state: "success" },
+      ci: { overall: "success", runbot: "success", checks: [] },
       key: "odoo/odoo#42",
     });
   });

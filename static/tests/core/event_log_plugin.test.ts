@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
 
 beforeEach(() => {
   localStorage.clear();
@@ -11,7 +12,7 @@ beforeEach(() => {
 
 describe("EventLogPlugin", () => {
   it("starts empty when localStorage has nothing", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     expect(plugin.entries()).toEqual([]);
     expect(plugin.lastReadId()).toBe(0);
   });
@@ -24,7 +25,7 @@ describe("EventLogPlugin", () => {
         lastReadId: 1,
       }),
     );
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     expect(plugin.entries()).toEqual([{ id: 1, at: 1, text: "starting…", status: "", eid: "" }]);
     expect(plugin.lastReadId()).toBe(1);
   });
@@ -36,20 +37,20 @@ describe("EventLogPlugin", () => {
         entries: [{ id: 1, text: "ok" }, { text: "no id" }, { id: "not-a-number" }],
       }),
     );
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     expect(plugin.entries()).toEqual([{ id: 1, text: "ok" }]);
   });
 
   it("starts fresh on corrupt localStorage JSON", () => {
     localStorage.setItem("oo-event-log", "{not json");
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     expect(plugin.entries()).toEqual([]);
   });
 
   it("add() appends an entry, assigns an incrementing id, and best-effort mirrors to the server", () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) }));
     vi.stubGlobal("fetch", fetchMock);
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.add("hello", "anchor1", "error");
     expect(plugin.entries()).toEqual([
       expect.objectContaining({ id: 1, text: "hello", anchor: "anchor1", level: "error" }),
@@ -61,16 +62,16 @@ describe("EventLogPlugin", () => {
   });
 
   it("add() persists to localStorage and caps at MAX (1000) entries", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     for (let i = 0; i < 1005; i++) plugin.add(`line ${i}`);
     expect(plugin.entries().length).toBe(1000);
     expect(plugin.entries()[0].text).toBe("line 5"); // oldest 5 dropped
-    const persisted = JSON.parse(localStorage.getItem("oo-event-log"));
+    const persisted = JSON.parse(localStorage.getItem("oo-event-log")!);
     expect(persisted.entries.length).toBe(1000);
   });
 
   it("start()/finish() resolve a pending row by its correlation id", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.start("eid1", "doing thing…");
     expect(plugin.entries()).toEqual([expect.objectContaining({ status: "pending", eid: "eid1" })]);
     plugin.finish("eid1", "done");
@@ -78,7 +79,7 @@ describe("EventLogPlugin", () => {
   });
 
   it("finish() with no matching start() falls back to appending a finished row when text is given", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.finish("missing-eid", "error", "it happened anyway");
     expect(plugin.entries()).toEqual([
       expect.objectContaining({ eid: "missing-eid", status: "error", text: "it happened anyway" }),
@@ -86,7 +87,7 @@ describe("EventLogPlugin", () => {
   });
 
   it("finish() with no matching start() and no text is silently dropped", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.finish("missing-eid", "error");
     expect(plugin.entries()).toEqual([]);
   });
@@ -94,7 +95,7 @@ describe("EventLogPlugin", () => {
   it("begin() mints a local- id, starts a pending row, and mirrors to the server", () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) }));
     vi.stubGlobal("fetch", fetchMock);
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     const eid = plugin.begin("doing a thing");
     expect(eid).toBe("local-1");
     expect(plugin.entries()).toEqual([
@@ -104,14 +105,14 @@ describe("EventLogPlugin", () => {
   });
 
   it("drop() removes a pending row by its correlation id", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     const eid = plugin.begin("cancel me");
     plugin.drop(eid);
     expect(plugin.entries()).toEqual([]);
   });
 
   it("toggle() flips `open` and marks everything read", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.add("a");
     plugin.add("b");
     expect(plugin.unread()).toBe(2);
@@ -124,7 +125,7 @@ describe("EventLogPlugin", () => {
   });
 
   it("unread() counts only entries newer than lastReadId while closed", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.add("a");
     plugin.markRead();
     plugin.add("b");
@@ -133,10 +134,10 @@ describe("EventLogPlugin", () => {
   });
 
   it("clear() empties the log and persists the empty state", () => {
-    const plugin = new EventLogPlugin({});
+    const plugin = new EventLogPlugin(NO_MANAGER);
     plugin.add("a");
     plugin.clear();
     expect(plugin.entries()).toEqual([]);
-    expect(JSON.parse(localStorage.getItem("oo-event-log")).entries).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("oo-event-log")!).entries).toEqual([]);
   });
 });

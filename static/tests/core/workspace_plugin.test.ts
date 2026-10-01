@@ -6,9 +6,17 @@ import { CodePlugin } from "../../src/core/code_plugin.ts";
 import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
 import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { WorkspacePlugin, cascadeRemoveDescendants } from "../../src/core/workspace_plugin.ts";
+import type { CascadePlugins } from "../../src/core/workspace_plugin.ts";
+import type { WorkspaceConfig } from "../../src/core/config.ts";
+import type { ServerSnapshot } from "../../src/core/runtime_models.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
 
-function fakeConfig(overrides = {}) {
+// a workspace fixture carrying only the fields a test is about
+type WorkspaceFixture = Partial<WorkspaceConfig>;
+
+function fakeConfig(
+  overrides: { config?: Record<string, unknown>; workspace?: (id: string) => unknown } = {},
+) {
   return {
     config: { workspaces: [], main_repo_id: "", ...overrides.config },
     workspace: overrides.workspace || (() => null),
@@ -16,7 +24,7 @@ function fakeConfig(overrides = {}) {
   };
 }
 
-function fakeStore(overrides = {}) {
+function fakeStore(overrides: { server?: (id: string) => Partial<ServerSnapshot> | null } = {}) {
   return {
     server: overrides.server || (() => null),
     mergeServer: vi.fn(),
@@ -25,7 +33,7 @@ function fakeStore(overrides = {}) {
   };
 }
 
-function fakeServerPlugin(overrides = {}) {
+function fakeServerPlugin(overrides: { loadedWorkspaceId?: () => string } = {}) {
   return {
     onWorktree: vi.fn(),
     onLog: vi.fn(),
@@ -34,7 +42,7 @@ function fakeServerPlugin(overrides = {}) {
   };
 }
 
-function fakeCode(overrides = {}) {
+function fakeCode(overrides: { groups?: Record<string, unknown> } = {}) {
   return {
     groups: () => ({ pathByRepo: {}, pullRemoteByRepo: {}, githubByRepo: {}, ...overrides.groups }),
     openEditorPaths: vi.fn(),
@@ -45,12 +53,21 @@ function fakeEventLog() {
   return { begin: vi.fn(() => "eid"), finish: vi.fn(), add: vi.fn() };
 }
 
-function fakeDialogs(overrides = {}) {
+function fakeDialogs(overrides: { open?: ReturnType<typeof vi.fn> } = {}) {
   return { open: overrides.open || vi.fn(), error: vi.fn() };
 }
 
 // builds a WorkspacePlugin with every usePlugin() sibling faked as a plain object
-function buildPlugin(fakes = {}) {
+function buildPlugin(
+  fakes: {
+    config?: ReturnType<typeof fakeConfig>;
+    store?: ReturnType<typeof fakeStore>;
+    server?: ReturnType<typeof fakeServerPlugin>;
+    code?: ReturnType<typeof fakeCode>;
+    eventLog?: ReturnType<typeof fakeEventLog>;
+    dialogs?: ReturnType<typeof fakeDialogs>;
+  } = {},
+) {
   const config = fakes.config || fakeConfig();
   const store = fakes.store || fakeStore();
   const server = fakes.server || fakeServerPlugin();
@@ -89,9 +106,9 @@ describe("WorkspacePlugin.isWorktree", () => {
   it("falls back to location/worktree on a transient (not-yet-persisted) spec", () => {
     const { plugin } = buildPlugin();
     expect(plugin.isWorktree(null)).toBe(false);
-    expect(plugin.isWorktree({ location: "worktree" })).toBe(true);
-    expect(plugin.isWorktree({ worktree: { dir: "/x" } })).toBe(true);
-    expect(plugin.isWorktree({})).toBe(false);
+    expect(plugin.isWorktree({ id: "t", location: "worktree" })).toBe(true);
+    expect(plugin.isWorktree({ id: "t", worktree: { dir: "/x" } })).toBe(true);
+    expect(plugin.isWorktree({ id: "t" })).toBe(false);
   });
 });
 
@@ -144,19 +161,29 @@ describe("WorkspacePlugin.dirPath / hasMainRepo", () => {
     expect(withRecord.plugin.dirPath({ id: "w1" })).toBe("/from/record");
 
     const transient = buildPlugin();
-    expect(transient.plugin.dirPath({ worktree: { dir: "/frozen/dir" } })).toBe("/frozen/dir");
+    expect(transient.plugin.dirPath({ id: "t", worktree: { dir: "/frozen/dir" } })).toBe(
+      "/frozen/dir",
+    );
   });
 
   it("hasMainRepo: transient fallback defaults main_repo_id to community", () => {
     const { plugin } = buildPlugin({ config: fakeConfig({ config: { main_repo_id: "" } }) });
-    expect(plugin.hasMainRepo({ checkouts: [{ repo: "community" }] })).toBe(true);
-    expect(plugin.hasMainRepo({ checkouts: [{ repo: "enterprise" }] })).toBe(false);
+    expect(
+      plugin.hasMainRepo({ id: "t", checkouts: [{ repo: "community", branch: "master" }] }),
+    ).toBe(true);
+    expect(
+      plugin.hasMainRepo({ id: "t", checkouts: [{ repo: "enterprise", branch: "master" }] }),
+    ).toBe(false);
   });
 
   it("hasMainRepo: honors a configured main_repo_id", () => {
     const { plugin } = buildPlugin({ config: fakeConfig({ config: { main_repo_id: "odoo" } }) });
-    expect(plugin.hasMainRepo({ checkouts: [{ repo: "odoo" }] })).toBe(true);
-    expect(plugin.hasMainRepo({ checkouts: [{ repo: "community" }] })).toBe(false);
+    expect(plugin.hasMainRepo({ id: "t", checkouts: [{ repo: "odoo", branch: "master" }] })).toBe(
+      true,
+    );
+    expect(
+      plugin.hasMainRepo({ id: "t", checkouts: [{ repo: "community", branch: "master" }] }),
+    ).toBe(false);
   });
 });
 
@@ -181,7 +208,7 @@ describe("WorkspacePlugin live-state readers", () => {
   });
 
   it("running() is true for both 'running' and 'starting' states", () => {
-    let state = "starting";
+    const state = "starting";
     const { plugin } = buildPlugin({ store: fakeStore({ server: () => ({ state }) }) });
     expect(plugin.running({ id: "x" })).toBe(true);
   });
@@ -209,7 +236,7 @@ describe("WorkspacePlugin.startServer / stopServer", () => {
       dialogs,
       config: fakeConfig({ config: { main_repo_id: "community" } }),
     });
-    await plugin.startServer({ id: "w1", checkouts: [{ repo: "enterprise" }] });
+    await plugin.startServer({ id: "w1", checkouts: [{ repo: "enterprise", branch: "master" }] });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(dialogs.error).toHaveBeenCalledWith(
       "Cannot start the server",
@@ -221,7 +248,7 @@ describe("WorkspacePlugin.startServer / stopServer", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const { plugin } = buildPlugin({ store: fakeStore({ server: () => ({ state: "running" }) }) });
-    await plugin.startServer({ id: "w1", checkouts: [{ repo: "community" }] });
+    await plugin.startServer({ id: "w1", checkouts: [{ repo: "community", branch: "master" }] });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -235,7 +262,11 @@ describe("WorkspacePlugin.startServer / stopServer", () => {
       store,
       config: fakeConfig({ config: { main_repo_id: "community" } }),
     });
-    await plugin.startServer({ id: "w1", name: "feature", checkouts: [{ repo: "community" }] });
+    await plugin.startServer({
+      id: "w1",
+      name: "feature",
+      checkouts: [{ repo: "community", branch: "master" }],
+    });
     // once for the optimistic "starting" merge, once for the port-only merge
     expect(store.mergeServer).toHaveBeenNthCalledWith(1, { id: "w1", state: "starting" });
     expect(store.mergeServer).toHaveBeenNthCalledWith(2, { id: "w1", port: 9001 });
@@ -253,7 +284,11 @@ describe("WorkspacePlugin.startServer / stopServer", () => {
       dialogs,
       config: fakeConfig({ config: { main_repo_id: "community" } }),
     });
-    await plugin.startServer({ id: "w1", name: "feature", checkouts: [{ repo: "community" }] });
+    await plugin.startServer({
+      id: "w1",
+      name: "feature",
+      checkouts: [{ repo: "community", branch: "master" }],
+    });
     expect(store.mergeServer).toHaveBeenLastCalledWith({ id: "w1", state: "stopped" });
     expect(dialogs.error).toHaveBeenCalledWith("Could not start the server", "boom");
   });
@@ -321,7 +356,15 @@ describe("WorkspacePlugin.remove / removeSilently", () => {
 });
 
 describe("cascadeRemoveDescendants", () => {
-  function plugins({ workspaces, running = () => false, loadedWorkspaceId = () => "" }) {
+  function plugins({
+    workspaces,
+    running = () => false,
+    loadedWorkspaceId = () => "",
+  }: {
+    workspaces: WorkspaceFixture[];
+    running?: () => boolean;
+    loadedWorkspaceId?: () => string;
+  }) {
     const config = fakeConfig({ config: { workspaces } });
     const wt = { running, removeSilently: vi.fn(async () => true) };
     const eventLog = fakeEventLog();
@@ -329,16 +372,21 @@ describe("cascadeRemoveDescendants", () => {
     return { config, wt, eventLog, server };
   }
 
+  // the fakes implement only what the cascade reads of each plugin
+  const asPlugins = (p: object) => p as CascadePlugins;
+
   it("removes a worktree child that isn't busy, breadth-first", async () => {
     const workspaces = [
       { id: "child", parent: "root", location: "worktree" },
       { id: "grandchild", parent: "child", location: "worktree" },
     ];
     const p = plugins({ workspaces });
-    const { skipped } = await cascadeRemoveDescendants(p, { id: "root", name: "root" });
+    const { skipped } = await cascadeRemoveDescendants(asPlugins(p), { id: "root", name: "root" });
     expect(skipped).toEqual([]);
     expect(p.wt.removeSilently).toHaveBeenCalledTimes(2);
-    expect(p.wt.removeSilently.mock.calls.map(([w]) => w.id)).toEqual(["child", "grandchild"]);
+    expect(
+      p.wt.removeSilently.mock.calls.map((args: unknown[]) => (args[0] as WorkspaceFixture).id),
+    ).toEqual(["child", "grandchild"]);
   });
 
   it("skips a busy worktree child and demotes it to root, leaving its subtree untouched", async () => {
@@ -348,11 +396,14 @@ describe("cascadeRemoveDescendants", () => {
     ];
     const record = { setParent: vi.fn() };
     const config = fakeConfig({ config: { workspaces }, workspace: () => record });
-    const wt = { running: (w) => w.id === "busy", removeSilently: vi.fn(async () => true) };
+    const wt = {
+      running: (w: WorkspaceFixture) => w.id === "busy",
+      removeSilently: vi.fn(async () => true),
+    };
     const eventLog = fakeEventLog();
     const server = { loadedWorkspaceId: () => "" };
     const { skipped } = await cascadeRemoveDescendants(
-      { config, wt, eventLog, server },
+      asPlugins({ config, wt, eventLog, server }),
       { id: "root", name: "root" },
     );
     expect(skipped.map((w) => w.id)).toEqual(["busy"]);
@@ -363,14 +414,14 @@ describe("cascadeRemoveDescendants", () => {
   it("skips a busy main-located child (the loaded workspace) via isLoadedMainWorkspace", async () => {
     const workspaces = [{ id: "main-child", parent: "root", location: "main" }];
     const p = plugins({ workspaces, loadedWorkspaceId: () => "main-child" });
-    const { skipped } = await cascadeRemoveDescendants(p, { id: "root", name: "root" });
+    const { skipped } = await cascadeRemoveDescendants(asPlugins(p), { id: "root", name: "root" });
     expect(skipped.map((w) => w.id)).toEqual(["main-child"]);
   });
 
   it("removes a non-busy main-located child via config.updateConfig, not wt.removeSilently", async () => {
     const workspaces = [{ id: "main-child", parent: "root", location: "main" }];
     const p = plugins({ workspaces });
-    await cascadeRemoveDescendants(p, { id: "root", name: "root" });
+    await cascadeRemoveDescendants(asPlugins(p), { id: "root", name: "root" });
     expect(p.wt.removeSilently).not.toHaveBeenCalled();
     expect(p.config.updateConfig).toHaveBeenCalledWith({ workspaces: [] });
   });

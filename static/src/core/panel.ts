@@ -47,11 +47,11 @@ export class Panel extends Component {
       .optional(),
   });
 
-  hasSlot(name) {
+  hasSlot(name: string): boolean {
     return name in (this.props.slots || {});
   }
 
-  get hasBottomRow() {
+  get hasBottomRow(): boolean {
     return this.hasSlot("bottom-left") || this.hasSlot("bottom-right");
   }
 }

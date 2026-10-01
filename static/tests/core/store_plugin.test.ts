@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { StorePlugin } from "../../src/core/store_plugin.ts";
+import type { BranchInfo, RepoStatusWire } from "../../src/core/observed_models.ts";
+import { PullRequest } from "../../src/core/models.ts";
 import { newPlugin } from "../helpers/plugin.ts";
 
-function repo(id, over = {}) {
+function repo(id: string, over: Partial<RepoStatusWire> = {}): RepoStatusWire {
   return { id, current: "master", dirty: false, branches: [], ahead: 0, behind: 0, ...over };
+}
+
+function branch(name: string): BranchInfo {
+  return { name, date: "", subject: "", sha: "", remote: false, synced: false };
 }
 
 describe("StorePlugin", () => {
@@ -52,9 +58,9 @@ describe("StorePlugin", () => {
 
   it("dropBranch removes a branch from a repo's snapshot without a refetch", () => {
     const store = newPlugin(StorePlugin);
-    store.mergeRepoStatus([repo("community", { branches: [{ name: "a" }, { name: "b" }] })], 1);
+    store.mergeRepoStatus([repo("community", { branches: [branch("a"), branch("b")] })], 1);
     store.dropBranch("community", "a");
-    expect(store.repoStatusList()[0].branches).toEqual([{ name: "b" }]);
+    expect(store.repoStatusList()[0].branches).toEqual([branch("b")]);
   });
 
   it("mergeMergebot creates a record from state/detail/forwardPorts arriving separately", () => {
@@ -71,7 +77,13 @@ describe("StorePlugin", () => {
   it("closePr marks a PR closed in place, readyPr clears draft", () => {
     const store = newPlugin(StorePlugin);
     store.mergePrRepos(
-      [{ id: "community", github: "odoo/odoo", prs: [{ number: 1, state: "open", draft: true }] }],
+      [
+        {
+          id: "community",
+          github: "odoo/odoo",
+          prs: [PullRequest.from({ number: 1, state: "open", draft: true })],
+        },
+      ],
       1,
       new Set(["community"]),
     );
@@ -135,12 +147,12 @@ describe("StorePlugin", () => {
     const store = newPlugin(StorePlugin);
     store.mergeRun({ id: "r1", state: "done", kind: "test", server: "main", started_at: 1 });
     store.mergeRun({ id: "r2", state: "running", kind: "test", server: "main", started_at: 2 });
-    expect(store.activeRun("main").id).toBe("r2");
+    expect(store.activeRun("main")?.id).toBe("r2");
     expect(store.activeRun("wt1")).toBeNull();
 
     store.mergeRun({ id: "r2", state: "done", kind: "test", server: "main", started_at: 2 });
     expect(store.activeRun("main")).toBeNull();
-    expect(store.latestRunOfKind("test", "main").id).toBe("r2");
+    expect(store.latestRunOfKind("test", "main")?.id).toBe("r2");
   });
 
   it("workspaceView joins checkouts' live branch state, server and active run", () => {
@@ -158,7 +170,7 @@ describe("StorePlugin", () => {
       { repo: "community", branch: "master", current: "master", matches: true, dirty: false },
     ]);
     expect(view.server).toEqual(expect.objectContaining({ id: "main" }));
-    expect(view.run.id).toBe("r1");
+    expect(view.run?.id).toBe("r1");
   });
 
   it("workspaceView uses the worktree-scoped row (not the main RepoStatus) for a worktree workspace", () => {
@@ -213,9 +225,11 @@ describe("StorePlugin", () => {
 
   it("mergeRunbot creates then updates a status by branch key", () => {
     const store = newPlugin(StorePlugin);
-    store.mergeRunbot({ "master-x": "success" });
-    expect(store.runbot()).toEqual({ "master-x": "success" });
-    store.mergeRunbot({ "master-x": "failure" });
-    expect(store.runbot()).toEqual({ "master-x": "failure" });
+    const success = { result: "success", running: false, url: "" };
+    const failure = { result: "failure", running: false, url: "" };
+    store.mergeRunbot({ "master-x": success });
+    expect(store.runbot()).toEqual({ "master-x": success });
+    store.mergeRunbot({ "master-x": failure });
+    expect(store.runbot()).toEqual({ "master-x": failure });
   });
 });

@@ -12,11 +12,33 @@ import { LogBuffer } from "./log_buffer.ts";
 import { postJSON } from "./utils.ts";
 
 import { Plugin, usePlugin, useEffect, signal, markRaw } from "@odoo/owl";
+import type { Signal } from "@odoo/owl";
+import type { RunSnapshot } from "./runtime_models.ts";
 
 const HISTORY_MAX = 10;
 
+// what slotFor / run() read of a workspace (a WorkspaceConfig, or any view of one)
+export interface SlotWorkspace {
+  id: string;
+  location?: string;
+}
+
+// one server slot's test-run + console state (TestsPlugin.slot())
+export interface TestSlot {
+  output: LogBuffer;
+  status: Signal<string>; // "", "starting…", "running…", "passed", "failed — exit N", …
+  pending: Signal<boolean>; // optimistic "run starting", until the "run" event lands
+  capturing: boolean; // whether this slot's lines are mirrored to its console
+  finished: boolean; // guard: "test suite finished" is logged once per run
+  tags: string; // current run's tags (for the deferred "running tests" log)
+  cutOnChrome: boolean; // WebSuite runs end the console window at chrome teardown
+  result: string; // "" | "success" | "fail" — derived from the HOOT result lines
+  announced: string | null; // run id we've logged "running tests" for (once per run)
+  finishedRun: string | null; // run id we've finalized (once per run)
+}
+
 // the server slot a workspace's runs occupy
-export function slotFor(ws) {
+export function slotFor(ws: SlotWorkspace | null | undefined): string {
   return ws && ws.location === "worktree" ? ws.id : "main";
 }
 
@@ -27,7 +49,7 @@ export class TestsPlugin extends Plugin {
   store = usePlugin(StorePlugin); // one-shot runs live in the shared store's runs map
   server = usePlugin(ServerPlugin);
   eventLog = usePlugin(EventLogPlugin);
-  history = signal(this._readHistory()); // last test tags run, most recent first (global)
+  history = signal<string[]>(this._readHistory()); // last test tags run, most recent first (global)
   _failSeq = 0; // monotonic id source for failure-row anchors (global, never reset)
   // slotId -> per-slot run/console state. Raw (not deep-reactive): the Tests pane
   // reads this via a getter evaluated during render, and the reactive Map proxy
@@ -35,10 +57,10 @@ export class TestsPlugin extends Plugin {
   // a write-during-render that sends the component into a render loop (fields
   // that must be reactive — status, pending, the LogBuffer's own signals — stay
   // signals regardless; only the Map's own key-membership tracking is dropped).
-  _slots = markRaw(new Map());
+  _slots = markRaw(new Map<string, TestSlot>());
 
   // the per-slot state record, lazily created
-  slot(id = "main") {
+  slot(id = "main"): TestSlot {
     if (!this._slots.has(id)) {
       this._slots.set(id, {
         output: new LogBuffer(),
@@ -53,25 +75,25 @@ export class TestsPlugin extends Plugin {
         finishedRun: null, // run id we've finalized (once per run)
       });
     }
-    return this._slots.get(id);
+    return this._slots.get(id)!; // inserted just above when missing
   }
 
   // main-slot console alias — the event log's [jump] pins its autoscroll
-  get output() {
+  get output(): LogBuffer {
     return this.slot("main").output;
   }
 
-  runningFor(slotId) {
+  runningFor(slotId: string): boolean {
     return this.currentRun(slotId)?.state === "running";
   }
 
-  _readHistory() {
+  _readHistory(): string[] {
     const h = this.config.getState("test_history", []);
     return Array.isArray(h) ? h : [];
   }
 
   // record a run's tag at the front, deduped, capped at HISTORY_MAX
-  _pushHistory(tag) {
+  _pushHistory(tag: string): void {
     tag = tag.trim();
     if (!tag) return;
     const h = [tag, ...this.history().filter((t) => t !== tag)].slice(0, HISTORY_MAX);
@@ -80,17 +102,17 @@ export class TestsPlugin extends Plugin {
   }
 
   // the current/last test run on a slot (backend-minted, from the shared store)
-  currentRun(slotId = "main") {
+  currentRun(slotId = "main"): RunSnapshot | null {
     return this.store.latestRunOfKind("test", slotId);
   }
 
   // a test run is active on a slot — optimistically true between clicking Run and
   // the backend's first "run" event, then driven by the run's state
-  runActive(slotId = "main") {
+  runActive(slotId = "main"): boolean {
     return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
   }
 
-  setup() {
+  setup(): void {
     // per-slot run dispatch: react to the LATEST test run of every slot that has
     // one (dispatching per raw record would re-finalize superseded runs — the
     // finishedRun guard holds one id per slot)
@@ -109,7 +131,7 @@ export class TestsPlugin extends Plugin {
     this.server.onLog(({ server, line }) => this._capture(server, line));
   }
 
-  _capture(slotId, line) {
+  _capture(slotId: string, line: string): void {
     if (!this.runActive(slotId)) return;
     const s = this.slot(slotId);
     // open the console window at the launch command line — every server's own
@@ -155,7 +177,7 @@ export class TestsPlugin extends Plugin {
   // Resume-after (bringing back a server the run interrupted) is owned by the
   // backend; this just drives the console + event log. Announce/finalize once per
   // run id per slot.
-  _onRun(slotId, run) {
+  _onRun(slotId: string, run: RunSnapshot | null): void {
     if (!run) return;
     const s = this.slot(slotId);
     if (run.state === "running") {
@@ -195,7 +217,7 @@ export class TestsPlugin extends Plugin {
   }
 
   // close a slot's test-log window and log the finish event (once per run)
-  _finishRun(slotId, result = this.slot(slotId).result) {
+  _finishRun(slotId: string, result: string = this.slot(slotId).result): void {
     const s = this.slot(slotId);
     s.capturing = false;
     if (s.finished) return;
@@ -215,7 +237,7 @@ export class TestsPlugin extends Plugin {
   // patches ChromeBrowser so ANY test <tags> selects gets its own browser
   // session snapshotted transparently (see build_odoo_cmd and
   // addons/memleak_check/tests/test_memleak_check.py).
-  async run(tags, ws, memcheck = false) {
+  async run(tags: string, ws: SlotWorkspace | null | undefined, memcheck = false): Promise<void> {
     const target = tags.trim();
     if (!ws || !target) return;
     this.config.workspace(ws.id)?.touchActivity();
@@ -230,7 +252,7 @@ export class TestsPlugin extends Plugin {
             const st = this.server.status();
             return (st.state === "running" || st.state === "starting") && st.mode === "server";
           })()
-        : ["running", "starting"].includes(this.store.server(slotId)?.state);
+        : ["running", "starting"].includes(this.store.server(slotId)?.state ?? "");
     this._pushHistory(target);
     s.tags = memcheck ? `memcheck: ${target}` : target; // logged once the server is up
     s.cutOnChrome = s.tags.includes("web:WebSuite");
@@ -249,7 +271,7 @@ export class TestsPlugin extends Plugin {
       await postJSON("/api/tests/run", { workspace: targetId, slot: slotId, overrides });
     } catch (e) {
       s.pending.set(false);
-      s.status.set(`failed to start: ${e.message}`);
+      s.status.set(`failed to start: ${(e as Error).message}`); // postJSON rejects with an Error
     }
   }
 }

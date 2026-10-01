@@ -6,10 +6,18 @@
 import { buildLogRow } from "./utils.ts";
 
 import { signal } from "@odoo/owl";
+import type { Signal } from "@odoo/owl";
 
 const MAX_LINES = 2000;
 
 export class LogBuffer {
+  el: HTMLDivElement;
+  count: Signal<number>;
+  autoScroll: Signal<boolean>;
+  savedScroll: number;
+  _scrollQueued: boolean;
+  _lastTop: number;
+
   constructor() {
     this.el = document.createElement("div");
     this.el.className = "log-scroll";
@@ -35,11 +43,12 @@ export class LogBuffer {
   }
 
   // `id` (optional) tags the row's DOM element so callers can scroll/link to it
-  append(line, id) {
+  append(line: string, id?: string): void {
     const row = buildLogRow(line);
     if (id) row.id = id;
     this.el.appendChild(row);
-    while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild.remove();
+    // over the cap, so there is a first child to drop
+    while (this.el.childElementCount > MAX_LINES) this.el.firstElementChild!.remove();
     this.count.set(this.el.childElementCount);
     if (this.autoScroll()) this._queueScroll();
   }
@@ -48,7 +57,7 @@ export class LogBuffer {
   // toBottom() on every appended line interleaves a scrollHeight read with each
   // DOM mutation, forcing a synchronous reflow per line (layout thrashing). A
   // burst of appends now triggers a single reflow on the next frame instead.
-  _queueScroll() {
+  _queueScroll(): void {
     if (this._scrollQueued) return;
     this._scrollQueued = true;
     requestAnimationFrame(() => {
@@ -57,19 +66,19 @@ export class LogBuffer {
     });
   }
 
-  clear() {
+  clear(): void {
     this.el.replaceChildren();
     this.count.set(0);
   }
 
-  toBottom() {
+  toBottom(): void {
     this.el.scrollTop = this.el.scrollHeight;
     this._lastTop = this.el.scrollTop; // ours, not a user scroll
   }
 
   // called by the host console on (re)mount to restore the scroll position,
   // since detaching the element resets scrollTop
-  restore() {
+  restore(): void {
     if (this.autoScroll()) this.toBottom();
     else this.el.scrollTop = this.savedScroll;
     this._lastTop = this.el.scrollTop;

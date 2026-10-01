@@ -114,7 +114,15 @@ const GED_CONFIG = {
   ],
 };
 
-export const PRESETS = [
+// a preset: a bundle of legacy localStorage entries (key → stored string)
+export interface Preset {
+  id: string;
+  label: string;
+  data: Record<string, string>; // empty → pure DEFAULT_CONFIG
+  clearDataFile?: boolean;
+}
+
+export const PRESETS: Preset[] = [
   {
     id: "normal",
     label: "Normal — standard Odoo dev setup",

@@ -7,17 +7,32 @@ import { postJSON } from "./utils.ts";
 
 import { Plugin, signal } from "@odoo/owl";
 
+// one event-log row; a timed one carries `status` + its correlation id `eid`
+export interface EventLogEntry {
+  id: number;
+  at: number;
+  text: string;
+  anchor?: string; // DOM id of a log row the UI can scroll to
+  level?: string; // e.g. "error"
+  status?: string; // "pending" | "done" | "error" | "" (timed rows only)
+  eid?: string;
+}
+
 const MAX = 1000; // keep the most recent N entries (in memory and in storage)
 const STORAGE_KEY = "oo-event-log";
 
 // last session's log. A row still "pending" can never resolve — its finish was
 // lost with the page — so it rejoins as a plain line (status/eid stripped).
-function storedLog() {
+function storedLog(): { entries: EventLogEntry[]; lastReadId: number } {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    const raw: { entries?: unknown; lastReadId?: number } | null = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) || "null",
+    );
     if (raw && Array.isArray(raw.entries)) {
       const entries = raw.entries
-        .filter((e) => e && typeof e.id === "number" && typeof e.text === "string")
+        .filter(
+          (e): e is EventLogEntry => e && typeof e.id === "number" && typeof e.text === "string",
+        )
         .map((e) => (e.status === "pending" ? { ...e, status: "", eid: "" } : e));
       return { entries, lastReadId: raw.lastReadId || 0 };
     }
@@ -37,12 +52,12 @@ export class EventLogPlugin extends Plugin {
   _seq = this._stored.entries.reduce((m, e) => Math.max(m, e.id), 0);
 
   // cap + set + persist — every entries mutation funnels through here
-  _commit(next) {
+  _commit(next: EventLogEntry[]): void {
     this.entries.set(next.length > MAX ? next.slice(-MAX) : next);
     this._persist();
   }
 
-  _persist() {
+  _persist(): void {
     try {
       localStorage.setItem(
         STORAGE_KEY,
@@ -56,7 +71,7 @@ export class EventLogPlugin extends Plugin {
   // `anchor` (optional) is a DOM id of a log row the UI can scroll to. It is kept
   // client-side only — the server log still receives just the text. `level`
   // (e.g. "error") flags the entry so the UI can highlight it.
-  add(text, anchor = "", level = "") {
+  add(text: string, anchor = "", level = ""): void {
     this._commit([...this.entries(), { id: ++this._seq, at: Date.now(), text, anchor, level }]);
     postJSON("/api/event", { text }).catch(() => {}); // also log on the goo server (best-effort)
   }
@@ -65,8 +80,8 @@ export class EventLogPlugin extends Plugin {
   // later resolves to "ok" (or "failed"). `eid` correlates the start and the end —
   // it comes from the server (so the same token tags both SSE messages); the
   // server already logged the line, so this does not POST it back.
-  start(eid, text, level = "") {
-    const row = {
+  start(eid: string, text: string, level = ""): void {
+    const row: EventLogEntry = {
       id: ++this._seq,
       at: Date.now(),
       text,
@@ -81,7 +96,7 @@ export class EventLogPlugin extends Plugin {
   // Begin a *client-initiated* long-running event (e.g. starting the server): same
   // pending row as start(), but it mints and returns the correlation id so the
   // caller can finish()/drop() it later. Logged on the goo server too (best-effort).
-  begin(text, level = "") {
+  begin(text: string, level = ""): string {
     const eid = `local-${this._seq + 1}`;
     this.start(eid, text, level);
     postJSON("/api/event", { text }).catch(() => {});
@@ -92,7 +107,7 @@ export class EventLogPlugin extends Plugin {
   // ("error") after its dots, keeping the original text. If the start was missed
   // (e.g. the client connected mid-flight) and a text is given, fall back to
   // appending a finished row.
-  finish(eid, status, text = "", level = "") {
+  finish(eid: string, status: string, text = "", level = ""): void {
     let found = false;
     const entries = this.entries().map((e) => {
       if (e.eid !== eid) return e;
@@ -101,34 +116,42 @@ export class EventLogPlugin extends Plugin {
     });
     if (found) this._commit(entries);
     else if (text) {
-      const row = { id: ++this._seq, at: Date.now(), text, anchor: "", level, status, eid };
+      const row: EventLogEntry = {
+        id: ++this._seq,
+        at: Date.now(),
+        text,
+        anchor: "",
+        level,
+        status,
+        eid,
+      };
       this._commit([...entries, row]);
     }
   }
 
   // Drop a pending event by its id (e.g. the user cancelled before it really began).
-  drop(eid) {
+  drop(eid: string): void {
     this._commit(this.entries().filter((e) => e.eid !== eid));
   }
 
-  toggle() {
+  toggle(): void {
     this.open.set(!this.open());
     this.markRead(); // opening or closing, everything up to now has been seen
   }
 
   // mark every current entry as read (clears the unread badge)
-  markRead() {
+  markRead(): void {
     this.lastReadId.set(this._seq);
     this._persist();
   }
 
   // events that arrived since the panel was last open (0 while it's open)
-  unread() {
+  unread(): number {
     if (this.open()) return 0;
     return this.entries().filter((e) => e.id > this.lastReadId()).length;
   }
 
-  clear() {
+  clear(): void {
     this._commit([]);
   }
 }

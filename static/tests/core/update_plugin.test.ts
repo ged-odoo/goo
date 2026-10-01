@@ -4,7 +4,7 @@ import { ServerPlugin } from "../../src/core/server_plugin.ts";
 import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
 
-function jsonOk(data) {
+function jsonOk(data: object) {
   return { ok: true, json: async () => data };
 }
 
@@ -13,7 +13,10 @@ function setup({ serverState = "stopped" } = {}) {
     status: () => ({ state: serverState }),
     onGooUpdate: vi.fn(),
   };
-  const fakeDialogs = { open: vi.fn(async () => true), error: vi.fn() };
+  const fakeDialogs = {
+    open: vi.fn<(opts: { message: string }) => Promise<boolean>>(async () => true),
+    error: vi.fn(),
+  };
   const harness = createPluginHarness([
     [ServerPlugin, fakeServer],
     [DialogPlugin, fakeDialogs],
@@ -142,7 +145,7 @@ describe("UpdatePlugin", () => {
     const { plugin } = setup({ serverState: "running" });
     await flushMicrotasks();
     let updateCalled = false;
-    vi.stubGlobal("fetch", (url) => {
+    vi.stubGlobal("fetch", (url: string) => {
       if (url === "/api/goo/update") {
         updateCalled = true;
         return Promise.resolve(jsonOk({ boot: "b2" }));

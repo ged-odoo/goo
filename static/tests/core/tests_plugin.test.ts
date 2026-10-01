@@ -5,14 +5,17 @@ import { StorePlugin } from "../../src/core/store_plugin.ts";
 import { ServerPlugin } from "../../src/core/server_plugin.ts";
 import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
+
+type LogListener = (d: { server: string; line: string }) => void;
 
 function makePlugin() {
-  const store = new StorePlugin({});
+  const store = new StorePlugin(NO_MANAGER);
   const config = { getState: () => [], setState: vi.fn() };
-  const logListeners = new Set();
+  const logListeners = new Set<LogListener>();
   const server = {
     status: () => ({ state: "stopped" }),
-    onLog: (cb) => logListeners.add(cb),
+    onLog: (cb: LogListener) => logListeners.add(cb),
   };
   const eventLog = { add: vi.fn() };
   const harness = createPluginHarness([
@@ -37,7 +40,7 @@ describe("slotFor", () => {
 });
 
 describe("TestsPlugin._capture (HOOT/memlab log-line matching)", () => {
-  function activeSlot(plugin, slotId = "main") {
+  function activeSlot(plugin: TestsPlugin, slotId = "main") {
     const s = plugin.slot(slotId);
     // _capture()'s real first check is runActive(), not s.capturing directly —
     // pending(true) satisfies that gate without exercising the run-state machine
@@ -69,7 +72,9 @@ describe("TestsPlugin._capture (HOOT/memlab log-line matching)", () => {
     const s = activeSlot(plugin);
     plugin._capture("main", '[HOOT] Test "some.test" failed');
     expect(eventLog.add).toHaveBeenCalledWith("test failed: some.test", "test-fail-1", "error");
-    expect(s.output.lines?.length ?? 1).toBeGreaterThan(0);
+    // the line landed in the console, carrying the anchor the event-log entry jumps to
+    expect(s.output.count()).toBe(1);
+    expect(s.output.el.querySelector("#test-fail-1")).not.toBeNull();
   });
 
   it("a HOOT failure on a non-main slot gets no DOM anchor", () => {
@@ -139,32 +144,32 @@ describe("TestsPlugin history", () => {
 describe("TestsPlugin._onRun", () => {
   it("announces once per run id and flips status to running", () => {
     const { plugin, eventLog } = makePlugin();
-    plugin._onRun("main", { id: "r1", state: "running", spec: { tags: "web" } });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "running", spec: { tags: "web" } });
     expect(eventLog.add).toHaveBeenCalledWith("running tests (tags: web)");
     expect(plugin.slot("main").status()).toBe("running…");
     eventLog.add.mockClear();
-    plugin._onRun("main", { id: "r1", state: "running", spec: { tags: "web" } });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "running", spec: { tags: "web" } });
     expect(eventLog.add).not.toHaveBeenCalled(); // already announced this run id
   });
 
   it("finalizes once per run id, preferring a captured HOOT/memlab result over a clean exit code", () => {
     const { plugin } = makePlugin();
-    plugin._onRun("main", { id: "r1", state: "running", spec: { tags: "web" } });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "running", spec: { tags: "web" } });
     plugin.slot("main").result = "fail"; // e.g. memlab found leaks despite exit 0
-    plugin._onRun("main", { id: "r1", state: "done", returncode: 0 });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "done", returncode: 0 });
     expect(plugin.slot("main").status()).toBe("failed");
   });
 
   it("a manually stopped run (returncode null) reports 'stopped'", () => {
     const { plugin } = makePlugin();
-    plugin._onRun("main", { id: "r1", state: "running", spec: { tags: "web" } });
-    plugin._onRun("main", { id: "r1", state: "done", returncode: null });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "running", spec: { tags: "web" } });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "done", returncode: null });
     expect(plugin.slot("main").status()).toBe("stopped");
   });
 
   it("a run that finished before this session ever saw it running is not re-announced", () => {
     const { plugin, eventLog } = makePlugin();
-    plugin._onRun("main", { id: "r1", state: "done", returncode: 0 });
+    plugin._onRun("main", { id: "r1", kind: "test", state: "done", returncode: 0 });
     expect(eventLog.add).not.toHaveBeenCalled();
   });
 });

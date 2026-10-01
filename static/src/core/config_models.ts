@@ -41,17 +41,53 @@ import { CodePlugin } from "./code_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
 
 import { usePlugin } from "@odoo/owl";
+import type { Signal } from "@odoo/owl";
+import type {
+  AppStateBlob,
+  CheckoutConfig,
+  Config,
+  ConfigInput,
+  DockerImage,
+  LegacyTarget,
+  NavLink,
+  RepoConfig,
+  RepoInput,
+  ReviewEntry,
+  StartConfig,
+  StateInput,
+  TabConfig,
+  TemplateConfig,
+  TemplateInput,
+  WorkspaceConfig,
+  WorkspaceInput,
+  WorktreeInfo,
+} from "./config.ts";
 
 export { ORM };
+
+// an owl-orm model class (the ORM's own constraint on records()/create())
+type ModelClass = typeof Model & { id: string };
 
 // Resolve owl plugins from a record's own ORM scope, at call time. A config record is
 // seeded during ConfigPlugin construction — before higher-sequence plugins start — so a
 // field-initializer usePlugin() would resolve too early; running inside the record's stored
 // scope (orm._ctx) at call time resolves against the fully-started plugin manager.
-function withScope(rec, fn) {
+function withScope<T>(rec: Model, fn: () => T): T {
   const ctx = rec.orm._ctx;
   return ctx ? ctx.run(fn) : fn();
 }
+
+// what Workspace.applyEdit takes: the inline edit form, checkouts already parsed
+export interface WorkspaceEdit {
+  name: string;
+  checkouts: CheckoutConfig[];
+  db: string;
+  on_create_args: string;
+  category?: string;
+}
+
+// toConfig's output: every Config key Settings carries, plus the record collections
+export type ConfigBlob = Partial<Config> & Pick<Config, "repos" | "workspaces" | "templates">;
 
 // scalar settings that live as flat keys on the config blob
 const SETTINGS_CHARS = [
@@ -81,7 +117,7 @@ const SETTINGS_CHARS = [
   "docker_container_user",
   "docker_extra_run_args",
   "default_workspace_location",
-];
+] as const;
 const SETTINGS_BOOLS = [
   "auto_open_event_log",
   "update_check",
@@ -92,7 +128,7 @@ const SETTINGS_BOOLS = [
   "docker_headed_browser",
   "auto_workspace_on_review",
   "auto_claude_review",
-];
+] as const;
 const SETTINGS_JSON = [
   "start",
   "tabs",
@@ -101,10 +137,14 @@ const SETTINGS_JSON = [
   "workspace_categories",
   "reviews",
   "docker_images",
-];
+] as const;
 // the app-state blob keys (were the scattered oo-* localStorage keys, see config_plugin)
-const STATE_CHARS = ["active_workspace", "claude_model"];
-const STATE_JSON = ["test_history"];
+type SettingsKey =
+  | (typeof SETTINGS_CHARS)[number]
+  | (typeof SETTINGS_BOOLS)[number]
+  | (typeof SETTINGS_JSON)[number];
+const STATE_CHARS = ["active_workspace", "claude_model"] as const;
+const STATE_JSON = ["test_history"] as const;
 
 export class Settings extends Model {
   static id = "settings"; // singleton
@@ -164,15 +204,15 @@ export class Settings extends Model {
   // forwards the host's X11 display + a larger --shm-size + --privileged, so a
   // headed browser (watch=True, a debugged tour) renders on the host desktop
   docker_headed_browser = fields.bool();
-  docker_images = fields.json(); // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
+  docker_images: Signal<DockerImage[]> = fields.json(); // [{id, label, versions: [...], dockerfile_path?, image?, is_default}]
   // "main" or "worktree" — the create-workspace dialog's Location default
   default_workspace_location = fields.char();
-  start = fields.json();
-  tabs = fields.json();
-  links = fields.json();
-  test_presets = fields.json();
-  workspace_categories = fields.json(); // [{ id }] — group order for the Workspaces list
-  reviews = fields.json(); // [{ id, github, number, important? }] — the Reviews screen's tracked PRs
+  start: Signal<StartConfig> = fields.json();
+  tabs: Signal<TabConfig[]> = fields.json();
+  links: Signal<NavLink[]> = fields.json();
+  test_presets: Signal<{ tags: string }[]> = fields.json();
+  workspace_categories: Signal<{ id: string }[]> = fields.json(); // [{ id }] — group order for the Workspaces list
+  reviews: Signal<ReviewEntry[]> = fields.json(); // [{ id, github, number, important? }] — the Reviews screen's tracked PRs
 }
 
 export class Repository extends Model {
@@ -187,40 +227,40 @@ export class Repository extends Model {
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "repository" });
 
   // the canonical GitHub slug — the stored value, else the built-in default for this id
-  githubOrDefault() {
+  githubOrDefault(): string {
     return this.github() || DEFAULT_CONFIG.repos.find((d) => d.id === this.id)?.github || "";
   }
 
   // the configured git remotes, never blank — fetch/rebase pull from pullRemote,
   // push/remote-delete go to pushRemote
-  pullRemote() {
+  pullRemote(): string {
     return this.pull_remote() || "origin";
   }
 
-  pushRemote() {
+  pushRemote(): string {
     return this.push_remote() || "dev";
   }
 
   // `pushSlug`: the push remote's actual resolved "owner/repo" (from live git
   // state — see CodePlugin), so the fork link/compare page point at the real
   // fork rather than the hardcoded odoo-dev fallback baked into repoUrls.
-  compareUrl(branch, pushSlug) {
+  compareUrl(branch: string, pushSlug?: string | null): string {
     return repoUrls.compare(this.githubOrDefault(), branch, pushSlug);
   }
 
-  forkBranchUrl(branch, pushSlug) {
+  forkBranchUrl(branch: string, pushSlug?: string | null): string {
     return repoUrls.fork(this.githubOrDefault(), branch, pushSlug);
   }
 
-  remoteBranchUrl(branch, pushSlug) {
+  remoteBranchUrl(branch: string, pushSlug?: string | null): string {
     return repoUrls.remote(this.githubOrDefault(), branch, pushSlug);
   }
 
-  mergebotUrl(number) {
+  mergebotUrl(number: number): string {
     return repoUrls.mergebot(this.githubOrDefault(), number);
   }
 
-  pullRequestUrl(number) {
+  pullRequestUrl(number: number): string {
     return repoUrls.pullRequest(this.githubOrDefault(), number);
   }
 }
@@ -238,31 +278,31 @@ export class Repository extends Model {
 // last resort so a URL is still produced.
 export const repoUrls = {
   // GitHub "create PR" compare page for a work branch (base inferred from the name)
-  compare(github, branch, pushSlug) {
+  compare(github: string, branch: string, pushSlug?: string | null): string {
     const base = baseBranchOf(branch);
     const name = github.split("/")[1];
     const [forkOwner, forkRepo] = pushSlug ? pushSlug.split("/") : ["odoo-dev", name];
     return `https://github.com/${github}/compare/${base}...${forkOwner}:${forkRepo}:${branch}?expand=1`;
   },
   // the branch on the fork the push remote actually points to
-  fork(github, branch, pushSlug) {
+  fork(github: string, branch: string, pushSlug?: string | null): string {
     const name = github.split("/")[1];
     const slug = pushSlug || `odoo-dev/${name}`;
     return `https://github.com/${slug}/tree/${encodeURIComponent(branch)}`;
   },
   // where a branch lives remotely: base branches on the canonical repo, work branches on the fork
-  remote(github, branch, pushSlug) {
+  remote(github: string, branch: string, pushSlug?: string | null): string {
     if (BASE_BRANCH_RE.test(branch)) {
       return `https://github.com/${github}/tree/${encodeURIComponent(branch)}`;
     }
     return repoUrls.fork(github, branch, pushSlug);
   },
   // the mergebot page for one of this repo's PRs
-  mergebot(github, number) {
+  mergebot(github: string, number: number): string {
     return `${MERGEBOT}/${github}/pull/${number}`;
   },
   // the canonical GitHub page for an existing PR
-  pullRequest(github, number) {
+  pullRequest(github: string, number: number): string {
     return `https://github.com/${github}/pull/${number}`;
   },
 };
@@ -285,41 +325,42 @@ export class Workspace extends Model {
   // only one main-located workspace is loaded at a time, on the implicit :8069),
   // "worktree" = its own git worktree dir, running concurrently on its own port
   location = fields.char({ defaultValue: "main" });
-  worktree = fields.json(); // { base, dir, venv? } | null — only worktree workspaces
+  worktree: Signal<WorktreeInfo | null> = fields.json(); // { base, dir, venv? } | null — only worktree workspaces
   port = fields.number(); // stable server port (worktree only; 0 = none/main)
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "workspace" });
 
   // ── derivations (pure — this + this.orm) ─────────────────────────────────────
   // the explicit `location` marks a worktree, falling back to `worktree` metadata presence
-  isWorktree() {
+  isWorktree(): boolean {
     return (this.location() || (this.worktree() ? "worktree" : "main")) === "worktree";
   }
 
   // does this workspace have a checkout of the configured main repo (default
   // "community", see Settings.main_repo_id) — the one that holds odoo-bin
-  hasMainRepo() {
+  hasMainRepo(): boolean {
     const settings = this.orm.getById(Settings, "settings");
     const mainRepoId = settings?.main_repo_id() || "community";
-    return this.checkouts().some((c) => c.repository().id === mainRepoId);
+    return this.checkouts().some((c) => c.repository()!.id === mainRepoId);
   }
 
   // every workspace spawned from this one, at any depth, parent-before-child. The
   // subtree that travels with it — see setCategory (archiving) and, on the delete
   // side, cascadeRemoveDescendants (workspace_plugin.ts), which walks the blob
   // level-by-level instead so it can stop descending at a child it couldn't remove.
-  descendants() {
-    const byParent = new Map();
+  descendants(): Workspace[] {
+    const byParent = new Map<string, Workspace[]>();
     for (const w of this.orm.records(Workspace)) {
       const p = w.parent();
       if (!p) continue;
-      if (!byParent.has(p)) byParent.set(p, []);
-      byParent.get(p).push(w);
+      let children = byParent.get(p);
+      if (!children) byParent.set(p, (children = []));
+      children.push(w);
     }
-    const out = [];
+    const out: Workspace[] = [];
     const seen = new Set([this.id]); // cycle guard — `parent` is set once, at creation,
     let frontier = byParent.get(this.id) || []; // to an existing ancestor, but stay safe
     while (frontier.length) {
-      const next = [];
+      const next: Workspace[] = [];
       for (const w of frontier) {
         if (seen.has(w.id)) continue;
         seen.add(w.id);
@@ -334,7 +375,7 @@ export class Workspace extends Model {
   // the worktree's on-disk directory: the value frozen at creation (worktree.dir),
   // else derived from <settings.worktree_dir>/<name>. Persisting it means a later
   // rename can't move the path off the real checkout (worktreeDirFor, utils.ts).
-  dirPath() {
+  dirPath(): string {
     const dir = this.worktree()?.dir;
     if (dir) return dir;
     const settings = this.orm.getById(Settings, "settings");
@@ -346,20 +387,20 @@ export class Workspace extends Model {
     return withScope(this, () => usePlugin(ConfigPlugin));
   }
 
-  toggleDemoData() {
+  toggleDemoData(): void {
     this.demo_data.set(!this.demo_data());
     this._configPlugin().touch();
   }
 
   // persist the Details tab's notes (no touchActivity — writing a note is
   // bookkeeping, not workspace activity)
-  setNotes(text) {
+  setNotes(text: string): void {
     if (text === this.notes()) return;
     this.notes.set(text);
     this._configPlugin().touch();
   }
 
-  touchActivity() {
+  touchActivity(): void {
     this.last_activity.set(new Date().toISOString());
     this._configPlugin().touch();
   }
@@ -367,7 +408,7 @@ export class Workspace extends Model {
   // commit an inline edit onto the target (favorite/demo_data untouched — each is
   // toggled directly via its own checkbox).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
-  applyEdit({ name, checkouts, db, on_create_args, category }) {
+  applyEdit({ name, checkouts, db, on_create_args, category }: WorkspaceEdit): void {
     this.name.set(name);
     this.db.set(db);
     this.on_create_args.set(on_create_args);
@@ -383,7 +424,7 @@ export class Workspace extends Model {
   // shelving that parent shelves the work spawned from it, and restoring the parent
   // brings the subtree back with it (it also keeps parent and children in one list
   // group, which is what makes the nested rendering possible).
-  setCategory(category) {
+  setCategory(category: string | null | undefined): void {
     const cat = category || "";
     const wasArchived = this.category() === ARCHIVED_CATEGORY;
     const nowArchived = cat === ARCHIVED_CATEGORY;
@@ -401,7 +442,7 @@ export class Workspace extends Model {
   // demote to root ("" = no parent) — used only by cascadeRemoveDescendants
   // when this workspace's own removal was blocked; parent is otherwise fixed
   // once, at creation
-  setParent(parent) {
+  setParent(parent: string | null | undefined): void {
     this.parent.set(parent || "");
     this._configPlugin().touch();
   }
@@ -410,14 +451,14 @@ export class Workspace extends Model {
   // restore: re-checkout even when this workspace is already the active one — the
   // recovery path when a manual `git checkout` drifted the main checkout away from
   // the workspace's branches (the guards on missing/dirty branches still apply).
-  async activate({ restore = false } = {}) {
+  async activate({ restore = false }: { restore?: boolean } = {}): Promise<void> {
     const { server, code, eventLog } = withScope(this, () => ({
       server: usePlugin(ServerPlugin),
       code: usePlugin(CodePlugin),
       eventLog: usePlugin(EventLogPlugin),
     }));
     // live git state per repo — for the guard + deciding which repos actually switch
-    const repoMap = {};
+    const repoMap: Record<string, { current: string; dirty: boolean; branches: Set<string> }> = {};
     for (const r of code.branchRepos()) {
       repoMap[r.id] = {
         current: r.current,
@@ -425,7 +466,7 @@ export class Workspace extends Model {
         branches: new Set((r.branches || []).map((b) => b.name)),
       };
     }
-    const cos = this.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }));
+    const cos = this.checkouts().map((c) => ({ repo: c.repository()!.id, branch: c.branch() }));
     // guard (mirrors canActivate): not already active, all branches present, none dirty
     if (this.id === server.loadedWorkspaceId() && !restore) return;
     if (!cos.every(({ repo, branch }) => repoMap[repo]?.branches.has(branch))) return;
@@ -460,8 +501,10 @@ export class Workspace extends Model {
 
 export class Checkout extends Model {
   static id = "checkout"; // id = `${workspace}:${repo}` (workspace ids = the old target ids)
-  workspace = fields.many2one({ comodel: () => Workspace, inverse: "checkouts" });
-  repository = fields.many2one({ comodel: () => Repository, inverse: "checkouts" });
+  workspace = fields.many2one({ comodel: () => Workspace });
+  // never null: every Checkout is created with its repo id (createWorkspace /
+  // reconcileCheckouts), hence the `repository()!` reads
+  repository = fields.many2one({ comodel: () => Repository });
   branch = fields.char();
 }
 
@@ -476,25 +519,25 @@ export class Template extends Model {
   on_create_args = fields.char();
   demo_data = fields.bool({ defaultValue: true });
   category = fields.char(); // default workspace_categories id new workspaces inherit ("" = none)
-  checkouts = fields.json(); // [{repo, branch}]
+  checkouts: Signal<CheckoutConfig[]> = fields.json();
 }
 
 export class AppState extends Model {
   static id = "appstate"; // singleton — the app-recorded state blob
   active_workspace = fields.char();
   claude_model = fields.char();
-  test_history = fields.json();
+  test_history: Signal<string[]> = fields.json();
 }
 
 export const CONFIG_MODELS = [Settings, Repository, Workspace, Template, Checkout, AppState];
 
-const checkoutId = (workspaceId, repo) => `${workspaceId}:${repo}`;
+const checkoutId = (workspaceId: string, repo: string): string => `${workspaceId}:${repo}`;
 
 // ── legacy target shape → workspace shape (migration-only mapping) ───────────────
 
 // a stored legacy target object → the workspace shape (no `port` — the migration
 // deals stable ports itself). Used ONLY by migrateToWorkspaces (config_plugin).
-export function workspaceFromTarget(t) {
+export function workspaceFromTarget(t: LegacyTarget & { id: string }): WorkspaceInput {
   const location =
     (t.kind || (t.worktree ? "worktree" : "plain")) === "worktree" ? "worktree" : "main";
   return {
@@ -517,7 +560,7 @@ export function workspaceFromTarget(t) {
 export const RESERVED_PORTS = [8069, 8072];
 
 // the smallest stable port ≥ 8070 not held by any workspace and not reserved
-export function nextFreePort(orm) {
+export function nextFreePort(orm: ORM): number {
   const used = new Set([...RESERVED_PORTS, ...orm.records(Workspace).map((w) => w.port())]);
   let p = 8070;
   while (used.has(p)) p++;
@@ -529,8 +572,8 @@ export function nextFreePort(orm) {
 // seed an empty ORM from a {config, state} pair (boot / reset / preset / import).
 // The blob arrives normalized (config_plugin's normalizeConfigState ran the one-time
 // targets→workspaces migration), so `workspaces`/`templates` are authoritative here.
-export function toModels(orm, config = {}, state = {}) {
-  const settings = { id: "settings" };
+export function toModels(orm: ORM, config: ConfigInput = {}, state: StateInput = {}): void {
+  const settings: Record<string, unknown> = { id: "settings" };
   for (const k of SETTINGS_CHARS) settings[k] = config[k] ?? "";
   for (const k of SETTINGS_BOOLS) settings[k] = !!config[k];
   // one-time migration: hide_start_controls (boolean) → launch_mode (3-way).
@@ -552,7 +595,7 @@ export function toModels(orm, config = {}, state = {}) {
   for (const w of config.workspaces || []) createWorkspace(orm, w); // repos exist → checkout m2o resolves
   for (const t of config.templates || []) createTemplate(orm, t);
 
-  const st = { id: "state" };
+  const st: Record<string, unknown> = { id: "state" };
   for (const k of STATE_CHARS) st[k] = state[k] ?? "";
   for (const k of STATE_JSON) st[k] = state[k] ?? [];
   orm.create(AppState, st);
@@ -567,10 +610,26 @@ export function toModels(orm, config = {}, state = {}) {
 // toModels, toConfig and the reconcilers all iterate these specs, so adding a field
 // is the fields.*() declaration on the model + one line here — nothing else to keep
 // in sync (relational fields — checkouts — stay hand-wired).
-const char = (name) => ({ name, in: (v) => v ?? "" });
-const bool = (name, dflt = false) => ({ name, in: dflt ? (v) => v ?? true : (v) => !!v });
+interface FieldSpec<B, R> {
+  name: string;
+  in(v: unknown, blob: B): unknown;
+  out?(rec: R): unknown;
+  reconcile?: "set" | "ifPresent";
+}
 
-const REPO_FIELDS = [
+// the reflective side of the specs: a blob is a plain JSON object read by key, and every
+// spec name is one of the model's own fields.*() signals (the specs list exactly those)
+const blobValue = (blob: object, key: string): unknown => (blob as Record<string, unknown>)[key];
+const fieldOf = (rec: Model, name: string): Signal<unknown> =>
+  (rec as unknown as Record<string, Signal<unknown>>)[name];
+
+const char = (name: string) => ({ name, in: (v: unknown) => v ?? "" });
+const bool = (name: string, dflt = false) => ({
+  name,
+  in: dflt ? (v: unknown) => v ?? true : (v: unknown) => !!v,
+});
+
+const REPO_FIELDS: FieldSpec<RepoInput, Repository>[] = [
   char("path"),
   char("github"),
   // `||` normalization migrates configs saved before these fields existed (blank → default)
@@ -581,7 +640,7 @@ const REPO_FIELDS = [
   bool("autoreload"),
 ];
 
-const WORKSPACE_FIELDS = [
+const WORKSPACE_FIELDS: FieldSpec<WorkspaceInput, Workspace>[] = [
   char("name"),
   { ...char("created_at"), reconcile: "ifPresent" },
   { ...char("last_activity"), reconcile: "ifPresent" },
@@ -598,7 +657,7 @@ const WORKSPACE_FIELDS = [
   { name: "port", in: (v) => v ?? 0, out: (w) => w.port() || null, reconcile: "ifPresent" },
 ];
 
-const TEMPLATE_FIELDS = [
+const TEMPLATE_FIELDS: FieldSpec<TemplateInput, Template>[] = [
   char("name"),
   char("db"),
   char("on_create_args"),
@@ -607,28 +666,36 @@ const TEMPLATE_FIELDS = [
   { name: "checkouts", in: (v) => v || [], out: (t) => t.checkouts() || [] },
 ];
 
-function dataFromBlob(fields, blob) {
-  const data = { id: blob.id };
-  for (const f of fields) data[f.name] = f.in(blob[f.name], blob);
+function dataFromBlob<B extends { id: string }>(
+  fields: FieldSpec<B, never>[],
+  blob: B,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = { id: blob.id };
+  for (const f of fields) data[f.name] = f.in(blobValue(blob, f.name), blob);
   return data;
 }
-function blobFromRecord(fields, rec) {
-  const out = { id: rec.id };
-  for (const f of fields) out[f.name] = f.out ? f.out(rec) : rec[f.name]();
-  return out;
+// O = the blob shape the specs describe: they emit every one of its fields
+function blobFromRecord<R extends Model, O>(fields: FieldSpec<never, R>[], rec: R): O {
+  const out: Record<string, unknown> = { id: rec.id };
+  for (const f of fields) out[f.name] = f.out ? f.out(rec) : fieldOf(rec, f.name)();
+  return out as O;
 }
-function updateFromBlob(fields, rec, item) {
+function updateFromBlob<B extends object, R extends Model>(
+  fields: FieldSpec<B, R>[],
+  rec: R,
+  item: B,
+): void {
   for (const f of fields) {
     if (f.reconcile === "ifPresent" && !(f.name in item)) continue;
-    rec[f.name].set(f.in(item[f.name], item));
+    fieldOf(rec, f.name).set(f.in(blobValue(item, f.name), item));
   }
 }
 
-function createRepo(orm, r) {
+function createRepo(orm: ORM, r: RepoInput): void {
   orm.create(Repository, dataFromBlob(REPO_FIELDS, r));
 }
 
-function createWorkspace(orm, w) {
+function createWorkspace(orm: ORM, w: WorkspaceInput): void {
   orm.create(Workspace, dataFromBlob(WORKSPACE_FIELDS, w));
   for (const c of w.checkouts || []) {
     orm.create(Checkout, {
@@ -640,15 +707,15 @@ function createWorkspace(orm, w) {
   }
 }
 
-function createTemplate(orm, t) {
+function createTemplate(orm: ORM, t: TemplateInput): void {
   orm.create(Template, dataFromBlob(TEMPLATE_FIELDS, t));
 }
 
 // ── records → blob ──────────────────────────────────────────────────────────────
 
-export function toConfig(orm) {
+export function toConfig(orm: ORM): ConfigBlob {
   const s = orm.getById(Settings, "settings");
-  const out = {};
+  const out: Partial<Config> = {};
   if (s) {
     for (const k of SETTINGS_CHARS) out[k] = s[k]();
     for (const k of SETTINGS_BOOLS) out[k] = s[k]();
@@ -660,19 +727,23 @@ export function toConfig(orm) {
     out.reviews = s.reviews() ?? [];
     out.docker_images = s.docker_images() ?? [];
   }
-  out.repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
-  out.workspaces = orm.records(Workspace).map((w) => ({
-    ...blobFromRecord(WORKSPACE_FIELDS, w),
-    checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() })),
+  const repos = orm
+    .records(Repository)
+    .map((r) => blobFromRecord<Repository, RepoConfig>(REPO_FIELDS, r));
+  const workspaces = orm.records(Workspace).map((w): WorkspaceConfig => ({
+    ...blobFromRecord<Workspace, Omit<WorkspaceConfig, "checkouts">>(WORKSPACE_FIELDS, w),
+    checkouts: w.checkouts().map((c) => ({ repo: c.repository()!.id, branch: c.branch() })),
   }));
-  out.templates = orm.records(Template).map((t) => blobFromRecord(TEMPLATE_FIELDS, t));
-  return out;
+  const templates = orm
+    .records(Template)
+    .map((t) => blobFromRecord<Template, TemplateConfig>(TEMPLATE_FIELDS, t));
+  return { ...out, repos, workspaces, templates };
 }
 
-export function toState(orm) {
+export function toState(orm: ORM): Partial<AppStateBlob> {
   const st = orm.getById(AppState, "state");
   if (!st) return {};
-  const out = {};
+  const out: Partial<AppStateBlob> = {};
   for (const k of STATE_CHARS) out[k] = st[k]();
   for (const k of STATE_JSON) out[k] = st[k]();
   return out;
@@ -680,11 +751,13 @@ export function toState(orm) {
 
 // ── flat patch → minimal record edits (the updateConfig diff-sync) ───────────────
 
-export function applyPatch(orm, patch) {
+export function applyPatch(orm: ORM, patch: ConfigInput): void {
   const s = orm.getById(Settings, "settings");
   if (s) {
+    // each key's Settings signal holds that same key's Config value
+    const settingsFields: Record<SettingsKey, Signal<unknown>> = s;
     for (const k of [...SETTINGS_CHARS, ...SETTINGS_BOOLS, ...SETTINGS_JSON]) {
-      if (k in patch) s[k].set(patch[k]);
+      if (k in patch) settingsFields[k].set(patch[k]);
     }
   }
   if ("repos" in patch) reconcileRepos(orm, patch.repos || []);
@@ -694,9 +767,16 @@ export function applyPatch(orm, patch) {
 
 // reconcile a model's records against a desired array, keyed by `keyOf`: update the
 // ones that stay, create the new ones, delete the ones that left. Returns nothing.
-function reconcile(orm, Cls, desired, keyOf, update, create) {
+function reconcile<M extends ModelClass, I>(
+  orm: ORM,
+  Cls: M,
+  desired: I[],
+  keyOf: (item: I) => string,
+  update: (rec: InstanceType<M>, item: I) => void,
+  create: (orm: ORM, item: I) => void,
+): void {
   const have = new Map(orm.records(Cls).map((rec) => [rec.id, rec]));
-  const keep = new Set();
+  const keep = new Set<string>();
   for (const item of desired) {
     const id = keyOf(item);
     keep.add(id);
@@ -707,7 +787,7 @@ function reconcile(orm, Cls, desired, keyOf, update, create) {
   for (const [id, rec] of have) if (!keep.has(id)) orm.delete(rec);
 }
 
-function reconcileRepos(orm, repos) {
+function reconcileRepos(orm: ORM, repos: RepoInput[]): void {
   reconcile(
     orm,
     Repository,
@@ -720,7 +800,7 @@ function reconcileRepos(orm, repos) {
 
 // desired = workspace-shaped objects. A migration-produced workspace may carry no
 // `port` — creates then allocate the next free one for a worktree-located workspace.
-function reconcileWorkspaces(orm, desired) {
+function reconcileWorkspaces(orm: ORM, desired: WorkspaceInput[]): void {
   reconcile(
     orm,
     Workspace,
@@ -787,7 +867,7 @@ function reconcileWorkspaces(orm, desired) {
   }
 }
 
-function reconcileTemplates(orm, templates) {
+function reconcileTemplates(orm: ORM, templates: TemplateInput[]): void {
   // order-aware (like workspaces): the Templates screen's drag-reorder sends the
   // same id set in a new order — rebuild the records so the order persists
   // (templates are flat, no dependents, so a full rebuild is cheap and safe)
@@ -808,7 +888,7 @@ function reconcileTemplates(orm, templates) {
   );
 }
 
-function reconcileCheckouts(orm, w) {
+function reconcileCheckouts(orm: ORM, w: { id: string; checkouts?: CheckoutConfig[] }): void {
   const desired = (w.checkouts || []).map((c) => ({
     id: checkoutId(w.id, c.repo),
     repo: c.repo,
@@ -820,7 +900,7 @@ function reconcileCheckouts(orm, w) {
       .filter((c) => c.workspace()?.id === w.id)
       .map((c) => [c.id, c]),
   );
-  const keep = new Set();
+  const keep = new Set<string>();
   for (const c of desired) {
     keep.add(c.id);
     const rec = have.get(c.id);

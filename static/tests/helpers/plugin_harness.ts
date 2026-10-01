@@ -8,11 +8,19 @@
 // under test, so its usePlugin(X) field initializers resolve without a full live
 // Owl app. A plugin with no usePlugin() calls (e.g. StorePlugin) can be `new`'d
 // directly — no harness needed.
-export function createPluginHarness(overrides = []) {
+import type { Plugin, PluginConstructor } from "@odoo/owl";
+
+// a sibling plugin to pre-seed: its class + the (usually partial) fake standing in
+export type PluginOverride = [PluginConstructor, object];
+
+export function createPluginHarness(overrides: PluginOverride[] = []): {
+  start<T extends PluginConstructor>(PluginClass: T): InstanceType<T>;
+} {
   const app = new globalThis.owl.App({});
   const manager = app.pluginManager;
   for (const [PluginClass, fakeInstance] of overrides) {
-    manager.plugins[PluginClass.id] = fakeInstance;
+    // a test fake implements only what the plugin under test reads
+    manager.plugins[PluginClass.id] = fakeInstance as Plugin;
   }
   return {
     // manager.startPlugin() alone does NOT push the plugin-manager scope onto
@@ -20,8 +28,9 @@ export function createPluginHarness(overrides = []) {
     // plugin whose field initializers call usePlugin(X) would hit "No active
     // scope". Scope.run() (PluginManager extends Scope) pushes/pops around the
     // call, matching what startPlugins()'s own startBatch does internally.
-    start(PluginClass) {
-      return manager.run(() => manager.startPlugin(PluginClass));
+    start<T extends PluginConstructor>(PluginClass: T): InstanceType<T> {
+      // startPlugin only returns null for a plugin already started — never here
+      return manager.run(() => manager.startPlugin(PluginClass))!;
     },
   };
 }

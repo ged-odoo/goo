@@ -2,11 +2,19 @@
 // The log parser builds detached DOM nodes (appended manually by the console
 // component) — re-rendering thousands of lines through the framework is too slow.
 
-export function timeAgo(ts) {
+import type { CheckoutConfig } from "./config.ts";
+
+// the message of a caught value: an Error's own message (fetch/postJSON/JSON.parse
+// all throw Errors), else the thrown value itself as text
+export function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+export function timeAgo(ts: string): string {
   // either ISO8601 with timezone (git) or naive UTC "2026-06-11 12:34:56" (odoo)
   const date = ts.includes("T") ? new Date(ts) : new Date(ts.replace(" ", "T") + "Z");
-  if (isNaN(date)) return ts;
-  const secs = Math.max(0, Math.floor((Date.now() - date) / 1000));
+  if (isNaN(date.getTime())) return ts;
+  const secs = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
   if (secs < 60) return "just now";
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
@@ -15,7 +23,7 @@ export function timeAgo(ts) {
 
 // a byte count as a compact human size (e.g. 0 -> "0 B", 1536 -> "1.5 kB",
 // 21000000 -> "20 MB"). Returns "" for null/undefined (size unknown).
-export function formatBytes(n) {
+export function formatBytes(n: number | null | undefined): string {
   if (n == null || isNaN(n)) return "";
   if (n < 1024) return `${n} B`;
   const units = ["kB", "MB", "GB", "TB"];
@@ -28,7 +36,7 @@ export function formatBytes(n) {
   return `${v >= 10 || Number.isInteger(v) ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
-export function escapeHtml(text) {
+export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
@@ -39,17 +47,17 @@ export function escapeHtml(text) {
 // Returns the LAST one found in `text` (a later re-review after changes wins
 // when the caller feeds it the whole conversation), or null if none was ever
 // reported (an older review, a non-review chat, or Claude just didn't comply).
-export function parseReviewScore(text) {
+export function parseReviewScore(text: string | null | undefined): number | null {
   const re = /score\s*:\s*(\d{1,3})\s*\/\s*100/gi;
-  let score = null;
-  let m;
+  let score: number | null = null;
+  let m: RegExpExecArray | null;
   while ((m = re.exec(text || ""))) score = Math.max(0, Math.min(100, Number(m[1])));
   return score;
 }
 
 // the little colored badge's variant for a review score — shared by the Reviews
 // screen's group-header button and ReviewPanel's header.
-export function reviewScoreClass(score) {
+export function reviewScoreClass(score: number): string {
   if (score >= 70) return "high";
   if (score >= 40) return "mid";
   return "low";
@@ -67,30 +75,32 @@ export function reviewScoreClass(score) {
 // regexes genuinely never see that content — the trade-off is that markdown
 // emphasis inside a link's label isn't recognized either, which this renderer
 // never documented as supported anyway.
-function inlineMd(text) {
-  const spans = []; // pre-rendered <code>/<a> HTML, restored verbatim at the end
-  const stash = (html) => {
+function inlineMd(text: string): string {
+  const spans: string[] = []; // pre-rendered <code>/<a> HTML, restored verbatim at the end
+  const stash = (html: string): string => {
     spans.push(html);
     // \0 can't occur in real text (nor survive escapeHtml, which only touches
     // &/</>) — a placeholder built from ordinary characters (digits, letters)
     // could collide with the text around it (e.g. "line 51" containing "51").
     return `\0${spans.length - 1}\0`;
   };
-  let s = text.replace(/`([^`]+?)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  let s = text.replace(/`([^`]+?)`/g, (_, code: string) =>
+    stash(`<code>${escapeHtml(code)}</code>`),
+  );
   s = escapeHtml(s);
   // the URL itself excludes quotes (on top of whitespace/")" already excluded to find
   // the link's closing paren) — escapeHtml only strips &/</>, not ' or ", so a raw
   // quote reaching here would otherwise close the href="..." attribute early and let
   // the rest of the "URL" inject arbitrary attributes (e.g. onmouseover=...). The
   // .replace is defense in depth for any quote that slips through some other way.
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g, (_, label, url) =>
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g, (_, label: string, url: string) =>
     stash(`<a href="${url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">${label}</a>`),
   );
   s = s.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/__([^_]+?)__/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, "$1<em>$2</em>");
   s = s.replace(/(^|[^_])_([^_\s][^_]*?)_(?!_)/g, "$1<em>$2</em>");
-  s = s.replace(/\0(\d+)\0/g, (_, i) => spans[i]);
+  s = s.replace(/\0(\d+)\0/g, (_, i: string) => spans[Number(i)]);
   return s;
 }
 
@@ -102,11 +112,11 @@ function inlineMd(text) {
 // only ever passed through owl's `markup()` by the caller, never inserted as
 // raw HTML on its own — every text run goes through escapeHtml first (in
 // inlineMd, or directly for code-fence bodies).
-export function mdToHtml(text) {
+export function mdToHtml(text: string | null | undefined): string {
   const lines = (text || "").replace(/\r\n/g, "\n").split("\n");
-  const out = [];
-  let para = [];
-  let list = null; // { type: "ul"|"ol", items: [...] }
+  const out: string[] = [];
+  let para: string[] = [];
+  let list: { type: "ul" | "ol"; items: string[] } | null = null;
   const flushPara = () => {
     if (para.length) out.push(`<p>${inlineMd(para.join(" "))}</p>`);
     para = [];
@@ -123,7 +133,7 @@ export function mdToHtml(text) {
     if (/^```/.test(line)) {
       flushPara();
       flushList();
-      const body = [];
+      const body: string[] = [];
       i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) body.push(lines[i++]);
       i++; // skip the closing fence
@@ -147,21 +157,22 @@ export function mdToHtml(text) {
     }
     const ul = /^\s*[-*+]\s+(.*)$/.exec(line);
     const ol = /^\s*\d+\.\s+(.*)$/.exec(line);
-    if (ul || ol) {
+    const item = ul || ol;
+    if (item) {
       flushPara();
       const type = ul ? "ul" : "ol";
       if (!list || list.type !== type) {
         flushList();
         list = { type, items: [] };
       }
-      list.items.push((ul || ol)[1]);
+      list.items.push(item[1]);
       i++;
       continue;
     }
     if (/^>\s?/.test(line)) {
       flushPara();
       flushList();
-      const quote = [];
+      const quote: string[] = [];
       while (i < lines.length && /^>\s?/.test(lines[i]))
         quote.push(lines[i++].replace(/^>\s?/, ""));
       out.push(`<blockquote><p>${inlineMd(quote.join(" "))}</p></blockquote>`);
@@ -182,7 +193,7 @@ export function mdToHtml(text) {
   return out.join("\n");
 }
 
-export function tintCmd(cmd) {
+export function tintCmd(cmd: string): string {
   const tokens = cmd.split(" ").map((tok) => {
     const esc = escapeHtml(tok);
     if (tok.startsWith("-")) return `<span class="flag">${esc}</span>`;
@@ -197,9 +208,15 @@ const LOG_RE =
   /^(?:\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2},\d+) (\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) ([\w.]+): (.*)$/;
 const HTTP_RE =
   /^(.*?)"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ([^"]*) (HTTP\/[\d.]+)" (\d{3}) ?(.*)$/;
-const LVL_CLASS = { DEBUG: "info", INFO: "info", WARNING: "warn", ERROR: "err", CRITICAL: "err" };
+const LVL_CLASS: Record<string, string> = {
+  DEBUG: "info",
+  INFO: "info",
+  WARNING: "warn",
+  ERROR: "err",
+  CRITICAL: "err",
+};
 
-function tintHttpMeta(rest) {
+function tintHttpMeta(rest: string): string {
   const tokens = rest.trim().split(/\s+/).filter(Boolean);
   const floatIdx = tokens.flatMap((t, i) => (/^\d+\.\d+$/.test(t) ? [i] : []));
   const last = floatIdx[floatIdx.length - 1];
@@ -215,17 +232,17 @@ function tintHttpMeta(rest) {
     .join("");
 }
 
-export function ansiToHtml(line) {
+export function ansiToHtml(line: string): string {
   line = line.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
   let html = "";
-  let fg = null;
+  let fg: number | null = null;
   let bold = false;
   const parts = line.split(/\x1b\[([0-9;]*)m/);
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 0) {
       const text = parts[i].replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
       if (!text) continue;
-      const classes = [];
+      const classes: string[] = [];
       if (fg !== null) classes.push(`ansi-${fg}`);
       if (bold) classes.push("ansi-bold");
       html += classes.length
@@ -252,7 +269,7 @@ export function ansiToHtml(line) {
 // HOOT's own test id: Java-style String.hashCode of the test's full name, as an
 // 8-char hex string. Mirrors generateHash() in web/static/lib/hoot/hoot_utils.js
 // (the id is generateHash(fullName) in core/job.js).
-function hootTestId(name) {
+function hootTestId(name: string): string {
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = (hash << 5) - hash + name.charCodeAt(i);
@@ -261,7 +278,7 @@ function hootTestId(name) {
   return (hash + 16 ** 8).toString(16).slice(-8);
 }
 
-function hootTestUrl(name) {
+function hootTestUrl(name: string): string {
   // go through the autologin addon (?to=<url-encoded target>) so no manual login
   // is needed — same as the navbar /odoo and /web/tests links
   const to = `/web/tests?debug=assets&timeout=500000&id=${hootTestId(name)}`;
@@ -271,7 +288,7 @@ function hootTestUrl(name) {
 // append an "[open in hoot]" link that opens the single test in HOOT's web UI.
 // HOOT is served by the odoo server, so left-click is intercepted and handed to
 // the app (via a DOM event) which starts the server first if it isn't running.
-function appendHootLink(div, name) {
+function appendHootLink(div: HTMLElement, name: string): void {
   const a = document.createElement("a");
   const url = hootTestUrl(name);
   a.className = "hoot-link";
@@ -288,7 +305,7 @@ function appendHootLink(div, name) {
 }
 
 // Build a detached <div class="row"> for one odoo log line.
-export function buildLogRow(line) {
+export function buildLogRow(line: string): HTMLDivElement {
   const div = document.createElement("div");
   const text = line.replace(ANSI_RE, "");
   // a HOOT "Running test" line gets a link to open that test in the HOOT web UI
@@ -341,38 +358,46 @@ export function buildLogRow(line) {
 // (e.g. rewriteHistory's `in_progress` flag) can still get at it: the backend
 // sends a non-2xx status for any `{ok: false}` reply, so a plain `if (!res.ok)`
 // check AFTER a postJSON call is unreachable — postJSON already threw.
-export async function postJSON(path, body) {
+export type PostJSONError = Error & { data?: unknown };
+
+export async function postJSON<T = unknown>(path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  const data = await resp.json().catch(() => ({}));
+  const data: { error?: string } = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const err = new Error(data.error || resp.status);
+    const err: PostJSONError = new Error(data.error || String(resp.status));
     err.data = data;
     throw err;
   }
-  return data;
+  return data as T; // the endpoint's reply shape, as the caller declares it
 }
 
 // The Claude review prompt template — a real .md file on disk (not part of the
 // reactive config blob), edited in the Configuration screen and read fresh at
 // review time (workspaces_screen/dialogs.ts's runClaudeReview).
-export async function fetchReviewPrompt() {
+export async function fetchReviewPrompt(): Promise<string> {
   const res = await fetch("/api/review-prompt");
-  const data = await res.json().catch(() => ({}));
+  const data: { content?: string } = await res.json().catch(() => ({}));
   return data.content || "";
 }
 
-export async function saveReviewPrompt(content) {
+export async function saveReviewPrompt(content: string): Promise<unknown> {
   return postJSON("/api/review-prompt", { content });
 }
 
 // filesystem-safe folder name for a worktree target (case-preserving; falls back
 // to the stable id). Kept pure so both WorkspacePlugin.dirPath and the config
 // migration derive the same path.
-export function worktreeSlug(tgt) {
+// what a worktree's folder name derives from: a workspace (or legacy target)'s name + id
+export interface WorktreeNamed {
+  id: string;
+  name?: string;
+}
+
+export function worktreeSlug(tgt: WorktreeNamed): string {
   const s = (tgt.name || tgt.id || "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return s || tgt.id;
 }
@@ -381,7 +406,7 @@ export function worktreeSlug(tgt) {
 // persisted `worktree.dir` (frozen at creation) should be preferred over this —
 // see WorkspacePlugin.dirPath. Deriving from the name is only correct at creation
 // time; afterwards a rename would move the derived path off the real checkout.
-export function worktreeDirFor(worktreeDir, tgt) {
+export function worktreeDirFor(worktreeDir: string | null | undefined, tgt: WorktreeNamed): string {
   return `${(worktreeDir || "/tmp").replace(/\/+$/, "")}/${worktreeSlug(tgt)}`;
 }
 
@@ -391,14 +416,21 @@ export function worktreeDirFor(worktreeDir, tgt) {
 // confirmation message. The actual cascade executor (cascadeRemoveDescendants,
 // workspace_plugin.ts) walks level-by-level instead, so it can stop descending into a
 // child that couldn't be removed and leave its own subtree untouched.
-export function descendantWorkspaces(list, id) {
-  const byParent = new Map();
+// the parent link descendantWorkspaces / nestByParent walk
+export interface ParentLinked {
+  id: string;
+  parent?: string;
+}
+
+export function descendantWorkspaces<T extends ParentLinked>(list: T[], id: string): T[] {
+  const byParent = new Map<string, T[]>();
   for (const w of list) {
     if (!w.parent) continue;
-    if (!byParent.has(w.parent)) byParent.set(w.parent, []);
-    byParent.get(w.parent).push(w);
+    let siblings = byParent.get(w.parent);
+    if (!siblings) byParent.set(w.parent, (siblings = []));
+    siblings.push(w);
   }
-  const out = [];
+  const out: T[] = [];
   let frontier = byParent.get(id) || [];
   while (frontier.length) {
     out.push(...frontier);
@@ -413,18 +445,19 @@ export function descendantWorkspaces(list, id) {
 // both simply keep their relative order from `items`. An item whose parent isn't present
 // in THIS list (filtered out by search, a different category group, etc.) renders as an
 // ordinary top-level (depth 0) entry — never dropped. Returns [{ ws, depth }].
-export function nestByParent(items) {
+export function nestByParent<T extends ParentLinked>(items: T[]): { ws: T; depth: number }[] {
   const byId = new Map(items.map((ws) => [ws.id, ws]));
-  const childrenOf = new Map();
+  const childrenOf = new Map<string, T[]>();
   for (const ws of items) {
     const p = ws.parent && byId.has(ws.parent) ? ws.parent : "";
     if (!p) continue;
-    if (!childrenOf.has(p)) childrenOf.set(p, []);
-    childrenOf.get(p).push(ws);
+    let children = childrenOf.get(p);
+    if (!children) childrenOf.set(p, (children = []));
+    children.push(ws);
   }
-  const out = [];
-  const emitted = new Set();
-  const emit = (ws, depth) => {
+  const out: { ws: T; depth: number }[] = [];
+  const emitted = new Set<string>();
+  const emit = (ws: T, depth: number): void => {
     if (emitted.has(ws.id)) return; // cycle guard — parent is set once at creation to
     emitted.add(ws.id); // an existing ancestor, never user-edited, so this shouldn't
     out.push({ ws, depth }); // trigger, but stay safe
@@ -441,8 +474,9 @@ export function nestByParent(items) {
 // the "repo:branch,repo:branch" config-string format used by the workspace /
 // template create+edit dialogs — one line both ways
 export const repoBranchList = {
-  format: (v) => (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
-  parse: (s) =>
+  format: (v: CheckoutConfig[] | null | undefined): string =>
+    (v || []).map((c) => `${c.repo}:${c.branch}`).join(","),
+  parse: (s: string): CheckoutConfig[] =>
     s
       .split(",")
       .map((x) => x.trim())

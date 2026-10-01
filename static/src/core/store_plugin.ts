@@ -21,9 +21,49 @@ import {
   MergebotStatus,
   RunbotStatus,
 } from "./observed_models.ts";
+import type {
+  ForwardPortRow,
+  PrRepoInput,
+  RepoState,
+  RepoStatusWire,
+  RunbotBranchStatus,
+} from "./observed_models.ts";
 import { OdooServer, Run } from "./runtime_models.ts";
+import type { RunSnapshot, ServerSnapshot } from "./runtime_models.ts";
+import type { CheckoutConfig, WorkspaceConfig } from "./config.ts";
+import type { Model } from "../../../vendor/owl-orm/index.ts";
+import type { PullRequest } from "./models.ts";
 
 import { Plugin, computed } from "@odoo/owl";
+
+// an owl-orm model class (the ORM's own constraint on records()/create())
+type ModelClass = typeof Model & { id: string };
+
+// what workspaceView/drift/serverFor read off a workspace (config.workspaces shape)
+export interface WorkspaceRef {
+  id: string;
+  location?: string;
+  checkouts?: CheckoutConfig[];
+}
+
+// one checkout of a workspace joined with its repo's live git state
+export interface CheckoutView {
+  repo: string;
+  branch: string;
+  current: string | undefined; // undefined = the repo's state isn't loaded yet
+  matches: boolean;
+  dirty: boolean;
+}
+
+// a workspace joined with its live state (StorePlugin.workspaceView)
+export interface WorkspaceView<T extends WorkspaceRef = WorkspaceConfig> {
+  target: T;
+  checkouts: CheckoutView[];
+  server: ServerSnapshot | null;
+  db: null;
+  run: RunSnapshot | null;
+  claude: null;
+}
 
 export class StorePlugin extends Plugin {
   static sequence = 0; // the shared store — set up before every plugin that reads it
@@ -33,8 +73,8 @@ export class StorePlugin extends Plugin {
   orm = new ORM();
 
   // in-flight keys, shared across screens so they never double-fetch
-  mbPending = new Set();
-  rbPending = new Set();
+  mbPending = new Set<string>();
+  rbPending = new Set<string>();
 
   // ── observed accessors — computeds that rebuild the shapes consumers already read ─
   _repoList = computed(() =>
@@ -88,11 +128,17 @@ export class StorePlugin extends Plugin {
     Object.fromEntries(this.orm.records(RunbotStatus).map((r) => [r.id, r.status()])),
   );
 
-  repoStatusList() {
+  repoStatusList(): (RepoState & { id: string })[] {
     return this._repoList();
   }
 
-  prReposList() {
+  prReposList(): {
+    id: string;
+    github: string;
+    error: string | null;
+    prs: PullRequest[];
+    fetchedAt: number;
+  }[] {
     return this._prList();
   }
 
@@ -104,7 +150,7 @@ export class StorePlugin extends Plugin {
   // an upsert keyed on it writes into a record that records() excludes, and the
   // value silently vanishes (the disappearing-mergebot-badge bug). Look the id
   // up among the ACTIVE records instead; create() re-registers it cleanly.
-  _live(M, id) {
+  _live<M extends ModelClass>(M: M, id: string): InstanceType<M> | null {
     return this.orm.records(M).find((r) => r.id === id) || null;
   }
 
@@ -112,7 +158,11 @@ export class StorePlugin extends Plugin {
   // timestamp: stamping when the read was *requested* makes "latest wins" order a full
   // scan behind a targeted refresh that raced it. A full fetch (authoritative) drops
   // repos that vanished from config.
-  mergeRepoStatus(repos, at, { authoritative } = {}) {
+  mergeRepoStatus(
+    repos: RepoStatusWire[],
+    at: number,
+    { authoritative }: { authoritative?: boolean } = {},
+  ): void {
     for (const raw of repos) {
       const fetchedAt = raw.fetchedAt ?? at;
       const rec = this._live(RepoStatus, raw.id);
@@ -150,7 +200,7 @@ export class StorePlugin extends Plugin {
   // — same step-4 upsert as mergeRepoStatus, but never authoritative (a
   // worktree-scoped fetch only ever touches its own repos' rows, in their own
   // table, so it can't and shouldn't drop anything).
-  mergeWorktreeRepoStatus(repos, at) {
+  mergeWorktreeRepoStatus(repos: RepoStatusWire[], at: number): void {
     for (const raw of repos) {
       const fetchedAt = raw.fetchedAt ?? at;
       const rec = this._live(WorktreeRepoStatus, raw.id);
@@ -182,7 +232,7 @@ export class StorePlugin extends Plugin {
   // one worktree workspace's own branch-state row for one repo — the
   // composite-keyed WorktreeRepoStatus counterpart to repoStatusList()'s
   // bare-id RepoStatus rows. null if not fetched yet (CodePlugin.loadWorktreeBranches).
-  worktreeRepoStatus(workspaceId, repoId) {
+  worktreeRepoStatus(workspaceId: string, repoId: string): RepoState | null {
     // _live (not getById): the row doesn't exist yet on first render, before
     // loadWorktreeBranches' fetch lands — getById's plain-object lookup (see
     // Table.datapoints) establishes no subscription on a miss, so the caller
@@ -204,7 +254,7 @@ export class StorePlugin extends Plugin {
 
   // drop every composite row for a removed workspace — called from
   // WorkspacePlugin's _removeCleanup, alongside dropServer(tgt.id)
-  dropWorktreeRepoStatusFor(workspaceId) {
+  dropWorktreeRepoStatusFor(workspaceId: string): void {
     const prefix = `${workspaceId}:`;
     for (const rec of this.orm.records(WorktreeRepoStatus)) {
       if (rec.id.startsWith(prefix)) this.orm.delete(rec);
@@ -214,7 +264,7 @@ export class StorePlugin extends Plugin {
   // fold a PR fetch into PrRepo records. Authoritative only over the repos it requested
   // (scopeIds), so a narrowed workspace-scoped load merges into — rather than replaces
   // — the full list, while a full load still drops repos that left the config.
-  mergePrRepos(repos, at, scopeIds) {
+  mergePrRepos(repos: PrRepoInput[], at: number, scopeIds: Set<string>): void {
     for (const raw of repos) {
       const fetchedAt = raw.fetchedAt ?? at;
       const rec = this._live(PrRepo, raw.id);
@@ -239,7 +289,11 @@ export class StorePlugin extends Plugin {
     }
   }
 
-  mergeMergebot(states, details, forwardPorts) {
+  mergeMergebot(
+    states: Record<string, string> | null | undefined,
+    details: Record<string, string | null> | null | undefined,
+    forwardPorts: Record<string, ForwardPortRow[]> | null | undefined,
+  ): void {
     for (const [k, v] of Object.entries(states || {})) {
       const rec = this._live(MergebotStatus, k);
       if (rec) rec.state.set(v);
@@ -275,7 +329,7 @@ export class StorePlugin extends Plugin {
     }
   }
 
-  mergeRunbot(states) {
+  mergeRunbot(states: Record<string, RunbotBranchStatus> | null | undefined): void {
     for (const [k, v] of Object.entries(states || {})) {
       const rec = this._live(RunbotStatus, k);
       if (rec) rec.status.set(v);
@@ -286,13 +340,13 @@ export class StorePlugin extends Plugin {
   // ── optimistic local edits (no server round-trip) ─────────────────────────────
 
   // drop a branch from a repo's snapshot after a local delete, without a refetch
-  dropBranch(repoId, name) {
+  dropBranch(repoId: string, name: string): void {
     const rec = this._live(RepoStatus, repoId);
     if (rec) rec.branches.set((rec.branches() || []).filter((b) => b.name !== name));
   }
 
   // mark a PR closed in the view after closing it, without a refetch
-  closePr(github, number) {
+  closePr(github: string, number: number): void {
     for (const rec of this.orm.records(PrRepo)) {
       if (rec.github() !== github) continue;
       rec.prs.set(
@@ -302,7 +356,7 @@ export class StorePlugin extends Plugin {
   }
 
   // mark a PR ready for review (draft off) in the view, without a refetch
-  readyPr(github, number) {
+  readyPr(github: string, number: number): void {
     for (const rec of this.orm.records(PrRepo)) {
       if (rec.github() !== github) continue;
       rec.prs.set((rec.prs() || []).map((p) => (p.number === number ? { ...p, draft: false } : p)));
@@ -314,8 +368,11 @@ export class StorePlugin extends Plugin {
   // fold one server snapshot into its OdooServer record, keyed by id. Spread-merge into
   // the `data` json so a partial SSE update (a worktree carrying only state/port)
   // preserves the fields it omits — notably a worktree's client-only `exists`. The
-  // "main" snapshot carries every field.
-  mergeServer(snap) {
+  // "main" snapshot carries every field. (A record first created from a patch has
+  // only the patch's fields — readers treat an absent `state` as "stopped".)
+  mergeServer(
+    snap: (Pick<ServerSnapshot, "id"> & Partial<ServerSnapshot>) | null | undefined,
+  ): void {
     if (!snap || !snap.id) return;
     const rec = this._live(OdooServer, snap.id);
     if (rec) rec.data.set({ ...rec.data(), ...snap });
@@ -323,7 +380,7 @@ export class StorePlugin extends Plugin {
   }
 
   // forget a server record (a worktree removed from config)
-  dropServer(id) {
+  dropServer(id: string): void {
     const rec = this._live(OdooServer, id);
     if (rec) this.orm.delete(rec);
   }
@@ -332,14 +389,14 @@ export class StorePlugin extends Plugin {
   // record doesn't exist until its first SSE "server" snapshot lands, and a
   // render that reads it as null on a miss otherwise never re-renders once it
   // does (drives every Start/Stop button, state dot and "isLive" guard).
-  server(id) {
+  server(id: string): ServerSnapshot | null {
     const rec = this._live(OdooServer, id);
     return rec ? rec.data() : null;
   }
 
   // the server backing a target: the main process when it's running this target,
   // otherwise the target's own worktree server (or null)
-  serverFor(tgt) {
+  serverFor(tgt: { id: string }): ServerSnapshot | null {
     const main = this.server("main");
     if (
       main &&
@@ -352,7 +409,7 @@ export class StorePlugin extends Plugin {
   }
 
   // fold one run snapshot into its Run record, keyed by run id (SSE "run": running → done/failed)
-  mergeRun(snap) {
+  mergeRun(snap: RunSnapshot | null | undefined): void {
     if (!snap || !snap.id) return;
     const rec = this._live(Run, snap.id);
     if (rec) rec.data.set({ ...rec.data(), ...snap });
@@ -360,13 +417,13 @@ export class StorePlugin extends Plugin {
   }
 
   // every run snapshot (reactive — reads each record's data)
-  runs() {
+  runs(): RunSnapshot[] {
     return this.orm.records(Run).map((r) => r.data());
   }
 
   // the currently-running one-shot on a workspace slot, or null. Runs carry the
   // slot they occupy (`server`: "main" | a worktree workspace id).
-  activeRun(slot = "main") {
+  activeRun(slot = "main"): RunSnapshot | null {
     for (const r of this.orm.records(Run)) {
       const d = r.data();
       if (d.state === "running" && (d.server ?? "main") === slot) return d;
@@ -377,8 +434,8 @@ export class StorePlugin extends Plugin {
   // the most recent run of a kind (test | install | upgrade) on a slot, running or
   // finished — so a screen still shows its last result after a run of another kind
   // occupied the slot
-  latestRunOfKind(kind, slot = "main") {
-    let best = null;
+  latestRunOfKind(kind: string, slot = "main"): RunSnapshot | null {
+    let best: RunSnapshot | null = null;
     for (const r of this.orm.records(Run)) {
       const d = r.data();
       if (d.kind !== kind || (d.server ?? "main") !== slot) continue;
@@ -390,7 +447,7 @@ export class StorePlugin extends Plugin {
   // the aggregate the UI orbits: a target joined with its checkouts' live git state
   // (current branch, does it match, dirty), its server, and the one-shot run holding
   // its slot. db/claude are filled in a later step.
-  workspaceView(tgt) {
+  workspaceView<T extends WorkspaceRef>(tgt: T): WorkspaceView<T> {
     const isWt = tgt.location === "worktree";
     const checkouts = (tgt.checkouts || []).map(({ repo, branch }) => {
       // a worktree's checkout lives in ITS OWN directory (its branch can't also
@@ -425,7 +482,7 @@ export class StorePlugin extends Plugin {
   // repos whose git state hasn't loaded yet (current unknown — don't claim drift
   // before knowing). Only meaningful for the LOADED workspace — a non-loaded one's
   // branches naturally differ; callers gate on that.
-  drift(ws) {
+  drift(ws: WorkspaceRef): CheckoutView[] {
     if (ws.location === "worktree") return [];
     return this.workspaceView(ws).checkouts.filter((c) => c.current !== undefined && !c.matches);
   }

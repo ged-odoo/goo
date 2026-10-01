@@ -8,6 +8,9 @@ import {
   RunbotStatus,
 } from "../../src/core/observed_models.ts";
 import { OdooServer, Run } from "../../src/core/runtime_models.ts";
+import { PullRequest } from "../../src/core/models.ts";
+
+const branchA = { name: "a", date: "", subject: "", sha: "", remote: false, synced: false };
 
 describe("observed_models field defaults + read/write", () => {
   it("RepoStatus: defaults + getter/setter round trip", () => {
@@ -20,10 +23,10 @@ describe("observed_models field defaults + read/write", () => {
 
     rec.current.set("master");
     rec.dirty.set(true);
-    rec.branches.set([{ name: "a" }]);
+    rec.branches.set([branchA]);
     expect(rec.current()).toBe("master");
     expect(rec.dirty()).toBe(true);
-    expect(rec.branches()).toEqual([{ name: "a" }]);
+    expect(rec.branches()).toEqual([branchA]);
     expect(orm.records(RepoStatus).map((r) => r.id)).toEqual(["community"]);
   });
 
@@ -40,8 +43,9 @@ describe("observed_models field defaults + read/write", () => {
     const orm = new ORM();
     const rec = orm.create(PrRepo, { id: "community", github: "odoo/odoo" });
     expect(rec.prs()).toBeNull();
-    rec.prs.set([{ number: 1, state: "open" }]);
-    expect(rec.prs()).toEqual([{ number: 1, state: "open" }]);
+    const prs = [PullRequest.from({ number: 1, state: "open" })];
+    rec.prs.set(prs);
+    expect(rec.prs()).toEqual(prs);
   });
 
   it("MergebotStatus keyed by 'github#number'", () => {
