@@ -21,7 +21,8 @@ export type RouteReply = unknown;
 export type Route = RouteReply | ((body: unknown, call: BackendCall) => RouteReply);
 
 export interface MountAppOptions {
-  // fake backend, keyed by path ("/api/databases") — unknown paths answer `{}`
+  // fake backend, keyed by path ("/api/databases") over empty BACKGROUND_ROUTES; an
+  // unrouted path answers `{}` but fails the test at destroy()
   routes?: Record<string, Route>;
   // the server-owned config the app boots with (merged over DEFAULT_CONFIG)
   config?: Partial<Config>;
@@ -43,6 +44,19 @@ export interface MountedApp {
   destroy(): void;
 }
 
+const BACKGROUND_ROUTES: Record<string, Route> = {
+  "/api/goo/update": { ok: true, checked: true, behind: 0 },
+  "/api/status": { id: "main", state: "stopped" },
+  "/api/event": { ok: true },
+  "/api/workspace/list": { servers: {} },
+  "/api/workspace/logs": { lines: [] },
+  "/api/databases": { ok: true, databases: [] },
+  "/api/code/branches": { repos: [] },
+  "/api/prs": { repos: [] },
+  "/api/runbot": { states: {} },
+  "/api/mergebot": { states: {} },
+};
+
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), {
     status,
@@ -60,6 +74,10 @@ export async function mountApp(opts: MountAppOptions = {}): Promise<MountedApp> 
   const calls: BackendCall[] = [];
   const unhandled: string[] = [];
   const routes: Record<string, Route> = {
+    // the background reads every screen makes (update check, server status, event
+    // log, the observed git/PR/CI state) — empty by default, i.e. "nothing to show";
+    // a test overrides the ones it's about. Anything else must be routed explicitly.
+    ...BACKGROUND_ROUTES,
     "/api/config": {
       ok: true,
       rev: 1,
@@ -98,10 +116,14 @@ export async function mountApp(opts: MountAppOptions = {}): Promise<MountedApp> 
   await app.createRoot(App).mount(root);
 
   const settle = async (): Promise<void> => {
-    // until a full flush changes nothing (bounded: a test must not hang)
-    let before = "";
-    for (let i = 0; i < 20 && root.innerHTML !== before; i++) {
-      before = root.innerHTML;
+    // until a full flush changes nothing — no DOM change and no new backend request
+    // (a request mid-flush means a fetch chain is still running). Bounded: a test
+    // must not hang.
+    let html = "";
+    let sent = -1;
+    for (let i = 0; i < 30 && (root.innerHTML !== html || calls.length !== sent); i++) {
+      html = root.innerHTML;
+      sent = calls.length;
       await flush();
     }
   };
@@ -123,6 +145,11 @@ export async function mountApp(opts: MountAppOptions = {}): Promise<MountedApp> 
       root.remove();
       vi.unstubAllGlobals();
       location.hash = "";
+      // a request no route answered got `{}` — a test must not pass on that default
+      if (unhandled.length)
+        throw new Error(
+          `unrouted backend calls (add a route): ${[...new Set(unhandled)].join(", ")}`,
+        );
     },
   };
 }

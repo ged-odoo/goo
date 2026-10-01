@@ -52,7 +52,8 @@ class FakeEventSource {
 // implements only the members goo's code touches (no readyState/CONNECTING/…)
 globalThis.EventSource ??= FakeEventSource as unknown as typeof EventSource;
 
-// jsdom doesn't implement requestAnimationFrame.
+// vitest's jsdom has a real (~60fps) requestAnimationFrame; this is only a fallback
+// for an environment without one.
 globalThis.requestAnimationFrame ??= (cb) => setTimeout(cb, 0);
 
 afterEach(() => {

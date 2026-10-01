@@ -24,9 +24,9 @@ repos:
       # whole-project type check of the frontend, once per commit touching it
       - id: tsc
         name: tsc (frontend types)
-        entry: npx --yes -p typescript tsc
+        entry: sh -c 'npx --yes -p typescript tsc && npx --yes -p typescript tsc -p static/tests'
         language: system
-        files: ^(static/(src|tests)/|vendor/owl-orm/).*\.ts$|^tsconfig\.json$
+        files: ^(static/(src|tests)/|vendor/owl-orm/).*\.ts$|tsconfig\.json$|^package(-lock)?\.json$
         pass_filenames: false
       - id: prettier
         name: prettier

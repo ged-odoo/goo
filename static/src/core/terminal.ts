@@ -1,12 +1,4 @@
-import {
-  Component,
-  onWillUnmount,
-  useProps,
-  signal,
-  t,
-  useEffect,
-  xml,
-} from "@odoo/owl";
+import { Component, onWillUnmount, useProps, signal, t, useEffect, xml } from "@odoo/owl";
 import { useDragResize } from "./common.ts";
 import type { DragResize } from "./common.ts";
 

@@ -39,7 +39,7 @@ import {
 } from "./config_models.ts";
 import type { ConfigBlob } from "./config_models.ts";
 
-import { Plugin, signal, computed } from "@odoo/owl";
+import { Plugin, signal, computed, onWillDestroy } from "@odoo/owl";
 import type { Signal } from "@odoo/owl";
 
 // a {rev, config, state} triple as GET/POST /api/config and the SSE "config" event carry it
@@ -390,6 +390,12 @@ export class ConfigPlugin extends Plugin {
   _configView = computed(() => merge(toConfig(this.orm)));
   _dirty = { config: false, state: false }; // blobs edited since the last flush
   _timer: ReturnType<typeof setTimeout> | undefined = undefined;
+
+  override setup(): void {
+    // a pending debounced save must not outlive the app (it would post into whatever
+    // runs next — in the tests, the next test's backend)
+    onWillDestroy(() => clearTimeout(this._timer));
+  }
 
   // seed a fresh ORM from the boot payload (field initializer, so config + state are
   // populated the moment the plugin is constructed — other plugins' field inits read

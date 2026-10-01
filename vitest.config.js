@@ -7,6 +7,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./static/tests/setup.ts"],
     include: ["static/tests/**/*.test.ts"],
+    // whole-app tests take ~0.2–1.5s each; the default 5s left too little headroom
+    // on a loaded machine
+    testTimeout: 15000,
     coverage: {
       provider: "v8",
       include: ["static/src/**/*.ts"],

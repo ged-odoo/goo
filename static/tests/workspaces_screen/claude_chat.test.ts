@@ -45,6 +45,9 @@ async function mount(workspaces: WorkspaceConfig[], opts: MountAppOptions = {}) 
       "/api/runbot": { states: {} },
       "/api/mergebot": { states: {} },
       "/api/workspace/claude/history": { items: [], state: "idle" },
+      // the backend accepts a turn (its progress then streams over SSE) and a stop
+      "/api/workspace/claude": { ok: true, state: "running" },
+      "/api/workspace/claude/stop": { ok: true, error: null },
       ...opts.routes,
     },
   });

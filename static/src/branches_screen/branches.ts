@@ -495,8 +495,10 @@ export class BranchesScreen extends Component {
         );
         skipped.push(...res.skipped);
       }
+      // a busy workspace the cascade kept stays, even when it was ticked too
+      const kept = new Set(skipped.map((w) => w.id));
       this.config.updateConfig({
-        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id)),
+        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id) || kept.has(w.id)),
       });
       if (skipped.length) {
         await this.dialogs.open({

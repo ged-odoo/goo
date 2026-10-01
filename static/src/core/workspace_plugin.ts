@@ -17,7 +17,7 @@ import { CodePlugin } from "./code_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { LogBuffer } from "./log_buffer.ts";
-import { postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.ts";
+import { errorMessage, postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.ts";
 
 import { Plugin, usePlugin, signal, markRaw } from "@odoo/owl";
 import type { CheckoutConfig, WorkspaceConfig } from "./config.ts";
@@ -539,6 +539,14 @@ export class WorkspacePlugin extends Plugin {
   // leaving it alone unless the checkbox was ticked). Returns false (kept) on
   // failure, true on success.
   async _removeCleanup(tgt: WorkspaceLike, { dropDb = false } = {}): Promise<boolean> {
+    if (!(await this._removeWorktree(tgt, { dropDb }))) return false;
+    this._forget(tgt);
+    return true;
+  }
+
+  // the backend half of a removal: the worktree (+ optionally its db). Returns false
+  // (nothing changed, the workspace kept) when the worktree couldn't be removed.
+  async _removeWorktree(tgt: WorkspaceLike, { dropDb = false } = {}): Promise<boolean> {
     const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
       repo,
       mainPath,
@@ -546,15 +554,23 @@ export class WorkspacePlugin extends Plugin {
     }));
     this.eventLog.add(`removing workspace ${tgt.name} (worktree)`);
     try {
-      await postJSON("/api/workspace/remove", {
+      // a git refusal (e.g. a locked worktree) is a 200 with ok:false + per-repo results
+      const res = await postJSON<{
+        ok?: boolean;
+        results?: { repo: string; ok: boolean; error: string | null }[];
+      }>("/api/workspace/remove", {
         workspace: tgt.id,
         dirPath: this.dirPath(tgt),
         repos,
       });
+      if (res.ok === false) {
+        const failed = (res.results || []).filter((r) => !r.ok);
+        throw new Error(failed.map((r) => `${r.repo}: ${r.error}`).join("\n") || "failed");
+      }
     } catch (e) {
       // the worktree is still on disk / registered with git — keep the target so
       // there's a UI handle to retry, rather than orphaning it.
-      this._error("Worktree removal failed", (e as Error).message);
+      this._error("Worktree removal failed", errorMessage(e));
       return false;
     }
     if (dropDb && tgt.db) {
@@ -564,12 +580,16 @@ export class WorkspacePlugin extends Plugin {
           filestore: this.config.config.filestore,
         });
       } catch (e) {
-        // the worktree itself is gone, so still drop the target below; just report
+        // the worktree itself is gone, so the target is still dropped; just report
         // the leftover database.
-        this._error("Database drop failed", (e as Error).message);
+        this._error("Database drop failed", errorMessage(e));
       }
     }
-    // drop the workspace from config (canonical write) + local state
+    return true;
+  }
+
+  // the local half: drop the workspace from config (canonical write) + local state
+  _forget(tgt: WorkspaceLike): void {
     this.config.updateConfig({
       workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id),
     });
@@ -578,7 +598,6 @@ export class WorkspacePlugin extends Plugin {
     this.logs.delete(tgt.id);
     // through select() so the remembered selection is cleared too, not just the signal
     if (this.selectedId() === tgt.id) this.select("");
-    return true;
   }
 
   async remove(tgt: WorkspaceLike): Promise<false | void> {
@@ -601,14 +620,16 @@ export class WorkspacePlugin extends Plugin {
       okLabel: "Remove",
     });
     if (!res) return;
-    // cascade the sub-workspaces while the parent still exists: once it's gone, the
-    // config's dangling-parent heal demotes its children to root
+    // the parent's worktree first (a failure keeps everything, as a handle to retry),
+    // then its sub-workspaces while it's still in config — once it's gone, the
+    // config's dangling-parent heal demotes its children to root — then the parent
+    if (!(await this._removeWorktree(tgt, { dropDb: !!res.dropDb }))) return;
     const { skipped } = await cascadeRemoveDescendants(
       { config: this.config, wt: this, eventLog: this.eventLog, server: this.server },
       tgt,
     );
     if (skipped.length) this._notifyKept(skipped);
-    await this._removeCleanup(tgt, { dropDb: !!res.dropDb });
+    this._forget(tgt);
   }
 
   // silent per-child removal the cascade drives — no confirm, no dropDb prompt

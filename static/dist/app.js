@@ -17,6 +17,7 @@ var onMounted = owl.onMounted;
 var onPatched = owl.onPatched;
 var onWillStart = owl.onWillStart;
 var onWillUnmount = owl.onWillUnmount;
+var onWillDestroy = owl.onWillDestroy;
 var useEffect = owl.useEffect;
 var useApp = owl.useApp;
 var Plugin = owl.Plugin;
@@ -4274,6 +4275,9 @@ var ConfigPlugin = class extends Plugin {
   _dirty = { config: false, state: false };
   // blobs edited since the last flush
   _timer = void 0;
+  setup() {
+    onWillDestroy(() => clearTimeout(this._timer));
+  }
   // seed a fresh ORM from the boot payload (field initializer, so config + state are
   // populated the moment the plugin is constructed — other plugins' field inits read
   // getState right after `usePlugin(ConfigPlugin)` returns)
@@ -4835,6 +4839,13 @@ var WorkspacePlugin = class extends Plugin {
   // leaving it alone unless the checkbox was ticked). Returns false (kept) on
   // failure, true on success.
   async _removeCleanup(tgt, { dropDb = false } = {}) {
+    if (!await this._removeWorktree(tgt, { dropDb })) return false;
+    this._forget(tgt);
+    return true;
+  }
+  // the backend half of a removal: the worktree (+ optionally its db). Returns false
+  // (nothing changed, the workspace kept) when the worktree couldn't be removed.
+  async _removeWorktree(tgt, { dropDb = false } = {}) {
     const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
       repo,
       mainPath,
@@ -4842,13 +4853,17 @@ var WorkspacePlugin = class extends Plugin {
     }));
     this.eventLog.add(`removing workspace ${tgt.name} (worktree)`);
     try {
-      await postJSON("/api/workspace/remove", {
+      const res = await postJSON("/api/workspace/remove", {
         workspace: tgt.id,
         dirPath: this.dirPath(tgt),
         repos
       });
+      if (res.ok === false) {
+        const failed = (res.results || []).filter((r) => !r.ok);
+        throw new Error(failed.map((r) => `${r.repo}: ${r.error}`).join("\n") || "failed");
+      }
     } catch (e) {
-      this._error("Worktree removal failed", e.message);
+      this._error("Worktree removal failed", errorMessage(e));
       return false;
     }
     if (dropDb && tgt.db) {
@@ -4858,9 +4873,13 @@ var WorkspacePlugin = class extends Plugin {
           filestore: this.config.config.filestore
         });
       } catch (e) {
-        this._error("Database drop failed", e.message);
+        this._error("Database drop failed", errorMessage(e));
       }
     }
+    return true;
+  }
+  // the local half: drop the workspace from config (canonical write) + local state
+  _forget(tgt) {
     this.config.updateConfig({
       workspaces: (this.config.config.workspaces || []).filter((w) => w.id !== tgt.id)
     });
@@ -4868,7 +4887,6 @@ var WorkspacePlugin = class extends Plugin {
     this.store.dropWorktreeRepoStatusFor(tgt.id);
     this.logs.delete(tgt.id);
     if (this.selectedId() === tgt.id) this.select("");
-    return true;
   }
   async remove(tgt) {
     if (this.running(tgt))
@@ -4886,12 +4904,13 @@ var WorkspacePlugin = class extends Plugin {
       okLabel: "Remove"
     });
     if (!res) return;
+    if (!await this._removeWorktree(tgt, { dropDb: !!res.dropDb })) return;
     const { skipped } = await cascadeRemoveDescendants(
       { config: this.config, wt: this, eventLog: this.eventLog, server: this.server },
       tgt
     );
     if (skipped.length) this._notifyKept(skipped);
-    await this._removeCleanup(tgt, { dropDb: !!res.dropDb });
+    this._forget(tgt);
   }
   // silent per-child removal the cascade drives — no confirm, no dropDb prompt
   async removeSilently(tgt) {
@@ -6446,8 +6465,9 @@ var BranchesScreen = class extends Component {
         );
         skipped.push(...res2.skipped);
       }
+      const kept = new Set(skipped.map((w) => w.id));
       this.config.updateConfig({
-        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id))
+        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id) || kept.has(w.id))
       });
       if (skipped.length) {
         await this.dialogs.open({

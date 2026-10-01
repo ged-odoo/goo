@@ -425,8 +425,8 @@ describe("remove", () => {
     expect(be.to("/api/databases/drop")).toEqual([
       { path: "/api/databases/drop", body: { name: "w1-db", filestore: true } },
     ]);
-    // the cascaded child went too (its db left alone), removed before its parent
-    expect(be.to("/api/workspace/remove").map((c) => c.body.workspace)).toEqual(["w2", "w1"]);
+    // the cascaded child went too (its db left alone)
+    expect(be.to("/api/workspace/remove").map((c) => c.body.workspace)).toEqual(["w1", "w2"]);
     expect(cfg.workspaces).toEqual([]);
     expect(store.server("w1")).toBeNull();
     expect(plugin.logBuffer("w1").count()).toBe(0);

@@ -214,7 +214,20 @@ describe("Topbar — event log button", () => {
 
 describe("Sidebar", () => {
   it("shows the default tabs, navigates, and highlights the current screen", async () => {
-    await boot();
+    await boot({
+      routes: {
+        // the Configuration screen loads these on open
+        "/api/rust-bundler": {
+          ok: true,
+          installed: true,
+          current: true,
+          version: "1.0",
+          expected_version: "1.0",
+          building: false,
+        },
+        "/api/review-prompt": { ok: true, content: "" },
+      },
+    });
     const labels = [...app.root.querySelectorAll(".sidebar .nav-label")].map((l) => l.textContent);
     // opt-in tabs stay hidden until enabled
     expect(labels).toEqual([
@@ -343,7 +356,13 @@ describe("App", () => {
         "/api/goo/update": (_body: unknown, call: { method: string }) =>
           call.method === "POST"
             ? { ok: true }
-            : { ok: true, checked: true, behind: 1, can_fast_forward: true, boot: restarted ? "b2" : "b1" },
+            : {
+                ok: true,
+                checked: true,
+                behind: 1,
+                can_fast_forward: true,
+                boot: restarted ? "b2" : "b1",
+              },
         "/api/goo/restart": () => {
           restarted = true;
           return { ok: true };

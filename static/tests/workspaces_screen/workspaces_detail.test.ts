@@ -162,7 +162,12 @@ describe("main-located workspace lifecycle", () => {
   });
 
   it("Start runs the main server; the live status flips it to Stop, Stop stops it", async () => {
-    await mount([ALPHA, BETA]);
+    await mount([ALPHA, BETA], {
+      routes: {
+        "/api/start": { ok: true, state: "starting", cmd: "odoo-bin -d alpha" },
+        "/api/stop": { ok: true, state: "stopped" },
+      },
+    });
     expect(lifecycle().textContent).toBe("Start");
     lifecycle().click();
     await app.settle();
@@ -206,7 +211,12 @@ describe("main-located workspace lifecycle", () => {
   });
 
   it("the Start options menu: Drop database & start confirms, drops, then starts", async () => {
-    await mount([ALPHA, BETA]);
+    await mount([ALPHA, BETA], {
+      routes: {
+        "/api/databases/drop": { ok: true },
+        "/api/start": { ok: true, state: "starting", cmd: "odoo-bin -d alpha" },
+      },
+    });
     app.root.querySelector<HTMLButtonElement>(".wt-start-caret")!.click();
     await app.settle();
     const menu = document.querySelector(".action-menu:not(.hidden)")!;
@@ -297,11 +307,18 @@ describe("main-located workspace lifecycle", () => {
   });
 });
 
+// the backend removes each repo's worktree and reports per-repo results
+const removeRoute = (body: unknown) => {
+  const { repos } = body as { repos: { repo: string }[] };
+  return { ok: true, results: repos.map(({ repo }) => ({ repo, ok: true, error: null })) };
+};
+
 describe("worktree workspace lifecycle", () => {
   it("starts on its own port, streams its log, then stops", async () => {
     await mount([ALPHA, WT], {
       routes: {
-        "/api/workspace/start": { port: 8075 },
+        "/api/workspace/start": { ok: true, port: 8075 },
+        "/api/workspace/stop": { ok: true, error: null },
         "/api/workspace/logs": { lines: ["earlier line from the tail"] },
       },
     });
@@ -363,7 +380,7 @@ describe("worktree workspace lifecycle", () => {
   });
 
   it("Remove confirms, removes the worktree and drops it from the list", async () => {
-    await mount([ALPHA, WT]);
+    await mount([ALPHA, WT], { routes: { "/api/workspace/remove": removeRoute } });
     await select("feature-wt");
     const remove = await kebab("Remove workspace");
     expect(remove.title).toBe("remove the worktree + workspace");
@@ -393,7 +410,7 @@ describe("worktree workspace lifecycle", () => {
       worktree: { dir: "/home/odoo/work-trees/wt2" },
       parent: "wt1",
     });
-    await mount([ALPHA, WT, child]);
+    await mount([ALPHA, WT, child], { routes: { "/api/workspace/remove": removeRoute } });
     await select("feature-wt");
     (await kebab("Remove workspace")).click();
     await app.settle();
@@ -402,8 +419,43 @@ describe("worktree workspace lifecycle", () => {
     await waitFor(app, () => app.callsTo("/api/workspace/remove").length === 2);
     expect(
       app.callsTo("/api/workspace/remove").map((c) => (c.body as { workspace: string }).workspace),
-    ).toEqual(["wt2", "wt1"]); // the sub-workspace first, while its parent still exists
+    ).toEqual(["wt1", "wt2"]);
     expect(texts(app.root, ".wt-item-name")).toEqual(["alpha"]);
+  });
+
+  it("a failed worktree removal keeps the workspace and its sub-workspaces", async () => {
+    const child = ws({
+      id: "wt2",
+      name: "feature-wt-fp",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt2" },
+      parent: "wt1",
+    });
+    await mount([ALPHA, WT, child], {
+      routes: {
+        // what the backend answers when git refuses (it replies 200, ok:false)
+        "/api/workspace/remove": {
+          ok: false,
+          results: [
+            { repo: "community", ok: false, error: "worktree locked" },
+            { repo: "enterprise", ok: true, error: null },
+          ],
+        },
+      },
+    });
+    await select("feature-wt");
+    (await kebab("Remove workspace")).click();
+    await app.settle();
+    await dialogButton(dialog()!.querySelector(".dialog-foot .primary")!.textContent!);
+    await waitFor(app, () => !!dialog()?.textContent?.includes("community: worktree locked"));
+    expect(dialog()?.textContent).toContain("Worktree removal failed");
+    // only the parent was attempted; nothing was removed
+    expect(
+      app.callsTo("/api/workspace/remove").map((c) => (c.body as { workspace: string }).workspace),
+    ).toEqual(["wt1"]);
+    expect(texts(app.root, ".wt-item-name")).toEqual(
+      expect.arrayContaining(["feature-wt", "feature-wt-fp"]),
+    );
   });
 
   it("Details shows the worktree's location, path and checkouts", async () => {
@@ -501,7 +553,7 @@ describe("header menu", () => {
   });
 
   it("Drop database confirms first; cancel keeps it", async () => {
-    await mount([ALPHA]);
+    await mount([ALPHA], { routes: { "/api/databases/drop": { ok: true } } });
     const drop = await kebab("Drop database");
     expect(drop.title).toBe('drop database "alpha"');
     drop.click();

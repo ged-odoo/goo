@@ -68,8 +68,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - Architecture: scattered fetch/parse/IO is behind the `effects` seam + `services`;
   the cohesive `WorkspaceManager`/PTY subsystem keeps its own process side-effects
   (not abstracted behind the seam — its tests run it against a fake `odoo-bin`).
-- `static/tests/` — Vitest + jsdom suite mirroring `static/src/<feature>/...`
-  path-for-path. `static/tests/setup.ts` populates `globalThis.owl` (via
+- `static/tests/` — Vitest + jsdom suite, one folder per `static/src/<feature>/` (files
+  named by module, or `<module>_<topic>`). `static/tests/setup.ts` populates `globalThis.owl` (via
   `vm.runInThisContext` on `static/lib/owl.js`, matching the classic `<script>`
   semantics `static/index.html` itself relies on) before any test imports
   `@odoo/owl`. `static/tests/helpers/plugin_harness.ts` builds a real
@@ -105,7 +105,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     `branches_screen/`, `todo_screen/`, `databases_screen/`, `nightly_screen/`,
     `memory_screen/`, `config_screen/`, `ci_screen/`, `reviews_screen/`): each holds its screen component; some also hold a dedicated plugin
     (`workspaces_screen/claude_plugin.ts`, `nightly_screen/nightly_plugin.ts`,
-    `memory_screen/memory_plugin.ts`). `workspaces_screen/` is the primary surface — the
+    `memory_screen/memory_plugin.ts`, `ci_screen/ci_plugin.ts`,
+    `reviews_screen/reviews_plugin.ts`). `workspaces_screen/` is the primary surface — the
     master-detail Workspaces screen, split one file per component: `workspaces.ts`
     (the screen/list), `code_pane.ts` (the Code tab), `history.ts` (`CommitHistory`,
     the reorder/squash/drop commit editor), `claude_chat.ts`, the other tab panes
@@ -132,11 +133,12 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `python3 goo.py` — run (add `--open` to launch the browser).
 - `python3 -m unittest discover` — run the backend tests (from the repo root).
 - `npm run lint` / `npm run lint:fix` — eslint (typescript-eslint; `static/src` + `static/tests`).
-- `npm run typecheck:ts` — `tsc` (strict, `tsconfig.json`, no emit). CI, pre-commit and the
-  hooks run it.
+- `npm run typecheck:ts` — `tsc` (strict, no emit) twice: `tsconfig.json` (production —
+  `static/src`, `vendor/owl-orm`) and `static/tests/tsconfig.json` (the tests, plus
+  test-only declarations like `static/tests/helpers/node.d.ts`). CI, pre-commit and the hooks run it.
 - `npm run format` — prettier (ts/js/css/html/md).
 - `npm run test` / `npm run test:watch` — Vitest suite for `static/src/` (see
-  `static/tests/` above; ~30s). Not pre-commit-hooked, same as the Python suite.
+  `static/tests/` above; ~40s). Not pre-commit-hooked, same as the Python suite.
 - `npm run build` — bundle `static/src/main.ts` → `static/dist/app.js` (esbuild;
   `@odoo/owl` aliased to the `window.owl` shim). Run + commit the output after editing
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
@@ -150,7 +152,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `vulture` / `npm run deadcode` (knip) — dead-code checks, both run in CI (config in
   `pyproject.toml` `[tool.vulture]` and `knip.json`). `pip install vulture` locally.
 - `cd addons/rust_bundler/native && cargo test --locked` — native asset-bundler tests.
-- `pre-commit` runs ruff + pyright + prettier + eslint on changed files, and rebuilds
+- `pre-commit` runs ruff + pyright + tsc + prettier + eslint on changed files, and rebuilds
   `static/dist/app.js` when `static/src/` or `vendor/owl-orm/` changed.
 
 ## Conventions
@@ -174,7 +176,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - **Hooks enforce the checks** (`.claude/settings.json` → `.claude/hooks/`): every
   edited file is formatted + linted on the spot (`format.sh`), and a turn can't end
   while the checks for what the branch changed fail (`check.sh`: ruff, pyright,
-  unit tests, eslint, vitest; a stale `static/dist/app.js` is rebuilt). It's
+  unit tests, tsc, eslint, vitest; a stale `static/dist/app.js` is rebuilt). It's
   skipped when nothing changed since the last passing run; the frontend checks
   need `npm install`. Fix the failure — don't disable the hook or work around it.
 - **Tests check the outcome, not the command sent to a fake.** A test that asserts

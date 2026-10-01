@@ -34,6 +34,7 @@ export const onMounted = owl.onMounted;
 export const onPatched = owl.onPatched;
 export const onWillStart = owl.onWillStart;
 export const onWillUnmount = owl.onWillUnmount;
+export const onWillDestroy = owl.onWillDestroy;
 export const useEffect = owl.useEffect;
 export const useApp = owl.useApp;
 
