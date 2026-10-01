@@ -8,7 +8,9 @@ import {
   useEffect,
   xml,
 } from "@odoo/owl";
+import type { ComponentConstructor } from "@odoo/owl";
 import { VERSION } from "./config.ts";
+import type { WorkspaceConfig } from "./config.ts";
 import { ConfigPlugin } from "./config_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
@@ -20,6 +22,7 @@ import { WorkspacePlugin } from "./workspace_plugin.ts";
 import { UpdatePlugin } from "./update_plugin.ts";
 import { BranchesScreen } from "../branches_screen/branches.ts";
 import { DirtyMenu, ICONS, NAV, m, mergedTabIds } from "./common.ts";
+import type { NavItem } from "./common.ts";
 import { ConfigScreen } from "../config_screen/config.ts";
 import { DatabasesScreen } from "../databases_screen/databases.ts";
 import { EventLog, ActivityBar } from "./event_log.ts";
@@ -113,7 +116,7 @@ export class Topbar extends Component {
     return this.config.config.links;
   }
 
-  isMenu(r) {
+  isMenu(r: { children?: unknown }): boolean {
     return Array.isArray(r.children);
   }
 
@@ -151,13 +154,13 @@ export class Topbar extends Component {
   // activate a main-located workspace from the menu: load the live branch state
   // first (the model's guard reads it — empty state would silently refuse), then
   // let the Workspace model do the guarded stop+checkout+set-current
-  async switchTo(ws) {
+  async switchTo(ws: WorkspaceConfig) {
     if (ws.id === this.activeId) return;
     await this.code.loadBranches(new Set((ws.checkouts || []).map((c) => c.repo)));
     await this.config.workspace(ws.id)?.activate();
   }
 
-  openWorktree(id) {
+  openWorktree(id: string) {
     this.wt.selectOnOpen(id);
     this.router.go("workspaces");
   }
@@ -195,7 +198,8 @@ export class Topbar extends Component {
   onToggle() {
     const s = this.server.status().state;
     if (s === "running" || s === "starting") this.server.stop();
-    else if (s === "stopped") this.server.start(this.activeId);
+    // the toggle only renders under t-if="this.target", i.e. with an active id
+    else if (s === "stopped") this.server.start(this.activeId!);
   }
 }
 
@@ -267,12 +271,12 @@ export class Sidebar extends Component {
   // config slot in at their natural position (see mergedTabIds); Config is always
   // kept, hidden tabs are filtered out.
   get nav() {
-    const meta = Object.fromEntries(NAV.map((n) => [n.id, n]));
+    const meta: Record<string, NavItem> = Object.fromEntries(NAV.map((n) => [n.id, n]));
     const configured = this.config.config.tabs;
     // config wins; an unconfigured tab defaults to visible, EXCEPT opt-in tabs (e.g.
     // Worktrees) which stay hidden until enabled in the Tabs editor. Config is always shown.
     const cfg = Object.fromEntries((configured || []).map((t) => [t.id, t]));
-    const shown = (id) =>
+    const shown = (id: string) =>
       id === "config" || (cfg[id] ? cfg[id].visible !== false : !meta[id].optIn);
     if (!configured || !configured.length) return NAV.filter((n) => shown(n.id));
     const out = mergedTabIds(configured)
@@ -282,7 +286,7 @@ export class Sidebar extends Component {
     return out;
   }
 
-  icon(s) {
+  icon(s: string) {
     return m(s);
   }
 }
@@ -291,7 +295,8 @@ export class Sidebar extends Component {
 // Hosts a plugin-owned LogBuffer element while mounted; the element (with all
 // its rows + scroll position) lives on the plugin and survives unmount.
 
-export const SCREENS = {
+// route id → screen component (an unknown route falls back to Workspaces)
+export const SCREENS: Record<string, ComponentConstructor | undefined> = {
   workspaces: WorkspacesScreen,
   branches: BranchesScreen,
   "review-queue": ReviewsScreen,
@@ -360,7 +365,7 @@ export class App extends Component {
       // the navbar dot — amber the instant Start is clicked, before the backend
       // confirms — rather than lagging until the first status event
       const state = this.server.displayState();
-      const el = document.getElementById("favicon");
+      const el = document.getElementById("favicon") as HTMLLinkElement | null; // index.html's <link id="favicon">
       // green up, amber starting, red disconnected, black (default) when stopped
       const icon =
         state === "running"
@@ -374,12 +379,13 @@ export class App extends Component {
     });
     // "[open in hoot]" links (built in utils.ts) — HOOT is served by odoo, so
     // start the server first if it's down, then point the tab at the test.
-    const onHoot = (e) => this.openHoot(e.detail.url);
+    // dispatched as a CustomEvent by utils.ts
+    const onHoot = (e: Event) => this.openHoot((e as CustomEvent<{ url: string }>).detail.url);
     document.addEventListener("goo:open-hoot", onHoot);
     onWillUnmount(() => document.removeEventListener("goo:open-hoot", onHoot));
   }
 
-  async openHoot(url) {
+  async openHoot(url: string) {
     const running = this.server.status().state === "running";
     // open the tab now (inside the click gesture) to avoid popup blockers
     const win = window.open(running ? url : "about:blank", "_blank");

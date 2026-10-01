@@ -11,18 +11,22 @@ import {
   useEffect,
   xml,
 } from "@odoo/owl";
+import type { PluginInstance, Signal, Type } from "@odoo/owl";
 import { CodePlugin } from "./code_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { ServerPlugin } from "./server_plugin.ts";
 import { StorePlugin } from "./store_plugin.ts";
+import type { LogBuffer } from "./log_buffer.ts";
 
 export const appBus = new EventBus();
 
-export const m = (s) => markup(s);
+export const m = (s: string) => markup(s);
 
 // map a mergebot state string to its color category (the badge's CSS class)
 
-export function mbCategory(s) {
+export type MbCategory = "merged" | "ready" | "progress" | "blocked" | "other";
+
+export function mbCategory(s: string): MbCategory {
   if (s === "merged") return "merged";
   if (["ready", "approved", "validated", "mergeable", "reviewed"].includes(s)) return "ready";
   if (["staged", "staging", "squashed", "pending"].includes(s)) return "progress";
@@ -36,7 +40,7 @@ export function mbCategory(s) {
 // "blocked" because CI hasn't passed yet) — so check the "Review" requirement
 // itself, via `details` (MergebotService._blocked_reasons — the comma-joined
 // list of what's currently unmet, e.g. "CI" or "Review, CI"), not the badge word.
-export function mbIsRPlus(state, details) {
+export function mbIsRPlus(state: string | null | undefined, details?: string | null): boolean {
   if (!state) return false;
   if (state === "merged") return true;
   return !/review/i.test(details || "");
@@ -88,7 +92,14 @@ export const ICONS = {
   collapse: `<svg viewBox="0 0 24 24"><polyline points="13 17 8 12 13 7"/><polyline points="18 17 13 12 18 7"/></svg>`,
 };
 
-export const NAV = [
+export interface NavItem {
+  id: string;
+  label: string;
+  icon: string;
+  optIn?: boolean; // hidden until enabled in the Tabs editor
+}
+
+export const NAV: NavItem[] = [
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches & PRs", icon: ICONS.branches },
   // NOTE: the route id is "review-queue", not "reviews" — router_plugin.ts's
@@ -108,10 +119,10 @@ export const NAV = [
 // their config (e.g. a newly-shipped one) is inserted at its natural NAV position
 // — right after its NAV predecessor — instead of tacked on at the end.
 
-export function mergedTabIds(configured) {
+export function mergedTabIds(configured: readonly { id: string }[] | null | undefined): string[] {
   const inNav = new Set(NAV.map((n) => n.id));
-  const out = [];
-  const seen = new Set();
+  const out: string[] = [];
+  const seen = new Set<string>();
   for (const t of configured || []) {
     if (!inNav.has(t.id) || seen.has(t.id)) continue;
     seen.add(t.id);
@@ -145,7 +156,7 @@ export class LogConsole extends Component {
 
   props = useProps({
     title: t.string(),
-    buffer: t.any(),
+    buffer: t.any() as Type<LogBuffer>, // a plugin-owned LogBuffer (not validated at runtime)
     extraClass: t.string().optional(),
     bare: t.boolean().optional(),
   });
@@ -156,7 +167,7 @@ export class LogConsole extends Component {
 
   setup() {
     onMounted(() => {
-      this.host().appendChild(this.props.buffer.el);
+      this.host()!.appendChild(this.props.buffer.el); // the always-rendered log-host div
       this.props.buffer.restore();
     });
     onWillUnmount(() => {
@@ -191,7 +202,7 @@ export class SearchBox extends Component {
       <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
     </div>`;
 
-  props = useProps({ value: t.any() });
+  props = useProps({ value: t.any() as Type<Signal<string>> }); // not validated at runtime
 }
 
 // ─────────────────────────── Dirty badge + menu ──────────────────────────────
@@ -204,10 +215,11 @@ export class DirtyBadge extends Component {
   // menu's commit/discard actions refresh ITS OWN branch state afterward
   // instead of the main checkout's (see DirtyMenu / CodePlugin.loadWorktreeBranches)
   props = useProps({ path: t.string(), repo: t.string(), workspaceId: t.string().optional() });
-  openMenu(ev) {
-    const rect = ev.currentTarget.getBoundingClientRect();
+  openMenu(ev: MouseEvent) {
+    // currentTarget: the badge <button> the handler is bound to
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
     appBus.dispatchEvent(
-      new CustomEvent("dirty-menu", {
+      new CustomEvent<DirtyMenuDetail>("dirty-menu", {
         detail: {
           rect,
           path: this.props.path,
@@ -217,6 +229,14 @@ export class DirtyBadge extends Component {
       }),
     );
   }
+}
+
+// the appBus "dirty-menu" event's payload: which checkout the menu acts on
+interface DirtyMenuDetail {
+  rect: DOMRect;
+  path: string;
+  repo: string;
+  workspaceId: string;
 }
 
 export class DirtyMenu extends Component {
@@ -232,15 +252,18 @@ export class DirtyMenu extends Component {
   store = usePlugin(StorePlugin);
   dialogs = usePlugin(DialogPlugin);
   open = signal(false);
-  _path = null;
-  _repo = null;
+  _path = ""; // the opened checkout — set by openMenu before any action can run
+  _repo = "";
   _workspaceId = ""; // set for a worktree workspace's checkout — see DirtyBadge
-  _el = null;
+  _el: HTMLElement | null = null;
 
   setup() {
     onMounted(() => {
-      this._el = document.querySelector(".dirty-menu");
-      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
+      this._el = document.querySelector<HTMLElement>(".dirty-menu");
+      // appBus "dirty-menu" events are dispatched as CustomEvents (DirtyBadge.openMenu)
+      appBus.addEventListener("dirty-menu", (e) =>
+        this.openMenu((e as CustomEvent<DirtyMenuDetail>).detail),
+      );
       document.addEventListener("click", () => this.open.set(false));
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.open.set(false);
@@ -248,15 +271,16 @@ export class DirtyMenu extends Component {
     });
   }
 
-  async openMenu({ rect, path, repo, workspaceId }) {
+  async openMenu({ rect, path, repo, workspaceId }: DirtyMenuDetail) {
     this._path = path;
     this._repo = repo;
     this._workspaceId = workspaceId || "";
     this.open.set(true);
     await Promise.resolve();
-    const w = this._el.offsetWidth;
-    this._el.style.top = `${rect.bottom + 4}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+    const el = this._el!; // set in onMounted, before the listener that calls this
+    const w = el.offsetWidth;
+    el.style.top = `${rect.bottom + 4}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
 
   // prompt for a message (the shared textarea editor — also used by CommitsDialog's
@@ -288,7 +312,8 @@ export class DirtyMenu extends Component {
     const repo = this._workspaceId
       ? this.store.worktreeRepoStatus(this._workspaceId, this._repo)
       : this.code.branchRepos().find((r) => r.id === this._repo);
-    const b = (repo?.branches || []).find((x) => x.name === repo.current);
+    // the callback only runs when `repo` has branches, i.e. when it exists
+    const b = (repo?.branches || []).find((x) => x.name === repo!.current);
     return b?.subject || "";
   }
 
@@ -323,9 +348,13 @@ export class DirtyMenu extends Component {
 // reword affordance (initialMessage = the existing message, being edited in
 // place). Returns the trimmed message, or null if cancelled/blank.
 export async function editCommitMessage(
-  dialogs,
-  { title, initialMessage = "", okLabel = "Commit" },
-) {
+  dialogs: PluginInstance<typeof DialogPlugin>,
+  {
+    title,
+    initialMessage = "",
+    okLabel = "Commit",
+  }: { title: string; initialMessage?: string; okLabel?: string },
+): Promise<string | null> {
   const res = await dialogs.open({
     title,
     okLabel,
@@ -347,8 +376,9 @@ export async function editCommitMessage(
 
 // ─────────────────────────── Shared helpers ───────────────────────────
 
-export function loadScript(src, isLoaded) {
-  return new Promise((resolve, reject) => {
+// resolves with the script's load event, or with nothing when already loaded
+export function loadScript(src: string, isLoaded: () => unknown): Promise<Event | void> {
+  return new Promise<Event | void>((resolve, reject) => {
     if (isLoaded()) return resolve();
     const s = document.createElement("script");
     s.src = src;
@@ -363,7 +393,24 @@ export function loadScript(src, isLoaded) {
 // line chart(s) on a <canvas>. Wheel-zooms and drag-pans; no pinch (that needs
 // hammer.js too, and this is a desktop dev tool).
 
-export function useDragResize({ w = 780, h = 440, place = null } = {}) {
+export interface DragResizeOptions {
+  w?: number;
+  h?: number;
+  // the first position for a (w, h) window; default: centered in the viewport
+  place?: ((w: number, h: number) => { x: number; y: number }) | null;
+}
+
+export interface DragResize {
+  handle: Signal<HTMLElement | null>; // bind to the panel root with t-ref
+  onDragStart: (e: MouseEvent) => void;
+  onResizeStart: (e: MouseEvent) => void;
+}
+
+export function useDragResize({
+  w = 780,
+  h = 440,
+  place = null,
+}: DragResizeOptions = {}): DragResize {
   const handle = signal.ref(HTMLElement);
   let x = 0;
   let y = 0;
@@ -386,7 +433,7 @@ export function useDragResize({ w = 780, h = 440, place = null } = {}) {
     el.style.width = `${width}px`;
     el.style.height = `${height}px`;
   };
-  const onMouseMove = (e) => {
+  const onMouseMove = (e: MouseEvent) => {
     if (dragging) {
       x = Math.max(0, e.clientX - offX);
       y = Math.max(0, e.clientY - offY);
@@ -425,14 +472,14 @@ export function useDragResize({ w = 780, h = 440, place = null } = {}) {
   });
   return {
     handle,
-    onDragStart: (e) => {
+    onDragStart: (e: MouseEvent) => {
       if (e.button !== 0) return;
       dragging = true;
       offX = e.clientX - x;
       offY = e.clientY - y;
       e.preventDefault();
     },
-    onResizeStart: (e) => {
+    onResizeStart: (e: MouseEvent) => {
       if (e.button !== 0) return;
       resizing = true;
       startX = e.clientX;

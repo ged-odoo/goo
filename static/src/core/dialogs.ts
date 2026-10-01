@@ -13,6 +13,35 @@ import { CodePlugin } from "./code_plugin.ts";
 import { ConfigPlugin } from "./config_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { ICONS, editCommitMessage, m, useDragResize } from "./common.ts";
+import type { DragResize } from "./common.ts";
+import type { PluginInstance, Type } from "@odoo/owl";
+
+// one repo a searched branch was found in: locally (attach as-is) or only on a
+// remote (`remote` = the git remote to fetch it from)
+interface BranchHitRepo {
+  id: string;
+  local: boolean;
+  remote?: string;
+}
+
+// one result row: a branch name + the repos it exists in
+interface BranchHit {
+  branch: string;
+  repos: BranchHitRepo[];
+}
+
+// what RemoteBranchDialog resolves with (null when cancelled)
+export interface RemoteBranchPick {
+  branch: string;
+  repos: string[];
+  remoteByRepo: Record<string, string>; // remote-only repos → the remote to fetch from
+}
+
+// /api/code/remote-branches/search's response
+interface RemoteBranchSearch {
+  ok: boolean;
+  results: { repo: string; branch: string; remote: string }[];
+}
 
 // Searches BOTH branches you already have locally (instant, from the Branches
 // screen's own in-memory data — code.groups(), no network) and branches on
@@ -56,20 +85,24 @@ export class RemoteBranchDialog extends Component {
       </div>
     </div>`;
 
-  props = useProps({ done: t.function(), repoIds: t.any().optional() });
+  props = useProps({
+    done: t.function<[RemoteBranchPick | null], void>(),
+    repoIds: (t.any() as Type<string[]>).optional(), // not validated at runtime
+  });
+
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
   searching = signal(false); // the remote (network) half only — local is instant
   searched = signal(false);
-  rows = signal([]);
+  rows = signal<BranchHit[]>([]);
   sel = signal("");
   inputEl = signal.ref(HTMLElement);
-  _timer = null;
+  _timer?: ReturnType<typeof setTimeout>;
   _query = "";
 
   setup() {
     onMounted(() => this.inputEl()?.focus());
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.done(null);
     };
     document.addEventListener("keydown", onKey);
@@ -79,15 +112,15 @@ export class RemoteBranchDialog extends Component {
     });
   }
 
-  done(result) {
+  done(result: RemoteBranchPick | null) {
     this.props.done(result);
   }
 
-  get repoIds() {
+  get repoIds(): Set<string> | null {
     return this.props.repoIds ? new Set(this.props.repoIds) : null;
   }
 
-  onInput(val) {
+  onInput(val: string) {
     this.sel.set("");
     clearTimeout(this._timer);
     this._query = val.trim();
@@ -104,9 +137,9 @@ export class RemoteBranchDialog extends Component {
 
   // local branches, from the same {branch, rows: [{repo, ...}]} groups the
   // Branches screen already holds in memory — no network round-trip
-  _searchLocal(query) {
+  _searchLocal(query: string) {
     const ids = this.repoIds;
-    const byBranch = new Map();
+    const byBranch = new Map<string, BranchHitRepo[]>();
     for (const g of this.code.groups().list) {
       if (!g.branch.includes(query)) continue;
       const repos = g.rows
@@ -118,7 +151,7 @@ export class RemoteBranchDialog extends Component {
     this.searched.set(true);
   }
 
-  async _searchRemote(query) {
+  async _searchRemote(query: string) {
     const ids = this.repoIds;
     const repos = this.config.config.repos
       .filter((r) => r.github && (!ids || ids.has(r.id)))
@@ -135,12 +168,12 @@ export class RemoteBranchDialog extends Component {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repos, query }),
       });
-      const data = await res.json();
+      const data: RemoteBranchSearch = await res.json();
       if (query !== this._query || !data.ok) return; // input moved on — drop this response
-      const byBranch = new Map();
+      const byBranch = new Map<string, Map<string, string>>();
       for (const { repo, branch, remote } of data.results) {
         if (!byBranch.has(branch)) byBranch.set(branch, new Map());
-        byBranch.get(branch).set(repo, remote);
+        byBranch.get(branch)!.set(repo, remote);
       }
       this._mergeRemote(byBranch);
     } finally {
@@ -153,15 +186,16 @@ export class RemoteBranchDialog extends Component {
   // no fetch needed); a remote-only repo carries the git remote name to fetch it
   // from (the upstream `pull_remote`, or a fork's `push_remote` — see
   // GitHubService.search_branches), so a caller never guesses the wrong one
-  _mergeRemote(remoteByBranch) {
+  _mergeRemote(remoteByBranch: Map<string, Map<string, string>>) {
     const merged = new Map(
       this.rows().map((r) => [r.branch, new Map(r.repos.map((x) => [x.id, x]))]),
     );
     for (const [branch, repoRemotes] of remoteByBranch) {
       if (!merged.has(branch)) merged.set(branch, new Map());
+      // set just above when missing
       for (const [repo, remote] of repoRemotes)
-        if (!merged.get(branch).has(repo))
-          merged.get(branch).set(repo, { id: repo, local: false, remote });
+        if (!merged.get(branch)!.has(repo))
+          merged.get(branch)!.set(repo, { id: repo, local: false, remote });
     }
     this.rows.set(
       [...merged.entries()].map(([branch, repoMap]) => ({
@@ -171,7 +205,7 @@ export class RemoteBranchDialog extends Component {
     );
   }
 
-  onKey(ev) {
+  onKey(ev: KeyboardEvent) {
     if (ev.key === "Enter" && this.sel()) this.ok();
   }
 
@@ -182,8 +216,8 @@ export class RemoteBranchDialog extends Component {
     const repos = rowRepos.map((r) => r.id);
     // which remote to `git fetch` each remote-only repo's branch from — a local
     // repo needs none, it's already there
-    const remoteByRepo = Object.fromEntries(
-      rowRepos.filter((r) => !r.local && r.remote).map((r) => [r.id, r.remote]),
+    const remoteByRepo: Record<string, string> = Object.fromEntries(
+      rowRepos.filter((r) => !r.local && r.remote).map((r) => [r.id, r.remote!]), // filtered
     );
     this.done({ branch, repos, remoteByRepo });
   }
@@ -194,6 +228,16 @@ export class RemoteBranchDialog extends Component {
 // by default; toggled from the sidebar. Newest entries first.
 
 // lazy-load xterm.js + addon-fit only on first terminal open
+
+// one commit row, as CodePlugin.commits() returns it
+interface CommitRow {
+  sha: string;
+  date: string;
+  subject: string;
+  author: string;
+  body?: string;
+  ahead?: boolean; // this branch's own commit (editable), not inherited from its base
+}
 
 export class CommitsDialog extends Component {
   static template = xml`
@@ -231,7 +275,7 @@ export class CommitsDialog extends Component {
     </div>`;
 
   props = useProps({
-    done: t.function(),
+    done: t.function<[null], void>(),
     path: t.string(),
     label: t.string(),
     ref: t.string(),
@@ -244,15 +288,16 @@ export class CommitsDialog extends Component {
   code = usePlugin(CodePlugin);
   dialogs = usePlugin(DialogPlugin);
   externalIcon = m(ICONS.external);
-  commits = signal([]);
+  commits = signal<CommitRow[]>([]);
   loading = signal(true);
   error = signal("");
-  expanded = signal(new Set());
+  expanded = signal(new Set<string>());
+  declare drag: DragResize; // set in setup()
 
   setup() {
     this.drag = useDragResize({ w: 620, h: 460 });
     onMounted(() => this.load());
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.done(null);
     };
     document.addEventListener("keydown", onKey);
@@ -269,7 +314,7 @@ export class CommitsDialog extends Component {
         }),
       );
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set((e as Error).message); // CodePlugin rejects with an Error
     } finally {
       this.loading.set(false);
     }
@@ -277,7 +322,7 @@ export class CommitsDialog extends Component {
 
   // open the shared textarea editor prefilled with this commit's current
   // message; on confirm, reword it server-side and reload the list
-  async editMessage(c) {
+  async editMessage(c: CommitRow) {
     const message = await editCommitMessage(this.dialogs, {
       title: "Edit commit message",
       initialMessage: this.message(c),
@@ -291,53 +336,61 @@ export class CommitsDialog extends Component {
       });
       await this.load();
     } catch (e) {
-      this.dialogs.error("Edit commit message failed", e.message);
+      this.dialogs.error("Edit commit message failed", (e as Error).message); // see load()
     }
   }
 
-  when(date) {
+  when(date: string) {
     return timeAgo(date);
   }
 
-  fullDate(date) {
+  fullDate(date: string): string {
     const d = new Date(date);
-    return isNaN(d) ? date : d.toLocaleString();
+    return isNaN(d.getTime()) ? date : d.toLocaleString();
   }
 
-  toggle(sha) {
+  toggle(sha: string) {
     const s = new Set(this.expanded());
     if (s.has(sha)) s.delete(sha);
     else s.add(sha);
     this.expanded.set(s);
   }
 
-  isExpanded(sha) {
+  isExpanded(sha: string): boolean {
     return this.expanded().has(sha);
   }
 
   // full commit message (subject + body) shown when a row is expanded
-  message(c) {
+  message(c: CommitRow): string {
     return c.body ? `${c.subject}\n\n${c.body}` : c.subject;
   }
 
   // the commit on GitHub (only linked when the repo has a github slug)
-  commitUrl(c) {
+  commitUrl(c: CommitRow): string {
     return `https://github.com/${this.props.github}/commit/${c.sha}`;
   }
 
-  done(result) {
+  done(result: null) {
     this.props.done(result);
   }
+}
+
+// one branch to push (see pushBranchesDialog)
+export interface PushBranch {
+  path: string;
+  branch: string;
+  repo: string;
+  workspaceId?: string;
 }
 
 // confirm (via the app modal) then push one or more branches to the dev remote.
 // branches: [{ path, branch, repo, workspaceId? }]. Shared by every "Push" affordance.
 export async function pushBranchesDialog(
-  code,
-  dialogs,
-  branches,
-  { title, message, force = false },
-) {
+  code: PluginInstance<typeof CodePlugin>,
+  dialogs: PluginInstance<typeof DialogPlugin>,
+  branches: PushBranch[],
+  { title, message, force = false }: { title: string; message?: string; force?: boolean },
+): Promise<boolean> {
   if (!branches.length) return false;
   const ok = await dialogs.open({ title, message, okLabel: force ? "Force push" : "Push" });
   if (!ok) return false;

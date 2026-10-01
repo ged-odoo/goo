@@ -170,7 +170,7 @@ describe("ansiToHtml", () => {
 
 describe("worktreeSlug", () => {
   it("replaces disallowed runs with a dash and trims leading/trailing dashes", () => {
-    expect(worktreeSlug({ name: "My Feature!" })).toBe("My-Feature");
+    expect(worktreeSlug({ id: "w1", name: "My Feature!" })).toBe("My-Feature");
   });
 
   it("falls back to id when name is blank", () => {

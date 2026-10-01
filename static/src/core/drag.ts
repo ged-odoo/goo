@@ -13,20 +13,32 @@
 // Returns a stop(commit) handle (call it from onWillUnmount so a mid-drag
 // unmount never leaks the ghost or the window listeners), or null when the
 // event isn't a plain left-button press.
-export function startRowDrag(ev, { row, onMove, onEnd }) {
+export interface RowDragOptions {
+  row: HTMLElement | null;
+  onMove: (ev: PointerEvent) => void;
+  onEnd: (commit: boolean) => void;
+}
+
+export type StopDrag = (commit: boolean) => void;
+
+export function startRowDrag(
+  ev: PointerEvent,
+  { row, onMove, onEnd }: RowDragOptions,
+): StopDrag | null {
   if (ev.button !== 0 || !row) return null;
   ev.preventDefault(); // no text selection while dragging
   const rect = row.getBoundingClientRect();
   const offsetX = ev.clientX - rect.left;
   const offsetY = ev.clientY - rect.top;
-  const ghost = row.cloneNode(true);
+  const ghost = row.cloneNode(true) as HTMLElement; // a deep clone of an element is an element
   ghost.classList.add("drag-ghost");
   ghost.classList.remove("dragging", "drag-over");
   ghost.style.width = `${rect.width}px`;
   // cloneNode copies attributes, not live input state — sync typed values so
   // the ghost shows what the row shows
-  const src = row.querySelectorAll("input, select, textarea");
-  ghost.querySelectorAll("input, select, textarea").forEach((el, i) => {
+  const src = row.querySelectorAll<HTMLInputElement>("input, select, textarea");
+  // typed as inputs: `.checked` is read off every field, undefined on select/textarea
+  ghost.querySelectorAll<HTMLInputElement>("input, select, textarea").forEach((el, i) => {
     if (!src[i]) return;
     el.value = src[i].value;
     el.checked = src[i].checked;
@@ -37,14 +49,14 @@ export function startRowDrag(ev, { row, onMove, onEnd }) {
   // ghost that also carries a CSS rotate/scale (the kanban card's lift) would
   // rotate and scale the offset itself if it were written to `transform`, and
   // the card would slide away from the cursor as the drag got longer.
-  const place = (e) => {
+  const place = (e: PointerEvent) => {
     ghost.style.translate = `${e.clientX - offsetX}px ${e.clientY - offsetY}px`;
   };
-  const move = (e) => {
+  const move = (e: PointerEvent) => {
     place(e);
     onMove(e);
   };
-  const stop = (commit) => {
+  const stop = (commit: boolean) => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
@@ -55,7 +67,7 @@ export function startRowDrag(ev, { row, onMove, onEnd }) {
   };
   const up = () => stop(true);
   const cancel = () => stop(false);
-  const key = (e) => e.key === "Escape" && stop(false);
+  const key = (e: KeyboardEvent) => e.key === "Escape" && stop(false);
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);
   window.addEventListener("pointercancel", cancel);
@@ -71,7 +83,10 @@ export function startRowDrag(ev, { row, onMove, onEnd }) {
 // target): the first row whose vertical midline is below the pointer, else
 // after the last. With the dragged row excluded, this is also the right splice
 // index in the array-without-it.
-export function dropIndex(ev, rows) {
+export function dropIndex(
+  ev: Pick<MouseEvent, "clientY">,
+  rows: ArrayLike<{ getBoundingClientRect(): Pick<DOMRect, "top" | "height"> }>,
+): number {
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i].getBoundingClientRect();
     if (ev.clientY < r.top + r.height / 2) return i;

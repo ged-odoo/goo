@@ -4,7 +4,7 @@ import { dropIndex } from "../../src/core/drag.ts";
 // dropIndex against fake DOMRect-shaped fixtures — no real DOM layout needed.
 // startRowDrag itself (real pointer/DOM mechanics) is out of scope; see the
 // plan's documented frontend exclusions.
-function fakeRow(top, height) {
+function fakeRow(top: number, height: number) {
   return { getBoundingClientRect: () => ({ top, height }) };
 }
 

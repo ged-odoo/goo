@@ -73,11 +73,11 @@ describe("toModels / toConfig round trip", () => {
 
   it("toState round-trips the app-state blob", () => {
     const orm = new ORM();
-    toModels(orm, baseConfig(), { active_workspace: "w1", test_history: [{ ok: true }] });
+    toModels(orm, baseConfig(), { active_workspace: "w1", test_history: ["/web:WebSuite"] });
     expect(toState(orm)).toEqual({
       active_workspace: "w1",
       claude_model: "",
-      test_history: [{ ok: true }],
+      test_history: ["/web:WebSuite"],
     });
   });
 });
@@ -103,7 +103,7 @@ describe("applyPatch", () => {
     });
     const out = toConfig(orm);
     expect(out.repos.map((r) => r.id).sort()).toEqual(["community", "enterprise"]);
-    expect(out.repos.find((r) => r.id === "community").favorite).toBe(false);
+    expect(out.repos.find((r) => r.id === "community")!.favorite).toBe(false);
   });
 
   it("reconciles workspace checkouts (o2m) when a workspace is patched", () => {
@@ -145,7 +145,7 @@ describe("applyPatch", () => {
       }),
     );
     applyPatch(orm, { workspaces: [{ id: "w2", name: "child", location: "main", checkouts: [] }] });
-    expect(orm.getById(Workspace, "w2").parent()).toBe("");
+    expect(orm.getById(Workspace, "w2")!.parent()).toBe("");
   });
 
   it("reordering workspaces in a patch persists the new order in toConfig (regression: order used to not survive)", () => {
@@ -186,8 +186,8 @@ describe("applyPatch", () => {
       ],
     });
     const out = toConfig(orm);
-    expect(out.workspaces.find((w) => w.id === "a").port).toBe(8071);
-    expect(out.workspaces.find((w) => w.id === "b").port).toBe(8072);
+    expect(out.workspaces.find((w) => w.id === "a")!.port).toBe(8071);
+    expect(out.workspaces.find((w) => w.id === "b")!.port).toBe(8072);
   });
 
   it("reconciles templates, including order-only patches", () => {
@@ -214,18 +214,18 @@ describe("Workspace pure derivations", () => {
   it("isWorktree() reads the explicit location, falling back to worktree metadata presence", () => {
     const orm = new ORM();
     toModels(orm, baseConfig());
-    expect(orm.getById(Workspace, "w1").isWorktree()).toBe(false);
+    expect(orm.getById(Workspace, "w1")!.isWorktree()).toBe(false);
   });
 
   it("hasMainRepo() checks against Settings.main_repo_id, defaulting to 'community'", () => {
     const orm = new ORM();
     toModels(orm, baseConfig(), {});
-    expect(orm.getById(Workspace, "w1").hasMainRepo()).toBe(true);
+    expect(orm.getById(Workspace, "w1")!.hasMainRepo()).toBe(true);
 
     const orm2 = new ORM();
     toModels(orm2, baseConfig({ main_repo_id: "odoo" }));
     // "community" repo id doesn't match main_repo_id "odoo" — no main repo
-    expect(orm2.getById(Workspace, "w1").hasMainRepo()).toBe(false);
+    expect(orm2.getById(Workspace, "w1")!.hasMainRepo()).toBe(false);
   });
 
   it("descendants() walks the parent chain breadth-first and guards against cycles", () => {
@@ -241,7 +241,7 @@ describe("Workspace pure derivations", () => {
       }),
     );
     const ids = orm
-      .getById(Workspace, "root")
+      .getById(Workspace, "root")!
       .descendants()
       .map((w) => w.id);
     expect(ids).toEqual(["child1", "grandchild"]);
@@ -252,7 +252,7 @@ describe("Repository pure URL builders", () => {
   it("githubOrDefault falls back to the built-in default when unset", () => {
     const orm = new ORM();
     toModels(orm, baseConfig({ repos: [{ id: "community", path: "/x", github: "" }] }));
-    expect(orm.getById(Repository, "community").githubOrDefault()).toBe("odoo/odoo");
+    expect(orm.getById(Repository, "community")!.githubOrDefault()).toBe("odoo/odoo");
   });
 
   it("compareUrl uses the resolved push slug when given, else falls back to odoo-dev", () => {

@@ -6,7 +6,7 @@ import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
 import { ConfigPlugin } from "../../src/core/config_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
 
-function jsonOk(data) {
+function jsonOk(data: object) {
   return { ok: true, json: async () => ({ ok: true, ...data }) };
 }
 
@@ -140,7 +140,11 @@ describe("DatabasePlugin", () => {
     const fetchMock = vi.fn(async (url, opts) => {
       if (opts?.method === "POST") {
         expect(url).toBe("/api/databases/restore-dump");
-        expect(JSON.parse(opts.body)).toEqual({ name: "bar", url: "http://runbot/dump.zip", filestore: "/fs" });
+        expect(JSON.parse(opts.body)).toEqual({
+          name: "bar",
+          url: "http://runbot/dump.zip",
+          filestore: "/fs",
+        });
         return jsonOk({});
       }
       return jsonOk({ databases: [] });

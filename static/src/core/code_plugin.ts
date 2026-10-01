@@ -8,12 +8,133 @@ import { StorePlugin } from "./store_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { postJSON } from "./utils.ts";
+import type { PostJSONError } from "./utils.ts";
 import { PullRequest, branchKey } from "./models.ts";
+import type { PullRequestWire } from "./models.ts";
+import type {
+  ForwardPortRow,
+  PrRepoWire,
+  RepoStatusWire,
+  RunbotBranchStatus,
+} from "./observed_models.ts";
 
 import { Plugin, usePlugin, signal, computed } from "@odoo/owl";
 
 const PRS_CACHE_KEY = "oo-prs-cache";
 const WORKSPACE_REFRESH_TTL = 10 * 60 * 1000;
+
+// Every `catch (e)` below catches what postJSON / fetch reject with — an Error
+// (a PostJSONError for a non-2xx reply) — so `(e as Error).message` is its message.
+
+// the store's PR-repo row view (prRepos())
+type PrRepoView = ReturnType<StorePlugin["prReposList"]>[number];
+
+// a PR's identity, as the mergebot loaders take it (a full PullRequest also fits)
+export interface PrRef {
+  github: string;
+  number: number;
+}
+
+// a one-shot refresh scope: null = none armed, true = everything, a Set = those keys
+type RefreshScope = null | true | Set<string>;
+
+// narrows a forced load's runbot / mergebot re-scrape (branch names / "github#number")
+export interface StatusScope {
+  branches: Set<string>;
+  prs: Set<string>;
+}
+
+// one repo's copy of a branch, in a BranchGroup
+export interface BranchGroupRow {
+  repo: string;
+  date: string;
+  remote: boolean;
+  checkedOut: boolean;
+}
+
+// a branch name across every repo that has it (groups().list)
+export interface BranchGroup {
+  branch: string;
+  rows: BranchGroupRow[];
+  activity: number; // latest commit/PR-update timestamp (ms) across the rows
+  base: boolean; // a base branch (master, saas-*, …)
+}
+
+// the grouped Branches & PRs view model (groups()); the *ByRepo maps are keyed
+// by repo id, prIndex / prsIndex by branchKey(repo, branch)
+export interface CodeGroups {
+  githubByRepo: Record<string, string | undefined>;
+  pathByRepo: Record<string, string>;
+  pullRemoteByRepo: Record<string, string>;
+  pushRemoteByRepo: Record<string, string>;
+  pushGithubByRepo: Record<string, string | null>;
+  prIndex: Record<string, PullRequest>; // the principal PR per branch
+  prsIndex: Record<string, PullRequest[]>; // every PR per branch, principal first
+  errors: PrRepoView[]; // PR repos whose fetch failed
+  list: BranchGroup[];
+}
+
+// a repo branch to check out (checkout)
+export interface RepoBranch {
+  repo: string;
+  path: string;
+  branch: string;
+}
+
+// a repo to fetch & rebase onto `base` (rebase)
+export interface RebaseRepo {
+  repo: string;
+  path: string;
+  base: string; // the base branch to rebase onto, e.g. "master"
+  github?: string;
+}
+
+// a repo at an explicit on-disk path (a worktree's own checkout)
+export interface RepoPath {
+  id: string;
+  path: string;
+}
+
+// a branch to create (createBranches)
+export interface BranchCreateSpec {
+  path: string;
+  name: string;
+  startPoint: string;
+  freshStart?: boolean;
+}
+
+// one commit of /api/code/log
+export interface Commit {
+  sha: string;
+  author: string;
+  date: string;
+  subject: string;
+  body: string;
+  ahead: boolean; // reachable from the ref but not from its base branch
+}
+
+// one entry of a rewriteHistory plan (oldest-first)
+export interface RebasePlanStep {
+  sha: string;
+  squash?: boolean;
+  drop?: boolean;
+  message?: string;
+}
+
+// rewriteHistory's thrown error: `inProgress` = a conflict left the rebase mid-flight
+export type RewriteHistoryError = PostJSONError & { inProgress?: boolean };
+
+// the instant-paint branch cache in localStorage
+interface BranchCache {
+  at: number;
+  branchRepos: ReturnType<StorePlugin["repoStatusList"]>;
+}
+
+// per-item outcome of the batch git endpoints
+interface ItemResult {
+  ok: boolean;
+  error?: string;
+}
 
 export class CodePlugin extends Plugin {
   static sequence = 3;
@@ -31,11 +152,11 @@ export class CodePlugin extends Plugin {
   mbDetails = this.store.mbDetails; // "github#number" -> blocked-reason detail
   mbForwardPorts = this.store.mbForwardPorts; // "github#number" -> subsequent branch rows
   runbot = this.store.runbot; // branch name -> runbot status
-  at = signal((this._cache() || {}).at || 0);
+  at = signal(this._cache()?.at || 0);
   // branchKey -> a PR resolved by head ref (forward ports / colleagues' PRs the
   // authored `prs()` fetch misses), or null once looked up and none was found (so
   // we don't re-ask). Overlaid onto the authored prIndex in `_groups()`.
-  headPrs = signal({});
+  headPrs = signal<Record<string, PullRequest | null>>({});
   loading = signal(false);
   error = signal("");
   busy = signal(false);
@@ -43,7 +164,7 @@ export class CodePlugin extends Plugin {
   // remote fetch, checkout, rebase) — drives the Code tab's per-card "working…"
   // chip so a long fetch doesn't read as a silent failure. Session-local: it
   // tracks the ops THIS browser started.
-  working = signal({});
+  working = signal<Record<string, number>>({});
   // one-shot refresh scopes, armed by a forced load(): the next mergebot / runbot
   // fetch re-asks the given keys IN SCOPE (server cache bypassed) instead of only
   // the unknown keys, updating the held records in place — stale-while-revalidate,
@@ -51,21 +172,24 @@ export class CodePlugin extends Plugin {
   // full-list refresh); a Set = just those keys (one workspace's refresh must not
   // re-scrape every other workspace's badges). Consumed by the fetch that acts on
   // them, so the have-based dedup (the loop guard) resumes right after.
-  _mbRefresh = null; // null | true | Set<"github#number">
-  _rbRefresh = null; // null | true | Set<branch name>
+  _mbRefresh: RefreshScope = null; // null | true | Set<"github#number">
+  _rbRefresh: RefreshScope = null; // null | true | Set<branch name>
   // workspace + repo scope -> its current automatic load. Switching away and back
   // while a request is still running should join it, not start another scan.
-  _workspaceLoads = new Map();
+  _workspaceLoads = new Map<string, Promise<unknown>>();
   // grouped, sorted view model — recomputed only when its inputs change
-  groups = computed(() => this._groups());
+  groups = computed((): CodeGroups => this._groups());
 
   // hydrate the store from the instant-paint cache once, so a reload doesn't flash
   // empty until the branch fetch lands (branches are local git — uncached server-side).
   // The cached snapshots carry an old stamp, so the fresh fetch's later `at` wins.
-  setup() {
+  setup(): void {
     const c = this._cache();
     if (c && c.branchRepos) {
-      this.store.mergeRepoStatus(c.branchRepos, c.at || 0, { authoritative: false });
+      // the cache holds the store's own rows (camelCase pushGithub), mergeRepoStatus
+      // reads the wire shape (push_github)
+      const repos = c.branchRepos.map((r) => ({ ...r, push_github: r.pushGithub }));
+      this.store.mergeRepoStatus(repos, c.at || 0, { authoritative: false });
     }
   }
 
@@ -74,9 +198,9 @@ export class CodePlugin extends Plugin {
   // load effects (which re-run when the signal updates) from looping. An armed one-shot
   // refresh widens the batch to the given PRs in scope (held ones included) and asks
   // the server to re-scrape; the held badges stay visible and update in place.
-  async loadMergebot(prs) {
+  async loadMergebot(prs: PrRef[]): Promise<void> {
     const refresh = this._mbRefresh;
-    const inScope = (k) => refresh === true || (refresh instanceof Set && refresh.has(k));
+    const inScope = (k: string) => refresh === true || (refresh instanceof Set && refresh.has(k));
     const have = this.mergebot();
     const forwardPorts = this.mbForwardPorts();
     const todo = prs.filter((p) => {
@@ -88,7 +212,11 @@ export class CodePlugin extends Plugin {
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this.store.mbPending.add(k));
     try {
-      const res = await postJSON("/api/mergebot", { prs: todo, refresh: keys.some(inScope) });
+      const res = await postJSON<{
+        states?: Record<string, string>;
+        details?: Record<string, string | null>;
+        forward_ports?: Record<string, ForwardPortRow[]>;
+      }>("/api/mergebot", { prs: todo, refresh: keys.some(inScope) });
       // don't pin blanks: a state the scrape couldn't produce (fresh PR not yet
       // indexed, transient mergebot failure) must stay re-askable — a stored ""
       // satisfies the `k in have` dedup forever and permanently blanks the badge
@@ -115,9 +243,9 @@ export class CodePlugin extends Plugin {
 
   // runbot status for the given branches — same dedup + one-shot refresh as
   // loadMergebot
-  async loadRunbot(branches) {
+  async loadRunbot(branches: string[]): Promise<void> {
     const refresh = this._rbRefresh;
-    const inScope = (b) => refresh === true || (refresh instanceof Set && refresh.has(b));
+    const inScope = (b: string) => refresh === true || (refresh instanceof Set && refresh.has(b));
     const have = this.runbot();
     const todo = branches.filter(
       (b) => (inScope(b) || !(b in have)) && !this.store.rbPending.has(b),
@@ -126,7 +254,10 @@ export class CodePlugin extends Plugin {
     this._rbRefresh = null; // consumed by this batch
     todo.forEach((b) => this.store.rbPending.add(b));
     try {
-      const res = await postJSON("/api/runbot", { branches: todo, refresh: todo.some(inScope) });
+      const res = await postJSON<{ states: Record<string, RunbotBranchStatus> }>("/api/runbot", {
+        branches: todo,
+        refresh: todo.some(inScope),
+      });
       this.store.mergeRunbot(res.states);
     } catch {
       /* leave status blank on failure */
@@ -137,7 +268,7 @@ export class CodePlugin extends Plugin {
 
   // widen a one-shot refresh scope with another: `true` (everything) absorbs
   // sets, sets union — an armed scope is never narrowed by a later, smaller one
-  _widenScope(cur, next) {
+  _widenScope(cur: RefreshScope, next: RefreshScope): RefreshScope {
     if (cur === true || next === true) return true;
     if (!cur || !next) return cur || next;
     return new Set([...cur, ...next]);
@@ -147,7 +278,10 @@ export class CodePlugin extends Plugin {
   // scopes so both loaders re-ask exactly those keys (server cache bypassed) and
   // update the held records in place — the badges stay visible throughout. Resolves
   // when both re-scrapes have landed (drives the list's refresh spinner).
-  async refreshStatuses(branches, prs) {
+  async refreshStatuses(
+    branches: string[] | null | undefined,
+    prs: PrRef[] | null | undefined,
+  ): Promise<void> {
     this._rbRefresh = this._widenScope(this._rbRefresh, new Set(branches || []));
     this._mbRefresh = this._widenScope(
       this._mbRefresh,
@@ -166,15 +300,15 @@ export class CodePlugin extends Plugin {
   // a repo added for convenience but outside the odoo CI ecosystem (e.g. odoo/owl):
   // flagged `external` in config, so we skip its mergebot + runbot scrapes (they'd
   // only 404 — those services don't index it). Keyed by the github slug PRs carry.
-  isExternalRepo(github) {
+  isExternalRepo(github: string): boolean {
     return !!github && !!this.config.config.repos.find((r) => r.github === github)?.external;
   }
 
   // last-known branches, kept only for an instant first paint on reload (PRs are
   // now server-cached and always fetched fresh, so they're no longer stored here)
-  _cache() {
+  _cache(): BranchCache | null {
     try {
-      const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
+      const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY) ?? "null");
       return c && c.at && c.branchRepos ? c : null;
     } catch {
       return null;
@@ -190,7 +324,12 @@ export class CodePlugin extends Plugin {
   // subprocesses. null = every repo (the Branches/PRs tabs, which show all).
   // `statusScope` ({branches: Set, prs: Set}) narrows a forced load's runbot/mergebot
   // re-scrape the same way; null = re-ask everything (the full-list refreshers).
-  async load(force = false, prRepoIds = null, branchRepoIds = null, statusScope = null) {
+  async load(
+    force = false,
+    prRepoIds: Set<string> | null = null,
+    branchRepoIds: Set<string> | null = null,
+    statusScope: StatusScope | null = null,
+  ): Promise<void> {
     this.loading.set(true);
     this.error.set("");
     // stale-while-revalidate: the held runbot/mergebot badges stay on screen; the
@@ -205,7 +344,9 @@ export class CodePlugin extends Plugin {
     const at = Date.now(); // request-start stamp — the freshness of these snapshots
     const repos = this.reposWithGithub();
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
-    const branchesP = postJSON("/api/code/branches", { repos: branchReq })
+    const branchesP = postJSON<{ repos: RepoStatusWire[] }>("/api/code/branches", {
+      repos: branchReq,
+    })
       .then((b) => {
         // One merge rule: a full scan is authoritative for its scope (repos gone from
         // config are dropped); a narrowed load only merges. A targeted refresh that
@@ -215,19 +356,22 @@ export class CodePlugin extends Plugin {
         return true;
       })
       .catch((e) => {
-        this.error.set(e.message);
+        this.error.set((e as Error).message);
         return false;
       });
     const prReq = repos.filter((r) => r.github && (!prRepoIds || prRepoIds.has(r.id)));
     const scopeIds = new Set(prReq.map((r) => r.id));
-    const prsP = postJSON("/api/prs", { repos: prReq, refresh: force })
+    const prsP = postJSON<{ repos: (PrRepoWire & { prs?: PullRequestWire[] })[] }>("/api/prs", {
+      repos: prReq,
+      refresh: force,
+    })
       .then((p) => {
         // normalize each PR into the canonical shape on ingest (see models.ts)
         const normalized = p.repos.map((r) => ({ ...r, prs: (r.prs || []).map(PullRequest.from) }));
         this.store.mergePrRepos(normalized, at, scopeIds);
       })
       .catch((e) => {
-        this.error.set(e.message);
+        this.error.set((e as Error).message);
       });
     const [ok] = await Promise.all([branchesP, prsP]);
     this.loading.set(false);
@@ -251,15 +395,15 @@ export class CodePlugin extends Plugin {
   // "looked up, none found") unless force re-asks. `repoIds` (a Set) limits the walk
   // to those repos; null = all. Never triggered from an effect that reads groups(),
   // so updating headPrs can't re-drive a load.
-  async loadHeadPrs(force = false, repoIds = null) {
-    const prIndex = {};
+  async loadHeadPrs(force = false, repoIds: Set<string> | null = null): Promise<void> {
+    const prIndex: Record<string, PullRequest> = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
     }
     const githubByRepo = Object.fromEntries(this.reposWithGithub().map((r) => [r.id, r.github]));
     const have = this.headPrs();
     const seen = new Set();
-    const pairs = [];
+    const pairs: { id: string; github: string; branch: string }[] = [];
     for (const repo of this.branchRepos()) {
       if (repoIds && !repoIds.has(repo.id)) continue;
       const github = githubByRepo[repo.id];
@@ -276,11 +420,11 @@ export class CodePlugin extends Plugin {
     }
     if (!pairs.length) return;
     try {
-      const data = await postJSON("/api/prs/for-branches", {
+      const data = await postJSON<{ prs?: PullRequestWire[] }>("/api/prs/for-branches", {
         branches: pairs.map((p) => ({ github: p.github, branch: p.branch })),
         refresh: force,
       });
-      const byGhBranch = {};
+      const byGhBranch: Record<string, PullRequest> = {};
       for (const raw of data.prs || [])
         byGhBranch[`${raw.github}#${raw.branch}`] = PullRequest.from(raw);
       const next = { ...this.headPrs() };
@@ -290,7 +434,7 @@ export class CodePlugin extends Plugin {
       }
       this.headPrs.set(next);
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set((e as Error).message);
     }
   }
 
@@ -298,7 +442,7 @@ export class CodePlugin extends Plugin {
   // is only as fresh as its oldest requested repo snapshot; repos with a GitHub slug
   // need both their local branch state and PR state. Deriving this from the normalized
   // store also lets a list-wide or another screen's load satisfy the workspace cache.
-  workspaceRefreshedAt(repoIds) {
+  workspaceRefreshedAt(repoIds: Set<string> | string[] | null | undefined): number {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     if (!ids.size) return 0;
     const branches = new Map(this.branchRepos().map((r) => [r.id, r.fetchedAt || 0]));
@@ -325,14 +469,20 @@ export class CodePlugin extends Plugin {
   // Selection-driven workspace loads are cache-aware for ten minutes. Manual
   // Refresh passes force=true and always bypasses this frontend freshness guard
   // (and the backend's PR cache through load()).
-  loadWorkspace(workspaceId, repoIds, force = false, statusScope = null) {
+  loadWorkspace(
+    workspaceId: string,
+    repoIds: Set<string> | string[] | null | undefined,
+    force = false,
+    statusScope: StatusScope | null = null,
+  ): Promise<boolean> {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     const refreshedAt = this.workspaceRefreshedAt(ids);
     if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
       return Promise.resolve(false);
     }
     const key = `${workspaceId}:${JSON.stringify([...ids].sort())}`;
-    const pending = this._workspaceLoads.get(key);
+    // a key without the "wt:" prefix only ever holds this method's own request
+    const pending = this._workspaceLoads.get(key) as Promise<boolean> | undefined;
     // A manual refresh made during an automatic request must still force a second
     // load after it; ordinary selection changes can simply share the pending one.
     if (pending)
@@ -354,17 +504,19 @@ export class CodePlugin extends Plugin {
   // optionally scoped to a set of repo ids. For a screen that needs checkout/dirty
   // state on demand but never shows PRs — the Targets kebab. Leaves the PR/runbot/
   // mergebot signals untouched (unlike load(), which also refetches those).
-  async loadBranches(branchRepoIds = null) {
+  async loadBranches(branchRepoIds: Set<string> | null = null): Promise<void> {
     const repos = this.reposWithGithub();
     const req = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
     const at = Date.now();
     try {
-      const b = await postJSON("/api/code/branches", { repos: req });
+      const b = await postJSON<{ repos: RepoStatusWire[] }>("/api/code/branches", {
+        repos: req,
+      });
       // merge when narrowed (a scoped load reads a single workspace's repos): must
       // not clobber the other repos' branch state that the workspaces/branches rely on
       this.store.mergeRepoStatus(b.repos, at, { authoritative: !branchRepoIds });
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set((e as Error).message);
     }
   }
 
@@ -373,12 +525,12 @@ export class CodePlugin extends Plugin {
   // only touch a subset of repos — a target's checkout, a (per-repo or "all") rebase
   // — so we don't re-scan every clone. Like loadBranches it leaves PR/runbot/mergebot
   // untouched: a local checkout/rebase changes the working tree, not the PRs.
-  async refreshBranches(repoIds) {
+  async refreshBranches(repoIds: Set<string>): Promise<void> {
     const repos = this.reposWithGithub().filter((r) => repoIds.has(r.id));
     if (!repos.length) return;
     const at = Date.now();
     try {
-      const b = await postJSON("/api/code/branches", { repos });
+      const b = await postJSON<{ repos: RepoStatusWire[] }>("/api/code/branches", { repos });
       this.store.mergeRepoStatus(b.repos, at, { authoritative: false }); // only these changed
       // keep the instant-paint cache in step, so a reload right after doesn't flash
       // the pre-checkout branch for the repos we just refreshed
@@ -388,7 +540,7 @@ export class CodePlugin extends Plugin {
         localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ ...cache, branchRepos }));
       }
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set((e as Error).message);
     }
   }
 
@@ -401,7 +553,7 @@ export class CodePlugin extends Plugin {
   // touches the bare-repo-id RepoStatus rows the Branches screen and other
   // workspaces rely on. In-flight de-dup reuses _workspaceLoads (key prefixed
   // "wt:" so it can't collide with loadWorkspace's own keys).
-  async loadWorktreeBranches(workspaceId, repoPaths) {
+  async loadWorktreeBranches(workspaceId: string, repoPaths: RepoPath[]): Promise<unknown> {
     if (!repoPaths.length) return;
     const key = `wt:${workspaceId}:${repoPaths
       .map((r) => r.id)
@@ -411,7 +563,7 @@ export class CodePlugin extends Plugin {
     if (pending) return pending;
     const { pullRemoteByRepo, pushRemoteByRepo } = this.groups();
     const at = Date.now();
-    const request = postJSON("/api/code/branches", {
+    const request = postJSON<{ repos: RepoStatusWire[] }>("/api/code/branches", {
       repos: repoPaths.map((r) => ({
         id: `${workspaceId}:${r.id}`,
         path: r.path,
@@ -420,7 +572,7 @@ export class CodePlugin extends Plugin {
       })),
     })
       .then((b) => this.store.mergeWorktreeRepoStatus(b.repos, at))
-      .catch((e) => this.error.set(e.message))
+      .catch((e) => this.error.set((e as Error).message))
       .finally(() => {
         if (this._workspaceLoads.get(key) === request) this._workspaceLoads.delete(key);
       });
@@ -431,12 +583,17 @@ export class CodePlugin extends Plugin {
   // after a mutation at a worktree workspace's own path, refresh ITS composite
   // row instead of the main checkout's — shared by checkout/rebase/commit/
   // wipCommit/amendCommit/discard/push below.
-  _refreshRepo(repo, path, workspaceId, ids = null) {
+  _refreshRepo(
+    repo: string,
+    path: string,
+    workspaceId: string,
+    ids: Set<string> | null = null,
+  ): Promise<unknown> {
     if (workspaceId) return this.loadWorktreeBranches(workspaceId, [{ id: repo, path }]);
     return this.refreshBranches(ids || new Set([repo]));
   }
 
-  _groups() {
+  _groups(): CodeGroups {
     const repos = this.reposWithGithub();
     const githubByRepo = Object.fromEntries(repos.map((r) => [r.id, r.github]));
     const pathByRepo = Object.fromEntries(repos.map((r) => [r.id, r.path]));
@@ -453,7 +610,7 @@ export class CodePlugin extends Plugin {
     // derive prIndex as the PRINCIPAL one (open — there can be only one — else the
     // most recently updated) so every existing "single PR" action/badge site keeps
     // working unchanged. prsIndex exposes the full list for display.
-    const prsByBranch = {};
+    const prsByBranch: Record<string, PullRequest[]> = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) {
         const key = branchKey(repo.id, pr.branch);
@@ -465,27 +622,26 @@ export class CodePlugin extends Plugin {
     for (const [key, pr] of Object.entries(headPrs)) {
       if (pr && !prsByBranch[key]) prsByBranch[key] = [pr];
     }
-    const prIndex = {};
-    const prsIndex = {};
+    const prIndex: Record<string, PullRequest> = {};
+    const prsIndex: Record<string, PullRequest[]> = {};
     for (const [key, list] of Object.entries(prsByBranch)) {
       const sorted = list
         .slice()
         .sort(
           (a, b) =>
-            (b.state === "open") - (a.state === "open") ||
+            Number(b.state === "open") - Number(a.state === "open") ||
             (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0),
         );
       prsIndex[key] = sorted;
       prIndex[key] = sorted[0];
     }
-    const map = new Map();
+    const map = new Map<string, BranchGroupRow[]>();
     for (const repo of this.branchRepos()) {
       for (const b of repo.branches) {
         if (!map.has(b.name)) map.set(b.name, []);
-        map.get(b.name).push({
+        map.get(b.name)!.push({
           repo: repo.id,
           date: b.date,
-          runbot: b.runbot,
           remote: b.remote,
           checkedOut: b.name === repo.current,
         });
@@ -513,10 +669,9 @@ export class CodePlugin extends Plugin {
             rows,
             activity,
             base: BASE_BRANCH_RE.test(branch),
-            runbot: rows.map((r) => r.runbot).find(Boolean) || "",
           };
         })
-        .sort((a, b) => a.base - b.base || b.activity - a.activity),
+        .sort((a, b) => Number(a.base) - Number(b.base) || b.activity - a.activity),
     };
   }
 
@@ -526,7 +681,7 @@ export class CodePlugin extends Plugin {
   // `repoId` resolves the push remote's actual fork (see pushGithubByRepo) — without
   // it (or before that repo's first branches() read completes) these fall back to
   // repoUrls' own hardcoded-org guess.
-  prCreateUrl(repoId, github, branch) {
+  prCreateUrl(repoId: string, github: string, branch: string): string {
     const pushSlug = this.groups().pushGithubByRepo[repoId];
     return (
       this.config.repoByGithub(github)?.compareUrl(branch, pushSlug) ??
@@ -534,7 +689,7 @@ export class CodePlugin extends Plugin {
     );
   }
 
-  forkBranchUrl(repoId, github, branch) {
+  forkBranchUrl(repoId: string, github: string, branch: string): string {
     const pushSlug = this.groups().pushGithubByRepo[repoId];
     return (
       this.config.repoByGithub(github)?.forkBranchUrl(branch, pushSlug) ??
@@ -542,7 +697,7 @@ export class CodePlugin extends Plugin {
     );
   }
 
-  remoteBranchUrl(repoId, github, branch) {
+  remoteBranchUrl(repoId: string, github: string, branch: string): string {
     const pushSlug = this.groups().pushGithubByRepo[repoId];
     return (
       this.config.repoByGithub(github)?.remoteBranchUrl(branch, pushSlug) ??
@@ -550,43 +705,47 @@ export class CodePlugin extends Plugin {
     );
   }
 
-  mergebotUrl(github, number) {
+  mergebotUrl(github: string, number: number): string {
     return (
       this.config.repoByGithub(github)?.mergebotUrl(number) ?? repoUrls.mergebot(github, number)
     );
   }
 
-  pullRequestUrl(github, number) {
+  pullRequestUrl(github: string, number: number): string {
     return (
       this.config.repoByGithub(github)?.pullRequestUrl(number) ??
       repoUrls.pullRequest(github, number)
     );
   }
 
-  async postRPlus(github, number) {
+  async postRPlus(github: string, number: number): Promise<boolean> {
     this.eventLog.add(`posting robodoo r+ on PR #${number} (${github})`);
     try {
       await postJSON("/api/prs/r-plus", { repo: github, number });
       this.eventLog.add(`posted robodoo r+ on PR #${number} (${github})`);
       return true;
     } catch (e) {
-      this.eventLog.add(`posting r+ failed: ${github}#${number} — ${e.message}`, "", "error");
-      this.dialogs.error("Post r+ failed", e.message);
+      this.eventLog.add(
+        `posting r+ failed: ${github}#${number} — ${(e as Error).message}`,
+        "",
+        "error",
+      );
+      this.dialogs.error("Post r+ failed", (e as Error).message);
       return false;
     }
   }
 
   // the configured remotes for the repo at <path> (never blank — REPO_FIELDS normalizes)
-  _pullRemote(path) {
+  _pullRemote(path: string): string {
     return this.config.config.repos.find((r) => r.path === path)?.pull_remote || "origin";
   }
 
-  _pushRemote(path) {
+  _pushRemote(path: string): string {
     return this.config.config.repos.find((r) => r.path === path)?.push_remote || "dev";
   }
 
-  async remoteExists(path, branch) {
-    const res = await postJSON("/api/code/branch/remote", {
+  async remoteExists(path: string, branch: string): Promise<boolean> {
+    const res = await postJSON<{ exists: boolean }>("/api/code/branch/remote", {
       path,
       branch,
       push_remote: this._pushRemote(path),
@@ -598,8 +757,16 @@ export class CodePlugin extends Plugin {
   // (the branch's own base, e.g. "master") + `pullRemote` make each commit carry
   // an "ahead" flag — reachable from ref but not the base branch, i.e. unique to
   // this branch and so safe to reword (see rewordCommit).
-  async commits(path, ref = "", { base = "", pullRemote = "", count = 20 } = {}) {
-    const res = await postJSON("/api/code/log", {
+  async commits(
+    path: string,
+    ref = "",
+    {
+      base = "",
+      pullRemote = "",
+      count = 20,
+    }: { base?: string; pullRemote?: string; count?: number } = {},
+  ): Promise<Commit[]> {
+    const res = await postJSON<ItemResult & { commits: Commit[] }>("/api/code/log", {
       path,
       ref,
       base,
@@ -610,8 +777,11 @@ export class CodePlugin extends Plugin {
     return res.commits;
   }
 
-  async commitDiff(path, sha) {
-    const res = await postJSON("/api/code/commit/diff", { path, sha });
+  async commitDiff(path: string, sha: string): Promise<string> {
+    const res = await postJSON<ItemResult & { diff?: string }>("/api/code/commit/diff", {
+      path,
+      sha,
+    });
     if (!res.ok) throw new Error(res.error || "git show failed");
     return res.diff || "";
   }
@@ -621,19 +791,19 @@ export class CodePlugin extends Plugin {
   // fetch the body up front, since most commits are never opened for editing) — this
   // is the on-demand fetch for the edit/amend dialogs' prefill, so a multi-line
   // message isn't silently truncated to its first line. "" if the commit isn't found.
-  async commitMessage(path, ref = "") {
+  async commitMessage(path: string, ref = ""): Promise<string> {
     const [head] = await this.commits(path, ref);
     if (!head) return "";
     return head.body ? `${head.subject}\n\n${head.body}` : head.subject;
   }
 
-  async _mutate(label, fn, reload = true) {
+  async _mutate(label: string, fn: () => Promise<void>, reload = true): Promise<void> {
     this.busy.set(true);
     try {
       await fn();
       if (reload) await this.load(true);
     } catch (e) {
-      this.dialogs.error(`${label} failed`, e.message);
+      this.dialogs.error(`${label} failed`, (e as Error).message);
     } finally {
       this.busy.set(false);
     }
@@ -644,12 +814,15 @@ export class CodePlugin extends Plugin {
   // refresh only them (merging into the view) and leave every other repo alone —
   // and PRs (keyed by head branch), runbot (by branch) and mergebot (by PR) are
   // unaffected, so we keep those from the cache (the screens lazily fill any new).
-  async checkout(repos, workspaceId = "") {
+  async checkout(repos: RepoBranch[], workspaceId = ""): Promise<void> {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     this.busy.set(true);
     this._beginWork(ids);
     try {
-      const res = await postJSON("/api/code/checkout", { repos });
+      const res = await postJSON<{ results?: (ItemResult & { branch: string })[] }>(
+        "/api/code/checkout",
+        { repos },
+      );
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
         this.dialogs.error(
@@ -667,7 +840,7 @@ export class CodePlugin extends Plugin {
         await this.load(false);
       }
     } catch (e) {
-      this.dialogs.error("Checkout failed", e.message);
+      this.dialogs.error("Checkout failed", (e as Error).message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -679,7 +852,7 @@ export class CodePlugin extends Plugin {
   // commits (head sha, ahead/behind, pushed-state), so we refresh only them; the PR
   // list / runbot / mergebot reflect the pushed branch, which a local rebase hasn't
   // touched, so we leave those as-is rather than re-querying everything.
-  async rebase(repos, workspaceId = "") {
+  async rebase(repos: RebaseRepo[], workspaceId = ""): Promise<void> {
     const ids = [...new Set(repos.map((r) => r.repo).filter(Boolean))];
     const { pullRemoteByRepo } = this.groups();
     repos = repos.map((r) => ({ ...r, pull_remote: pullRemoteByRepo[r.repo] }));
@@ -688,7 +861,10 @@ export class CodePlugin extends Plugin {
     // the backend logs each repo's fetch then rebase phase as it happens (via SSE
     // events), so there's nothing to pre-log here
     try {
-      const res = await postJSON("/api/code/rebase", { repos });
+      const res = await postJSON<{ results?: (ItemResult & { repo: string })[] }>(
+        "/api/code/rebase",
+        { repos },
+      );
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length) {
         for (const f of failed)
@@ -709,8 +885,8 @@ export class CodePlugin extends Plugin {
         await this.load(true);
       }
     } catch (e) {
-      this.eventLog.add(`fetch & rebase failed: ${e.message}`, "", "error");
-      this.dialogs.error("Fetch & rebase failed", e.message);
+      this.eventLog.add(`fetch & rebase failed: ${(e as Error).message}`, "", "error");
+      this.dialogs.error("Fetch & rebase failed", (e as Error).message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -719,7 +895,7 @@ export class CodePlugin extends Plugin {
 
   // drop a branch from the view + cache without a server round-trip — a full
   // reload would re-fetch every branch's runbot badge, which is pointless here
-  _dropBranch(repo, branch) {
+  _dropBranch(repo: string, branch: string): void {
     this.store.dropBranch(repo, branch);
     const cache = this._cache();
     if (cache) {
@@ -728,7 +904,12 @@ export class CodePlugin extends Plugin {
     }
   }
 
-  async deleteBranch(branch, repo, path, deleteRemote = false) {
+  async deleteBranch(
+    branch: string,
+    repo: string,
+    path: string,
+    deleteRemote = false,
+  ): Promise<void> {
     const scope = deleteRemote ? `locally and on the ${this._pushRemote(path)} remote` : "locally";
     const ok = await this.dialogs.open({
       title: `Force-delete branch "${branch}" in ${repo}?`,
@@ -741,12 +922,17 @@ export class CodePlugin extends Plugin {
 
   // delete a branch without prompting — the caller has already confirmed (e.g.
   // a single confirmation dialog covering several branches / PRs at once)
-  deleteBranchNoConfirm(branch, repo, path, deleteRemote = false) {
+  deleteBranchNoConfirm(
+    branch: string,
+    repo: string,
+    path: string,
+    deleteRemote = false,
+  ): Promise<void> {
     return this._mutate(
       "Delete",
       async () => {
         this.eventLog.add(`deleting branch ${branch} (${repo})`);
-        const res = await postJSON("/api/code/branches/delete", {
+        const res = await postJSON<{ remote_error?: string }>("/api/code/branches/delete", {
           path,
           branch,
           delete_remote: deleteRemote,
@@ -771,13 +957,13 @@ export class CodePlugin extends Plugin {
   // to prefer a freshly fetched canonical-remote branch over the local start point.
   // per-repo in-flight bookkeeping for the slow git operations (counted, so
   // overlapping operations on one repo keep the flag up until the last one ends)
-  _beginWork(ids) {
+  _beginWork(ids: string[]): void {
     const w = { ...this.working() };
     for (const id of ids) w[id] = (w[id] || 0) + 1;
     this.working.set(w);
   }
 
-  _endWork(ids) {
+  _endWork(ids: string[]): void {
     const w = { ...this.working() };
     for (const id of ids) {
       if ((w[id] = (w[id] || 1) - 1) <= 0) delete w[id];
@@ -787,16 +973,16 @@ export class CodePlugin extends Plugin {
 
   // is a slow git operation (branch create/fetch, checkout, rebase) running for
   // this repo in this session?
-  repoWorking(id) {
+  repoWorking(id: string): boolean {
     return !!this.working()[id];
   }
 
-  async createBranches(specs) {
+  async createBranches(specs: BranchCreateSpec[] | null | undefined): Promise<void> {
     const repoByPath = new Map(this.config.config.repos.map((r) => [r.path, r]));
     const branches = (specs || [])
       .filter((s) => s.path && s.name && repoByPath.has(s.path))
       .map((s) => {
-        const repo = repoByPath.get(s.path);
+        const repo = repoByPath.get(s.path)!; // filtered on repoByPath.has above
         return {
           path: s.path,
           name: s.name,
@@ -815,7 +1001,10 @@ export class CodePlugin extends Plugin {
         const repo = repoByPath.get(b.path);
         this.eventLog.add(`creating branch ${b.name}${repo ? ` (${repo.id})` : ""}`);
       }
-      const res = await postJSON("/api/code/branches/create", { branches });
+      const res = await postJSON<{ results?: (ItemResult & { name: string })[] }>(
+        "/api/code/branches/create",
+        { branches },
+      );
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
         this.dialogs.error(
@@ -824,7 +1013,7 @@ export class CodePlugin extends Plugin {
         );
       await this.refreshBranches(new Set(ids));
     } catch (e) {
-      this.dialogs.error("Create branch failed", e.message);
+      this.dialogs.error("Create branch failed", (e as Error).message);
     } finally {
       this._endWork(ids);
       this.busy.set(false);
@@ -832,18 +1021,18 @@ export class CodePlugin extends Plugin {
   }
 
   // create a single branch at <startPoint> without checking it out
-  createBranch(path, name, startPoint) {
+  createBranch(path: string, name: string, startPoint: string): Promise<void> {
     return this.createBranches([{ path, name, startPoint }]);
   }
 
   // optimistically mark a PR closed in the view, no reload (which would re-fetch
   // everything just to flip one PR's state). The server already invalidated its PR
   // cache in close_pr, so the next load reflects it too.
-  _closePrLocally(github, number) {
+  _closePrLocally(github: string, number: number): void {
     this.store.closePr(github, number);
   }
 
-  async closePr(github, number) {
+  async closePr(github: string, number: number): Promise<void> {
     const ok = await this.dialogs.open({
       title: `Close PR #${number} in ${github}?`,
       okLabel: "Close PR",
@@ -854,7 +1043,7 @@ export class CodePlugin extends Plugin {
 
   // mark a draft PR ready for review (`gh pr ready`). Optimistically flips the
   // local record's draft flag on success — no full reload for one field.
-  readyPr(github, number) {
+  readyPr(github: string, number: number): Promise<void> {
     return this._mutate(
       "Set PR to ready",
       async () => {
@@ -867,7 +1056,7 @@ export class CodePlugin extends Plugin {
   }
 
   // close a PR without prompting — caller has already confirmed
-  closePrNoConfirm(github, number) {
+  closePrNoConfirm(github: string, number: number): Promise<void> {
     return this._mutate(
       "Close PR",
       async () => {
@@ -884,23 +1073,23 @@ export class CodePlugin extends Plugin {
   // plugin itself via the DialogPlugin, no component involvement needed.
   // open a repo's working directory in the configured editor (default "code");
   // no git mutation, so no busy/reload — just fire the launch (only failures log)
-  openEditor(path, repo) {
+  openEditor(path: string, repo: string): Promise<void> {
     return this.openEditorPaths([path], repo);
   }
 
   // open one or more repo folders in the configured editor — passing several dirs
   // opens them in a single window (`code repo1 repo2`). `label` names them in logs.
-  async openEditorPaths(paths, label) {
+  async openEditorPaths(paths: string[], label: string): Promise<void> {
     const editor = (this.config.config.editor || "code").trim();
     try {
       await postJSON("/api/open-editor", { editor, paths });
     } catch (e) {
-      this.eventLog.add(`open with editor failed (${label}): ${e.message}`, "", "error");
-      this.dialogs.error("Could not open the editor", e.message);
+      this.eventLog.add(`open with editor failed (${label}): ${(e as Error).message}`, "", "error");
+      this.dialogs.error("Could not open the editor", (e as Error).message);
     }
   }
 
-  async wipCommit(path, repo, workspaceId = "") {
+  async wipCommit(path: string, repo: string, workspaceId = ""): Promise<void> {
     this.busy.set(true);
     try {
       this.eventLog.add(`WIP commit (${repo})`);
@@ -910,7 +1099,7 @@ export class CodePlugin extends Plugin {
       await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`WIP commit failed (${repo})`);
-      this.dialogs.error("WIP commit failed", e.message);
+      this.dialogs.error("WIP commit failed", (e as Error).message);
     } finally {
       this.busy.set(false);
     }
@@ -918,7 +1107,7 @@ export class CodePlugin extends Plugin {
 
   // stage all changes and commit with a user-supplied message (see
   // dialogs.ts's editCommitMessage — the "Commit" menu action's caller)
-  async commit(path, repo, message, workspaceId = "") {
+  async commit(path: string, repo: string, message: string, workspaceId = ""): Promise<void> {
     this.busy.set(true);
     try {
       this.eventLog.add(`commit (${repo})`);
@@ -926,7 +1115,7 @@ export class CodePlugin extends Plugin {
       await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`commit failed (${repo})`);
-      this.dialogs.error("Commit failed", e.message);
+      this.dialogs.error("Commit failed", (e as Error).message);
     } finally {
       this.busy.set(false);
     }
@@ -935,7 +1124,7 @@ export class CodePlugin extends Plugin {
   // stage all changes and fold them into the HEAD commit with a (possibly
   // edited) message — git commit --amend (see dialogs.ts's editCommitMessage —
   // the "Amend commit" menu action's caller)
-  async amendCommit(path, repo, message, workspaceId = "") {
+  async amendCommit(path: string, repo: string, message: string, workspaceId = ""): Promise<void> {
     this.busy.set(true);
     try {
       this.eventLog.add(`amend commit (${repo})`);
@@ -943,7 +1132,7 @@ export class CodePlugin extends Plugin {
       await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`amend commit failed (${repo})`);
-      this.dialogs.error("Amend commit failed", e.message);
+      this.dialogs.error("Amend commit failed", (e as Error).message);
     } finally {
       this.busy.set(false);
     }
@@ -954,8 +1143,13 @@ export class CodePlugin extends Plugin {
   // and the backend re-checks that itself before touching anything). Throws on
   // failure — the caller (CommitsDialog) owns showing that error, since it needs
   // to keep its own dialog open rather than this cutting straight to a generic one.
-  async rewordCommit(path, sha, message, { base = "", pullRemote = "" } = {}) {
-    const res = await postJSON("/api/code/reword", {
+  async rewordCommit(
+    path: string,
+    sha: string,
+    message: string,
+    { base = "", pullRemote = "" }: { base?: string; pullRemote?: string } = {},
+  ): Promise<void> {
+    const res = await postJSON<ItemResult>("/api/code/reword", {
       path,
       sha,
       message,
@@ -978,19 +1172,25 @@ export class CodePlugin extends Plugin {
   // postJSON already throws on the backend's non-2xx failure reply, so the
   // flag has to be read off that thrown error's attached `.data`, not a
   // `res.ok` check here.
-  async rewriteHistory(path, base, plan, pullRemote = "") {
+  async rewriteHistory(
+    path: string,
+    base: string,
+    plan: RebasePlanStep[],
+    pullRemote = "",
+  ): Promise<void> {
     try {
       await postJSON("/api/code/rebase-plan", { path, base, plan, pull_remote: pullRemote });
     } catch (e) {
-      e.inProgress = !!e.data?.in_progress;
-      throw e;
+      const err = e as RewriteHistoryError; // see the catch note at the top
+      err.inProgress = !!(err.data as { in_progress?: boolean } | undefined)?.in_progress;
+      throw err;
     }
   }
 
   // abort an in-progress rebase left by a conflicted rewriteHistory, restoring
   // the branch to its pre-rebase state. Throws on failure.
-  async abortRebase(path) {
-    const res = await postJSON("/api/code/rebase-abort", { path });
+  async abortRebase(path: string): Promise<void> {
+    const res = await postJSON<ItemResult>("/api/code/rebase-abort", { path });
     if (!res.ok) throw new Error(res.error || "git rebase --abort failed");
   }
 
@@ -998,13 +1198,15 @@ export class CodePlugin extends Plugin {
   // every history view load (not just right after applying a plan), so a
   // stuck rebase from a previous session is never silently invisible. Throws
   // on failure (the caller falls back to treating it as unknown/not stuck).
-  async rebaseStatus(path) {
-    const res = await postJSON("/api/code/rebase-status", { path });
+  async rebaseStatus(path: string): Promise<boolean> {
+    const res = await postJSON<ItemResult & { in_progress?: boolean }>("/api/code/rebase-status", {
+      path,
+    });
     if (!res.ok) throw new Error(res.error || "couldn't check rebase status");
     return !!res.in_progress;
   }
 
-  async discard(path, repo, workspaceId = "") {
+  async discard(path: string, repo: string, workspaceId = ""): Promise<void> {
     const ok = await this.dialogs.open({
       title: `Discard changes in ${repo}?`,
       message:
@@ -1021,7 +1223,7 @@ export class CodePlugin extends Plugin {
       await this._refreshRepo(repo, path, workspaceId);
     } catch (e) {
       this.eventLog.add(`discard failed (${repo})`);
-      this.dialogs.error("Discard changes failed", e.message);
+      this.dialogs.error("Discard changes failed", (e as Error).message);
     } finally {
       this.busy.set(false);
     }
@@ -1032,7 +1234,14 @@ export class CodePlugin extends Plugin {
   // derived from `path` — a worktree's path never matches any configured repo
   // path, and defaulting its push_remote to a hardcoded "dev" would silently
   // push to the wrong remote).
-  pushBranchNoConfirm(path, branch, repo, reload = true, force = false, workspaceId = "") {
+  pushBranchNoConfirm(
+    path: string,
+    branch: string,
+    repo: string,
+    reload = true,
+    force = false,
+    workspaceId = "",
+  ): Promise<void> {
     const repoCfg = this.config.config.repos.find((r) => r.id === repo);
     return this._mutate(
       force ? "Force push" : "Push",

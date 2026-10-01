@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ConfigPlugin,
+  loadServerConfig,
   migrateConfigState,
   migrateToWorkspaces,
 } from "../../src/core/config_plugin.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
+
+// the JSON body a fetch mock was called with
+function sentBody(init: RequestInit | undefined) {
+  return JSON.parse(String(init?.body));
+}
 
 describe("migrateConfigState", () => {
   it("renames active_target to active_workspace and drops the old key", () => {
@@ -43,9 +50,9 @@ describe("migrateConfigState", () => {
       },
       {},
     );
-    expect(config.targets[0].kind).toBe("worktree");
-    expect(config.targets[0].worktree.dir).toBeTruthy();
-    expect(config.targets[0].worktree.dir.startsWith("/wt")).toBe(true);
+    expect(config.targets![0].kind).toBe("worktree");
+    expect(config.targets![0].worktree!.dir).toBeTruthy();
+    expect(config.targets![0].worktree!.dir!.startsWith("/wt")).toBe(true);
   });
 
   it("is a no-op on an already-migrated target list", () => {
@@ -69,7 +76,7 @@ describe("migrateConfigState", () => {
       },
       {},
     );
-    expect(config.targets.map((t) => t.id)).toEqual(["feature", "feature-2"]);
+    expect(config.targets!.map((t) => t.id)).toEqual(["feature", "feature-2"]);
   });
 
   it("remaps a name-based active_workspace to the matching target's id", () => {
@@ -141,10 +148,10 @@ describe("migrateToWorkspaces", () => {
     };
     const result = migrateToWorkspaces(config, {});
     expect(result.changed).toBe(true);
-    const [w1, w2] = result.config.workspaces;
+    const [w1, w2] = result.config.workspaces!;
     expect(w1.created_at).toBeTruthy();
     expect(w1.last_activity).toBe(w1.created_at);
-    expect(new Date(w1.created_at).getTime()).toBeLessThan(new Date(w2.created_at).getTime());
+    expect(new Date(w1.created_at!).getTime()).toBeLessThan(new Date(w2.created_at!).getTime());
   });
 
   it("converts plain targets into main-location workspaces with no port", () => {
@@ -154,7 +161,7 @@ describe("migrateToWorkspaces", () => {
     const result = migrateToWorkspaces(config, {});
     expect(result.changed).toBe(true);
     expect(result.config.workspaces).toHaveLength(1);
-    const w = result.config.workspaces[0];
+    const w = result.config.workspaces![0];
     expect(w.location).toBe("main");
     expect(w.port).toBeNull();
     expect(result.config.targets).toBeUndefined(); // legacy list dropped from the persisted blob
@@ -168,9 +175,9 @@ describe("migrateToWorkspaces", () => {
       ],
     };
     const result = migrateToWorkspaces(config, {});
-    const ports = result.config.workspaces.map((w) => w.port);
+    const ports = result.config.workspaces!.map((w) => w.port);
     expect(ports).toEqual([8070, 8071]);
-    expect(ports.some((p) => [8069, 8072].includes(p))).toBe(false);
+    expect(ports.some((p) => p === 8069 || p === 8072)).toBe(false);
   });
 
   it("seeds templates only from targets whose checkouts are all base branches, deduped by name", () => {
@@ -203,17 +210,17 @@ describe("migrateToWorkspaces", () => {
       ],
     };
     const result = migrateToWorkspaces(config, {});
-    expect(result.config.templates.map((t) => t.name)).toEqual(["Base"]);
+    expect(result.config.templates!.map((t) => t.name)).toEqual(["Base"]);
   });
 });
 
 describe("ConfigPlugin", () => {
   // ConfigPlugin has no usePlugin() dependencies (sequence = 1, "everything else may
   // depend on config") — it can be constructed directly without the plugin harness.
-  let plugin;
+  let plugin: ConfigPlugin;
 
   beforeEach(() => {
-    plugin = new ConfigPlugin({});
+    plugin = new ConfigPlugin(NO_MANAGER);
   });
 
   afterEach(() => {
@@ -227,23 +234,21 @@ describe("ConfigPlugin", () => {
 
   it("updateConfig() applies the patch immediately (optimistic) and schedules a flush", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({ rev: 1 }),
-      })),
-    );
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rev: 1 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
     plugin.updateConfig({ db_user: "someone" });
     expect(plugin.config.db_user).toBe("someone"); // optimistic update, before any flush
-    expect(fetch).not.toHaveBeenCalled(); // debounced — nothing sent yet
+    expect(fetchMock).not.toHaveBeenCalled(); // debounced — nothing sent yet
 
     await vi.advanceTimersByTimeAsync(250);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const [url, opts] = fetch.mock.calls[0];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/config");
-    const body = JSON.parse(opts.body);
+    const body = sentBody(opts);
     expect(body.rev).toBe(0);
     expect(body.config.db_user).toBe("someone");
     expect(plugin.rev()).toBe(1); // adopted the server's new rev after a successful flush
@@ -251,7 +256,7 @@ describe("ConfigPlugin", () => {
 
   it("coalesces multiple updateConfig() calls within the debounce window into one flush", async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
       status: 200,
       json: async () => ({ rev: 1 }),
@@ -262,7 +267,7 @@ describe("ConfigPlugin", () => {
     plugin.updateConfig({ db_password: "b" });
     await vi.advanceTimersByTimeAsync(250);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const body = sentBody(fetchMock.mock.calls[0][1]);
     expect(body.config.db_user).toBe("a");
     expect(body.config.db_password).toBe("b");
   });
@@ -308,10 +313,12 @@ describe("ConfigPlugin", () => {
 
   it("getState/setState round-trip through the AppState record and schedule a flush", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ rev: 1 }) })),
-    );
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rev: 1 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
     // AppState's char fields default to "" (not undefined) — see toModels'
     // `state[k] ?? ""` seeding — so an unset field reads back as "", not the
     // fallback (getState only falls back on undefined/null).
@@ -319,7 +326,7 @@ describe("ConfigPlugin", () => {
     plugin.setState("claude_model", "opus");
     expect(plugin.getState("claude_model", "fallback")).toBe("opus");
     await vi.advanceTimersByTimeAsync(250);
-    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    const body = sentBody(fetchMock.mock.calls[0][1]);
     expect(body.state.claude_model).toBe("opus");
   });
 
@@ -341,5 +348,38 @@ describe("ConfigPlugin", () => {
     plugin.applyBroadcast({ rev: 5, config: { db_user: "remote" }, state: {} });
     expect(plugin.rev()).toBe(5);
     expect(plugin.config.db_user).toBe("remote");
+  });
+});
+
+// last in the file: loadServerConfig() stashes the boot payload every later
+// ConfigPlugin construction in this module reads
+describe("loadServerConfig", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a usable rev when seeding a first config fails server-side (500, no rev)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? { ok: false, status: 500, json: async () => ({ ok: false, error: "write failed" }) }
+          : { ok: true, status: 200, json: async () => ({ ok: true, rev: 0, config: null }) },
+      ),
+    );
+    await loadServerConfig();
+    const plugin = new ConfigPlugin(NO_MANAGER);
+
+    // a later save must still carry the rev — the server refuses a write without one
+    vi.useFakeTimers();
+    const save = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rev: 1 }),
+    }));
+    vi.stubGlobal("fetch", save);
+    plugin.updateConfig({ db_user: "someone" });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(sentBody(save.mock.calls[0][1]).rev).toBe(0);
   });
 });

@@ -6,14 +6,15 @@ import { EventLogPlugin } from "../../src/core/event_log_plugin.ts";
 import { CodePlugin } from "../../src/core/code_plugin.ts";
 import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
 
 // setup() starts a real setInterval(..., 1000) and opens a (faked) EventSource —
 // fake timers keep the interval from leaking a live timer past the test, and the
 // FakeEventSource stubbed globally in static/tests/setup.ts keeps _connect() from
 // throwing. Real SSE event delivery/wiring is out of scope (see the plan's Context
 // section) — only the pure dispatch/state methods below are under test.
-function makePlugin(workspaces = []) {
-  const store = new StorePlugin({});
+function makePlugin(workspaces: { id: string; name: string }[] = []) {
+  const store = new StorePlugin(NO_MANAGER);
   const config = {
     config: { workspaces },
     getState: () => "",

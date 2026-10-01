@@ -20,13 +20,65 @@ import { LogBuffer } from "./log_buffer.ts";
 import { postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.ts";
 
 import { Plugin, usePlugin, signal, markRaw } from "@odoo/owl";
+import type { CheckoutConfig, WorkspaceConfig } from "./config.ts";
+import type { ServerSnapshot, ServerStatus } from "./runtime_models.ts";
+
+// Every `catch (e)` below catches what postJSON rejects with — an Error — so
+// `(e as Error).message` is its message.
+
+// a workspace as these methods take it: a config workspace, or the create flow's
+// transient (not-yet-persisted) spec — only `id` is always there
+export type WorkspaceLike = Pick<WorkspaceConfig, "id"> & Partial<WorkspaceConfig>;
+
+// a launch_mode "external" workspace's last container check (externalStatus())
+export interface ExternalStatus {
+  checking: boolean;
+  running?: boolean;
+  url?: string;
+  error?: string;
+}
+
+// one repo of an existing worktree workspace, resolved against config (wtRepos())
+export interface WorktreeRepo {
+  repo: string;
+  branch: string;
+  mainPath: string; // the configured main checkout the worktree hangs off
+  github: string;
+  worktreePath: string; // the worktree's own checkout of this repo
+}
+
+// createWorktree's spec (see the comment above it)
+export interface CreateWorktreeSpec {
+  name: string;
+  dbName: string;
+  cloneSource?: string; // a db to clone into dbName first ("" = none)
+  checkouts: CheckoutConfig[];
+  startPointByRepo?: Record<string, string>; // repo id -> the start point to fork from
+  baseId?: string;
+  on_create_args?: string;
+  demo_data?: boolean;
+  favorite?: boolean;
+  category?: string;
+  parent?: string;
+  createVenv?: boolean;
+  forkRepos?: Set<string>; // repo ids to fork fresh (the rest attach an existing branch)
+  select?: boolean;
+}
+
+// the sibling plugins cascadeRemoveDescendants drives
+export interface CascadePlugins {
+  config: Pick<ConfigPlugin, "config" | "workspace" | "updateConfig">;
+  wt: Pick<WorkspacePlugin, "running" | "removeSilently">;
+  eventLog: Pick<EventLogPlugin, "add">;
+  server: Pick<ServerPlugin, "loadedWorkspaceId">;
+}
 
 // the last selected workspace, remembered per browser so the Workspaces screen
 // reopens (and a page refresh lands) on what you were last working on. A browser
 // view preference like the list ordering — not server config.
 const SELECTED_KEY = "goo-workspace-selected";
 
-function savedSelection() {
+function savedSelection(): string {
   try {
     return localStorage.getItem(SELECTED_KEY) || "";
   } catch {
@@ -56,12 +108,12 @@ export class WorkspacePlugin extends Plugin {
   // very key it just read on that first insert — a write-during-render that
   // sends the component into a render loop (see tests_plugin.ts's _slots for the
   // fuller explanation; LogBuffer's own signals stay reactive regardless).
-  logs = markRaw(new Map());
-  _startEids = {}; // targetId -> pending "starting worktree server" timed-event id
-  _externalStatus = new Map(); // targetId -> { checking, running, url, error }
+  logs = markRaw(new Map<string, LogBuffer>());
+  _startEids: Record<string, string> = {}; // targetId -> pending "starting worktree server" timed-event id
+  _externalStatus = new Map<string, ExternalStatus>(); // targetId -> { checking, running, url, error }
   _externalStatusTick = signal(0); // bumped after a fetch so externalStatus() re-renders
 
-  setup() {
+  setup(): void {
     this.server.onWorktree((d) => this.applyStatus(d));
     // every non-main server's log lines land in its own buffer (main's live in
     // ServerPlugin.output)
@@ -74,22 +126,22 @@ export class WorkspacePlugin extends Plugin {
   // ── which targets are worktrees ──────────────────────────────────────────────
   // canonical records carry `location`; the metadata-object fallback covers a
   // transient (not-yet-persisted) spec passed by the create flow.
-  isWorktree(tgt) {
+  isWorktree(tgt: WorkspaceLike | null | undefined): boolean {
     if (!tgt) return false;
     const rec = this.config.workspace(tgt.id);
     if (rec) return rec.isWorktree(); // logic lives on the Workspace model
     return (tgt.location || (tgt.worktree ? "worktree" : "main")) === "worktree"; // transient
   }
 
-  worktreeWorkspaces() {
+  worktreeWorkspaces(): WorkspaceConfig[] {
     return (this.config.config.workspaces || []).filter((w) => this.isWorktree(w));
   }
 
-  selected() {
+  selected(): WorkspaceConfig | null {
     return this.worktreeWorkspaces().find((t) => t.id === this.selectedId()) || null;
   }
 
-  select(id) {
+  select(id: string): void {
     this.selectedId.set(id);
     try {
       if (id) localStorage.setItem(SELECTED_KEY, id);
@@ -110,20 +162,20 @@ export class WorkspacePlugin extends Plugin {
     }
   }
 
-  selectOnOpen(id) {
+  selectOnOpen(id: string): void {
     this.requestedSelection.set(id);
     this.select(id);
   }
 
   // branch names owned by a worktree (for the Branches/PRs "wt" badge)
-  worktreeBranches() {
-    const s = new Set();
+  worktreeBranches(): Set<string> {
+    const s = new Set<string>();
     for (const t of this.worktreeWorkspaces())
       for (const c of t.checkouts || []) if (c.branch) s.add(c.branch);
     return s;
   }
 
-  isWorktreeBranch(name) {
+  isWorktreeBranch(name: string | null | undefined): boolean {
     return !!name && this.worktreeBranches().has(name);
   }
 
@@ -131,13 +183,13 @@ export class WorkspacePlugin extends Plugin {
   // the worktree's checkout directory: the value frozen at creation
   // (worktree.dir), else derived from the name. Persisting it means a later rename
   // can't move the path off the real on-disk checkout (worktreeDirFor in utils.ts).
-  dirPath(tgt) {
+  dirPath(tgt: WorkspaceLike): string {
     const rec = this.config.workspace(tgt.id);
     if (rec) return rec.dirPath(); // logic lives on the Target model
     return tgt.worktree?.dir || worktreeDirFor(this.config.config.worktree_dir, tgt); // transient
   }
 
-  hasMainRepo(tgt) {
+  hasMainRepo(tgt: WorkspaceLike): boolean {
     const rec = this.config.workspace(tgt.id);
     if (rec) return rec.hasMainRepo();
     const mainRepoId = this.config.config.main_repo_id || "community";
@@ -148,21 +200,24 @@ export class WorkspacePlugin extends Plugin {
   // for people who launch Odoo by hand outside of goo (launch_mode "external"):
   // a read-only check of whether a container matching this workspace's db/branch
   // name is already running, and at what URL. goo never starts/stops it itself.
-  externalStatus(tgt) {
+  externalStatus(tgt: WorkspaceLike): ExternalStatus | null {
     this._externalStatusTick(); // subscribe this render to future refreshes
     return this._externalStatus.get(tgt.id) || null;
   }
 
-  async refreshExternalStatus(tgt) {
+  async refreshExternalStatus(tgt: WorkspaceLike): Promise<void> {
     if (!tgt.db) return;
     this._externalStatus.set(tgt.id, { checking: true });
     this._externalStatusTick.set(this._externalStatusTick() + 1);
-    let next;
+    let next: ExternalStatus;
     try {
-      const res = await postJSON("/api/workspace/external_status", { name: tgt.db });
+      const res = await postJSON<{ running: boolean; url: string }>(
+        "/api/workspace/external_status",
+        { name: tgt.db },
+      );
       next = { checking: false, running: res.running, url: res.url };
     } catch (e) {
-      next = { checking: false, error: e.message };
+      next = { checking: false, error: (e as Error).message };
     }
     this._externalStatus.set(tgt.id, next);
     this._externalStatusTick.set(this._externalStatusTick() + 1);
@@ -175,10 +230,15 @@ export class WorkspacePlugin extends Plugin {
   // reflects goo's own subprocess/container), so it can't tell a db an external
   // container is actively serving from an unused one. Returns null (never
   // blocks the caller) on a failed check.
-  async checkDbInUse(dbName) {
+  async checkDbInUse(
+    dbName: string | null | undefined,
+  ): Promise<{ running: boolean; url: string } | null> {
     if (!dbName) return null;
     try {
-      const res = await postJSON("/api/workspace/external_status", { name: dbName });
+      const res = await postJSON<{ running?: boolean; url?: string }>(
+        "/api/workspace/external_status",
+        { name: dbName },
+      );
       return { running: !!res.running, url: res.url || "" };
     } catch {
       return null;
@@ -186,7 +246,7 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // per-repo worktree descriptors for an existing worktree target (start / remove)
-  wtRepos(tgt) {
+  wtRepos(tgt: WorkspaceLike): WorktreeRepo[] {
     const g = this.code.groups();
     const dir = this.dirPath(tgt);
     return (tgt.checkouts || [])
@@ -201,35 +261,38 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // ── live state (from the shared servers map, keyed by target id) ─────────────
-  state(tgt) {
+  state(tgt: WorkspaceLike): ServerStatus {
     return this.store.server(tgt.id) || { exists: false, state: "stopped", port: null };
   }
 
-  exists(tgt) {
+  exists(tgt: WorkspaceLike): boolean {
     return !!this.state(tgt).exists;
   }
 
-  serverState(tgt) {
+  serverState(tgt: WorkspaceLike): string {
     return this.state(tgt).state || "stopped";
   }
 
-  running(tgt) {
+  running(tgt: WorkspaceLike): boolean {
     const s = this.serverState(tgt);
     return s === "running" || s === "starting";
   }
 
-  port(tgt) {
+  port(tgt: WorkspaceLike): number | null {
     return this.state(tgt).port || null;
   }
 
-  _merge(id, patch) {
+  _merge(id: string, patch: Partial<ServerSnapshot>): void {
+    // mergeServer spread-merges into the held snapshot, so a patch carries only the
+    // fields it changes (a missing record's absent state reads as "stopped", see
+    // serverState)
     this.store.mergeServer({ id, ...patch });
   }
 
   // resolve a worktree's pending start timed-event on a state transition. The store
   // merge already happened in ServerPlugin's "server" SSE handler (which relays each
   // worktree snapshot here); this just drives the event-log row.
-  applyStatus(d) {
+  applyStatus(d: ServerSnapshot | null | undefined): void {
     if (!d || !d.id) return;
     const eid = this._startEids[d.id];
     if (eid && (d.state === "running" || d.state === "stopped")) {
@@ -239,14 +302,17 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // hydrate existence + current server state for every worktree workspace
-  async load() {
+  async load(): Promise<void> {
     const workspaces = this.worktreeWorkspaces().map((t) => ({
       id: t.id,
       dirPath: this.dirPath(t),
     }));
     if (!workspaces.length) return;
     try {
-      const res = await postJSON("/api/workspace/list", { workspaces });
+      const res = await postJSON<{ servers?: Record<string, ServerSnapshot> }>(
+        "/api/workspace/list",
+        { workspaces },
+      );
       for (const snap of Object.values(res.servers || {})) this.store.mergeServer(snap);
     } catch {
       /* leave current state */
@@ -254,18 +320,18 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // ── logs ─────────────────────────────────────────────────────────────────────
-  logBuffer(id) {
+  logBuffer(id: string): LogBuffer {
     if (!this.logs.has(id)) this.logs.set(id, new LogBuffer());
-    return this.logs.get(id);
+    return this.logs.get(id)!; // inserted just above when missing
   }
 
   // fill scrollback from the server's tail once, only if we don't already hold the
   // live stream (e.g. after a page reload while the server was already running)
-  async _primeLogs(id) {
+  async _primeLogs(id: string): Promise<void> {
     const buf = this.logBuffer(id);
     if (buf.count()) return;
     try {
-      const res = await postJSON("/api/workspace/logs", { workspace: id });
+      const res = await postJSON<{ lines?: string[] }>("/api/workspace/logs", { workspace: id });
       buf.clear();
       for (const line of res.lines || []) buf.append(line);
     } catch {
@@ -274,7 +340,7 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // ── create ─────────────────────────────────────────────────────────────────
-  _newId(seed) {
+  _newId(seed: string | null | undefined): string {
     const base =
       "wt-" +
       (seed || "wt")
@@ -311,12 +377,14 @@ export class WorkspacePlugin extends Plugin {
     createVenv = false,
     forkRepos = new Set(),
     select = true,
-  }) {
+  }: CreateWorktreeSpec): Promise<string | false> {
     if (!checkouts || !checkouts.length)
       return this._error("Create workspace", "the workspace has no checkouts");
     const id = this._newId(name);
     const now = new Date().toISOString();
-    const ws = {
+    const ws: Omit<WorkspaceConfig, "notes" | "port" | "worktree"> & {
+      worktree: { base: string; dir?: string; venv?: boolean };
+    } = {
       id,
       name,
       created_at: now,
@@ -375,7 +443,10 @@ export class WorkspacePlugin extends Plugin {
           filestore: this.config.config.filestore,
         });
       }
-      const res = await postJSON("/api/workspace/create", { workspace: id, repos });
+      const res = await postJSON<{
+        ok: boolean;
+        results?: { ok: boolean; repo: string; error?: string }[];
+      }>("/api/workspace/create", { workspace: id, repos });
       if (!res.ok) {
         this.eventLog.finish(eid, "error");
         const msg = (res.results || [])
@@ -398,7 +469,7 @@ export class WorkspacePlugin extends Plugin {
           this.eventLog.finish(veid, "done");
         } catch (e) {
           this.eventLog.finish(veid, "error");
-          this._error("Venv creation failed", e.message);
+          this._error("Venv creation failed", (e as Error).message);
         }
       }
       // canonical write: spread the existing workspaces so their ports survive;
@@ -410,14 +481,14 @@ export class WorkspacePlugin extends Plugin {
       return id;
     } catch (e) {
       this.eventLog.finish(eid, "error");
-      return this._error("Workspace creation failed", e.message);
+      return this._error("Workspace creation failed", (e as Error).message);
     }
   }
 
   // ── server lifecycle ─────────────────────────────────────────────────────────
   // The backend builds the worktree launch config from the target id (repos pointed
   // at the worktree copies + the worktree's odoo-bin, from the persisted worktree.dir).
-  async startServer(tgt) {
+  async startServer(tgt: WorkspaceLike): Promise<false | void> {
     if (this.running(tgt)) return;
     if (!this.hasMainRepo(tgt))
       return this._error("Cannot start the server", "this workspace has no main repo checkout");
@@ -426,7 +497,9 @@ export class WorkspacePlugin extends Plugin {
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/workspace/start", { workspace: tgt.id });
+      const res = await postJSON<{ port: number | null }>("/api/workspace/start", {
+        workspace: tgt.id,
+      });
       // merge only the port: a fast server's SSE "running" snapshot can beat this
       // reply, and re-merging "starting" here would clobber it
       this._merge(tgt.id, { port: res.port });
@@ -434,11 +507,11 @@ export class WorkspacePlugin extends Plugin {
       delete this._startEids[tgt.id];
       this.eventLog.finish(eid, "error");
       this._merge(tgt.id, { state: "stopped" });
-      this._error("Could not start the server", e.message);
+      this._error("Could not start the server", (e as Error).message);
     }
   }
 
-  async stopServer(tgt) {
+  async stopServer(tgt: WorkspaceLike): Promise<void> {
     this.config.workspace(tgt.id)?.touchActivity();
     this.eventLog.add(`stopping server (${tgt.name})`);
     // optimistic feedback only BEFORE the POST: the backend stop is synchronous and
@@ -454,7 +527,7 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // stop is synchronous on the backend, so a plain stop-then-start restarts cleanly
-  async restartServer(tgt) {
+  async restartServer(tgt: WorkspaceLike): Promise<void> {
     await this.stopServer(tgt);
     await this.startServer(tgt);
   }
@@ -465,7 +538,7 @@ export class WorkspacePlugin extends Plugin {
   // explicitly asked for a cascaded child, matching the interactive default of
   // leaving it alone unless the checkbox was ticked). Returns false (kept) on
   // failure, true on success.
-  async _removeCleanup(tgt, { dropDb = false } = {}) {
+  async _removeCleanup(tgt: WorkspaceLike, { dropDb = false } = {}): Promise<boolean> {
     const repos = this.wtRepos(tgt).map(({ repo, mainPath, worktreePath }) => ({
       repo,
       mainPath,
@@ -481,7 +554,7 @@ export class WorkspacePlugin extends Plugin {
     } catch (e) {
       // the worktree is still on disk / registered with git — keep the target so
       // there's a UI handle to retry, rather than orphaning it.
-      this._error("Worktree removal failed", e.message);
+      this._error("Worktree removal failed", (e as Error).message);
       return false;
     }
     if (dropDb && tgt.db) {
@@ -493,7 +566,7 @@ export class WorkspacePlugin extends Plugin {
       } catch (e) {
         // the worktree itself is gone, so still drop the target below; just report
         // the leftover database.
-        this._error("Database drop failed", e.message);
+        this._error("Database drop failed", (e as Error).message);
       }
     }
     // drop the workspace from config (canonical write) + local state
@@ -508,7 +581,7 @@ export class WorkspacePlugin extends Plugin {
     return true;
   }
 
-  async remove(tgt) {
+  async remove(tgt: WorkspaceLike): Promise<false | void> {
     if (this.running(tgt))
       return this._error(
         "Stop the server first",
@@ -537,12 +610,12 @@ export class WorkspacePlugin extends Plugin {
   }
 
   // silent per-child removal the cascade drives — no confirm, no dropDb prompt
-  async removeSilently(tgt) {
+  async removeSilently(tgt: WorkspaceLike): Promise<boolean> {
     if (this.running(tgt)) return false;
     return this._removeCleanup(tgt, { dropDb: false });
   }
 
-  _notifyKept(skipped) {
+  _notifyKept(skipped: WorkspaceConfig[]): void {
     this.dialogs.open({
       title: "Some sub-workspaces were kept",
       message: skipped
@@ -558,7 +631,7 @@ export class WorkspacePlugin extends Plugin {
 
   // open the worktree's repo folders in the configured editor (all in one window);
   // works whether or not the server is running — it's just the checkout on disk
-  openEditor(tgt) {
+  openEditor(tgt: WorkspaceLike): void {
     this.config.workspace(tgt.id)?.touchActivity();
     const paths = this.wtRepos(tgt).map((r) => r.worktreePath);
     if (paths.length) this.code.openEditorPaths(paths, `worktree ${tgt.name}`);
@@ -570,7 +643,7 @@ export class WorkspacePlugin extends Plugin {
   // nginx by container name — see dockerUrl below), else the externally-
   // launched server's URL (see externalStatus/refreshExternalStatus, for
   // launch_mode "external")
-  _baseUrl(tgt) {
+  _baseUrl(tgt: WorkspaceLike): string {
     if (this.config.config.launch_mode === "docker") {
       return this.running(tgt) ? this.dockerUrl(tgt) : "";
     }
@@ -584,7 +657,7 @@ export class WorkspacePlugin extends Plugin {
   // where <container> is the live "dev"/"dev1"/"dev2" slot this run picked
   // (backend's next_container_slot — a pooled slot, not a fixed per-workspace
   // name, so it's read from live server state, never persisted/recomputed)
-  dockerUrl(tgt) {
+  dockerUrl(tgt: WorkspaceLike): string {
     const slug = this.state(tgt).docker_container;
     if (!slug) return "";
     const port = this.config.config.docker_nginx_port;
@@ -594,24 +667,24 @@ export class WorkspacePlugin extends Plugin {
   // wraps a target path through goo's autologin route, unless autologin_links
   // is off (then it's just the plain path — for people who'd rather log in
   // themselves, e.g. the autologin addon isn't installed on this server)
-  _link(tgt, path) {
+  _link(tgt: WorkspaceLike, path: string): string {
     const base = this._baseUrl(tgt);
     if (!base) return "";
     if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
     return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
   }
 
-  odooUrl(tgt) {
+  odooUrl(tgt: WorkspaceLike): string {
     return this._link(tgt, "/odoo?debug=assets");
   }
 
-  testsUrl(tgt) {
+  testsUrl(tgt: WorkspaceLike): string {
     return this._link(tgt, "/web/tests?debug=assets&timeout=500000&manual=true");
   }
 
   // thin wrapper: `return this._error(…)` deliberately returns false (callers
   // use it to bail out of a flow with a failure result)
-  _error(title, message) {
+  _error(title: string, message: string): false {
     this.dialogs.error(title, message);
     return false;
   }
@@ -627,12 +700,15 @@ export class WorkspacePlugin extends Plugin {
 // workspace — the exact same predicates removeBlocked uses) stops the cascade at that
 // node: it's demoted to root but its OWN subtree is left completely untouched, since
 // nobody asked to touch that branch of the tree. plugins: { config, wt, eventLog, server }.
-export async function cascadeRemoveDescendants(plugins, parentWs) {
+export async function cascadeRemoveDescendants(
+  plugins: CascadePlugins,
+  parentWs: WorkspaceLike,
+): Promise<{ skipped: WorkspaceConfig[] }> {
   const { config, wt, eventLog, server } = plugins;
-  const skipped = [];
+  const skipped: WorkspaceConfig[] = [];
   let frontier = directChildren(config.config.workspaces || [], parentWs.id);
   while (frontier.length) {
-    const next = [];
+    const next: WorkspaceConfig[] = [];
     for (const child of frontier) {
       const live = (config.config.workspaces || []).find((w) => w.id === child.id);
       if (!live) continue;
@@ -656,11 +732,11 @@ export async function cascadeRemoveDescendants(plugins, parentWs) {
   return { skipped };
 }
 
-function directChildren(list, id) {
+function directChildren(list: WorkspaceConfig[], id: string): WorkspaceConfig[] {
   return list.filter((w) => w.parent === id);
 }
 
-function isLoadedMainWorkspace(server, ws) {
+function isLoadedMainWorkspace(server: CascadePlugins["server"], ws: WorkspaceConfig): boolean {
   if (ws.location === "worktree") return false;
   return ws.id === server.loadedWorkspaceId();
 }

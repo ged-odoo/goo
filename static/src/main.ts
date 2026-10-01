@@ -47,7 +47,8 @@ const PLUGINS = [
 async function boot() {
   // load the server-owned config before mount, so ConfigPlugin seeds from it
   await loadServerConfig();
-  mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });
+  // static/index.html always has the #root mount point
+  mount(App, document.getElementById("root")!, { plugins: PLUGINS, dev: true });
 }
 
 boot();

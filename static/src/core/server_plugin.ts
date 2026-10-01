@@ -6,9 +6,36 @@ import { EventLogPlugin } from "./event_log_plugin.ts";
 import { CodePlugin } from "./code_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { LogBuffer } from "./log_buffer.ts";
-import { postJSON } from "./utils.ts";
+import { errorMessage, postJSON } from "./utils.ts";
+import type { UpdateInfo } from "./update_plugin.ts";
+import type { ServerSnapshot, ServerStatus } from "./runtime_models.ts";
+import type { ConfigInput, StateInput } from "./config.ts";
 
 import { Plugin, usePlugin, signal } from "@odoo/owl";
+
+// one line of a server's log stream (SSE "log"): "main" | a workspace id
+export interface LogLine {
+  server: string;
+  line: string;
+}
+
+// a backend business event (SSE "event"); a timed one carries `id` + `status`
+interface ServerEvent {
+  id: string;
+  text: string;
+  status?: string; // "start" | "done" | "error"
+  level?: string;
+}
+
+// a per-worktree Claude chat item (SSE "claude": a transcript item or the turn's
+// "result"), relayed as-is to ClaudePlugin — whose items carry more fields
+export interface ClaudeEvent {
+  workspace: string;
+  role?: string;
+  ok?: boolean;
+  error?: string;
+  [key: string]: unknown;
+}
 
 export class ServerPlugin extends Plugin {
   static sequence = 2;
@@ -23,11 +50,11 @@ export class ServerPlugin extends Plugin {
   pending = signal("");
   now = signal(Date.now());
   output = new LogBuffer(); // the persistent server-log element
-  logListeners = new Set(); // per-server log lines {server, line} — tests/addons/worktree buffers
-  gooUpdateListeners = new Set(); // UpdatePlugin refreshes the navbar badge from here
-  worktreeListeners = new Set(); // WorkspacePlugin updates per-worktree state from here
-  claudeListeners = new Set(); // ClaudePlugin appends per-worktree chat items from here
-  _startEid = null; // pending "starting server" timed event, resolved on the green dot
+  logListeners = new Set<(d: LogLine) => void>(); // per-server log lines — tests/addons/worktree buffers
+  gooUpdateListeners = new Set<(d: UpdateInfo) => void>(); // UpdatePlugin refreshes the navbar badge from here
+  worktreeListeners = new Set<(snap: ServerSnapshot) => void>(); // WorkspacePlugin updates per-worktree state from here
+  claudeListeners = new Set<(d: ClaudeEvent) => void>(); // ClaudePlugin appends per-worktree chat items from here
+  _startEid: string | null = null; // pending "starting server" timed event, resolved on the green dot
   // the active workspace (last started or activated), server-persisted + reactive. The
   // backend reads it from its own config for `goo --test-tags` (no client mirror).
   activeWorkspace = signal(this.config.getState("active_workspace", ""));
@@ -36,47 +63,47 @@ export class ServerPlugin extends Plugin {
   // this rather than looking idle. Set by Workspace.activate() in config_models.
   activatingId = signal("");
 
-  setup() {
+  setup(): void {
     setInterval(() => this.now.set(Date.now()), 1000);
     this._connect();
   }
 
   // the main odoo's live snapshot — servers["main"], fed by the "server" SSE event
   // ("stopped" until the first one lands). The ~40 status() reads app-wide are unchanged.
-  status() {
+  status(): ServerStatus {
     return this.store.server("main") || { state: "stopped" };
   }
 
   // subscribe to every server's log stream; cb receives {server, line}
   // ("main" | a workspace id)
-  onLog(cb) {
+  onLog(cb: (d: LogLine) => void): () => boolean {
     this.logListeners.add(cb);
     return () => this.logListeners.delete(cb);
   }
 
-  onGooUpdate(cb) {
+  onGooUpdate(cb: (d: UpdateInfo) => void): () => boolean {
     this.gooUpdateListeners.add(cb);
     return () => this.gooUpdateListeners.delete(cb);
   }
 
-  onWorktree(cb) {
+  onWorktree(cb: (snap: ServerSnapshot) => void): () => boolean {
     this.worktreeListeners.add(cb);
     return () => this.worktreeListeners.delete(cb);
   }
 
-  onClaude(cb) {
+  onClaude(cb: (d: ClaudeEvent) => void): () => boolean {
     this.claudeListeners.add(cb);
     return () => this.claudeListeners.delete(cb);
   }
 
   // a MAIN-server log line (local [goo] notes take this path too): the persistent
   // Server-screen buffer + every log subscriber
-  log(line) {
+  log(line: string): void {
     this.output.append(line);
     for (const cb of this.logListeners) cb({ server: "main", line });
   }
 
-  _connect() {
+  _connect(): void {
     const es = new EventSource("/api/events");
     es.onopen = () => this.output.clear(); // server replays its buffer on connect
     es.onerror = () => this.store.mergeServer({ id: "main", state: "disconnected" });
@@ -85,7 +112,7 @@ export class ServerPlugin extends Plugin {
     // resolution, a worktree snapshot is relayed to WorkspacePlugin (which resolves its
     // own per-target start events and reads the same map).
     es.addEventListener("server", (e) => {
-      const snap = JSON.parse(e.data);
+      const snap: ServerSnapshot = JSON.parse(e.data);
       if (snap.id === "main") {
         const prev = this.status();
         this.store.mergeServer(snap);
@@ -102,13 +129,13 @@ export class ServerPlugin extends Plugin {
     // the unified per-server log stream {server, line}: main lines feed the
     // Server screen's buffer; every subscriber routes by `server`
     es.addEventListener("log", (e) => {
-      const d = JSON.parse(e.data);
+      const d: LogLine = JSON.parse(e.data);
       if (d.server === "main") this.output.append(d.line);
       for (const cb of this.logListeners) cb(d);
     });
     // config/state written by another tab → keep this tab's ConfigPlugin in lockstep
     es.addEventListener("config", (e) => {
-      const d = JSON.parse(e.data);
+      const d: { rev?: number; config?: ConfigInput; state?: StateInput } = JSON.parse(e.data);
       this.config.applyBroadcast(d);
       // active_workspace lives in a signal here too; follow the broadcast
       const at = (d.state || {}).active_workspace;
@@ -118,7 +145,7 @@ export class ServerPlugin extends Plugin {
     // A timed event carries an `id` + `status`: "start" opens a row with an animated
     // "...", "done"/"error" resolves that same row to "ok"/"failed".
     es.addEventListener("event", (e) => {
-      const d = JSON.parse(e.data);
+      const d: ServerEvent = JSON.parse(e.data);
       if (d.status === "start") this.eventLog.start(d.id, d.text, d.level || "");
       else if (d.status === "done" || d.status === "error")
         this.eventLog.finish(d.id, d.status, d.text, d.level || "");
@@ -127,23 +154,23 @@ export class ServerPlugin extends Plugin {
     // the hourly goo-update check pushes its recomputed status here so the navbar
     // badge updates live (UpdatePlugin listens via onGooUpdate)
     es.addEventListener("goo_update", (e) => {
-      const d = JSON.parse(e.data);
+      const d: UpdateInfo = JSON.parse(e.data);
       for (const cb of this.gooUpdateListeners) cb(d);
     });
     // per-worktree Claude chat items (assistant text / tool activity / result) → ClaudePlugin
     es.addEventListener("claude", (e) => {
-      const d = JSON.parse(e.data);
+      const d: ClaudeEvent = JSON.parse(e.data);
       for (const cb of this.claudeListeners) cb(d);
     });
   }
 
   // an override bundle for a thin launch request — only the bits that differ from the
   // target's stored config (the server resolves the rest from its own config)
-  _overrides(otherArgs) {
+  _overrides(otherArgs: string | null | undefined): { other_args?: string } {
     return otherArgs == null ? {} : { other_args: otherArgs };
   }
 
-  _hasTarget(targetId) {
+  _hasTarget(targetId: string): boolean {
     return !!(this.config.config.workspaces || []).find((w) => w.id === targetId);
   }
 
@@ -151,7 +178,7 @@ export class ServerPlugin extends Plugin {
   // delivers it too, but only after connecting, which leaves a "stopped" flash
   // (Start → Stop) on a reload of an already-running server. Await this in the
   // app's onWillStart. Best-effort: on failure the SSE still fills it in shortly.
-  async loadStatus() {
+  async loadStatus(): Promise<void> {
     try {
       const res = await fetch("/api/status");
       if (res.ok) this.store.mergeServer(await res.json()); // the id="main" snapshot
@@ -160,7 +187,7 @@ export class ServerPlugin extends Plugin {
     }
   }
 
-  lastWorkspace() {
+  lastWorkspace(): string {
     return this.activeWorkspace();
   }
 
@@ -168,7 +195,7 @@ export class ServerPlugin extends Plugin {
   // (or starting) server's workspace while one is up, else the last activated
   // one. Every "is this workspace loaded/active?" check must go through here —
   // it used to be re-derived in six places that had to agree.
-  loadedWorkspaceId() {
+  loadedWorkspaceId(): string | null | undefined {
     const s = this.status();
     return s.state === "running" || s.state === "starting" ? s.workspace : this.lastWorkspace();
   }
@@ -176,20 +203,20 @@ export class ServerPlugin extends Plugin {
   // the state the UI should reflect: an optimistic "start" click reads as
   // "starting" before the backend confirms, so the navbar dot and the favicon
   // flip the instant the button is pressed (and stay in lockstep with each other)
-  displayState() {
+  displayState(): string {
     return this.pending() === "start" ? "starting" : this.status().state;
   }
 
-  _targetName(id) {
+  _targetName(id: string): string {
     return (this.config.config.workspaces || []).find((w) => w.id === id)?.name || id;
   }
 
-  setLastWorkspace(id) {
+  setLastWorkspace(id: string): void {
     this.activeWorkspace.set(id);
     this.config.setState("active_workspace", id);
   }
 
-  async _run(path, body, label) {
+  async _run(path: string, body: unknown, label: string): Promise<void> {
     try {
       await postJSON(path, body);
     } catch (e) {
@@ -198,9 +225,9 @@ export class ServerPlugin extends Plugin {
       this._failStart();
       // surface the failure everywhere — server log (record), event log (badge +
       // history) and a modal — so it can't go unnoticed from another screen
-      this.log(`[goo] ${label} failed: ${e.message}`);
-      this.eventLog.add(`${label} failed: ${e.message}`, "", "error");
-      this.dialogs.error(`Could not ${label} the server`, e.message);
+      this.log(`[goo] ${label} failed: ${errorMessage(e)}`);
+      this.eventLog.add(`${label} failed: ${errorMessage(e)}`, "", "error");
+      this.dialogs.error(`Could not ${label} the server`, errorMessage(e));
     }
   }
 
@@ -208,18 +235,18 @@ export class ServerPlugin extends Plugin {
   // away (logged before the branch-confirm load, so there's no delay) and resolves
   // to "ok" once the server reports "running" (the green dot) — or "failed" if it
   // never gets there. A new start supersedes any still-pending one.
-  _beginStart(text) {
+  _beginStart(text: string): void {
     if (this._startEid) this.eventLog.drop(this._startEid);
     this._startEid = this.eventLog.begin(text);
   }
 
-  _cancelStart() {
+  _cancelStart(): void {
     if (this._startEid) this.eventLog.drop(this._startEid);
     this._startEid = null;
     this.pending.set("");
   }
 
-  _failStart() {
+  _failStart(): void {
     if (this._startEid) this.eventLog.finish(this._startEid, "error");
     this._startEid = null;
     this.pending.set("");
@@ -227,7 +254,7 @@ export class ServerPlugin extends Plugin {
 
   // drive the pending start event off the live status: "ok" when it enters
   // "running", "failed" if the process exits before getting there
-  _resolveStartEvent(prev, s) {
+  _resolveStartEvent(prev: ServerStatus, s: ServerStatus): void {
     if (!this._startEid) return;
     if (s.state === "running" && prev.state !== "running") {
       this.eventLog.finish(this._startEid, "done");
@@ -241,7 +268,7 @@ export class ServerPlugin extends Plugin {
   // branches aren't sent to the backend). If they don't match the target, ask the
   // user to confirm — starting with different branches is a valid use case.
   // Returns true to proceed, false if the user cancelled.
-  async _confirmBranches(targetId) {
+  async _confirmBranches(targetId: string): Promise<boolean> {
     const target = (this.config.config.workspaces || []).find((w) => w.id === targetId);
     if (!target) return true;
     // we only need this workspace's repos' current branch to compare against what it
@@ -272,7 +299,7 @@ export class ServerPlugin extends Plugin {
     return !!ok;
   }
 
-  async start(targetId, otherArgs) {
+  async start(targetId: string, otherArgs?: string | null): Promise<void> {
     if (!this._hasTarget(targetId)) return this.log(`[goo] no such workspace: "${targetId}"`);
     this.pending.set("start"); // immediate feedback, before the confirm/POST awaits
     this._beginStart(`starting server (workspace: ${this._targetName(targetId)})`);
@@ -286,7 +313,7 @@ export class ServerPlugin extends Plugin {
     );
   }
 
-  async restart(targetId, otherArgs) {
+  async restart(targetId: string, otherArgs?: string | null): Promise<void> {
     if (!this._hasTarget(targetId)) return;
     this.pending.set("restart"); // immediate feedback, before the confirm/POST awaits
     this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
@@ -302,14 +329,14 @@ export class ServerPlugin extends Plugin {
 
   // re-start the server on the last target (e.g. DatabasePlugin stops it for a db op,
   // then resumes). The backend rebuilds the launch config from the target id.
-  async resume() {
+  async resume(): Promise<void> {
     const targetId = this.lastWorkspace();
     if (!this._hasTarget(targetId)) return;
     this._beginStart(`restarting server (workspace: ${this._targetName(targetId)})`);
     await this._run("/api/start", { workspace: targetId, overrides: {} }, "resume");
   }
 
-  async stop({ trackActivity = true } = {}) {
+  async stop({ trackActivity = true }: { trackActivity?: boolean } = {}): Promise<void> {
     if (trackActivity) this.config.workspace(this.lastWorkspace())?.touchActivity();
     this.pending.set("stop"); // immediate feedback, before the POST round-trip
     this.eventLog.add("stopping server");
@@ -317,7 +344,7 @@ export class ServerPlugin extends Plugin {
   }
 
   // resolve true once the server reports "running", false on timeout
-  waitUntilRunning(timeout = 90000) {
+  waitUntilRunning(timeout = 90000): Promise<boolean> {
     return new Promise((resolve) => {
       if (this.status().state === "running") return resolve(true);
       const t0 = Date.now();

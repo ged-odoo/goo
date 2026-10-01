@@ -6,18 +6,34 @@
 
 import { ServerPlugin } from "./server_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
-import { postJSON } from "./utils.ts";
+import { errorMessage, postJSON } from "./utils.ts";
 
 import { Plugin, usePlugin, signal } from "@odoo/owl";
+
+// how goo's checkout compares to origin/master (backend update.status, GET
+// /api/goo/update + the SSE "goo_update" push); `boot` identifies the serving process.
+// A failed check (check()) carries only {ok: false, error}.
+export interface UpdateInfo {
+  ok?: boolean;
+  error?: string;
+  checked?: boolean;
+  is_repo?: boolean;
+  branch?: string;
+  behind?: number;
+  ahead?: number;
+  dirty?: boolean;
+  can_fast_forward?: boolean;
+  boot?: string;
+}
 
 export class UpdatePlugin extends Plugin {
   server = usePlugin(ServerPlugin);
   dialogs = usePlugin(DialogPlugin);
   // { checked, is_repo, branch, behind, ahead, dirty, can_fast_forward } | null
-  info = signal(null);
+  info = signal<UpdateInfo | null>(null);
   applying = signal(false); // true while updating + restarting (drives an overlay)
 
-  setup() {
+  setup(): void {
     this._load();
     // the backend re-checks hourly; refresh periodically so the badge appears on
     // long-open tabs without needing a reload
@@ -29,21 +45,21 @@ export class UpdatePlugin extends Plugin {
 
   // on-demand re-check (the Config tab's "Check for update" button): fetch +
   // recompute on the backend, refresh `info`, and return the fresh result
-  async check() {
+  async check(): Promise<UpdateInfo> {
     try {
-      const data = await postJSON("/api/goo/check");
+      const data = await postJSON<UpdateInfo>("/api/goo/check");
       this.info.set(data);
       return data;
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: errorMessage(e) };
     }
   }
 
   // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
   // otherwise explain how to update manually so local work is never clobbered.
   // Only meaningful when behind > 0 (the badge / a positive check gate it).
-  async promptUpdate() {
-    const u = this.info() || {};
+  async promptUpdate(): Promise<void> {
+    const u: UpdateInfo = this.info() || {};
     if (!u.behind) return;
     if (!u.can_fast_forward) {
       let why = `goo is ${u.behind} commit${u.behind === 1 ? "" : "s"} behind origin/master`;
@@ -70,9 +86,9 @@ export class UpdatePlugin extends Plugin {
     if (!res.ok) this.dialogs.error("Update failed", res.error);
   }
 
-  async _load(retried = false) {
+  async _load(retried = false): Promise<void> {
     try {
-      const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
+      const data: UpdateInfo = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
       this.info.set(data);
       // the startup `git fetch` may not have finished when the UI first loaded —
       // re-check once shortly after so the badge still appears
@@ -84,7 +100,7 @@ export class UpdatePlugin extends Plugin {
 
   // fast-forward goo onto origin/master, restart the server, then reload the page
   // once it's back. Returns { ok, error }; on success the page is reloading.
-  async applyAndRestart() {
+  async applyAndRestart(): Promise<{ ok: true } | { ok: false; error: string }> {
     this.applying.set(true);
     const boot = this.info()?.boot; // remember this process so we can detect the new one
     try {
@@ -98,20 +114,22 @@ export class UpdatePlugin extends Plugin {
       return { ok: false, error: "goo was updated but didn't come back — restart it manually." };
     } catch (e) {
       this.applying.set(false);
-      return { ok: false, error: e.message };
+      return { ok: false, error: errorMessage(e) };
     }
   }
 
   // wait until the re-exec'd goo is serving: a changed boot id is the reliable
   // signal (the old, still-shutting-down server keeps the old id); fall back to
   // "saw it go down, then back up" if we never had a boot id to compare.
-  async _waitUntilRestarted(boot, timeout = 30000) {
+  async _waitUntilRestarted(boot: string | undefined, timeout = 30000): Promise<boolean> {
     const t0 = Date.now();
     let wentDown = false;
     await new Promise((r) => setTimeout(r, 600));
     while (Date.now() - t0 < timeout) {
       try {
-        const data = await (await fetch("/api/goo/update", { cache: "no-store" })).json();
+        const data: UpdateInfo = await (
+          await fetch("/api/goo/update", { cache: "no-store" })
+        ).json();
         if (boot ? data.boot && data.boot !== boot : wentDown) return true;
       } catch {
         wentDown = true; // observed the restart gap

@@ -24,6 +24,53 @@
 // browser-side view preference, like the Workspaces categories).
 
 import { Component, signal, xml, useProps, t } from "@odoo/owl";
+import type { ComponentConstructor, Type } from "@odoo/owl";
+
+// the row shape RecordList itself relies on: a stable id (the default row key)
+export interface RecordRow {
+  readonly id?: string | number;
+}
+
+// one column (see the FieldSpec description above). Methods (not arrow-typed
+// properties) so a FieldSpec<SomeRow> is usable where a FieldSpec<RecordRow> is.
+export interface FieldSpec<R = RecordRow> {
+  name: string;
+  type?: string; // "char" (default) | "bool" | "number" | "relation"
+  label?: string;
+  get?(row: R): unknown;
+  set?(row: R, value: unknown): void;
+  component?: ComponentConstructor;
+  cellProps?(row: R): object;
+  class?: string;
+  title?(row: R): string;
+  sortable?: boolean;
+}
+
+export interface Recordset<R = RecordRow> {
+  records: () => R[];
+  fields: FieldSpec<R>[];
+}
+
+// a relation cell's value: the target record (name() when it has one)
+interface RelationValue {
+  name?: () => unknown;
+  id?: unknown;
+}
+
+// one rendered group: grouped mode's per-key bucket, or the single flat one
+interface RecordGroup {
+  key: string;
+  label: string;
+  rows: RecordRow[];
+  collapsed: boolean;
+}
+
+// screen-owned header sorting state (see the `sort` prop below)
+interface SortState {
+  key: () => string;
+  dir: () => string;
+  toggle: (name: string) => void;
+}
 
 // ── adapters ──────────────────────────────────────────────────────────────────
 
@@ -31,16 +78,16 @@ import { Component, signal, xml, useProps, t } from "@odoo/owl";
 // with a stable `.id` + getters). The author supplies each FieldSpec fully — a `get`
 // reading the underlying model signals (so reactivity is free), and an optional `set`
 // that may write a *different* record than the row (config on a derived view).
-export function recordset(recordsFn, specs) {
+export function recordset<R>(recordsFn: () => R[], specs: FieldSpec<R>[]): Recordset<R> {
   return { records: recordsFn, fields: specs };
 }
 
 // collapsed-group persistence (shared shape with the Workspaces categories: a
 // plain JSON array of group keys under one localStorage key)
-function savedCollapsed(stateKey) {
+function savedCollapsed(stateKey: string | undefined): Set<string> {
   if (!stateKey) return new Set();
   try {
-    const stored = JSON.parse(localStorage.getItem(stateKey));
+    const stored = JSON.parse(localStorage.getItem(stateKey) as string); // null parses to null
     return new Set(Array.isArray(stored) ? stored : []);
   } catch {
     return new Set();
@@ -69,16 +116,17 @@ function savedCollapsed(stateKey) {
 //   slots       group-header       scoped slot (receives `g` = {key, label, rows,
 //               collapsed}) replacing the label — the home for group actions
 export class RecordList extends Component {
+  // the t.any() props are typed for this class only — owl doesn't validate them
   props = useProps({
-    recordset: t.any(),
-    rowKey: t.any().optional(),
-    rowClass: t.any().optional(),
-    groupBy: t.any().optional(),
-    groupLabel: t.any().optional(),
-    groupSort: t.any().optional(),
+    recordset: t.any() as Type<Recordset>,
+    rowKey: (t.any() as Type<(row: RecordRow) => string>).optional(),
+    rowClass: (t.any() as Type<(row: RecordRow) => object | string>).optional(),
+    groupBy: (t.any() as Type<(row: RecordRow) => unknown>).optional(),
+    groupLabel: (t.any() as Type<(key: string, rows: RecordRow[]) => string>).optional(),
+    groupSort: (t.any() as Type<(a: RecordGroup, b: RecordGroup) => number>).optional(),
     collapsible: t.boolean().optional(),
     stateKey: t.string().optional(),
-    sort: t.any().optional(),
+    sort: (t.any() as Type<SortState>).optional(),
     slots: t.any().optional(),
   });
 
@@ -128,23 +176,23 @@ export class RecordList extends Component {
   // collapsed group keys; seeded from localStorage when a stateKey is given
   collapsed = signal(savedCollapsed(this.props.stateKey));
 
-  get fields() {
+  get fields(): FieldSpec[] {
     return this.props.recordset.fields;
   }
 
-  get grouped() {
+  get grouped(): boolean {
     return !!this.props.groupBy;
   }
 
   // the render model: grouped → [{key, label, rows, collapsed}] in first-occurrence
   // order (or props.groupSort); flat → one anonymous group holding every record
-  get groups() {
+  get groups(): RecordGroup[] {
     const rows = this.props.recordset.records();
     if (!this.grouped) return [{ key: "__flat__", label: "", rows, collapsed: false }];
-    const map = new Map();
+    const map = new Map<string, RecordRow[]>();
     for (const row of rows) {
-      const key = String(this.props.groupBy(row));
-      (map.get(key) || map.set(key, []).get(key)).push(row);
+      const key = String(this.props.groupBy!(row)); // set: this.grouped
+      (map.get(key) || map.set(key, []).get(key)!).push(row);
     }
     const collapsed = this.collapsed();
     const groups = [...map.entries()].map(([key, rows]) => ({
@@ -157,7 +205,7 @@ export class RecordList extends Component {
     return groups;
   }
 
-  toggleGroup(key) {
+  toggleGroup(key: string) {
     const next = new Set(this.collapsed());
     if (!next.delete(key)) next.add(key);
     this.collapsed.set(next);
@@ -169,56 +217,61 @@ export class RecordList extends Component {
     }
   }
 
-  rowKey(row) {
+  rowKey(row: RecordRow) {
     return this.props.rowKey ? this.props.rowKey(row) : row.id;
   }
 
-  rowClass(row) {
+  rowClass(row: RecordRow) {
     return this.props.rowClass ? this.props.rowClass(row) : "";
   }
 
-  label(f) {
+  label(f: FieldSpec) {
     return f.label === undefined ? f.name : f.label;
   }
 
   // ── header sorting (state owned by the screen via props.sort) ──
-  sortable(f) {
+  sortable(f: FieldSpec): boolean {
     return !!(f.sortable && this.props.sort);
   }
 
-  onHeaderClick(f) {
-    if (this.sortable(f)) this.props.sort.toggle(f.name);
+  onHeaderClick(f: FieldSpec) {
+    if (this.sortable(f)) this.props.sort!.toggle(f.name); // sortable(f) ⇒ props.sort
   }
 
   // " ▲" / " ▼" for the active sort column, else ""
-  sortArrow(f) {
+  sortArrow(f: FieldSpec): string {
     const sort = this.props.sort;
     if (!sort || sort.key() !== f.name) return "";
     return sort.dir() === "asc" ? " ▲" : " ▼";
   }
 
   // ── cells ──
-  cellClass(f) {
+  cellClass(f: FieldSpec): string {
     return `rec-${f.type || "char"}${f.class ? " " + f.class : ""}`;
   }
 
-  cellProps(f, row) {
+  cellProps(f: FieldSpec, row: RecordRow): object {
     return f.cellProps ? f.cellProps(row) : { row };
   }
 
-  val(f, row) {
-    return f.get(row);
+  // val/display render a FieldSpec without a `component`, which always has a `get`
+  val(f: FieldSpec, row: RecordRow): unknown {
+    return f.get!(row);
   }
 
   // read-only cell text — a relation shows the target's name (or id), else the value
-  display(f, row) {
-    const v = f.get(row);
-    if (f.type === "relation") return v ? (v.name ? v.name() : (v.id ?? "")) : "—";
+  display(f: FieldSpec, row: RecordRow): unknown {
+    const v = f.get!(row);
+    if (f.type === "relation") {
+      const rel = v as RelationValue | null | undefined; // a relation's get() returns a record
+      return rel ? (rel.name ? rel.name() : (rel.id ?? "")) : "—";
+    }
     if (v === null || v === undefined || v === "") return "—";
     return v;
   }
 
-  write(f, row, raw) {
-    f.set(row, f.type === "number" ? Number(raw) : raw);
+  // only bound on editable cells (`f.set` present)
+  write(f: FieldSpec, row: RecordRow, raw: string | boolean) {
+    f.set!(row, f.type === "number" ? Number(raw) : raw);
   }
 }

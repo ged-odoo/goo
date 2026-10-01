@@ -6,10 +6,25 @@ import { DialogPlugin } from "../../src/core/dialog_plugin.ts";
 import { StorePlugin } from "../../src/core/store_plugin.ts";
 import { PullRequest } from "../../src/core/models.ts";
 import { createPluginHarness } from "../helpers/plugin_harness.ts";
+import type { RepoConfig } from "../../src/core/config.ts";
+import type { BranchInfo, RunbotBranchStatus } from "../../src/core/observed_models.ts";
+import { NO_MANAGER } from "../helpers/plugin.ts";
 
 const PRS_CACHE_KEY = "oo-prs-cache";
 
-function makeConfig(repos) {
+// a branch fixture carrying only the fields a test is about
+const branch = (b: Partial<BranchInfo>) => b as BranchInfo;
+
+// a runbot status fixture
+const runbotStatus = (result: string): RunbotBranchStatus => ({ result, running: false, url: "" });
+
+// the stubbed fetch() answering every call with a 200 + `body`
+function respondWith(body: unknown) {
+  // postJSON reads only `ok` and `json()` off the Response
+  vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => body } as Response);
+}
+
+function makeConfig(repos: Partial<RepoConfig>[]) {
   return { config: { repos }, repoByGithub: () => undefined };
 }
 
@@ -18,8 +33,8 @@ function makeConfig(repos) {
 // for real, it's cheap and pure in-memory state) are faked to isolate that logic
 // from GitHubService/MergebotService/RunbotService, which already have their own
 // backend-side test coverage.
-function makePlugin(repos = [{ id: "community", github: "odoo/odoo" }]) {
-  const store = new StorePlugin({});
+function makePlugin(repos: Partial<RepoConfig>[] = [{ id: "community", github: "odoo/odoo" }]) {
+  const store = new StorePlugin(NO_MANAGER);
   const eventLog = { add: vi.fn() };
   const dialogs = { open: vi.fn(), error: vi.fn() };
   const config = makeConfig(repos);
@@ -42,9 +57,9 @@ describe("CodePlugin._groups", () => {
           id: "community",
           current: "master",
           branches: [
-            { name: "master", date: "2020-01-01T00:00:00Z", remote: true },
-            { name: "feature-old", date: "2020-01-01T00:00:00Z", remote: true },
-            { name: "feature-new", date: "2024-01-01T00:00:00Z", remote: true },
+            branch({ name: "master", date: "2020-01-01T00:00:00Z", remote: true }),
+            branch({ name: "feature-old", date: "2020-01-01T00:00:00Z", remote: true }),
+            branch({ name: "feature-new", date: "2024-01-01T00:00:00Z", remote: true }),
           ],
         },
       ],
@@ -58,7 +73,7 @@ describe("CodePlugin._groups", () => {
   it("picks the open PR over a closed one, and the most recently updated among opens", () => {
     const { plugin, store } = makePlugin();
     store.mergeRepoStatus(
-      [{ id: "community", branches: [{ name: "feature", date: "2024-01-01T00:00:00Z" }] }],
+      [{ id: "community", branches: [branch({ name: "feature", date: "2024-01-01T00:00:00Z" })] }],
       1,
       { authoritative: true },
     );
@@ -95,7 +110,7 @@ describe("CodePlugin._groups", () => {
   it("a head-ref PR lookup never shadows an authored PR on the same branch", () => {
     const { plugin, store } = makePlugin();
     store.mergeRepoStatus(
-      [{ id: "community", branches: [{ name: "feature", date: "2024-01-01T00:00:00Z" }] }],
+      [{ id: "community", branches: [branch({ name: "feature", date: "2024-01-01T00:00:00Z" })] }],
       1,
       { authoritative: true },
     );
@@ -155,6 +170,21 @@ describe("CodePlugin._cache / instant-paint localStorage cache", () => {
   });
 });
 
+describe("CodePlugin setup() — instant paint from the cache", () => {
+  afterEach(() => localStorage.clear());
+
+  it("keeps each cached repo's resolved push fork, so the PR-create link targets it on reload", () => {
+    // what load() writes: the store's own repoStatusList() rows (camelCase pushGithub)
+    const cached = {
+      at: 123,
+      branchRepos: [{ id: "community", current: "feat", branches: [], pushGithub: "me/odoo" }],
+    };
+    localStorage.setItem(PRS_CACHE_KEY, JSON.stringify(cached));
+    const { plugin } = makePlugin();
+    expect(plugin.groups().pushGithubByRepo.community).toBe("me/odoo");
+  });
+});
+
 describe("CodePlugin._widenScope", () => {
   it("true absorbs anything", () => {
     const { plugin } = makePlugin();
@@ -172,7 +202,7 @@ describe("CodePlugin._widenScope", () => {
   it("two sets union rather than replace", () => {
     const { plugin } = makePlugin();
     const widened = plugin._widenScope(new Set(["a"]), new Set(["b"]));
-    expect([...widened].sort()).toEqual(["a", "b"]);
+    expect([...(widened as Set<string>)].sort()).toEqual(["a", "b"]);
   });
 });
 
@@ -249,10 +279,7 @@ describe("CodePlugin.loadMergebot dedup", () => {
 
   it("fetches an unknown PR and merges the result into the store", async () => {
     const { plugin } = makePlugin();
-    fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ states: { "odoo/odoo#1": "approved" }, details: {} }),
-    });
+    respondWith({ states: { "odoo/odoo#1": "approved" }, details: {} });
     await plugin.loadMergebot([{ github: "odoo/odoo", number: 1 }]);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(plugin.mergebot()["odoo/odoo#1"]).toBe("approved");
@@ -260,7 +287,7 @@ describe("CodePlugin.loadMergebot dedup", () => {
 
   it("never pins a blank state — a scrape that returns nothing stays re-askable", async () => {
     const { plugin } = makePlugin();
-    fetch.mockResolvedValue({ ok: true, json: async () => ({ states: { "odoo/odoo#1": "" } }) });
+    respondWith({ states: { "odoo/odoo#1": "" } });
     await plugin.loadMergebot([{ github: "odoo/odoo", number: 1 }]);
     expect("odoo/odoo#1" in plugin.mergebot()).toBe(false);
   });
@@ -268,10 +295,7 @@ describe("CodePlugin.loadMergebot dedup", () => {
   it("an armed one-shot refresh re-asks a PR even though it's already held", async () => {
     const { plugin, store } = makePlugin();
     store.mergeMergebot({ "odoo/odoo#1": "approved" }, {}, { "odoo/odoo#1": [] });
-    fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ states: { "odoo/odoo#1": "merged" }, details: {} }),
-    });
+    respondWith({ states: { "odoo/odoo#1": "merged" }, details: {} });
     plugin._mbRefresh = new Set(["odoo/odoo#1"]);
     await plugin.loadMergebot([{ github: "odoo/odoo", number: 1 }]);
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -286,15 +310,15 @@ describe("CodePlugin.loadRunbot dedup", () => {
 
   it("doesn't re-fetch a branch whose runbot status is already held", async () => {
     const { plugin, store } = makePlugin();
-    store.mergeRunbot({ master: "success" });
+    store.mergeRunbot({ master: runbotStatus("success") });
     await plugin.loadRunbot(["master"]);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("fetches an unknown branch and merges the result", async () => {
     const { plugin } = makePlugin();
-    fetch.mockResolvedValue({ ok: true, json: async () => ({ states: { master: "success" } }) });
+    respondWith({ states: { master: runbotStatus("success") } });
     await plugin.loadRunbot(["master"]);
-    expect(plugin.runbot().master).toBe("success");
+    expect(plugin.runbot().master).toEqual(runbotStatus("success"));
   });
 });

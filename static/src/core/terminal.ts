@@ -10,10 +10,14 @@ import {
 } from "@odoo/owl";
 import { TerminalPlugin } from "./terminal_plugin.ts";
 import { useDragResize } from "./common.ts";
+import type { DragResize } from "./common.ts";
 
-export let _xtermReady = null;
+// tears down an attached terminal (its websocket, observer and xterm instance)
+type Dispose = () => void;
 
-export function loadXterm() {
+export let _xtermReady: Promise<unknown> | null = null;
+
+export function loadXterm(): Promise<unknown> {
   if (!_xtermReady) {
     _xtermReady = new Promise((resolve, reject) => {
       const link = document.createElement("link");
@@ -39,7 +43,11 @@ export function loadXterm() {
 // lazy-load a <script> and resolve once it has run (or already has, e.g. Chart.js
 // itself once both the Nightly and Memory panel have asked for it)
 
-export async function attachXterm(el, wsUrl, focusOnOpen = false) {
+export async function attachXterm(
+  el: HTMLElement,
+  wsUrl: string,
+  focusOnOpen = false,
+): Promise<Dispose> {
   await loadXterm();
   const term = new Terminal({
     cursorBlink: true,
@@ -61,7 +69,7 @@ export async function attachXterm(el, wsUrl, focusOnOpen = false) {
   };
   ws.onopen = sendSize;
   ws.onmessage = (e) => term.write(new Uint8Array(e.data));
-  const onData = term.onData((data) => {
+  const onData = term.onData((data: string) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
   });
   const ro = new ResizeObserver(() => {
@@ -105,7 +113,8 @@ export class TerminalPanel extends Component {
 
   term = usePlugin(TerminalPlugin);
   container = signal.ref(HTMLElement);
-  _dispose = null;
+  declare drag: DragResize; // set in setup()
+  _dispose: Dispose | null = null;
   _termOpen = false; // guard against double-open on re-renders
 
   setup() {
@@ -121,7 +130,7 @@ export class TerminalPanel extends Component {
     });
   }
 
-  async _openTerminal(el) {
+  async _openTerminal(el: HTMLElement) {
     if (this._termOpen) return;
     this._termOpen = true;
     try {
@@ -163,14 +172,15 @@ export class TerminalDialog extends Component {
     </div>`;
 
   props = useProps({
-    done: t.function(),
+    done: t.function<[null], void>(),
     path: t.string().optional(),
     workspace: t.string().optional(),
     label: t.string(),
   });
 
   container = signal.ref(HTMLElement);
-  _dispose = null;
+  declare drag: DragResize; // set in setup()
+  _dispose: Dispose | null = null;
 
   setup() {
     this.drag = useDragResize();
@@ -180,7 +190,8 @@ export class TerminalDialog extends Component {
       let live = true;
       const url = this.props.workspace
         ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}`
-        : `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+        : // callers pass either `workspace` or `path`
+          `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path!)}`;
       attachXterm(el, url, true).then((dispose) => (live ? (this._dispose = dispose) : dispose()));
       return () => {
         live = false;
@@ -188,7 +199,7 @@ export class TerminalDialog extends Component {
         this._dispose = null;
       };
     });
-    const onKey = (e) => {
+    const onKey = (e: KeyboardEvent) => {
       // let a focused terminal handle Escape itself (vim, readline, …); only
       // close the dialog when focus is outside the terminal
       if (e.key !== "Escape") return;
@@ -200,11 +211,11 @@ export class TerminalDialog extends Component {
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
   }
 
-  get label() {
+  get label(): string | undefined {
     return this.props.label || this.props.path;
   }
 
-  done(result) {
+  done(result: null) {
     this.props.done(result);
   }
 }

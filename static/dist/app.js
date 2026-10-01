@@ -379,10 +379,13 @@ var PRESETS = [
 ];
 
 // static/src/core/utils.ts
+function errorMessage(e) {
+  return e instanceof Error ? e.message : String(e);
+}
 function timeAgo(ts) {
   const date = ts.includes("T") ? new Date(ts) : /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
-  if (isNaN(date)) return ts;
-  const secs = Math.max(0, Math.floor((Date.now() - date) / 1e3));
+  if (isNaN(date.getTime())) return ts;
+  const secs = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1e3));
   if (secs < 60) return "just now";
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
@@ -421,7 +424,10 @@ function inlineMd(text) {
     spans.push(html);
     return `\0${spans.length - 1}\0`;
   };
-  let s = text.replace(/`([^`]+?)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  let s = text.replace(
+    /`([^`]+?)`/g,
+    (_, code) => stash(`<code>${escapeHtml(code)}</code>`)
+  );
   s = escapeHtml(s);
   s = s.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g,
@@ -431,7 +437,7 @@ function inlineMd(text) {
   s = s.replace(/__([^_]+?)__/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, "$1<em>$2</em>");
   s = s.replace(/(^|[^_])_([^_\s][^_]*?)_(?!_)/g, "$1<em>$2</em>");
-  s = s.replace(/\0(\d+)\0/g, (_, i) => spans[i]);
+  s = s.replace(/\0(\d+)\0/g, (_, i) => spans[Number(i)]);
   return s;
 }
 function mdToHtml(text) {
@@ -479,14 +485,15 @@ function mdToHtml(text) {
     }
     const ul = /^\s*[-*+]\s+(.*)$/.exec(line);
     const ol = /^\s*\d+\.\s+(.*)$/.exec(line);
-    if (ul || ol) {
+    const item = ul || ol;
+    if (item) {
       flushPara();
       const type = ul ? "ul" : "ol";
       if (!list || list.type !== type) {
         flushList();
         list = { type, items: [] };
       }
-      list.items.push((ul || ol)[1]);
+      list.items.push(item[1]);
       i++;
       continue;
     }
@@ -516,7 +523,13 @@ function mdToHtml(text) {
 var ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 var LOG_RE = /^(?:\d{4}-\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2},\d+) (\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) ([\w.]+): (.*)$/;
 var HTTP_RE = /^(.*?)"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ([^"]*) (HTTP\/[\d.]+)" (\d{3}) ?(.*)$/;
-var LVL_CLASS = { DEBUG: "info", INFO: "info", WARNING: "warn", ERROR: "err", CRITICAL: "err" };
+var LVL_CLASS = {
+  DEBUG: "info",
+  INFO: "info",
+  WARNING: "warn",
+  ERROR: "err",
+  CRITICAL: "err"
+};
 function tintHttpMeta(rest) {
   const tokens = rest.trim().split(/\s+/).filter(Boolean);
   const floatIdx = tokens.flatMap((t2, i) => /^\d+\.\d+$/.test(t2) ? [i] : []);
@@ -630,7 +643,7 @@ async function postJSON(path, body) {
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const err = new Error(data.error || resp.status);
+    const err = new Error(data.error || String(resp.status));
     err.data = data;
     throw err;
   }
@@ -655,8 +668,9 @@ function descendantWorkspaces(list, id) {
   const byParent = /* @__PURE__ */ new Map();
   for (const w of list) {
     if (!w.parent) continue;
-    if (!byParent.has(w.parent)) byParent.set(w.parent, []);
-    byParent.get(w.parent).push(w);
+    let siblings = byParent.get(w.parent);
+    if (!siblings) byParent.set(w.parent, siblings = []);
+    siblings.push(w);
   }
   const out = [];
   let frontier = byParent.get(id) || [];
@@ -672,8 +686,9 @@ function nestByParent(items) {
   for (const ws of items) {
     const p = ws.parent && byId.has(ws.parent) ? ws.parent : "";
     if (!p) continue;
-    if (!childrenOf.has(p)) childrenOf.set(p, []);
-    childrenOf.get(p).push(ws);
+    let children = childrenOf.get(p);
+    if (!children) childrenOf.set(p, children = []);
+    children.push(ws);
   }
   const out = [];
   const emitted = /* @__PURE__ */ new Set();
@@ -1335,9 +1350,7 @@ var RepoStatus = class extends Model {
   // the checked-out branch
   dirty = fields.bool();
   error = fields.json();
-  // null | string
   branches = fields.json();
-  // [{ name, date, runbot, remote, synced, subject }, …]
   pushGithub = fields.json();
   // "owner/repo" the push remote's URL resolves to, or null
   ahead = fields.number();
@@ -1364,7 +1377,7 @@ var PrRepo = class extends Model {
   github = fields.char();
   error = fields.json();
   prs = fields.json();
-  // [PullRequest, …] (normalized, see models.ts)
+  // normalized, see models.ts
   fetchedAt = fields.number();
 };
 var MergebotStatus = class extends Model {
@@ -1373,7 +1386,7 @@ var MergebotStatus = class extends Model {
   state = fields.char();
   // "" | "merged" | blocked reason
   detail = fields.json();
-  // blocked-reason detail (string) | null
+  // blocked-reason detail
   forwardPorts = fields.json();
   // subsequent mergebot matrix rows | null (not fetched)
 };
@@ -1652,7 +1665,8 @@ var StorePlugin = class extends Plugin {
   // fold one server snapshot into its OdooServer record, keyed by id. Spread-merge into
   // the `data` json so a partial SSE update (a worktree carrying only state/port)
   // preserves the fields it omits — notably a worktree's client-only `exists`. The
-  // "main" snapshot carries every field.
+  // "main" snapshot carries every field. (A record first created from a patch has
+  // only the patch's fields — readers treat an absent `state` as "stopped".)
   mergeServer(snap) {
     if (!snap || !snap.id) return;
     const rec = this._live(OdooServer, snap.id);
@@ -1751,9 +1765,13 @@ var MAX = 1e3;
 var STORAGE_KEY = "oo-event-log";
 function storedLog() {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    const raw = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) || "null"
+    );
     if (raw && Array.isArray(raw.entries)) {
-      const entries = raw.entries.filter((e) => e && typeof e.id === "number" && typeof e.text === "string").map((e) => e.status === "pending" ? { ...e, status: "", eid: "" } : e);
+      const entries = raw.entries.filter(
+        (e) => e && typeof e.id === "number" && typeof e.text === "string"
+      ).map((e) => e.status === "pending" ? { ...e, status: "", eid: "" } : e);
       return { entries, lastReadId: raw.lastReadId || 0 };
     }
   } catch {
@@ -1832,7 +1850,15 @@ var EventLogPlugin = class extends Plugin {
     });
     if (found) this._commit(entries);
     else if (text) {
-      const row = { id: ++this._seq, at: Date.now(), text, anchor: "", level, status, eid };
+      const row = {
+        id: ++this._seq,
+        at: Date.now(),
+        text,
+        anchor: "",
+        level,
+        status,
+        eid
+      };
       this._commit([...entries, row]);
     }
   }
@@ -2008,7 +2034,9 @@ var Dialog = class extends Component {
     document.addEventListener("keydown", onKey);
     onWillUnmount(() => document.removeEventListener("keydown", onKey));
     onMounted(() => {
-      const inp = document.querySelector(".dialog input[type=text], .dialog textarea");
+      const inp = document.querySelector(
+        ".dialog input[type=text], .dialog textarea"
+      );
       if (inp) {
         inp.focus();
         inp.select();
@@ -2116,7 +2144,7 @@ var CodePlugin = class extends Plugin {
   // "github#number" -> subsequent branch rows
   runbot = this.store.runbot;
   // branch name -> runbot status
-  at = signal((this._cache() || {}).at || 0);
+  at = signal(this._cache()?.at || 0);
   // branchKey -> a PR resolved by head ref (forward ports / colleagues' PRs the
   // authored `prs()` fetch misses), or null once looked up and none was found (so
   // we don't re-ask). Overlaid onto the authored prIndex in `_groups()`.
@@ -2151,7 +2179,8 @@ var CodePlugin = class extends Plugin {
   setup() {
     const c = this._cache();
     if (c && c.branchRepos) {
-      this.store.mergeRepoStatus(c.branchRepos, c.at || 0, { authoritative: false });
+      const repos = c.branchRepos.map((r) => ({ ...r, push_github: r.pushGithub }));
+      this.store.mergeRepoStatus(repos, c.at || 0, { authoritative: false });
     }
   }
   // mergebot state for the given PRs. Only fetch what we don't already hold and
@@ -2201,7 +2230,10 @@ var CodePlugin = class extends Plugin {
     this._rbRefresh = null;
     todo.forEach((b) => this.store.rbPending.add(b));
     try {
-      const res = await postJSON("/api/runbot", { branches: todo, refresh: todo.some(inScope) });
+      const res = await postJSON("/api/runbot", {
+        branches: todo,
+        refresh: todo.some(inScope)
+      });
       this.store.mergeRunbot(res.states);
     } catch {
     } finally {
@@ -2243,7 +2275,7 @@ var CodePlugin = class extends Plugin {
   // now server-cached and always fetched fresh, so they're no longer stored here)
   _cache() {
     try {
-      const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY));
+      const c = JSON.parse(localStorage.getItem(PRS_CACHE_KEY) ?? "null");
       return c && c.at && c.branchRepos ? c : null;
     } catch {
       return null;
@@ -2271,7 +2303,9 @@ var CodePlugin = class extends Plugin {
     const at = Date.now();
     const repos = this.reposWithGithub();
     const branchReq = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
-    const branchesP = postJSON("/api/code/branches", { repos: branchReq }).then((b) => {
+    const branchesP = postJSON("/api/code/branches", {
+      repos: branchReq
+    }).then((b) => {
       this.store.mergeRepoStatus(b.repos, at, { authoritative: !branchRepoIds });
       return true;
     }).catch((e) => {
@@ -2280,7 +2314,10 @@ var CodePlugin = class extends Plugin {
     });
     const prReq = repos.filter((r) => r.github && (!prRepoIds || prRepoIds.has(r.id)));
     const scopeIds = new Set(prReq.map((r) => r.id));
-    const prsP = postJSON("/api/prs", { repos: prReq, refresh: force }).then((p) => {
+    const prsP = postJSON("/api/prs", {
+      repos: prReq,
+      refresh: force
+    }).then((p) => {
       const normalized = p.repos.map((r) => ({ ...r, prs: (r.prs || []).map(PullRequest.from) }));
       this.store.mergePrRepos(normalized, at, scopeIds);
     }).catch((e) => {
@@ -2397,7 +2434,9 @@ var CodePlugin = class extends Plugin {
     const req = branchRepoIds ? repos.filter((r) => branchRepoIds.has(r.id)) : repos;
     const at = Date.now();
     try {
-      const b = await postJSON("/api/code/branches", { repos: req });
+      const b = await postJSON("/api/code/branches", {
+        repos: req
+      });
       this.store.mergeRepoStatus(b.repos, at, { authoritative: !branchRepoIds });
     } catch (e) {
       this.error.set(e.message);
@@ -2484,7 +2523,7 @@ var CodePlugin = class extends Plugin {
     const prsIndex = {};
     for (const [key, list] of Object.entries(prsByBranch)) {
       const sorted = list.slice().sort(
-        (a, b) => (b.state === "open") - (a.state === "open") || (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)
+        (a, b) => Number(b.state === "open") - Number(a.state === "open") || (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)
       );
       prsIndex[key] = sorted;
       prIndex[key] = sorted[0];
@@ -2496,7 +2535,6 @@ var CodePlugin = class extends Plugin {
         map.get(b.name).push({
           repo: repo.id,
           date: b.date,
-          runbot: b.runbot,
           remote: b.remote,
           checkedOut: b.name === repo.current
         });
@@ -2522,10 +2560,9 @@ var CodePlugin = class extends Plugin {
           branch,
           rows,
           activity,
-          base: BASE_BRANCH_RE.test(branch),
-          runbot: rows.map((r) => r.runbot).find(Boolean) || ""
+          base: BASE_BRANCH_RE.test(branch)
         };
-      }).sort((a, b) => a.base - b.base || b.activity - a.activity)
+      }).sort((a, b) => Number(a.base) - Number(b.base) || b.activity - a.activity)
     };
   }
   // GitHub / mergebot URL helpers. The logic lives on the Repository model (via the
@@ -2559,7 +2596,11 @@ var CodePlugin = class extends Plugin {
       this.eventLog.add(`posted robodoo r+ on PR #${number} (${github})`);
       return true;
     } catch (e) {
-      this.eventLog.add(`posting r+ failed: ${github}#${number} \u2014 ${e.message}`, "", "error");
+      this.eventLog.add(
+        `posting r+ failed: ${github}#${number} \u2014 ${e.message}`,
+        "",
+        "error"
+      );
       this.dialogs.error("Post r+ failed", e.message);
       return false;
     }
@@ -2583,7 +2624,11 @@ var CodePlugin = class extends Plugin {
   // (the branch's own base, e.g. "master") + `pullRemote` make each commit carry
   // an "ahead" flag — reachable from ref but not the base branch, i.e. unique to
   // this branch and so safe to reword (see rewordCommit).
-  async commits(path, ref = "", { base = "", pullRemote = "", count = 20 } = {}) {
+  async commits(path, ref = "", {
+    base = "",
+    pullRemote = "",
+    count = 20
+  } = {}) {
     const res = await postJSON("/api/code/log", {
       path,
       ref,
@@ -2595,7 +2640,10 @@ var CodePlugin = class extends Plugin {
     return res.commits;
   }
   async commitDiff(path, sha) {
-    const res = await postJSON("/api/code/commit/diff", { path, sha });
+    const res = await postJSON("/api/code/commit/diff", {
+      path,
+      sha
+    });
     if (!res.ok) throw new Error(res.error || "git show failed");
     return res.diff || "";
   }
@@ -2632,7 +2680,10 @@ ${head.body}` : head.subject;
     this.busy.set(true);
     this._beginWork(ids);
     try {
-      const res = await postJSON("/api/code/checkout", { repos });
+      const res = await postJSON(
+        "/api/code/checkout",
+        { repos }
+      );
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
         this.dialogs.error(
@@ -2666,7 +2717,10 @@ ${head.body}` : head.subject;
     this.busy.set(true);
     this._beginWork(ids);
     try {
-      const res = await postJSON("/api/code/rebase", { repos });
+      const res = await postJSON(
+        "/api/code/rebase",
+        { repos }
+      );
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length) {
         for (const f of failed)
@@ -2784,7 +2838,10 @@ ${res.remote_error}`
         const repo = repoByPath.get(b.path);
         this.eventLog.add(`creating branch ${b.name}${repo ? ` (${repo.id})` : ""}`);
       }
-      const res = await postJSON("/api/code/branches/create", { branches });
+      const res = await postJSON(
+        "/api/code/branches/create",
+        { branches }
+      );
       const failed = (res.results || []).filter((r) => !r.ok);
       if (failed.length)
         this.dialogs.error(
@@ -2937,8 +2994,9 @@ ${res.remote_error}`
     try {
       await postJSON("/api/code/rebase-plan", { path, base, plan, pull_remote: pullRemote });
     } catch (e) {
-      e.inProgress = !!e.data?.in_progress;
-      throw e;
+      const err = e;
+      err.inProgress = !!err.data?.in_progress;
+      throw err;
     }
   }
   // abort an in-progress rebase left by a conflicted rewriteHistory, restoring
@@ -2952,7 +3010,9 @@ ${res.remote_error}`
   // stuck rebase from a previous session is never silently invisible. Throws
   // on failure (the caller falls back to treating it as unknown/not stuck).
   async rebaseStatus(path) {
-    const res = await postJSON("/api/code/rebase-status", { path });
+    const res = await postJSON("/api/code/rebase-status", {
+      path
+    });
     if (!res.ok) throw new Error(res.error || "couldn't check rebase status");
     return !!res.in_progress;
   }
@@ -3004,6 +3064,12 @@ ${res.remote_error}`
 // static/src/core/log_buffer.ts
 var MAX_LINES = 2e3;
 var LogBuffer = class {
+  el;
+  count;
+  autoScroll;
+  savedScroll;
+  _scrollQueued;
+  _lastTop;
   constructor() {
     this.el = document.createElement("div");
     this.el.className = "log-scroll";
@@ -3077,7 +3143,7 @@ var ServerPlugin = class extends Plugin {
   output = new LogBuffer();
   // the persistent server-log element
   logListeners = /* @__PURE__ */ new Set();
-  // per-server log lines {server, line} — tests/addons/worktree buffers
+  // per-server log lines — tests/addons/worktree buffers
   gooUpdateListeners = /* @__PURE__ */ new Set();
   // UpdatePlugin refreshes the navbar badge from here
   worktreeListeners = /* @__PURE__ */ new Set();
@@ -3218,9 +3284,9 @@ var ServerPlugin = class extends Plugin {
       await postJSON(path, body);
     } catch (e) {
       this._failStart();
-      this.log(`[goo] ${label} failed: ${e.message}`);
-      this.eventLog.add(`${label} failed: ${e.message}`, "", "error");
-      this.dialogs.error(`Could not ${label} the server`, e.message);
+      this.log(`[goo] ${label} failed: ${errorMessage(e)}`);
+      this.eventLog.add(`${label} failed: ${errorMessage(e)}`, "", "error");
+      this.dialogs.error(`Could not ${label} the server`, errorMessage(e));
     }
   }
   // The "starting server" line is a timed event: it shows an animated "..." right
@@ -3582,8 +3648,9 @@ var Workspace = class _Workspace extends Model {
     for (const w of this.orm.records(_Workspace)) {
       const p = w.parent();
       if (!p) continue;
-      if (!byParent.has(p)) byParent.set(p, []);
-      byParent.get(p).push(w);
+      let children = byParent.get(p);
+      if (!children) byParent.set(p, children = []);
+      children.push(w);
     }
     const out = [];
     const seen = /* @__PURE__ */ new Set([this.id]);
@@ -3705,8 +3772,10 @@ var Workspace = class _Workspace extends Model {
 var Checkout = class extends Model {
   static id = "checkout";
   // id = `${workspace}:${repo}` (workspace ids = the old target ids)
-  workspace = fields.many2one({ comodel: () => Workspace, inverse: "checkouts" });
-  repository = fields.many2one({ comodel: () => Repository, inverse: "checkouts" });
+  workspace = fields.many2one({ comodel: () => Workspace });
+  // never null: every Checkout is created with its repo id (createWorkspace /
+  // reconcileCheckouts), hence the `repository()!` reads
+  repository = fields.many2one({ comodel: () => Repository });
   branch = fields.char();
 };
 var Template = class extends Model {
@@ -3718,7 +3787,6 @@ var Template = class extends Model {
   category = fields.char();
   // default workspace_categories id new workspaces inherit ("" = none)
   checkouts = fields.json();
-  // [{repo, branch}]
 };
 var AppState = class extends Model {
   static id = "appstate";
@@ -3775,8 +3843,13 @@ function toModels(orm, config = {}, state = {}) {
   for (const k of STATE_JSON) st[k] = state[k] ?? [];
   orm.create(AppState, st);
 }
+var blobValue = (blob, key) => blob[key];
+var fieldOf = (rec, name) => rec[name];
 var char = (name) => ({ name, in: (v) => v ?? "" });
-var bool = (name, dflt = false) => ({ name, in: dflt ? (v) => v ?? true : (v) => !!v });
+var bool = (name, dflt = false) => ({
+  name,
+  in: dflt ? (v) => v ?? true : (v) => !!v
+});
 var REPO_FIELDS = [
   char("path"),
   char("github"),
@@ -3813,18 +3886,18 @@ var TEMPLATE_FIELDS = [
 ];
 function dataFromBlob(fields2, blob) {
   const data = { id: blob.id };
-  for (const f of fields2) data[f.name] = f.in(blob[f.name], blob);
+  for (const f of fields2) data[f.name] = f.in(blobValue(blob, f.name), blob);
   return data;
 }
 function blobFromRecord(fields2, rec) {
   const out = { id: rec.id };
-  for (const f of fields2) out[f.name] = f.out ? f.out(rec) : rec[f.name]();
+  for (const f of fields2) out[f.name] = f.out ? f.out(rec) : fieldOf(rec, f.name)();
   return out;
 }
 function updateFromBlob(fields2, rec, item) {
   for (const f of fields2) {
     if (f.reconcile === "ifPresent" && !(f.name in item)) continue;
-    rec[f.name].set(f.in(item[f.name], item));
+    fieldOf(rec, f.name).set(f.in(blobValue(item, f.name), item));
   }
 }
 function createRepo(orm, r) {
@@ -3858,13 +3931,13 @@ function toConfig(orm) {
     out.reviews = s.reviews() ?? [];
     out.docker_images = s.docker_images() ?? [];
   }
-  out.repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
-  out.workspaces = orm.records(Workspace).map((w) => ({
+  const repos = orm.records(Repository).map((r) => blobFromRecord(REPO_FIELDS, r));
+  const workspaces = orm.records(Workspace).map((w) => ({
     ...blobFromRecord(WORKSPACE_FIELDS, w),
     checkouts: w.checkouts().map((c) => ({ repo: c.repository().id, branch: c.branch() }))
   }));
-  out.templates = orm.records(Template).map((t2) => blobFromRecord(TEMPLATE_FIELDS, t2));
-  return out;
+  const templates = orm.records(Template).map((t2) => blobFromRecord(TEMPLATE_FIELDS, t2));
+  return { ...out, repos, workspaces, templates };
 }
 function toState(orm) {
   const st = orm.getById(AppState, "state");
@@ -3877,8 +3950,9 @@ function toState(orm) {
 function applyPatch(orm, patch) {
   const s = orm.getById(Settings, "settings");
   if (s) {
+    const settingsFields = s;
     for (const k of [...SETTINGS_CHARS, ...SETTINGS_BOOLS, ...SETTINGS_JSON]) {
-      if (k in patch) s[k].set(patch[k]);
+      if (k in patch) settingsFields[k].set(patch[k]);
     }
   }
   if ("repos" in patch) reconcileRepos(orm, patch.repos || []);
@@ -4030,7 +4104,7 @@ function migrateConfigState(config, state) {
     const stale = (t2) => !t2.id || t2.config !== void 0 || !t2.kind || t2.worktree && !t2.worktree.dir;
     if (config.targets.some(stale)) {
       const worktreeDir = config.worktree_dir ?? DEFAULT_CONFIG.worktree_dir;
-      const used = new Set(config.targets.map((t2) => t2.id).filter(Boolean));
+      const used = new Set(config.targets.map((t2) => t2.id).filter((id) => !!id));
       config.targets = config.targets.map((t2) => {
         const { config: checkoutList, ...rest } = t2;
         const id = t2.id || slugId(t2.name, used);
@@ -4098,9 +4172,7 @@ function migrateToWorkspaces(config, state) {
     w.last_activity ||= w.created_at;
   }
   const seen = /* @__PURE__ */ new Set();
-  const templates = targets.filter(
-    (t2) => (t2.checkouts || []).length && t2.checkouts.every((c) => BASE_BRANCH_RE.test(c.branch))
-  ).filter((t2) => !seen.has(t2.name) && seen.add(t2.name)).map((t2) => ({
+  const templates = targets.filter((t2) => t2.checkouts?.length && t2.checkouts.every((c) => BASE_BRANCH_RE.test(c.branch))).filter((t2) => !seen.has(t2.name) && seen.add(t2.name)).map((t2) => ({
     id: t2.id,
     name: t2.name,
     db: t2.db ?? "",
@@ -4127,7 +4199,11 @@ async function loadServerConfig() {
   } catch {
   }
   if (payload && payload.ok && payload.config) {
-    const boot2 = { rev: payload.rev, config: payload.config, state: payload.state || {} };
+    const boot2 = {
+      rev: payload.rev,
+      config: payload.config,
+      state: payload.state || {}
+    };
     const migrated = migrateToWorkspaces(merge(boot2.config), boot2.state);
     _boot = migrated.changed ? await _writeBackMigration(boot2.rev, migrated.config, migrated.state) : boot2;
     return;
@@ -4142,7 +4218,7 @@ async function loadServerConfig() {
       body: JSON.stringify({ rev, config, state })
     });
     const res = await resp.json();
-    _boot = { rev: res.rev, config: res.config ?? config, state: res.state ?? state };
+    _boot = { rev: res.rev ?? rev, config: res.config ?? config, state: res.state ?? state };
   } catch {
     _boot = { rev, config, state };
   }
@@ -4173,7 +4249,7 @@ async function _writeBackMigration(rev, config, state, retry = true) {
 function adoptFromLocalStorage() {
   let config;
   try {
-    config = JSON.parse(localStorage.getItem("oo-config"));
+    config = JSON.parse(localStorage.getItem("oo-config") ?? "null");
   } catch {
     config = null;
   }
@@ -4213,7 +4289,7 @@ var ConfigPlugin = class extends Plugin {
   _configView = computed(() => merge(toConfig(this.orm)));
   _dirty = { config: false, state: false };
   // blobs edited since the last flush
-  _timer = null;
+  _timer = void 0;
   // seed a fresh ORM from the boot payload (field initializer, so config + state are
   // populated the moment the plugin is constructed — other plugins' field inits read
   // getState right after `usePlugin(ConfigPlugin)` returns)
@@ -4258,7 +4334,6 @@ var ConfigPlugin = class extends Plugin {
   repoByGithub(github) {
     return this.orm.records(Repository).find((r) => r.githubOrDefault() === github) || null;
   }
-  // ── app-state (the AppState singleton record) ────────────────────────────────
   getState(field, fallback = null) {
     const st = this.orm.getById(AppState, "state");
     const v = st && st[field] ? st[field]() : void 0;
@@ -4283,7 +4358,9 @@ var ConfigPlugin = class extends Plugin {
     if (!this._dirty.config && !this._dirty.state) return;
     const sent = { ...this._dirty };
     this._dirty = { config: false, state: false };
-    const body = { rev: this.rev() };
+    const body = {
+      rev: this.rev()
+    };
     if (sent.config) body.config = toConfig(this.orm);
     if (sent.state) body.state = toState(this.orm);
     try {
@@ -4299,12 +4376,12 @@ var ConfigPlugin = class extends Plugin {
         this._dirty.state ||= sent.state;
         return this._flush(tries + 1);
       }
-      if (!resp.ok) throw new Error(res.error || resp.status);
+      if (!resp.ok) throw new Error(res.error || String(resp.status));
       this.rev.set(res.rev);
     } catch (e) {
       this._dirty.config ||= sent.config;
       this._dirty.state ||= sent.state;
-      console.error(`[goo] config save failed: ${e.message}`);
+      console.error(`[goo] config save failed: ${errorMessage(e)}`);
     }
   }
   // apply a config broadcast from another tab (SSE "config"). Ignored while we have a
@@ -4335,7 +4412,7 @@ var ConfigPlugin = class extends Plugin {
       const res = await resp.json();
       if (res.rev !== void 0) this.rev.set(res.rev);
     } catch (e) {
-      console.error(`[goo] config save failed: ${e.message}`);
+      console.error(`[goo] config save failed: ${errorMessage(e)}`);
     }
   }
   // reset the whole config + state back to the built-in defaults
@@ -4513,7 +4590,10 @@ var WorkspacePlugin = class extends Plugin {
     this._externalStatusTick.set(this._externalStatusTick() + 1);
     let next;
     try {
-      const res = await postJSON("/api/workspace/external_status", { name: tgt.db });
+      const res = await postJSON(
+        "/api/workspace/external_status",
+        { name: tgt.db }
+      );
       next = { checking: false, running: res.running, url: res.url };
     } catch (e) {
       next = { checking: false, error: e.message };
@@ -4531,7 +4611,10 @@ var WorkspacePlugin = class extends Plugin {
   async checkDbInUse(dbName) {
     if (!dbName) return null;
     try {
-      const res = await postJSON("/api/workspace/external_status", { name: dbName });
+      const res = await postJSON(
+        "/api/workspace/external_status",
+        { name: dbName }
+      );
       return { running: !!res.running, url: res.url || "" };
     } catch {
       return null;
@@ -4588,7 +4671,10 @@ var WorkspacePlugin = class extends Plugin {
     }));
     if (!workspaces.length) return;
     try {
-      const res = await postJSON("/api/workspace/list", { workspaces });
+      const res = await postJSON(
+        "/api/workspace/list",
+        { workspaces }
+      );
       for (const snap of Object.values(res.servers || {})) this.store.mergeServer(snap);
     } catch {
     }
@@ -4733,7 +4819,9 @@ var WorkspacePlugin = class extends Plugin {
     this._startEids[tgt.id] = eid;
     this._merge(tgt.id, { state: "starting" });
     try {
-      const res = await postJSON("/api/workspace/start", { workspace: tgt.id });
+      const res = await postJSON("/api/workspace/start", {
+        workspace: tgt.id
+      });
       this._merge(tgt.id, { port: res.port });
     } catch (e) {
       delete this._startEids[tgt.id];
@@ -4947,7 +5035,7 @@ var UpdatePlugin = class extends Plugin {
       this.info.set(data);
       return data;
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: errorMessage(e) };
     }
   }
   // confirm, then (when it's a clean fast-forward) update + restart goo and reload;
@@ -5004,7 +5092,7 @@ var UpdatePlugin = class extends Plugin {
       return { ok: false, error: "goo was updated but didn't come back \u2014 restart it manually." };
     } catch (e) {
       this.applying.set(false);
-      return { ok: false, error: e.message };
+      return { ok: false, error: errorMessage(e) };
     }
   }
   // wait until the re-exec'd goo is serving: a changed boot id is the reliable
@@ -5137,6 +5225,7 @@ var LogConsole = class extends Component {
   props = useProps({
     title: t.string(),
     buffer: t.any(),
+    // a plugin-owned LogBuffer (not validated at runtime)
     extraClass: t.string().optional(),
     bare: t.boolean().optional()
   });
@@ -5172,6 +5261,7 @@ var SearchBox = class extends Component {
       <button t-if="this.props.value()" class="search-clear" title="clear search" t-on-click="() => this.props.value.set('')">✕</button>
     </div>`;
   props = useProps({ value: t.any() });
+  // not validated at runtime
 };
 var DirtyBadge = class extends Component {
   static template = xml`
@@ -5206,15 +5296,19 @@ var DirtyMenu = class extends Component {
   store = usePlugin(StorePlugin);
   dialogs = usePlugin(DialogPlugin);
   open = signal(false);
-  _path = null;
-  _repo = null;
+  _path = "";
+  // the opened checkout — set by openMenu before any action can run
+  _repo = "";
   _workspaceId = "";
   // set for a worktree workspace's checkout — see DirtyBadge
   _el = null;
   setup() {
     onMounted(() => {
       this._el = document.querySelector(".dirty-menu");
-      appBus.addEventListener("dirty-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener(
+        "dirty-menu",
+        (e) => this.openMenu(e.detail)
+      );
       document.addEventListener("click", () => this.open.set(false));
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.open.set(false);
@@ -5227,9 +5321,10 @@ var DirtyMenu = class extends Component {
     this._workspaceId = workspaceId || "";
     this.open.set(true);
     await Promise.resolve();
-    const w = this._el.offsetWidth;
-    this._el.style.top = `${rect.bottom + 4}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+    const el = this._el;
+    const w = el.offsetWidth;
+    el.style.top = `${rect.bottom + 4}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
   // prompt for a message (the shared textarea editor — also used by CommitsDialog's
   // reword affordance) then stage everything and commit with it. path/repo are
@@ -5283,7 +5378,11 @@ var DirtyMenu = class extends Component {
     this.code.discard(this._path, this._repo, this._workspaceId);
   }
 };
-async function editCommitMessage(dialogs, { title, initialMessage = "", okLabel = "Commit" }) {
+async function editCommitMessage(dialogs, {
+  title,
+  initialMessage = "",
+  okLabel = "Commit"
+}) {
   const res = await dialogs.open({
     title,
     okLabel,
@@ -5312,7 +5411,11 @@ function loadScript(src, isLoaded) {
     document.head.appendChild(s);
   });
 }
-function useDragResize({ w = 780, h = 440, place = null } = {}) {
+function useDragResize({
+  w = 780,
+  h = 440,
+  place = null
+} = {}) {
   const handle = signal.ref(HTMLElement);
   let x = 0;
   let y = 0;
@@ -5441,6 +5544,7 @@ function savedCollapsed(stateKey) {
   }
 }
 var RecordList = class extends Component {
+  // the t.any() props are typed for this class only — owl doesn't validate them
   props = useProps({
     recordset: t.any(),
     rowKey: t.any().optional(),
@@ -5562,16 +5666,21 @@ var RecordList = class extends Component {
   cellProps(f, row) {
     return f.cellProps ? f.cellProps(row) : { row };
   }
+  // val/display render a FieldSpec without a `component`, which always has a `get`
   val(f, row) {
     return f.get(row);
   }
   // read-only cell text — a relation shows the target's name (or id), else the value
   display(f, row) {
     const v = f.get(row);
-    if (f.type === "relation") return v ? v.name ? v.name() : v.id ?? "" : "\u2014";
+    if (f.type === "relation") {
+      const rel = v;
+      return rel ? rel.name ? rel.name() : rel.id ?? "" : "\u2014";
+    }
     if (v === null || v === void 0 || v === "") return "\u2014";
     return v;
   }
+  // only bound on editable cells (`f.set` present)
   write(f, row, raw) {
     f.set(row, f.type === "number" ? Number(raw) : raw);
   }
@@ -5612,7 +5721,11 @@ var RemoteBranchDialog = class extends Component {
         </div>
       </div>
     </div>`;
-  props = useProps({ done: t.function(), repoIds: t.any().optional() });
+  props = useProps({
+    done: t.function(),
+    repoIds: t.any().optional()
+    // not validated at runtime
+  });
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
   searching = signal(false);
@@ -5621,7 +5734,7 @@ var RemoteBranchDialog = class extends Component {
   rows = signal([]);
   sel = signal("");
   inputEl = signal.ref(HTMLElement);
-  _timer = null;
+  _timer;
   _query = "";
   setup() {
     onMounted(() => this.inputEl()?.focus());
@@ -5726,6 +5839,7 @@ var RemoteBranchDialog = class extends Component {
     const repos = rowRepos.map((r) => r.id);
     const remoteByRepo = Object.fromEntries(
       rowRepos.filter((r) => !r.local && r.remote).map((r) => [r.id, r.remote])
+      // filtered
     );
     this.done({ branch, repos, remoteByRepo });
   }
@@ -5782,6 +5896,7 @@ var CommitsDialog = class extends Component {
   loading = signal(true);
   error = signal("");
   expanded = signal(/* @__PURE__ */ new Set());
+  // set in setup()
   setup() {
     this.drag = useDragResize({ w: 620, h: 460 });
     onMounted(() => this.load());
@@ -5830,7 +5945,7 @@ var CommitsDialog = class extends Component {
   }
   fullDate(date) {
     const d = new Date(date);
-    return isNaN(d) ? date : d.toLocaleString();
+    return isNaN(d.getTime()) ? date : d.toLocaleString();
   }
   toggle(sha) {
     const s = new Set(this.expanded());
@@ -7636,7 +7751,7 @@ var DatabasePlugin = class extends Plugin {
       this.databases.set(data.databases);
       this.at.set(Date.now());
     } catch (e) {
-      this.error.set(e.message);
+      this.error.set(errorMessage(e));
     } finally {
       this.loading.set(false);
     }
@@ -7651,8 +7766,8 @@ var DatabasePlugin = class extends Plugin {
       await this.load(true);
       return null;
     } catch (e) {
-      this.eventLog.add(`failed to drop database ${name}: ${e.message}`);
-      return e.message;
+      this.eventLog.add(`failed to drop database ${name}: ${errorMessage(e)}`);
+      return errorMessage(e);
     } finally {
       this.dropping.set("");
     }
@@ -7669,8 +7784,8 @@ var DatabasePlugin = class extends Plugin {
       await this.load(true);
       return null;
     } catch (e) {
-      this.eventLog.add(`failed to clone database ${name}: ${e.message}`);
-      return e.message;
+      this.eventLog.add(`failed to clone database ${name}: ${errorMessage(e)}`);
+      return errorMessage(e);
     }
   }
   // restore a runbot build's database dump (see RunbotService.bundle_dumps) into a
@@ -7692,7 +7807,7 @@ var DatabasePlugin = class extends Plugin {
       return null;
     } catch (e) {
       this.eventLog.finish(eid, "error");
-      return e.message;
+      return errorMessage(e);
     }
   }
   // clone `source` into `target`, transparently stopping + resuming the server when
@@ -7726,8 +7841,8 @@ var DatabasePlugin = class extends Plugin {
       await this.load(true);
       return null;
     } catch (e) {
-      this.eventLog.add(`failed to rename database ${name}: ${e.message}`);
-      return e.message;
+      this.eventLog.add(`failed to rename database ${name}: ${errorMessage(e)}`);
+      return errorMessage(e);
     }
   }
   // the configured filestore root, sent with drop/clone/rename so the backend keeps
@@ -8166,7 +8281,7 @@ var TestsPlugin = class extends Plugin {
     const up = slotId === "main" ? (() => {
       const st = this.server.status();
       return (st.state === "running" || st.state === "starting") && st.mode === "server";
-    })() : ["running", "starting"].includes(this.store.server(slotId)?.state);
+    })() : ["running", "starting"].includes(this.store.server(slotId)?.state ?? "");
     this._pushHistory(target);
     s.tags = memcheck ? `memcheck: ${target}` : target;
     s.cutOnChrome = s.tags.includes("web:WebSuite");
@@ -8219,7 +8334,7 @@ var EventLog = class extends Component {
   clearIcon = m(ICONS.clear);
   body = signal.ref(HTMLElement);
   autoScroll = signal(true);
-  // follow the tail as new events arrive
+  // set in setup()
   _lastCount = 0;
   setup() {
     this.drag = useDragResize({
@@ -8276,7 +8391,11 @@ var EventLog = class extends Component {
   }
   // chronological: oldest first, newest appended at the end
   get rows() {
-    const STATUS_TITLE = { pending: "in progress\u2026", done: "done", error: "failed" };
+    const STATUS_TITLE = {
+      pending: "in progress\u2026",
+      done: "done",
+      error: "failed"
+    };
     return this.log.entries().map((e) => {
       const d = new Date(e.at);
       return {
@@ -8290,7 +8409,7 @@ var EventLog = class extends Component {
         level: e.level || "",
         status: e.status || "",
         // "" | pending | done | error (timed events)
-        statusTitle: STATUS_TITLE[e.status] || ""
+        statusTitle: STATUS_TITLE[e.status || ""] || ""
       };
     });
   }
@@ -9272,7 +9391,10 @@ var ActionMenu = class extends Component {
   setup() {
     onMounted(() => {
       this._el = document.querySelector(".action-menu");
-      appBus.addEventListener("action-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener(
+        "action-menu",
+        (e) => this.openMenu(e.detail)
+      );
       document.addEventListener("click", () => this.open.set(false));
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.open.set(false);
@@ -9283,12 +9405,13 @@ var ActionMenu = class extends Component {
     this.actions.set(actions);
     this.open.set(true);
     await Promise.resolve();
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
+    const el = this._el;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
     let top = rect.bottom + 4;
     if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
+    el.style.top = `${top}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.right - w, window.innerWidth - w - 12))}px`;
   }
   select(a) {
     if (a.disabled) return;
@@ -9314,7 +9437,10 @@ var CiMenu = class extends Component {
   setup() {
     onMounted(() => {
       this._el = document.querySelector(".ci-menu");
-      appBus.addEventListener("ci-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener(
+        "ci-menu",
+        (e) => this.openMenu(e.detail)
+      );
       appBus.addEventListener("ci-menu-hide", () => this.scheduleClose());
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.close();
@@ -9340,15 +9466,17 @@ var CiMenu = class extends Component {
     this.checks.set(checks);
     this.open.set(true);
     await Promise.resolve();
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
+    const el = this._el;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
     let top = rect.bottom + 4;
     if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+    el.style.top = `${top}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
   stateLabel(state) {
-    return { success: "ok", failure: "ko", pending: "running" }[state] || "\u2014";
+    const labels = { success: "ok", failure: "ko", pending: "running" };
+    return labels[state] || "\u2014";
   }
 };
 var MbMenu = class extends Component {
@@ -9369,7 +9497,10 @@ var MbMenu = class extends Component {
   setup() {
     onMounted(() => {
       this._el = document.querySelector(".mb-menu");
-      appBus.addEventListener("mb-menu", (e) => this.openMenu(e.detail));
+      appBus.addEventListener(
+        "mb-menu",
+        (e) => this.openMenu(e.detail)
+      );
       appBus.addEventListener("mb-menu-hide", () => this.scheduleClose());
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.close();
@@ -9395,12 +9526,13 @@ var MbMenu = class extends Component {
     this.rows.set(rows);
     this.open.set(true);
     await Promise.resolve();
-    const w = this._el.offsetWidth;
-    const h = this._el.offsetHeight;
+    const el = this._el;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
     let top = rect.bottom + 4;
     if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - 4);
-    this._el.style.top = `${top}px`;
-    this._el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
+    el.style.top = `${top}px`;
+    el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - w - 12))}px`;
   }
   // "blocked · Review, CI" — the state word, plus the unmet requirements when present
   label(r) {
@@ -11698,6 +11830,7 @@ var TerminalPanel = class extends Component {
     </div>`;
   term = usePlugin(TerminalPlugin);
   container = signal.ref(HTMLElement);
+  // set in setup()
   _dispose = null;
   _termOpen = false;
   // guard against double-open on re-renders
@@ -11751,6 +11884,7 @@ var TerminalDialog = class extends Component {
     label: t.string()
   });
   container = signal.ref(HTMLElement);
+  // set in setup()
   _dispose = null;
   setup() {
     this.drag = useDragResize();
@@ -11758,7 +11892,10 @@ var TerminalDialog = class extends Component {
       const el = this.container();
       if (!el) return;
       let live = true;
-      const url = this.props.workspace ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}` : `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`;
+      const url = this.props.workspace ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}` : (
+        // callers pass either `workspace` or `path`
+        `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`
+      );
       attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
       return () => {
         live = false;
