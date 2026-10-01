@@ -1,0 +1,6 @@
+{
+  // the tests (and, through their imports, static/src) — adds the test-only
+  // declarations (helpers/node.d.ts) the production tsconfig must not see
+  "extends": "../../tsconfig.json",
+  "include": [".", "../src", "../../vendor/owl-orm"]
+}

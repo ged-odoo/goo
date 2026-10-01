@@ -526,6 +526,50 @@ describe("Branches & PRs screen — row menu", () => {
     expect(rows[1].querySelector(".pr-state")?.textContent).toBe("closed");
   });
 
+  it("a busy sub-workspace ticked along with its parent is kept, not deleted", async () => {
+    app = await mount(
+      { "/api/code/branches/delete": { ok: true }, "/api/prs/close": { ok: true } },
+      {
+        workspaces: [
+          {
+            id: "w1",
+            name: "feat-a ws",
+            kind: "dev",
+            checkouts: [{ repo: "community", branch: "feat-a" }],
+          },
+          // on the same branch (so it's offered for deletion too) and busy: the
+          // running server occupies w3
+          {
+            id: "w3",
+            name: "busy child",
+            kind: "dev",
+            parent: "w1",
+            checkouts: [{ repo: "community", branch: "feat-a" }],
+          },
+        ],
+      },
+    );
+    const menu = await openMenu("feat-a", "community");
+    buttons(menu, "Delete")[0].click();
+    await app.settle();
+    const boxes = [...dialog()!.querySelectorAll<HTMLLabelElement>("label.edit-check")];
+    for (const name of ['Delete workspace "feat-a ws"', 'Delete workspace "busy child"'])
+      boxes
+        .find((l) => l.textContent?.trim() === name)!
+        .querySelector("input")!
+        .click();
+    await app.settle();
+    await clickDialog("Delete");
+    await vi.waitFor(() => {
+      const saved = app.callsTo("/api/config").filter((c) => c.method === "POST");
+      const ws = (
+        saved.at(-1)?.body as { config?: { workspaces?: { id: string; parent?: string }[] } }
+      )?.config?.workspaces;
+      expect(ws?.map((w) => [w.id, w.parent ?? ""])).toEqual([["w3", ""]]);
+    });
+    expect(document.body.textContent).toContain('"busy child" is still busy');
+  });
+
   it("cancelling the single-row delete sends nothing", async () => {
     app = await mount();
     const menu = await openMenu("local-only", "community");

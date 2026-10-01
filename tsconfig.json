@@ -1,6 +1,8 @@
 {
-  // type-checks the frontend (`npm run typecheck:ts`, also run in CI and by the
-  // Claude Code hooks); esbuild/vitest strip the types, tsc never emits
+  // type-checks the production frontend (`npm run typecheck:ts`, also run in CI and
+  // by the Claude Code hooks); esbuild/vitest strip the types, tsc never emits. The
+  // tests have their own static/tests/tsconfig.json, so test-only declarations
+  // (Node built-ins, test globals) can't leak into static/src.
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
@@ -11,8 +13,7 @@
     "strict": true,
     "noFallthroughCasesInSwitch": true,
     "isolatedModules": true,
-    "skipLibCheck": true,
-    "types": ["vitest/globals"]
+    "skipLibCheck": true
   },
-  "include": ["static/src", "static/tests", "vendor/owl-orm"]
+  "include": ["static/src", "vendor/owl-orm"]
 }

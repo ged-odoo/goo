@@ -16,12 +16,12 @@
     "test:watch": "vitest",
     "typecheck:py": "pyright",
     "deadcode": "knip",
-    "typecheck:ts": "tsc",
+    "typecheck:ts": "tsc && tsc -p static/tests",
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
-    "@odoo/owl": "^3.0.0-alpha.43",
+    "@odoo/owl": "3.0.0-alpha.43",
     "@vitest/coverage-v8": "^5.0.2",
     "esbuild": "^0.28.0",
     "eslint": "^9.0.0",

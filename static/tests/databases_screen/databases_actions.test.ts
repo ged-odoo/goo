@@ -285,6 +285,8 @@ describe("Databases screen — clone and rename", () => {
       routes: {
         ...dbBackend([db("live")]),
         "/api/status": { id: "main", state: "running", db: "live", workspace: "w1" },
+        "/api/stop": { ok: true, state: "stopped" },
+        "/api/start": { ok: true, state: "starting", cmd: "odoo-bin -d live" },
       },
     });
     await menuAction("live", "Clone");

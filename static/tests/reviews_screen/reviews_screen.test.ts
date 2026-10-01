@@ -457,8 +457,9 @@ describe("Reviews screen — Claude reviews", () => {
             created: 1_700_000_000,
           };
         },
-        "/api/review-prompt": { content: "Go again." },
-        "/api/workspace/claude": { ok: true },
+        "/api/review-prompt": { ok: true, content: "Go again." },
+        "/api/workspace/claude": { ok: true, state: "running" },
+        "/api/code/remote-branch/sync-pr": { ok: true, error: null },
       },
       WITH_WS,
     );
@@ -492,6 +493,17 @@ describe("Reviews screen — Claude reviews", () => {
 
     // Review again: a fresh review turn, the panel shows it's running
     await click(button(panel(), "Review again"));
+    // the checkouts are first synced to their tracked PRs' current heads
+    expect(
+      app
+        .callsTo("/api/code/remote-branch/sync-pr")
+        .map((c) => c.body as { repo: string; github: string; number: number })
+        .map(({ repo, github, number }) => ({ repo, github, number }))
+        .sort((a, b) => a.number - b.number),
+    ).toEqual([
+      { repo: "community", github: "odoo/odoo", number: 1 },
+      { repo: "enterprise", github: "odoo/enterprise", number: 2 },
+    ]);
     expect(app.callsTo("/api/workspace/claude")[0].body).toMatchObject({
       workspace: "rw1",
       review: true,

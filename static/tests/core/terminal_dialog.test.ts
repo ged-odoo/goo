@@ -120,7 +120,6 @@ function finishXtermLoad() {
   s2?.onload?.(new Event("load"));
 }
 
-
 describe("TerminalDialog", () => {
   it("opens a focused shell in the repo, and closes on ✕", async () => {
     const c = await mount(null);

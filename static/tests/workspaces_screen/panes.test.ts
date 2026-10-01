@@ -88,6 +88,11 @@ describe("Tests pane", () => {
     await mount([WT], {
       config: { test_presets: [{ tags: "/sale" }, { tags: " " }] },
       state: { test_history: ["/account"] },
+      routes: {
+        // the backend starts the one-shot run (its progress then streams over SSE)
+        "/api/tests/run": { ok: true, state: "starting", cmd: "odoo-bin --test-tags /sale" },
+        "/api/workspace/stop": { ok: true, error: null },
+      },
     });
     await tab("Tests");
     expect(pane().textContent).toContain("No test output yet");
@@ -160,7 +165,11 @@ describe("Tests pane", () => {
     const writeText = vi.fn();
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     await mount([ALPHA], {
-      routes: { "/api/status": { id: "main", state: "running", workspace: "alpha" } },
+      routes: {
+        "/api/status": { id: "main", state: "running", workspace: "alpha" },
+        "/api/tests/run": { ok: true, state: "starting", cmd: "odoo-bin --test-tags it's/tag" },
+        "/api/stop": { ok: true, state: "stopped" },
+      },
     });
     await tab("Tests");
     const copy = pane().querySelector<HTMLButtonElement>(".test-form .tool-btn[title^=Copy]")!;
@@ -240,7 +249,12 @@ const MODULES = [
 
 describe("Addons pane", () => {
   it("lists the db's apps, filters them, and installs one after confirming", async () => {
-    await mount([WT], { routes: { "/api/addons": { modules: MODULES } } });
+    await mount([WT], {
+      routes: {
+        "/api/addons": { modules: MODULES },
+        "/api/addons/run": { ok: true, state: "starting", cmd: "odoo-bin -i stock" },
+      },
+    });
     await tab("Addons");
     const body = app.callsTo("/api/addons")[0].body as {
       db: string;
