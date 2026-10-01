@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["static/tests/**/*.test.js"],
-  "project": ["static/src/**/*.js", "static/tests/**/*.js", "vendor/owl-orm/**/*.{js,ts}"],
+  "entry": ["static/tests/**/*.test.ts"],
+  "project": ["static/src/**/*.ts", "static/tests/**/*.ts", "vendor/owl-orm/**/*.ts"],
   "ignoreExportsUsedInFile": true
 }

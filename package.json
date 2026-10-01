@@ -4,21 +4,25 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Local Odoo development helper — stdlib Python server + Owl 3 frontend (served as-is; the only built asset is the vendored owlx ORM bundle).",
+  "description": "Local Odoo development helper — stdlib Python server + Owl 3 frontend in TypeScript (bundled by esbuild into the committed static/dist/app.js).",
   "scripts": {
-    "format": "prettier --write \"static/**/*.{js,css,html}\" \"*.md\"",
-    "format:check": "prettier --check \"static/**/*.{js,css,html}\" \"*.md\"",
-    "lint": "eslint static/src",
-    "lint:fix": "eslint static/src --fix",
-    "build": "esbuild static/src/main.js --bundle --format=esm --alias:@odoo/owl=./vendor/owl-orm/owl-global.js --outfile=static/dist/app.js",
+    "format": "prettier --write \"static/**/*.{ts,js,css,html}\" \"*.md\"",
+    "format:check": "prettier --check \"static/**/*.{ts,js,css,html}\" \"*.md\"",
+    "lint": "eslint static/src static/tests",
+    "lint:fix": "eslint static/src static/tests --fix",
+    "build": "esbuild static/src/main.ts --bundle --format=esm --alias:@odoo/owl=./vendor/owl-orm/owl-global.ts --outfile=static/dist/app.js",
     "watch": "npm run build -- --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck:py": "pyright",
-    "deadcode": "knip"
+    "deadcode": "knip",
+    "typecheck:ts": "tsc",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@odoo/owl": "^3.0.0-alpha.43",
+    "@vitest/coverage-v8": "^5.0.2",
     "esbuild": "^0.28.0",
     "eslint": "^9.0.0",
     "globals": "^15.0.0",
@@ -26,6 +30,8 @@
     "knip": "^6.38.0",
     "prettier": "^3.0.0",
     "pyright": "^1.1.414",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^5.0.0"
   }
 }

@@ -1,0 +1,255 @@
+// Run `odoo-bin --test-tags …` against a workspace's server slot. State is kept
+// PER SLOT ("main" | a worktree workspace id): each slot has its own console
+// buffer, status badge and capture window, so a worktree run and a main run can
+// stream concurrently without corrupting each other. The Workspaces screen's
+// Tests pane passes a workspace to address its slot.
+
+import { ConfigPlugin } from "./config_plugin.ts";
+import { StorePlugin } from "./store_plugin.ts";
+import { ServerPlugin } from "./server_plugin.ts";
+import { EventLogPlugin } from "./event_log_plugin.ts";
+import { LogBuffer } from "./log_buffer.ts";
+import { postJSON } from "./utils.ts";
+
+import { Plugin, usePlugin, useEffect, signal, markRaw } from "@odoo/owl";
+
+const HISTORY_MAX = 10;
+
+// the server slot a workspace's runs occupy
+export function slotFor(ws) {
+  return ws && ws.location === "worktree" ? ws.id : "main";
+}
+
+export class TestsPlugin extends Plugin {
+  static sequence = 3;
+
+  config = usePlugin(ConfigPlugin);
+  store = usePlugin(StorePlugin); // one-shot runs live in the shared store's runs map
+  server = usePlugin(ServerPlugin);
+  eventLog = usePlugin(EventLogPlugin);
+  history = signal(this._readHistory()); // last test tags run, most recent first (global)
+  _failSeq = 0; // monotonic id source for failure-row anchors (global, never reset)
+  // slotId -> per-slot run/console state. Raw (not deep-reactive): the Tests pane
+  // reads this via a getter evaluated during render, and the reactive Map proxy
+  // notifies the very key it just read when a new slot is lazily inserted below —
+  // a write-during-render that sends the component into a render loop (fields
+  // that must be reactive — status, pending, the LogBuffer's own signals — stay
+  // signals regardless; only the Map's own key-membership tracking is dropped).
+  _slots = markRaw(new Map());
+
+  // the per-slot state record, lazily created
+  slot(id = "main") {
+    if (!this._slots.has(id)) {
+      this._slots.set(id, {
+        output: new LogBuffer(),
+        status: signal(""),
+        pending: signal(false), // optimistic "run starting", until the "run" event lands
+        capturing: false, // whether this slot's lines are mirrored to its console
+        finished: false, // guard: "test suite finished" is logged once per run
+        tags: "", // current run's tags (for the deferred "running tests" log)
+        cutOnChrome: false, // WebSuite runs end the console window at chrome teardown
+        result: "", // "success" | "fail" — derived from the HOOT result lines
+        announced: null, // run id we've logged "running tests" for (once per run)
+        finishedRun: null, // run id we've finalized (once per run)
+      });
+    }
+    return this._slots.get(id);
+  }
+
+  // main-slot console alias — the event log's [jump] pins its autoscroll
+  get output() {
+    return this.slot("main").output;
+  }
+
+  runningFor(slotId) {
+    return this.currentRun(slotId)?.state === "running";
+  }
+
+  _readHistory() {
+    const h = this.config.getState("test_history", []);
+    return Array.isArray(h) ? h : [];
+  }
+
+  // record a run's tag at the front, deduped, capped at HISTORY_MAX
+  _pushHistory(tag) {
+    tag = tag.trim();
+    if (!tag) return;
+    const h = [tag, ...this.history().filter((t) => t !== tag)].slice(0, HISTORY_MAX);
+    this.history.set(h);
+    this.config.setState("test_history", h);
+  }
+
+  // the current/last test run on a slot (backend-minted, from the shared store)
+  currentRun(slotId = "main") {
+    return this.store.latestRunOfKind("test", slotId);
+  }
+
+  // a test run is active on a slot — optimistically true between clicking Run and
+  // the backend's first "run" event, then driven by the run's state
+  runActive(slotId = "main") {
+    return this.slot(slotId).pending() || this.currentRun(slotId)?.state === "running";
+  }
+
+  setup() {
+    // per-slot run dispatch: react to the LATEST test run of every slot that has
+    // one (dispatching per raw record would re-finalize superseded runs — the
+    // finishedRun guard holds one id per slot)
+    useEffect(() => {
+      const slots = new Set(
+        this.store
+          .runs()
+          .filter((d) => d.kind === "test")
+          .map((d) => d.server ?? "main"),
+      );
+      for (const s of slots) this._onRun(s, this.currentRun(s));
+    });
+    // the unified log stream feeds the capture pipeline, keyed by server slot.
+    // For a worktree slot this mirrors lines already going to its Server-logs
+    // buffer — intentionally, like the main test console mirrors the main log.
+    this.server.onLog(({ server, line }) => this._capture(server, line));
+  }
+
+  _capture(slotId, line) {
+    if (!this.runActive(slotId)) return;
+    const s = this.slot(slotId);
+    // open the console window at the launch command line — every server's own
+    // stream now carries its launch echo (the _onRun opener stays as a fallback)
+    if (!s.capturing && line.includes("[goo] starting odoo:")) s.capturing = true;
+    if (!s.capturing) return;
+    // a failing HOOT test gets a DOM anchor on its row so the event log entry can
+    // scroll the console straight to it (main slot only — the [jump] link opens
+    // the loaded workspace's Tests pane; worktree failures get a plain error row)
+    const failed = line.match(/\[HOOT\] Test "(.+?)" failed/);
+    const anchor = failed && slotId === "main" ? `test-fail-${++this._failSeq}` : "";
+    s.output.append(line, anchor);
+    if (failed) this.eventLog.add(`test failed: ${failed[1]}`, anchor, "error");
+    // remember the suite outcome as soon as HOOT reports it
+    if (line.includes("[HOOT] Test suite succeeded")) s.result = "success";
+    else if (line.includes("Some tests failed") || line.includes("[HOOT] Failed"))
+      s.result = "fail";
+    // memory-check mode: memlab's own "find-leaks" command never sets a
+    // non-zero exit code no matter how many leaks it finds, so its actual
+    // verdict has to come from parsing this summary line, not run.returncode
+    // (see _onRun, which now prefers s.result over a misleadingly-green exit
+    // code) — printed after odoo-bin's own test output, so it overrides any
+    // HOOT "success" already recorded above, which is the outcome we want:
+    // the test itself may have passed, but memory still leaked
+    const leaks = line.match(/MemLab found (\d+) leak/);
+    if (leaks) {
+      const n = Number(leaks[1]);
+      s.result = n > 0 ? "fail" : "success";
+      this.eventLog.add(
+        n > 0 ? `memory check: ${n} leak(s) found` : "memory check: no leaks found",
+        "",
+        n > 0 ? "error" : "",
+      );
+    }
+    // for browser (WebSuite) runs the meaningful window ends when the browser is
+    // torn down; everything after (thread dumps, shutdown noise) stays in the
+    // server log only. Other test kinds keep streaming until the process stops.
+    if (s.cutOnChrome && line.includes("Terminating chrome headless with pid"))
+      this._finishRun(slotId);
+  }
+
+  // react to a slot's backend-minted test Run moving running → done/failed.
+  // Resume-after (bringing back a server the run interrupted) is owned by the
+  // backend; this just drives the console + event log. Announce/finalize once per
+  // run id per slot.
+  _onRun(slotId, run) {
+    if (!run) return;
+    const s = this.slot(slotId);
+    if (run.state === "running") {
+      s.pending.set(false); // the real run is in — drop the optimistic override
+      if (s.announced !== run.id) {
+        s.announced = run.id;
+        // mirroring usually began at the launch-command line (see _capture);
+        // this is the fallback announce + capture opener
+        this.eventLog.add(`running tests (tags: ${run.spec?.tags ?? s.tags})`);
+        s.capturing = true;
+      }
+      s.status.set("running…");
+    } else if (s.finishedRun !== run.id) {
+      // done | failed. run.returncode is null when the run was stopped manually.
+      s.finishedRun = run.id;
+      // if we never saw it running this session (e.g. it finished before a reload),
+      // don't re-announce a stale result — matches the pre-run-model reload behavior
+      if (s.announced !== run.id) return;
+      const stopped = run.returncode === null;
+      // a non-zero exit always wins (the harder failure signal); otherwise
+      // prefer s.result when something (HOOT, or memlab's leak count — see
+      // _capture) already read a "fail" off the console despite a clean exit
+      s.status.set(
+        stopped
+          ? "stopped"
+          : run.returncode
+            ? `failed — exit ${run.returncode}`
+            : s.result === "fail"
+              ? "failed"
+              : "passed",
+      );
+      // fallback for non-browser tests (no chrome line): use the exit code if HOOT
+      // didn't report an outcome
+      const byExit = stopped ? "" : run.returncode ? "fail" : "success";
+      this._finishRun(slotId, s.result || byExit);
+    }
+  }
+
+  // close a slot's test-log window and log the finish event (once per run)
+  _finishRun(slotId, result = this.slot(slotId).result) {
+    const s = this.slot(slotId);
+    s.capturing = false;
+    if (s.finished) return;
+    s.finished = true;
+    const failed = result && String(result).includes("fail");
+    this.eventLog.add(
+      `test run finished${result ? ` (${result})` : ""}`,
+      "",
+      failed ? "error" : "",
+    );
+  }
+
+  // run tests against a workspace's slot (the Tests pane passes its workspace).
+  // `memcheck` is a plain option on this SAME `tags` run, not a separate mode:
+  // it (re)installs memleak_check and chains memlab's offline heap-diff
+  // analysis after the run — memleak_check's own test file, once imported,
+  // patches ChromeBrowser so ANY test <tags> selects gets its own browser
+  // session snapshotted transparently (see build_odoo_cmd and
+  // addons/memleak_check/tests/test_memleak_check.py).
+  async run(tags, ws, memcheck = false) {
+    const target = tags.trim();
+    if (!ws || !target) return;
+    this.config.workspace(ws.id)?.touchActivity();
+    const slotId = slotFor(ws);
+    const targetId = ws.id;
+    const s = this.slot(slotId);
+    // a real server is up on the slot; the backend stops it for the one-shot run
+    // and resumes it when the run ends (resume-after is backend-owned)
+    const up =
+      slotId === "main"
+        ? (() => {
+            const st = this.server.status();
+            return (st.state === "running" || st.state === "starting") && st.mode === "server";
+          })()
+        : ["running", "starting"].includes(this.store.server(slotId)?.state);
+    this._pushHistory(target);
+    s.tags = memcheck ? `memcheck: ${target}` : target; // logged once the server is up
+    s.cutOnChrome = s.tags.includes("web:WebSuite");
+    s.result = "";
+    // surface the stop as an event, but don't mirror its shutdown logs to the console
+    if (up) this.eventLog.add("stopping server to run tests");
+    s.output.clear();
+    s.capturing = false;
+    s.finished = false;
+    s.pending.set(true);
+    s.status.set("starting…");
+    try {
+      // the server resolves the launch config from the target + overrides, and
+      // runs it on the given workspace slot
+      const overrides = memcheck ? { test_tags: target, memcheck: true } : { test_tags: target };
+      await postJSON("/api/tests/run", { workspace: targetId, slot: slotId, overrides });
+    } catch (e) {
+      s.pending.set(false);
+      s.status.set(`failed to start: ${e.message}`);
+    }
+  }
+}

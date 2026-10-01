@@ -8,11 +8,11 @@ test runs, and PR tracking. Single stdlib-Python server + Owl 3 frontend.
 - **Backend**: the `backend/` package, Python 3.10+, **stdlib only** (no pip deps),
   fully type-annotated and checked with pyright.
 - **Frontend**: `static/src/` — Owl 3, authored as ES modules with real
-  `import { … } from "@odoo/owl"`. `npm run build` (esbuild) bundles `static/src/main.js`
+  `import { … } from "@odoo/owl"`. `npm run build` (esbuild) bundles `static/src/main.ts`
   → **`static/dist/app.js`**, which is **committed**, so the app still runs straight from
   the checkout with no build/install at dev time. The Owl runtime itself
   (`static/lib/owl.js`) stays a classic global `<script>`; the build aliases `@odoo/owl`
-  to `vendor/owl-orm/owl-global.js`, a shim re-exporting `globalThis.owl`, so the whole
+  to `vendor/owl-orm/owl-global.ts`, a shim re-exporting `globalThis.owl`, so the whole
   bundle (app + vendored `@odoo/owl-orm`) shares one `window.owl` reactivity. `npm run
 watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you edit
   `static/src/` or `vendor/owl-orm/`.
@@ -68,55 +68,55 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   the cohesive `WorkspaceManager`/PTY subsystem keeps its own process side-effects
   (not abstracted behind the seam — its tests run it against a fake `odoo-bin`).
 - `static/tests/` — Vitest + jsdom suite mirroring `static/src/<feature>/...`
-  path-for-path. `static/tests/setup.js` populates `globalThis.owl` (via
+  path-for-path. `static/tests/setup.ts` populates `globalThis.owl` (via
   `vm.runInThisContext` on `static/lib/owl.js`, matching the classic `<script>`
   semantics `static/index.html` itself relies on) before any test imports
-  `@odoo/owl`. `static/tests/helpers/plugin_harness.js` builds a real
+  `@odoo/owl`. `static/tests/helpers/plugin_harness.ts` builds a real
   `pluginManager` (via `new owl.App({})`, no DOM) for plugins that use
   `usePlugin()`; a dependency-free plugin (e.g. `StorePlugin`) can be `new`'d
   directly. Run `npm run test`.
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path. `rust_bundler/native/` is Goo's minimal Rust/PyO3 asset
   bundler; Odoo's resolved file list is authoritative and imports are never crawled.
-- `static/src/` — the Owl 3 frontend application (ES modules; `main.js` at the root is the
+- `static/src/` — the Owl 3 frontend application (ES modules; `main.ts` at the root is the
   entry). Organized **by feature**: a shared `core/` plus one folder per screen.
   - `core/` — the application basics everything builds on: the shared plugins (state/action
     layer — `config_plugin`, `store_plugin`, `server_plugin`, `code_plugin`, `dialog_plugin`,
     `event_log_plugin`, `router_plugin`, `workspace_plugin`, `database_plugin`,
     `terminal_plugin`, `tests_plugin`, `update_plugin`), the owl-orm models (`config_models`,
-    `observed_models`, `runtime_models`) + wire normalizers (`models.js`), the shared UI
-    (`common.js` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.js`, `dialogs.js`,
-    `terminal.js`, `recordset.js` (the generic `RecordList` — flat or grouped-by-field with
+    `observed_models`, `runtime_models`) + wire normalizers (`models.ts`), the shared UI
+    (`common.ts` — `appBus`/`ICONS`/`m`/`NAV` + reusable widgets — `menus.ts`, `dialogs.ts`,
+    `terminal.ts`, `recordset.ts` (the generic `RecordList` — flat or grouped-by-field with
     group-header slot/actions, collapsible groups, rich `component` cells; the Branches & PRs
-    screen is its first consumer), `panel.js` (the shared screen-header `Panel`, title + five
-    slots: title-extra/top-middle/top-right/bottom-left/bottom-right), the `event_log.js` panel,
-    and `app.js` = `Topbar`/`Sidebar`/
-    `App` + the `SCREENS` registry, which `main.js` imports), and the leaf libs `config.js`,
-    `utils.js`, `presets.js`, `log_buffer.js`, `drag.js` (the shared pointer-based
+    screen is its first consumer), `panel.ts` (the shared screen-header `Panel`, title + five
+    slots: title-extra/top-middle/top-right/bottom-left/bottom-right), the `event_log.ts` panel,
+    and `app.ts` = `Topbar`/`Sidebar`/
+    `App` + the `SCREENS` registry, which `main.ts` imports), and the leaf libs `config.ts`,
+    `utils.ts`, `presets.ts`, `log_buffer.ts`, `drag.ts` (the shared pointer-based
     row drag-and-drop: cursor-following ghost + midline drop index — every
     reorderable list uses it, never HTML5 dnd). `appBus` is a single shared `EventBus` exported
-    from `core/common.js` — import it, never re-instantiate.
+    from `core/common.ts` — import it, never re-instantiate.
   - One folder per screen, each suffixed `_screen/` (`workspaces_screen/`,
     `branches_screen/`, `todo_screen/`, `databases_screen/`, `nightly_screen/`,
     `memory_screen/`, `config_screen/`): each holds its screen component; some also hold a dedicated plugin
-    (`workspaces_screen/claude_plugin.js`, `nightly_screen/nightly_plugin.js`,
-    `memory_screen/memory_plugin.js`). `workspaces_screen/` is the primary surface — the
-    master-detail Workspaces screen, split one file per component: `workspaces.js`
-    (the screen/list), `code_pane.js` (the Code tab), `history.js` (`CommitHistory`,
-    the reorder/squash/drop commit editor), `claude_chat.js`, the other tab panes
-    (`panes.js`) + the shared create/delete dialogs (`dialogs.js`).
+    (`workspaces_screen/claude_plugin.ts`, `nightly_screen/nightly_plugin.ts`,
+    `memory_screen/memory_plugin.ts`). `workspaces_screen/` is the primary surface — the
+    master-detail Workspaces screen, split one file per component: `workspaces.ts`
+    (the screen/list), `code_pane.ts` (the Code tab), `history.ts` (`CommitHistory`,
+    the reorder/squash/drop commit editor), `claude_chat.ts`, the other tab panes
+    (`panes.ts`) + the shared create/delete dialogs (`dialogs.ts`).
     `branches_screen/` is the merged **Branches & PRs** screen (one RecordList grouped by
     branch name: local branches + their PRs, plus PR-only rows for authored PRs with no
     local branch; the old separate PRs screen and the PR-review feature are retired —
     `#prs`/`#reviews` alias to `#branches`).
     `assets_screen/` and `addons_screen/` are plugin-only folders (their standalone screens
-    retired into the Workspaces tabs; `assets_screen/analysis.js` is the bundle-analysis view
+    retired into the Workspaces tabs; `assets_screen/analysis.ts` is the bundle-analysis view
     those tabs render). Everything else is shared → `core/`. A screen folder may import from
-    `core/` (and, rarely, another screen — e.g. `workspaces_screen/panes.js` reuses the
+    `core/` (and, rarely, another screen — e.g. `workspaces_screen/panes.ts` reuses the
     assets/addons plugins); `core/` never imports from a screen folder.
 - `static/dist/app.js` — the committed esbuild bundle of `static/src/` (the file the
   page actually loads). Generated — never hand-edit; rebuild with `npm run build`.
-- `vendor/owl-orm/` — pinned `@odoo/owl-orm` source (`index.ts`/`orm.ts`) + `owl-global.js`,
+- `vendor/owl-orm/` — pinned `@odoo/owl-orm` source (`index.ts`/`orm.ts`) + `owl-global.ts`,
   the `@odoo/owl` → `window.owl` build shim (the single list of owl primitives the app may
   import). It's bundled into `static/dist/app.js` straight from source. The frontend state
   layer has been rewritten onto this ORM (see the `state-model-refactor` memory).
@@ -129,7 +129,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `npm run format` — prettier (js/css/html/md).
 - `npm run test` / `npm run test:watch` — Vitest suite for `static/src/` (see
   `static/tests/` above). Not pre-commit-hooked, same as the Python suite.
-- `npm run build` — bundle `static/src/main.js` → `static/dist/app.js` (esbuild;
+- `npm run build` — bundle `static/src/main.ts` → `static/dist/app.js` (esbuild;
   `@odoo/owl` aliased to the `window.owl` shim). Run + commit the output after editing
   `static/src/` or `vendor/owl-orm/`. `npm run watch` does it on change during dev.
 - `ruff check --fix` / `ruff format` — Python lint+format.
@@ -186,9 +186,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   (see `static/tests/`'s owl-shim setup above) — full `mount()`-based component
   rendering tests are deliberately not attempted for this reason; frontend tests
   cover plugin/model logic and extracted pure functions instead.
-- Frontend unit-test exclusions (deliberate, not gaps): `terminal.js` (WebSocket + xterm.js +
-  ResizeObserver), the live `EventSource` wiring end-to-end in `server_plugin.js`
+- Frontend unit-test exclusions (deliberate, not gaps): `terminal.ts` (WebSocket + xterm.js +
+  ResizeObserver), the live `EventSource` wiring end-to-end in `server_plugin.ts`
   (only its pure dispatch logic is tested, against a fake `EventSource`), real
-  pointer-drag geometry in `drag.js`'s `startRowDrag` (only `dropIndex` is
+  pointer-drag geometry in `drag.ts`'s `startRowDrag` (only `dropIndex` is
   tested, against fixture rects), and the Chart.js/xterm lazy `<script>`-loading
-  paths in `nightly_screen`/`terminal.js`.
+  paths in `nightly_screen`/`terminal.ts`.

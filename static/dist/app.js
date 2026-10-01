@@ -1,4 +1,4 @@
-// vendor/owl-orm/owl-global.js
+// vendor/owl-orm/owl-global.ts
 var owl = globalThis.owl;
 var getScope = owl.getScope;
 var Scope = owl.Scope;
@@ -22,7 +22,7 @@ var useApp = owl.useApp;
 var Plugin = owl.Plugin;
 var usePlugin = owl.usePlugin;
 
-// static/src/core/config.js
+// static/src/core/config.ts
 var VERSION = "1.2.0";
 var DEFAULT_CONFIG = {
   work_dir: "/home/odoo/work",
@@ -239,7 +239,7 @@ function defaultDemoData(branch) {
   return base !== "master" && !/^(19\.0|saas-19)/.test(base);
 }
 
-// static/src/core/presets.js
+// static/src/core/presets.ts
 var GED_CONFIG = {
   venv_activate: "source /home/odoo/work/env20/bin/activate",
   auto_open_event_log: true,
@@ -378,7 +378,7 @@ var PRESETS = [
   }
 ];
 
-// static/src/core/utils.js
+// static/src/core/utils.ts
 function timeAgo(ts) {
   const date = ts.includes("T") ? new Date(ts) : /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
   if (isNaN(date)) return ts;
@@ -1327,7 +1327,7 @@ var ORM = class _ORM {
   }
 };
 
-// static/src/core/observed_models.js
+// static/src/core/observed_models.ts
 var RepoStatus = class extends Model {
   static id = "repostatus";
   // id = repo id ("community")
@@ -1364,7 +1364,7 @@ var PrRepo = class extends Model {
   github = fields.char();
   error = fields.json();
   prs = fields.json();
-  // [PullRequest, …] (normalized, see models.js)
+  // [PullRequest, …] (normalized, see models.ts)
   fetchedAt = fields.number();
 };
 var MergebotStatus = class extends Model {
@@ -1384,7 +1384,7 @@ var RunbotStatus = class extends Model {
   // runbot status value
 };
 
-// static/src/core/runtime_models.js
+// static/src/core/runtime_models.ts
 var OdooServer = class extends Model {
   static id = "odooserver";
   // id = "main" | target id
@@ -1398,7 +1398,7 @@ var Run = class extends Model {
   // the RunSnapshot object
 };
 
-// static/src/core/store_plugin.js
+// static/src/core/store_plugin.ts
 var StorePlugin = class extends Plugin {
   static sequence = 0;
   // the shared store — set up before every plugin that reads it
@@ -1746,7 +1746,7 @@ var StorePlugin = class extends Plugin {
   }
 };
 
-// static/src/core/event_log_plugin.js
+// static/src/core/event_log_plugin.ts
 var MAX = 1e3;
 var STORAGE_KEY = "oo-event-log";
 function storedLog() {
@@ -1859,7 +1859,7 @@ var EventLogPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/dialog_plugin.js
+// static/src/core/dialog_plugin.ts
 var _seq = 0;
 var DialogPlugin = class extends Plugin {
   dialogs = signal.Array([]);
@@ -2069,7 +2069,7 @@ var Dialog = class extends Component {
   }
 };
 
-// static/src/core/models.js
+// static/src/core/models.ts
 var prKey = (github, number) => `${github}#${number}`;
 var branchKey = (repo, name) => `${repo}:${name}`;
 var PullRequest = {
@@ -2093,7 +2093,7 @@ var PullRequest = {
   }
 };
 
-// static/src/core/code_plugin.js
+// static/src/core/code_plugin.ts
 var PRS_CACHE_KEY = "oo-prs-cache";
 var WORKSPACE_REFRESH_TTL = 10 * 60 * 1e3;
 var CodePlugin = class extends Plugin {
@@ -2875,7 +2875,7 @@ ${res.remote_error}`
     }
   }
   // stage all changes and commit with a user-supplied message (see
-  // dialogs.js's editCommitMessage — the "Commit" menu action's caller)
+  // dialogs.ts's editCommitMessage — the "Commit" menu action's caller)
   async commit(path, repo, message, workspaceId = "") {
     this.busy.set(true);
     try {
@@ -2890,7 +2890,7 @@ ${res.remote_error}`
     }
   }
   // stage all changes and fold them into the HEAD commit with a (possibly
-  // edited) message — git commit --amend (see dialogs.js's editCommitMessage —
+  // edited) message — git commit --amend (see dialogs.ts's editCommitMessage —
   // the "Amend commit" menu action's caller)
   async amendCommit(path, repo, message, workspaceId = "") {
     this.busy.set(true);
@@ -3001,7 +3001,7 @@ ${res.remote_error}`
   }
 };
 
-// static/src/core/log_buffer.js
+// static/src/core/log_buffer.ts
 var MAX_LINES = 2e3;
 var LogBuffer = class {
   constructor() {
@@ -3061,7 +3061,7 @@ var LogBuffer = class {
   }
 };
 
-// static/src/core/server_plugin.js
+// static/src/core/server_plugin.ts
 var ServerPlugin = class extends Plugin {
   static sequence = 2;
   config = usePlugin(ConfigPlugin);
@@ -3335,7 +3335,7 @@ Start with the current branches anyway?`,
   }
 };
 
-// static/src/core/config_models.js
+// static/src/core/config_models.ts
 function withScope(rec, fn) {
   const ctx = rec.orm._ctx;
   return ctx ? ctx.run(fn) : fn();
@@ -3422,14 +3422,14 @@ var Settings = class extends Model {
   cleanup_enabled = fields.bool();
   // off by default -- when a PR is added in the Reviews screen (including any
   // sibling PR auto-discovered on the same branch), auto-create a worktree
-  // workspace for it (createReviewWorkspace, workspaces_screen/dialogs.js)
+  // workspace for it (createReviewWorkspace, workspaces_screen/dialogs.ts)
   auto_workspace_on_review = fields.bool();
   // off by default, nested under auto_workspace_on_review -- also auto-run a
-  // Claude review (runClaudeReview, workspaces_screen/dialogs.js) in the
+  // Claude review (runClaudeReview, workspaces_screen/dialogs.ts) in the
   // freshly-created review workspace. The manual "Review" action in the
   // Reviews screen works regardless of this setting.
   auto_claude_review = fields.bool();
-  // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.js).
+  // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.ts).
   // Replaces the old hide_start_controls boolean (migrated in toModels below);
   // "docker"/"local" both get goo's own Start/Stop/logs/terminal, "external" hides them.
   launch_mode = fields.char();
@@ -3546,7 +3546,7 @@ var Workspace = class _Workspace extends Model {
   parent = fields.char();
   // the id of the workspace this one was spawned from
   // ("" = none/root); cascade-deleted with it — see cascadeRemoveDescendants
-  // (workspace_plugin.js)
+  // (workspace_plugin.ts)
   notes = fields.char();
   // free-form user notes (the Details tab)
   db = fields.char();
@@ -3575,7 +3575,7 @@ var Workspace = class _Workspace extends Model {
   }
   // every workspace spawned from this one, at any depth, parent-before-child. The
   // subtree that travels with it — see setCategory (archiving) and, on the delete
-  // side, cascadeRemoveDescendants (workspace_plugin.js), which walks the blob
+  // side, cascadeRemoveDescendants (workspace_plugin.ts), which walks the blob
   // level-by-level instead so it can stop descending at a child it couldn't remove.
   descendants() {
     const byParent = /* @__PURE__ */ new Map();
@@ -3602,7 +3602,7 @@ var Workspace = class _Workspace extends Model {
   }
   // the worktree's on-disk directory: the value frozen at creation (worktree.dir),
   // else derived from <settings.worktree_dir>/<name>. Persisting it means a later
-  // rename can't move the path off the real checkout (worktreeDirFor, utils.js).
+  // rename can't move the path off the real checkout (worktreeDirFor, utils.ts).
   dirPath() {
     const dir = this.worktree()?.dir;
     if (dir) return dir;
@@ -3997,7 +3997,7 @@ function reconcileCheckouts(orm, w) {
   for (const [id, rec] of have) if (!keep.has(id)) orm.delete(rec);
 }
 
-// static/src/core/config_plugin.js
+// static/src/core/config_plugin.ts
 var STATE_KEYS = {
   "oo-last-target": "active_workspace",
   "oo-test-history": "test_history",
@@ -4205,7 +4205,7 @@ var ConfigPlugin = class extends Plugin {
   // everything else may depend on config
   _b = _boot || { rev: 0, config: {}, state: {} };
   orm = this._seedOrm();
-  // the config graph as owl-orm records (config_models.js)
+  // the config graph as owl-orm records (config_models.ts)
   rev = signal(this._b.rev);
   // server revision — guards concurrent writes
   // the flat config blob, derived from the ORM records — recomputed only when a
@@ -4350,7 +4350,7 @@ var ConfigPlugin = class extends Plugin {
   async importSnapshot(snap) {
     await this._pushNow(snap.config || {}, snap.state || {});
   }
-  // replace the whole config + state with a preset (see presets.js)
+  // replace the whole config + state with a preset (see presets.ts)
   async applyPreset(id) {
     const preset = PRESETS.find((p) => p.id === id);
     if (!preset) return false;
@@ -4360,7 +4360,7 @@ var ConfigPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/router_plugin.js
+// static/src/core/router_plugin.ts
 var ALIASES = {
   dashboard: "workspaces",
   // the monitoring grid retired; Workspaces is the home screen
@@ -4396,7 +4396,7 @@ var RouterPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/workspace_plugin.js
+// static/src/core/workspace_plugin.ts
 var SELECTED_KEY = "goo-workspace-selected";
 function savedSelection() {
   try {
@@ -4424,9 +4424,9 @@ var WorkspacePlugin = class extends Plugin {
   requestedPane = signal("");
   // targetId -> LogBuffer (per-server scrollback + live stream). Raw: logBuffer()
   // lazily inserts on first access and is called straight from a template
-  // (workspaces.js's Server-log LogConsole), so a reactive Map would notify the
+  // (workspaces.ts's Server-log LogConsole), so a reactive Map would notify the
   // very key it just read on that first insert — a write-during-render that
-  // sends the component into a render loop (see tests_plugin.js's _slots for the
+  // sends the component into a render loop (see tests_plugin.ts's _slots for the
   // fuller explanation; LogBuffer's own signals stay reactive regardless).
   logs = markRaw(/* @__PURE__ */ new Map());
   _startEids = {};
@@ -4487,7 +4487,7 @@ var WorkspacePlugin = class extends Plugin {
   // ── paths ────────────────────────────────────────────────────────────────────
   // the worktree's checkout directory: the value frozen at creation
   // (worktree.dir), else derived from the name. Persisting it means a later rename
-  // can't move the path off the real on-disk checkout (worktreeDirFor in utils.js).
+  // can't move the path off the real on-disk checkout (worktreeDirFor in utils.ts).
   dirPath(tgt) {
     const rec = this.config.workspace(tgt.id);
     if (rec) return rec.dirPath();
@@ -4926,7 +4926,7 @@ function isLoadedMainWorkspace(server, ws) {
   return ws.id === server.loadedWorkspaceId();
 }
 
-// static/src/core/update_plugin.js
+// static/src/core/update_plugin.ts
 var UpdatePlugin = class extends Plugin {
   server = usePlugin(ServerPlugin);
   dialogs = usePlugin(DialogPlugin);
@@ -5027,7 +5027,7 @@ var UpdatePlugin = class extends Plugin {
   }
 };
 
-// static/src/core/common.js
+// static/src/core/common.ts
 var appBus = new EventBus();
 var m = (s) => markup(s);
 function mbCategory(s) {
@@ -5090,7 +5090,7 @@ var ICONS = {
 var NAV = [
   { id: "workspaces", label: "Workspaces", icon: ICONS.worktree },
   { id: "branches", label: "Branches & PRs", icon: ICONS.branches },
-  // NOTE: the route id is "review-queue", not "reviews" — router_plugin.js's
+  // NOTE: the route id is "review-queue", not "reviews" — router_plugin.ts's
   // ALIASES already redirects the retired "reviews" hash (old PR-review
   // feature) to "branches", so reusing that id here would silently bounce
   // this screen back to Branches & PRs.
@@ -5391,7 +5391,7 @@ function useDragResize({ w = 780, h = 440, place = null } = {}) {
   };
 }
 
-// static/src/core/panel.js
+// static/src/core/panel.ts
 var Panel = class extends Component {
   static template = xml`
     <div class="panel" t-att-class="{'panel-two-rows': this.hasBottomRow}">
@@ -5427,7 +5427,7 @@ var Panel = class extends Component {
   }
 };
 
-// static/src/core/recordset.js
+// static/src/core/recordset.ts
 function recordset(recordsFn, specs) {
   return { records: recordsFn, fields: specs };
 }
@@ -5577,7 +5577,7 @@ var RecordList = class extends Component {
   }
 };
 
-// static/src/core/dialogs.js
+// static/src/core/dialogs.ts
 var RemoteBranchDialog = class extends Component {
   static template = xml`
     <div class="dialog-backdrop" t-on-click="() => this.done(null)">
@@ -5864,7 +5864,7 @@ async function pushBranchesDialog(code, dialogs, branches, { title, message, for
   return true;
 }
 
-// static/src/branches_screen/cells.js
+// static/src/branches_screen/cells.ts
 var RepoCell = class extends Component {
   static components = { DirtyBadge };
   props = useProps({ row: t.any(), screen: t.any() });
@@ -5940,7 +5940,7 @@ var ActionsCell = class extends Component {
     </span>`;
 };
 
-// static/src/branches_screen/branches.js
+// static/src/branches_screen/branches.ts
 var BranchesScreen = class extends Component {
   static components = { SearchBox, Panel, RecordList };
   worktree = usePlugin(WorkspacePlugin);
@@ -6484,7 +6484,7 @@ var BranchesScreen = class extends Component {
   }
 };
 
-// static/src/core/drag.js
+// static/src/core/drag.ts
 function startRowDrag(ev, { row, onMove, onEnd }) {
   if (ev.button !== 0 || !row) return null;
   ev.preventDefault();
@@ -6538,7 +6538,7 @@ function dropIndex(ev, rows) {
   return rows.length;
 }
 
-// static/src/config_screen/config.js
+// static/src/config_screen/config.ts
 var ListEditor = class extends Component {
   static template = xml`
     <div class="config-block">
@@ -6608,7 +6608,7 @@ var ListEditor = class extends Component {
     }
     return [...rows.values()];
   }
-  // shared pointer drag (core/drag.js): ghost follows the cursor, the dimmed
+  // shared pointer drag (core/drag.ts): ghost follows the cursor, the dimmed
   // row live-reorders under it; drop persists, Escape restores the grab order
   onDragStart(ev, i) {
     const original = this.rows();
@@ -6744,7 +6744,7 @@ var TabsEditor = class extends Component {
     if (id === "config") return;
     this._save(this.rows.map((r) => r.id === id ? { ...r, visible } : r));
   }
-  // shared pointer drag (core/drag.js): ghost follows the cursor, the dimmed
+  // shared pointer drag (core/drag.ts): ghost follows the cursor, the dimmed
   // row live-reorders under it; drop writes the order to config once
   onDragStart(ev, row) {
     const stop = startRowDrag(ev, {
@@ -6895,7 +6895,7 @@ var LinksEditor = class extends Component {
     }
     return null;
   }
-  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost
+  // Shared pointer drag (core/drag.ts): the grabbed row lifts into a ghost
   // that follows the cursor. Unlike the flat editors there's no live reorder —
   // three distinct drop targets exist (before a row, into a menu's body, the
   // trailing top-level zone), so moving keeps the highlight semantics: the
@@ -7204,7 +7204,7 @@ var ConfigScreen = class extends Component {
   settings = signal(this._loadSettings());
   // the Claude review prompt template — a real .md file on disk, not part of the
   // reactive config blob, so it's fetched/saved through its own tiny endpoint
-  // (core/utils.js fetchReviewPrompt/saveReviewPrompt) rather than updateConfig.
+  // (core/utils.ts fetchReviewPrompt/saveReviewPrompt) rather than updateConfig.
   reviewPromptText = signal("");
   _reviewPromptTimer = null;
   // editor lives in Miscellaneous, not this grid; the rest are filtered to the
@@ -7318,7 +7318,7 @@ var ConfigScreen = class extends Component {
     await this.config.resetConfig();
     location.reload();
   }
-  // pick a preset (presets.js) and replace the whole config with it
+  // pick a preset (presets.ts) and replace the whole config with it
   async openPresets() {
     const res = await this.dialogs.open({
       title: "Configuration presets",
@@ -7597,7 +7597,7 @@ var SPECS = {
   }
 };
 
-// static/src/core/database_plugin.js
+// static/src/core/database_plugin.ts
 var DatabasePlugin = class extends Plugin {
   static sequence = 3;
   server = usePlugin(ServerPlugin);
@@ -7737,7 +7737,7 @@ var DatabasePlugin = class extends Plugin {
   }
 };
 
-// static/src/databases_screen/databases.js
+// static/src/databases_screen/databases.ts
 var DatabasesScreen = class extends Component {
   static components = { Panel };
   static template = xml`
@@ -7999,7 +7999,7 @@ var DatabasesScreen = class extends Component {
   }
 };
 
-// static/src/core/tests_plugin.js
+// static/src/core/tests_plugin.ts
 var HISTORY_MAX = 10;
 function slotFor(ws) {
   return ws && ws.location === "worktree" ? ws.id : "main";
@@ -8187,7 +8187,7 @@ var TestsPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/event_log.js
+// static/src/core/event_log.ts
 var EventLog = class extends Component {
   static template = xml`
     <div t-if="this.log.open()" class="event-log" t-ref="this.drag.handle">
@@ -8313,7 +8313,7 @@ var ActivityBar = class extends Component {
   }
 };
 
-// static/src/memory_screen/memory_plugin.js
+// static/src/memory_screen/memory_plugin.ts
 var STORAGE_KEY2 = "oo-memory-builds";
 var STORAGE_KEY_BATCH_URL = "oo-memory-batch-url";
 var MemoryPlugin = class extends Plugin {
@@ -8428,7 +8428,7 @@ var MemoryPlugin = class extends Plugin {
   }
 };
 
-// static/src/nightly_screen/nightly_plugin.js
+// static/src/nightly_screen/nightly_plugin.ts
 var NightlyPlugin = class extends Plugin {
   static sequence = 4;
   versions = signal([]);
@@ -8473,7 +8473,7 @@ var NightlyPlugin = class extends Plugin {
   }
 };
 
-// static/src/nightly_screen/nightly.js
+// static/src/nightly_screen/nightly.ts
 var _chartJsReady = null;
 function loadChartJs() {
   if (!_chartJsReady) {
@@ -9084,7 +9084,7 @@ var NightlyScreen = class extends Component {
   }
 };
 
-// static/src/memory_screen/memory.js
+// static/src/memory_screen/memory.ts
 var MemoryScreen = class extends Component {
   static components = { Panel };
   static template = xml`
@@ -9258,7 +9258,7 @@ var MemoryScreen = class extends Component {
   }
 };
 
-// static/src/core/menus.js
+// static/src/core/menus.ts
 var ActionMenu = class extends Component {
   static template = xml`
     <div class="dash-menu action-menu" t-att-class="{hidden: !this.open()}" t-on-click.stop="() => {}">
@@ -9408,7 +9408,7 @@ var MbMenu = class extends Component {
   }
 };
 
-// static/src/ci_screen/ci_plugin.js
+// static/src/ci_screen/ci_plugin.ts
 var CiPlugin = class extends Plugin {
   static sequence = 4;
   days = signal([]);
@@ -9439,7 +9439,7 @@ var CiPlugin = class extends Plugin {
   }
 };
 
-// static/src/ci_screen/ci.js
+// static/src/ci_screen/ci.ts
 var CiScreen = class extends Component {
   static components = { Panel };
   static template = xml`
@@ -9587,7 +9587,7 @@ var CiScreen = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/claude_plugin.js
+// static/src/workspaces_screen/claude_plugin.ts
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
   { value: "fable", label: "Fable" },
@@ -9638,7 +9638,7 @@ var ClaudePlugin = class extends Plugin {
   // turn, if any — parsed from the conversation's own assistant text. A review
   // run always ends its prompt with a fixed, non-editable instruction to report
   // one as "Score: N/100" (see REVIEW_SCORE_INSTRUCTION, workspaces_screen/
-  // dialogs.js), so this needs no dedicated backend field. Returns the LAST one
+  // dialogs.ts), so this needs no dedicated backend field. Returns the LAST one
   // found across the conversation (a later re-review after changes wins), or
   // null if none was ever reported (an older review, a non-review chat, or
   // Claude just didn't comply).
@@ -9730,7 +9730,7 @@ var ClaudePlugin = class extends Plugin {
   // send a task to Claude for <tgt>, running in its checkout (worktree copies, or
   // the main checkout for a loaded main-located workspace) with the workspace's
   // other repos added as extra allowed dirs. `review: true` (a review run — see
-  // dialogs.js's runClaudeReview) tells the backend to save this turn's reply to
+  // dialogs.ts's runClaudeReview) tells the backend to save this turn's reply to
   // disk on completion, so it survives a goo restart (an ordinary chat turn stays
   // in-memory only, as before).
   async send(tgt, prompt, { review = false } = {}) {
@@ -9764,7 +9764,7 @@ var ClaudePlugin = class extends Plugin {
   }
 };
 
-// static/src/reviews_screen/reviews_plugin.js
+// static/src/reviews_screen/reviews_plugin.ts
 var ReviewsPlugin = class extends Plugin {
   static sequence = 4;
   prInfo = signal({});
@@ -9881,7 +9881,7 @@ var ReviewsPlugin = class extends Plugin {
   }
 };
 
-// static/src/reviews_screen/review_panel.js
+// static/src/reviews_screen/review_panel.ts
 var ReviewPanel = class extends Component {
   static template = xml`
     <div class="term-panel review-panel" t-ref="this.drag.handle">
@@ -10039,7 +10039,7 @@ var ReviewPanel = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/dialogs.js
+// static/src/workspaces_screen/dialogs.ts
 function categoryOptions(config) {
   const opts = (config.config.workspace_categories || []).map((c) => ({
     value: c.id,
@@ -10344,7 +10344,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
             // "+ port" only promises something goo actually manages — a "local"
             // launch is the only mode where goo allocates a TCP port itself;
             // "docker" routes by container name (no port), "external" owns its
-            // own port goo has no say in (see workspace_plugin.js's port()/_baseUrl)
+            // own port goo has no say in (see workspace_plugin.ts's port()/_baseUrl)
             label: config.config.launch_mode === "local" ? "Own worktree + port (runs concurrently)" : "Own worktree (runs concurrently)"
           }
         ]
@@ -10528,7 +10528,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
         visible: (v) => v.location !== "worktree"
       },
       // the venv is only ever consulted at launch by goo's own LOCAL subprocess
-      // (workspace_plugin.js createWorktree) — a Docker container brings its own
+      // (workspace_plugin.ts createWorktree) — a Docker container brings its own
       // Python env, so this is local-mode-only, unlike Start args/Demo data above
       ...config.config.launch_mode === "local" ? [
         {
@@ -10931,7 +10931,7 @@ async function deleteWorkspaceDialog(ws, { config, code, db, eventLog, repoMap, 
   }
 }
 
-// static/src/reviews_screen/cells.js
+// static/src/reviews_screen/cells.ts
 function isMerged(row, mbState) {
   return row.state === "merged" || mbState === "merged";
 }
@@ -11052,7 +11052,7 @@ var ForwardPortsCell = class extends Component {
   }
 };
 
-// static/src/reviews_screen/reviews.js
+// static/src/reviews_screen/reviews.ts
 function parsePrRef(text) {
   const url = /github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/.exec(text);
   if (url) return { github: url[1], number: Number(url[2]) };
@@ -11615,7 +11615,7 @@ var ReviewsScreen = class extends Component {
   }
 };
 
-// static/src/core/terminal_plugin.js
+// static/src/core/terminal_plugin.ts
 var TerminalPlugin = class extends Plugin {
   open = signal(false);
   toggle() {
@@ -11623,7 +11623,7 @@ var TerminalPlugin = class extends Plugin {
   }
 };
 
-// static/src/core/terminal.js
+// static/src/core/terminal.ts
 var _xtermReady = null;
 function loadXterm() {
   if (!_xtermReady) {
@@ -11783,7 +11783,7 @@ var TerminalDialog = class extends Component {
   }
 };
 
-// static/src/todo_screen/todo.js
+// static/src/todo_screen/todo.ts
 var STORAGE_KEY3 = "oo-todos";
 var uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 var KANBAN_STAGES = ["backlog", "ongoing", "done"];
@@ -12255,7 +12255,7 @@ var TodoScreen = class extends Component {
     next.splice(to, 0, moved);
     this.lists.set(next);
   }
-  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
+  // Shared pointer drag (core/drag.ts): the grabbed row lifts into a ghost that
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the list as the pointer crosses its neighbours' midlines. Drop
   // persists the order; Escape restores the grab-time order.
@@ -12376,7 +12376,7 @@ var TodoScreen = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/claude_chat.js
+// static/src/workspaces_screen/claude_chat.ts
 var ClaudeChat = class extends Component {
   static template = xml`
     <div class="cchat">
@@ -12460,7 +12460,7 @@ var ClaudeChat = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/history.js
+// static/src/workspaces_screen/history.ts
 var CommitHistory = class extends Component {
   static template = xml`
     <div class="ws-history">
@@ -12784,7 +12784,7 @@ var CommitHistory = class extends Component {
     this.historyDropSet.set(/* @__PURE__ */ new Set());
     this.historyMessageEdits.set({});
   }
-  // Shared pointer drag (core/drag.js): the grabbed row lifts into a ghost that
+  // Shared pointer drag (core/drag.ts): the grabbed row lifts into a ghost that
   // follows the cursor, while the real row — dimmed in place — live-reorders
   // through the ahead rows as the pointer crosses their midlines. Drop just
   // updates the pending plan (git untouched until Apply); Escape restores it.
@@ -12886,7 +12886,7 @@ ${edits[sha].body}` : edits[sha].subject.trim();
   }
 };
 
-// static/src/workspaces_screen/code_pane.js
+// static/src/workspaces_screen/code_pane.ts
 var CodePane = class extends Component {
   static components = { CommitHistory, DirtyBadge };
   static template = xml`
@@ -13573,7 +13573,7 @@ var CodePane = class extends Component {
   }
 };
 
-// static/src/addons_screen/addons_plugin.js
+// static/src/addons_screen/addons_plugin.ts
 var AddonsPlugin = class _AddonsPlugin extends Plugin {
   static sequence = 4;
   static MAX_ROWS = 200;
@@ -13751,7 +13751,7 @@ var AddonsPlugin = class _AddonsPlugin extends Plugin {
   }
 };
 
-// static/src/assets_screen/assets_plugin.js
+// static/src/assets_screen/assets_plugin.ts
 var AssetsPlugin = class extends Plugin {
   static sequence = 6;
   config = usePlugin(ConfigPlugin);
@@ -13851,7 +13851,7 @@ var AssetsPlugin = class extends Plugin {
   }
 };
 
-// static/src/assets_screen/analysis.js
+// static/src/assets_screen/analysis.ts
 var BundleNode = class extends Component {
   static template = xml`
     <div class="bnode">
@@ -13982,7 +13982,7 @@ var AssetsAnalysis = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/panes.js
+// static/src/workspaces_screen/panes.ts
 var TestsPane = class extends Component {
   static components = { LogConsole };
   static template = xml`
@@ -14327,7 +14327,7 @@ var TerminalPane = class extends Component {
   }
 };
 
-// static/src/workspaces_screen/workspaces.js
+// static/src/workspaces_screen/workspaces.ts
 var WORKSPACE_ORDER_KEY = "goo-workspace-order";
 var WORKSPACE_ORDER_OPTIONS = [
   { value: "config", label: "Configured order", short: "Configured" },
@@ -15551,7 +15551,7 @@ var WorkspacesScreen = class extends Component {
   }
 };
 
-// static/src/core/app.js
+// static/src/core/app.ts
 var Topbar = class extends Component {
   static template = xml`
     <header class="topbar">
@@ -15846,7 +15846,7 @@ var App = class extends Component {
   }
 };
 
-// static/src/main.js
+// static/src/main.ts
 var PLUGINS = [
   StorePlugin,
   ConfigPlugin,

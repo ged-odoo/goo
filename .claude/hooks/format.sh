@@ -18,7 +18,7 @@ case "$f" in
     ruff format --force-exclude -q "$f"
     out=$(ruff check --force-exclude --fix -q "$f" 2>&1) || { echo "$out" >&2; exit 2; }
     ;;
-  static/src/*.js)
+  static/src/*.ts | static/tests/*.ts)
     npx prettier --write --log-level=warn "$f" >/dev/null
     out=$(npx eslint --fix "$f" 2>&1) || { echo "$out" >&2; exit 2; }
     ;;

@@ -1,0 +1,18 @@
+{
+  // type-checks the frontend (`npm run typecheck:ts`, also run in CI and by the
+  // Claude Code hooks); esbuild/vitest strip the types, tsc never emits
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": ["vitest/globals"]
+  },
+  "include": ["static/src", "static/tests", "vendor/owl-orm"]
+}
