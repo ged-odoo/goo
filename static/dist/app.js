@@ -2659,11 +2659,12 @@ var CodePlugin = class extends Plugin {
 
 ${head.body}` : head.subject;
   }
-  async _mutate(label, fn, reload = true) {
+  // run one git/GitHub mutation under the busy flag, reporting a failure in a dialog
+  // (each caller refreshes just what it changed)
+  async _mutate(label, fn) {
     this.busy.set(true);
     try {
       await fn();
-      if (reload) await this.load(true);
     } catch (e) {
       this.dialogs.error(`${label} failed`, e.message);
     } finally {
@@ -2769,27 +2770,23 @@ ${head.body}` : head.subject;
   // delete a branch without prompting — the caller has already confirmed (e.g.
   // a single confirmation dialog covering several branches / PRs at once)
   deleteBranchNoConfirm(branch, repo, path, deleteRemote = false) {
-    return this._mutate(
-      "Delete",
-      async () => {
-        this.eventLog.add(`deleting branch ${branch} (${repo})`);
-        const res = await postJSON("/api/code/branches/delete", {
-          path,
-          branch,
-          delete_remote: deleteRemote,
-          push_remote: this._pushRemote(path)
-        });
-        if (res.remote_error)
-          this.dialogs.error(
-            "Remote branch not deleted",
-            `The local branch was deleted, but the remote branch could not be removed:
+    return this._mutate("Delete", async () => {
+      this.eventLog.add(`deleting branch ${branch} (${repo})`);
+      const res = await postJSON("/api/code/branches/delete", {
+        path,
+        branch,
+        delete_remote: deleteRemote,
+        push_remote: this._pushRemote(path)
+      });
+      if (res.remote_error)
+        this.dialogs.error(
+          "Remote branch not deleted",
+          `The local branch was deleted, but the remote branch could not be removed:
 
 ${res.remote_error}`
-          );
-        this._dropBranch(repo, branch);
-      },
-      false
-    );
+        );
+      this._dropBranch(repo, branch);
+    });
   }
   // create one or more branches in parallel (each at its own start point) without
   // checking any out, then re-read branch state for just the affected repos. Creating
@@ -2877,27 +2874,19 @@ ${res.remote_error}`
   // mark a draft PR ready for review (`gh pr ready`). Optimistically flips the
   // local record's draft flag on success — no full reload for one field.
   readyPr(github, number) {
-    return this._mutate(
-      "Set PR to ready",
-      async () => {
-        this.eventLog.add(`marking PR #${number} ready for review (${github})`);
-        await postJSON("/api/prs/ready", { repo: github, number });
-        this.store.readyPr(github, number);
-      },
-      false
-    );
+    return this._mutate("Set PR to ready", async () => {
+      this.eventLog.add(`marking PR #${number} ready for review (${github})`);
+      await postJSON("/api/prs/ready", { repo: github, number });
+      this.store.readyPr(github, number);
+    });
   }
   // close a PR without prompting — caller has already confirmed
   closePrNoConfirm(github, number) {
-    return this._mutate(
-      "Close PR",
-      async () => {
-        this.eventLog.add(`closing PR #${number} (${github})`);
-        await postJSON("/api/prs/close", { repo: github, number });
-        this._closePrLocally(github, number);
-      },
-      false
-    );
+    return this._mutate("Close PR", async () => {
+      this.eventLog.add(`closing PR #${number} (${github})`);
+      await postJSON("/api/prs/close", { repo: github, number });
+      this._closePrLocally(github, number);
+    });
   }
   // commit / discard the working tree. On failure the event log records the
   // failure and the error is surfaced in a (scrollable) dialog — opened by the
@@ -3042,22 +3031,17 @@ ${res.remote_error}`
   // push to the wrong remote).
   pushBranchNoConfirm(path, branch, repo, reload = true, force = false, workspaceId = "") {
     const repoCfg = this.config.config.repos.find((r) => r.id === repo);
-    return this._mutate(
-      force ? "Force push" : "Push",
-      async () => {
-        const verb = force ? "force-pushing" : "pushing";
-        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo})` : ""} to GitHub`);
-        await postJSON("/api/code/branch/push", {
-          path,
-          branch,
-          force,
-          push_remote: repoCfg?.push_remote || "dev"
-        });
-        if (reload && repo) await this._refreshRepo(repo, path, workspaceId);
-      },
-      false
-      // never the _mutate full reload — the refresh above is enough
-    );
+    return this._mutate(force ? "Force push" : "Push", async () => {
+      const verb = force ? "force-pushing" : "pushing";
+      this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo})` : ""} to GitHub`);
+      await postJSON("/api/code/branch/push", {
+        path,
+        branch,
+        force,
+        push_remote: repoCfg?.push_remote || "dev"
+      });
+      if (reload && repo) await this._refreshRepo(repo, path, workspaceId);
+    });
   }
 };
 
@@ -11879,179 +11863,6 @@ var ReviewsScreen = class extends Component {
   }
 };
 
-// static/src/core/terminal_plugin.ts
-var TerminalPlugin = class extends Plugin {
-  open = signal(false);
-  toggle() {
-    this.open.set(!this.open());
-  }
-};
-
-// static/src/core/terminal.ts
-var _xtermReady = null;
-function loadXterm() {
-  if (!_xtermReady) {
-    _xtermReady = new Promise((resolve, reject) => {
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = "/static/lib/xterm/xterm.css";
-      document.head.appendChild(link);
-      const s1 = document.createElement("script");
-      s1.src = "/static/lib/xterm/xterm.js";
-      s1.onload = () => {
-        const s2 = document.createElement("script");
-        s2.src = "/static/lib/xterm/addon-fit.js";
-        s2.onload = resolve;
-        s2.onerror = reject;
-        document.head.appendChild(s2);
-      };
-      s1.onerror = reject;
-      document.head.appendChild(s1);
-    });
-  }
-  return _xtermReady;
-}
-async function attachXterm(el, wsUrl, focusOnOpen = false) {
-  await loadXterm();
-  const term = new Terminal({
-    cursorBlink: true,
-    fontSize: 13,
-    fontFamily: "var(--mono, monospace)"
-  });
-  const fit = new FitAddon.FitAddon();
-  term.loadAddon(fit);
-  term.open(el);
-  await new Promise((r) => requestAnimationFrame(r));
-  fit.fit();
-  if (focusOnOpen) term.focus();
-  const ws = new WebSocket(wsUrl);
-  ws.binaryType = "arraybuffer";
-  const sendSize = () => {
-    if (ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-  };
-  ws.onopen = sendSize;
-  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
-  const onData = term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
-  });
-  const ro = new ResizeObserver(() => {
-    fit.fit();
-    sendSize();
-  });
-  ro.observe(el);
-  return () => {
-    ro.disconnect();
-    onData.dispose?.();
-    try {
-      ws.close();
-    } catch {
-    }
-    term.dispose();
-  };
-}
-var TerminalPanel = class extends Component {
-  static template = xml`
-    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title">Terminal</span>
-        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  term = usePlugin(TerminalPlugin);
-  container = signal.ref(HTMLElement);
-  // set in setup()
-  _dispose = null;
-  _termOpen = false;
-  // guard against double-open on re-renders
-  setup() {
-    this.drag = useDragResize();
-    onWillUnmount(() => this._closeTerminal());
-    useEffect(() => {
-      const el = this.container();
-      if (el) {
-        this._openTerminal(el);
-      } else {
-        this._closeTerminal();
-      }
-    });
-  }
-  async _openTerminal(el) {
-    if (this._termOpen) return;
-    this._termOpen = true;
-    try {
-      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
-      if (this.container() !== el) {
-        dispose();
-        return;
-      }
-      this._dispose = dispose;
-    } catch (e) {
-      this._termOpen = false;
-    }
-  }
-  _closeTerminal() {
-    if (!this._termOpen) return;
-    this._termOpen = false;
-    this._dispose?.();
-    this._dispose = null;
-  }
-};
-var TerminalDialog = class extends Component {
-  static template = xml`
-    <div class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title" t-att-title="this.label" t-out="this.label"/>
-        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-  props = useProps({
-    done: t.function(),
-    path: t.string().optional(),
-    workspace: t.string().optional(),
-    label: t.string()
-  });
-  container = signal.ref(HTMLElement);
-  // set in setup()
-  _dispose = null;
-  setup() {
-    this.drag = useDragResize();
-    useEffect(() => {
-      const el = this.container();
-      if (!el) return;
-      let live = true;
-      const url = this.props.workspace ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}` : (
-        // callers pass either `workspace` or `path`
-        `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`
-      );
-      attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
-      return () => {
-        live = false;
-        this._dispose?.();
-        this._dispose = null;
-      };
-    });
-    const onKey = (e) => {
-      if (e.key !== "Escape") return;
-      const el = this.container();
-      if (el && el.contains(document.activeElement)) return;
-      this.done(null);
-    };
-    document.addEventListener("keydown", onKey);
-    onWillUnmount(() => document.removeEventListener("keydown", onKey));
-  }
-  get label() {
-    return this.props.label || this.props.path;
-  }
-  done(result) {
-    this.props.done(result);
-  }
-};
-
 // static/src/todo_screen/todo.ts
 var STORAGE_KEY3 = "oo-todos";
 var uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -12749,6 +12560,122 @@ var ClaudeChat = class extends Component {
   }
   stop() {
     this.claude.stop(this.props.target);
+  }
+};
+
+// static/src/core/terminal.ts
+var _xtermReady = null;
+function loadXterm() {
+  if (!_xtermReady) {
+    _xtermReady = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/static/lib/xterm/xterm.css";
+      document.head.appendChild(link);
+      const s1 = document.createElement("script");
+      s1.src = "/static/lib/xterm/xterm.js";
+      s1.onload = () => {
+        const s2 = document.createElement("script");
+        s2.src = "/static/lib/xterm/addon-fit.js";
+        s2.onload = resolve;
+        s2.onerror = reject;
+        document.head.appendChild(s2);
+      };
+      s1.onerror = reject;
+      document.head.appendChild(s1);
+    });
+  }
+  return _xtermReady;
+}
+async function attachXterm(el, wsUrl, focusOnOpen = false) {
+  await loadXterm();
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "var(--mono, monospace)"
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(el);
+  await new Promise((r) => requestAnimationFrame(r));
+  fit.fit();
+  if (focusOnOpen) term.focus();
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+  const sendSize = () => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+  };
+  ws.onopen = sendSize;
+  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+  const onData = term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+  });
+  const ro = new ResizeObserver(() => {
+    fit.fit();
+    sendSize();
+  });
+  ro.observe(el);
+  return () => {
+    ro.disconnect();
+    onData.dispose?.();
+    try {
+      ws.close();
+    } catch {
+    }
+    term.dispose();
+  };
+}
+var TerminalDialog = class extends Component {
+  static template = xml`
+    <div class="term-panel" t-ref="this.drag.handle">
+      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
+        <span class="term-panel-title" t-att-title="this.label" t-out="this.label"/>
+        <button class="event-log-x" title="close" t-on-click="() => this.done(null)">✕</button>
+      </div>
+      <div class="term-panel-body" t-ref="this.container"/>
+      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
+    </div>`;
+  props = useProps({
+    done: t.function(),
+    path: t.string().optional(),
+    workspace: t.string().optional(),
+    label: t.string()
+  });
+  container = signal.ref(HTMLElement);
+  // set in setup()
+  _dispose = null;
+  setup() {
+    this.drag = useDragResize();
+    useEffect(() => {
+      const el = this.container();
+      if (!el) return;
+      let live = true;
+      const url = this.props.workspace ? `ws://${location.host}/api/shell?workspace=${encodeURIComponent(this.props.workspace)}` : (
+        // callers pass either `workspace` or `path`
+        `ws://${location.host}/api/shell?cwd=${encodeURIComponent(this.props.path)}`
+      );
+      attachXterm(el, url, true).then((dispose) => live ? this._dispose = dispose : dispose());
+      return () => {
+        live = false;
+        this._dispose?.();
+        this._dispose = null;
+      };
+    });
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      const el = this.container();
+      if (el && el.contains(document.activeElement)) return;
+      this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+  }
+  get label() {
+    return this.props.label || this.props.path;
+  }
+  done(result) {
+    this.props.done(result);
   }
 };
 
@@ -16130,8 +16057,7 @@ var App = class extends Component {
     MbMenu,
     DirtyMenu,
     EventLog,
-    ActivityBar,
-    TerminalPanel
+    ActivityBar
   };
   static template = xml`
     <div class="app">
@@ -16146,7 +16072,6 @@ var App = class extends Component {
       <DirtyMenu/>
       <EventLog/>
       <ActivityBar/>
-      <TerminalPanel/>
       <div t-ref="this.dialogRoot"/>
       <div t-if="this.update.applying()" class="goo-updating">
         <div class="goo-updating-box"><span class="spin"/>Updating goo and restarting…</div>
@@ -16195,7 +16120,6 @@ var PLUGINS = [
   TestsPlugin,
   AddonsPlugin,
   AssetsPlugin,
-  TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,
   WorkspacePlugin,

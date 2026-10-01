@@ -797,11 +797,12 @@ export class CodePlugin extends Plugin {
     return head.body ? `${head.subject}\n\n${head.body}` : head.subject;
   }
 
-  async _mutate(label: string, fn: () => Promise<void>, reload = true): Promise<void> {
+  // run one git/GitHub mutation under the busy flag, reporting a failure in a dialog
+  // (each caller refreshes just what it changed)
+  async _mutate(label: string, fn: () => Promise<void>): Promise<void> {
     this.busy.set(true);
     try {
       await fn();
-      if (reload) await this.load(true);
     } catch (e) {
       this.dialogs.error(`${label} failed`, (e as Error).message);
     } finally {
@@ -928,25 +929,21 @@ export class CodePlugin extends Plugin {
     path: string,
     deleteRemote = false,
   ): Promise<void> {
-    return this._mutate(
-      "Delete",
-      async () => {
-        this.eventLog.add(`deleting branch ${branch} (${repo})`);
-        const res = await postJSON<{ remote_error?: string }>("/api/code/branches/delete", {
-          path,
-          branch,
-          delete_remote: deleteRemote,
-          push_remote: this._pushRemote(path),
-        });
-        if (res.remote_error)
-          this.dialogs.error(
-            "Remote branch not deleted",
-            `The local branch was deleted, but the remote branch could not be removed:\n\n${res.remote_error}`,
-          );
-        this._dropBranch(repo, branch);
-      },
-      false,
-    );
+    return this._mutate("Delete", async () => {
+      this.eventLog.add(`deleting branch ${branch} (${repo})`);
+      const res = await postJSON<{ remote_error?: string }>("/api/code/branches/delete", {
+        path,
+        branch,
+        delete_remote: deleteRemote,
+        push_remote: this._pushRemote(path),
+      });
+      if (res.remote_error)
+        this.dialogs.error(
+          "Remote branch not deleted",
+          `The local branch was deleted, but the remote branch could not be removed:\n\n${res.remote_error}`,
+        );
+      this._dropBranch(repo, branch);
+    });
   }
 
   // create one or more branches in parallel (each at its own start point) without
@@ -1044,28 +1041,20 @@ export class CodePlugin extends Plugin {
   // mark a draft PR ready for review (`gh pr ready`). Optimistically flips the
   // local record's draft flag on success — no full reload for one field.
   readyPr(github: string, number: number): Promise<void> {
-    return this._mutate(
-      "Set PR to ready",
-      async () => {
-        this.eventLog.add(`marking PR #${number} ready for review (${github})`);
-        await postJSON("/api/prs/ready", { repo: github, number });
-        this.store.readyPr(github, number);
-      },
-      false,
-    );
+    return this._mutate("Set PR to ready", async () => {
+      this.eventLog.add(`marking PR #${number} ready for review (${github})`);
+      await postJSON("/api/prs/ready", { repo: github, number });
+      this.store.readyPr(github, number);
+    });
   }
 
   // close a PR without prompting — caller has already confirmed
   closePrNoConfirm(github: string, number: number): Promise<void> {
-    return this._mutate(
-      "Close PR",
-      async () => {
-        this.eventLog.add(`closing PR #${number} (${github})`);
-        await postJSON("/api/prs/close", { repo: github, number });
-        this._closePrLocally(github, number);
-      },
-      false,
-    );
+    return this._mutate("Close PR", async () => {
+      this.eventLog.add(`closing PR #${number} (${github})`);
+      await postJSON("/api/prs/close", { repo: github, number });
+      this._closePrLocally(github, number);
+    });
   }
 
   // commit / discard the working tree. On failure the event log records the
@@ -1243,22 +1232,18 @@ export class CodePlugin extends Plugin {
     workspaceId = "",
   ): Promise<void> {
     const repoCfg = this.config.config.repos.find((r) => r.id === repo);
-    return this._mutate(
-      force ? "Force push" : "Push",
-      async () => {
-        const verb = force ? "force-pushing" : "pushing";
-        this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo})` : ""} to GitHub`);
-        await postJSON("/api/code/branch/push", {
-          path,
-          branch,
-          force,
-          push_remote: repoCfg?.push_remote || "dev",
-        });
-        // a push only flips this repo's remote-tracking/synced state — refresh just
-        // that branch row, not every repo's PRs/runbot/mergebot
-        if (reload && repo) await this._refreshRepo(repo, path, workspaceId);
-      },
-      false, // never the _mutate full reload — the refresh above is enough
-    );
+    return this._mutate(force ? "Force push" : "Push", async () => {
+      const verb = force ? "force-pushing" : "pushing";
+      this.eventLog.add(`${verb} ${branch}${repo ? ` (${repo})` : ""} to GitHub`);
+      await postJSON("/api/code/branch/push", {
+        path,
+        branch,
+        force,
+        push_remote: repoCfg?.push_remote || "dev",
+      });
+      // a push only flips this repo's remote-tracking/synced state — refresh just
+      // that branch row, not every repo's PRs/runbot/mergebot
+      if (reload && repo) await this._refreshRepo(repo, path, workspaceId);
+    });
   }
 }

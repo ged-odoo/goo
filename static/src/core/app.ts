@@ -31,7 +31,6 @@ import { ActionMenu, CiMenu, MbMenu } from "./menus.ts";
 import { NightlyScreen } from "../nightly_screen/nightly.ts";
 import { CiScreen } from "../ci_screen/ci.ts";
 import { ReviewsScreen } from "../reviews_screen/reviews.ts";
-import { TerminalPanel } from "./terminal.ts";
 import { TodoScreen } from "../todo_screen/todo.ts";
 import { WorkspacesScreen } from "../workspaces_screen/workspaces.ts";
 
@@ -327,7 +326,6 @@ export class App extends Component {
     DirtyMenu,
     EventLog,
     ActivityBar,
-    TerminalPanel,
   };
 
   static template = xml`
@@ -343,7 +341,6 @@ export class App extends Component {
       <DirtyMenu/>
       <EventLog/>
       <ActivityBar/>
-      <TerminalPanel/>
       <div t-ref="this.dialogRoot"/>
       <div t-if="this.update.applying()" class="goo-updating">
         <div class="goo-updating-box"><span class="spin"/>Updating goo and restarting…</div>

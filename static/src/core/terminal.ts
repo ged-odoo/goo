@@ -1,14 +1,12 @@
 import {
   Component,
   onWillUnmount,
-  usePlugin,
   useProps,
   signal,
   t,
   useEffect,
   xml,
 } from "@odoo/owl";
-import { TerminalPlugin } from "./terminal_plugin.ts";
 import { useDragResize } from "./common.ts";
 import type { DragResize } from "./common.ts";
 
@@ -89,76 +87,11 @@ export async function attachXterm(
   };
 }
 
-// ─────────────────────────── Terminal panel ───────────────────────────
-
-// draggable + resizable floating-window behaviour shared by the terminal windows.
-// Call from setup() and bind the returned `handle` to the panel root via t-ref.
-// Position is written straight to the DOM (not through a reactive style binding),
-// so the window paints centered on the very first frame — no reposition flash —
-// and dragging mutates the element directly instead of re-rendering per mousemove.
-// `place(w, h) => {x, y}` overrides the default (centered) first position — e.g.
-// the event log anchors bottom-right. x/y persist in the closure so a dragged
-// window keeps its spot when reshown.
-
-export class TerminalPanel extends Component {
-  static template = xml`
-    <div t-if="this.term.open()" class="term-panel" t-ref="this.drag.handle">
-      <div class="term-panel-head" t-on-mousedown="this.drag.onDragStart">
-        <span class="term-panel-title">Terminal</span>
-        <button class="event-log-x" t-on-click="() => this.term.toggle()" title="close">✕</button>
-      </div>
-      <div class="term-panel-body" t-ref="this.container"/>
-      <div class="term-panel-resize" t-on-mousedown="this.drag.onResizeStart"/>
-    </div>`;
-
-  term = usePlugin(TerminalPlugin);
-  container = signal.ref(HTMLElement);
-  declare drag: DragResize; // set in setup()
-  _dispose: Dispose | null = null;
-  _termOpen = false; // guard against double-open on re-renders
-
-  setup() {
-    this.drag = useDragResize();
-    onWillUnmount(() => this._closeTerminal());
-    useEffect(() => {
-      const el = this.container();
-      if (el) {
-        this._openTerminal(el);
-      } else {
-        this._closeTerminal();
-      }
-    });
-  }
-
-  async _openTerminal(el: HTMLElement) {
-    if (this._termOpen) return;
-    this._termOpen = true;
-    try {
-      const dispose = await attachXterm(el, `ws://${location.host}/api/terminal`);
-      if (this.container() !== el) {
-        dispose(); // container swapped/gone while loading
-        return;
-      }
-      this._dispose = dispose;
-    } catch (e) {
-      this._termOpen = false;
-    }
-  }
-
-  _closeTerminal() {
-    if (!this._termOpen) return;
-    this._termOpen = false;
-    this._dispose?.();
-    this._dispose = null;
-  }
-}
-
 // ─────────────────────────── Terminal dialog ───────────────────────────
 // A draggable, resizable floating terminal (opened from the workspace Code tab,
 // or — via `workspace` instead of `path` — the Shell popup on a workspace's Start
 // dropdown, running that workspace's own `odoo-bin shell` REPL). Backed by
-// /api/shell, so it works regardless of the Odoo server; shares the term-panel
-// chrome + useDragResize with the server-tab TerminalPanel.
+// /api/shell, so it works regardless of the Odoo server.
 
 export class TerminalDialog extends Component {
   static template = xml`
