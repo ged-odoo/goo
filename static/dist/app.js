@@ -16181,7 +16181,7 @@ var App = class extends Component {
   }
 };
 
-// static/src/main.ts
+// static/src/plugins.ts
 var PLUGINS = [
   StorePlugin,
   ConfigPlugin,
@@ -16203,6 +16203,8 @@ var PLUGINS = [
   CiPlugin,
   ReviewsPlugin
 ];
+
+// static/src/main.ts
 async function boot() {
   await loadServerConfig();
   mount(App, document.getElementById("root"), { plugins: PLUGINS, dev: true });
