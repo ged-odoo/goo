@@ -1,6 +1,5 @@
 // Every plugin the app registers, in one list shared by main.ts (the real mount)
 // and the tests that mount the whole app (static/tests/helpers/app.ts).
-import { TerminalPlugin } from "./core/terminal_plugin.ts";
 import { StorePlugin } from "./core/store_plugin.ts";
 import { RouterPlugin } from "./core/router_plugin.ts";
 import { EventLogPlugin } from "./core/event_log_plugin.ts";
@@ -31,7 +30,6 @@ export const PLUGINS = [
   TestsPlugin,
   AddonsPlugin,
   AssetsPlugin,
-  TerminalPlugin,
   DialogPlugin,
   UpdatePlugin,
   WorkspacePlugin,
