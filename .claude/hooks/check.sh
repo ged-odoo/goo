@@ -27,7 +27,11 @@ run() { # run <label> <cmd...>: collect the output of a failing check
 }
 
 if grep -qE '\.py$|^pyproject\.toml$' <<<"$changed"; then
-  command -v ruff >/dev/null && run "ruff check" ruff check -q
+  if command -v ruff >/dev/null; then
+    run "ruff check" ruff check -q
+    # format too: an edit made outside Edit/Write (a script, sed) skips format.sh
+    run "ruff format --check" ruff format --check -q
+  fi
   if grep -qE '^(backend/.*\.py|goo\.py|pyproject\.toml)$' <<<"$changed"; then
     run "pyright (npx pyright)" npx --yes pyright
   fi
@@ -36,6 +40,7 @@ fi
 if grep -qE '^(static/(src|tests)/|vendor/owl-orm/|package(-lock)?\.json$|tsconfig\.json$|vitest|eslint)' <<<"$changed"; then
   if [ -d node_modules ]; then
     run "types (npm run typecheck:ts)" npm run -s typecheck:ts
+    run "prettier (npm run format:check)" npm run -s format:check
     run "eslint (npm run lint)" npm run -s lint
     run "frontend tests (npm run test)" npm run -s test
     before=$(sha1sum static/dist/app.js)

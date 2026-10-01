@@ -175,8 +175,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 
 - **Hooks enforce the checks** (`.claude/settings.json` → `.claude/hooks/`): every
   edited file is formatted + linted on the spot (`format.sh`), and a turn can't end
-  while the checks for what the branch changed fail (`check.sh`: ruff, pyright,
-  unit tests, tsc, eslint, vitest; a stale `static/dist/app.js` is rebuilt). It's
+  while the checks for what the branch changed fail (`check.sh`: ruff check +
+  format, pyright, unit tests, tsc, prettier, eslint, vitest; a stale `static/dist/app.js` is rebuilt). It's
   skipped when nothing changed since the last passing run; the frontend checks
   need `npm install`. Fix the failure — don't disable the hook or work around it.
 - **Tests check the outcome, not the command sent to a fake.** A test that asserts
