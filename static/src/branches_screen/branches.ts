@@ -480,11 +480,11 @@ export class BranchesScreen extends Component {
     if (drop.length) {
       const ids = new Set(drop.map((t) => t.id));
       for (const t of drop) this.code.eventLog.add(`deleting workspace ${t.name}`);
-      this.config.updateConfig({
-        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id)),
-      });
+      // cascade the sub-workspaces while their parents still exist: once a parent is
+      // gone, the config's dangling-parent heal demotes its children to root
+      const skipped = [];
       for (const t of drop) {
-        const { skipped } = await cascadeRemoveDescendants(
+        const res = await cascadeRemoveDescendants(
           {
             config: this.config,
             wt: this.worktree,
@@ -493,18 +493,20 @@ export class BranchesScreen extends Component {
           },
           t,
         );
-        if (skipped.length) {
-          await this.dialogs.open({
-            title: "Some sub-workspaces were kept",
-            message: skipped
-              .map(
-                (w) => `"${w.name}" is still busy — kept, no longer linked to the deleted parent.`,
-              )
-              .join("\n"),
-            okLabel: "OK",
-            cancelLabel: null,
-          });
-        }
+        skipped.push(...res.skipped);
+      }
+      this.config.updateConfig({
+        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id)),
+      });
+      if (skipped.length) {
+        await this.dialogs.open({
+          title: "Some sub-workspaces were kept",
+          message: skipped
+            .map((w) => `"${w.name}" is still busy — kept, no longer linked to the deleted parent.`)
+            .join("\n"),
+          okLabel: "OK",
+          cancelLabel: null,
+        });
       }
     }
   }

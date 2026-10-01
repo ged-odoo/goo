@@ -1467,10 +1467,12 @@ export async function deleteWorkspaceDialog(
       ops.push(code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote));
   if (res.dropDb && ws.db) ops.push(db.drop(ws.db));
   await Promise.all(ops);
+  // cascade the sub-workspaces while the parent still exists: once it's gone, the
+  // config's dangling-parent heal demotes its children to root
+  const { skipped } = await cascadeRemoveDescendants({ config, wt, eventLog, server }, ws);
   config.updateConfig({
     workspaces: config.config.workspaces.filter((w) => w.id !== ws.id),
   });
-  const { skipped } = await cascadeRemoveDescendants({ config, wt, eventLog, server }, ws);
   if (skipped.length) {
     await dialogs.open({
       title: "Some sub-workspaces were kept",

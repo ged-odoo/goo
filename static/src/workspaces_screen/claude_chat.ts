@@ -40,6 +40,7 @@ export class ClaudeChat extends Component {
             <span t-if="m.text" class="cmsg-tool-text" t-out="m.text"/>
           </div>
           <div t-elif="m.role === 'error'" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.text"/></div>
+          <div t-elif="m.role === 'result' and m.error" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.error"/></div>
         </t>
         <div t-if="this.running" class="cchat-working"><span class="spin"/>Claude is working…</div>
       </div>

@@ -4902,12 +4902,12 @@ var WorkspacePlugin = class extends Plugin {
       okLabel: "Remove"
     });
     if (!res) return;
-    if (!await this._removeCleanup(tgt, { dropDb: !!res.dropDb })) return;
     const { skipped } = await cascadeRemoveDescendants(
       { config: this.config, wt: this, eventLog: this.eventLog, server: this.server },
       tgt
     );
     if (skipped.length) this._notifyKept(skipped);
+    await this._removeCleanup(tgt, { dropDb: !!res.dropDb });
   }
   // silent per-child removal the cascade drives — no confirm, no dropDb prompt
   async removeSilently(tgt) {
@@ -6449,11 +6449,9 @@ var BranchesScreen = class extends Component {
     if (drop.length) {
       const ids = new Set(drop.map((t2) => t2.id));
       for (const t2 of drop) this.code.eventLog.add(`deleting workspace ${t2.name}`);
-      this.config.updateConfig({
-        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id))
-      });
+      const skipped = [];
       for (const t2 of drop) {
-        const { skipped } = await cascadeRemoveDescendants(
+        const res2 = await cascadeRemoveDescendants(
           {
             config: this.config,
             wt: this.worktree,
@@ -6462,16 +6460,18 @@ var BranchesScreen = class extends Component {
           },
           t2
         );
-        if (skipped.length) {
-          await this.dialogs.open({
-            title: "Some sub-workspaces were kept",
-            message: skipped.map(
-              (w) => `"${w.name}" is still busy \u2014 kept, no longer linked to the deleted parent.`
-            ).join("\n"),
-            okLabel: "OK",
-            cancelLabel: null
-          });
-        }
+        skipped.push(...res2.skipped);
+      }
+      this.config.updateConfig({
+        workspaces: this.config.config.workspaces.filter((w) => !ids.has(w.id))
+      });
+      if (skipped.length) {
+        await this.dialogs.open({
+          title: "Some sub-workspaces were kept",
+          message: skipped.map((w) => `"${w.name}" is still busy \u2014 kept, no longer linked to the deleted parent.`).join("\n"),
+          okLabel: "OK",
+          cancelLabel: null
+        });
       }
     }
   }
@@ -9995,7 +9995,7 @@ var ReviewsPlugin = class extends Plugin {
       const byKey = Object.fromEntries(
         (res.prs || []).map((pr) => [`${pr.github}#${pr.number}`, pr])
       );
-      this.prInfo.set({ ...have, ...byKey });
+      if (Object.keys(byKey).length) this.prInfo.set({ ...have, ...byKey });
       this.at.set(Date.now());
     } catch (e) {
       this.error.set(errorMessage(e));
@@ -10019,7 +10019,8 @@ var ReviewsPlugin = class extends Plugin {
         "/api/prs/review-status",
         { prs: todo, refresh: force }
       );
-      this.reviewStatus.set({ ...have, ...res.statuses || {} });
+      const statuses = res.statuses || {};
+      if (Object.keys(statuses).length) this.reviewStatus.set({ ...have, ...statuses });
     } catch {
     } finally {
       keys.forEach((k) => this._pending.delete(`rs:${k}`));
@@ -11158,10 +11159,10 @@ async function deleteWorkspaceDialog(ws, {
       ops.push(code.deleteBranchNoConfirm(b.branch, b.repo, b.path, !!res.delRemote && b.remote));
   if (res.dropDb && ws.db) ops.push(db.drop(ws.db));
   await Promise.all(ops);
+  const { skipped } = await cascadeRemoveDescendants({ config, wt, eventLog, server }, ws);
   config.updateConfig({
     workspaces: config.config.workspaces.filter((w) => w.id !== ws.id)
   });
-  const { skipped } = await cascadeRemoveDescendants({ config, wt, eventLog, server }, ws);
   if (skipped.length) {
     await dialogs.open({
       title: "Some sub-workspaces were kept",
@@ -12684,6 +12685,7 @@ var ClaudeChat = class extends Component {
             <span t-if="m.text" class="cmsg-tool-text" t-out="m.text"/>
           </div>
           <div t-elif="m.role === 'error'" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.text"/></div>
+          <div t-elif="m.role === 'result' and m.error" class="cmsg cmsg-error"><div class="cmsg-body" t-out="m.error"/></div>
         </t>
         <div t-if="this.running" class="cchat-working"><span class="spin"/>Claude is working…</div>
       </div>

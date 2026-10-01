@@ -601,12 +601,14 @@ export class WorkspacePlugin extends Plugin {
       okLabel: "Remove",
     });
     if (!res) return;
-    if (!(await this._removeCleanup(tgt, { dropDb: !!res.dropDb }))) return;
+    // cascade the sub-workspaces while the parent still exists: once it's gone, the
+    // config's dangling-parent heal demotes its children to root
     const { skipped } = await cascadeRemoveDescendants(
       { config: this.config, wt: this, eventLog: this.eventLog, server: this.server },
       tgt,
     );
     if (skipped.length) this._notifyKept(skipped);
+    await this._removeCleanup(tgt, { dropDb: !!res.dropDb });
   }
 
   // silent per-child removal the cascade drives — no confirm, no dropDb prompt
