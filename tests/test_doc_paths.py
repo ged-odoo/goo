@@ -4,7 +4,7 @@ goo is written almost entirely with Claude Code, and every session trusts what
 CLAUDE.md and the code comments say — a reference left behind by a refactor
 (a moved module, a split file) silently misleads the next one. Checked: every
 path in CLAUDE.md, and every reference to one of goo's own source files
-(backend/, static/src/, static/tests/ .py/.js) in the code. Paths inside Odoo
+(backend/, static/src/, static/tests/ .py/.js/.ts) in the code. Paths inside Odoo
 (addons/web/…, runbot URLs, Odoo's docs) are out of scope.
 """
 
@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # static/src/, `services/` under backend/), so resolve against those roots too
 CLAUDE_MD_ROOTS = ["", "static/src", "backend", "addons"]
 # not preceded by a path character: "addons/web/static/src/x.js" is Odoo's, not goo's
-CODE_REF_RE = re.compile(r"(?<![\w./-])((?:backend|static/src|static/tests)/[\w./-]*\.(?:py|js))\b")
+CODE_REF_RE = re.compile(r"(?<![\w./-])((?:backend|static/src|static/tests)/[\w./-]*\.(?:py|js|ts))\b")
 # a bare file name in CLAUDE.md (`events.py`) must exist somewhere in the repo
 BARE_FILE_RE = re.compile(r"^[\w.-]+\.(?:py|js|ts|json|toml|md|sh|yml|yaml|html|css)$")
 CODE_DIRS = ["backend", "static/src", "static/tests", "tests"]
@@ -58,7 +58,7 @@ class DocPathsTest(unittest.TestCase):
             for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, d)):
                 dirnames[:] = [n for n in dirnames if n not in SKIP_DIRS]
                 for name in filenames:
-                    if not name.endswith((".py", ".js")):
+                    if not name.endswith((".py", ".js", ".ts")):
                         continue
                     path = os.path.join(dirpath, name)
                     with open(path, encoding="utf-8") as f:

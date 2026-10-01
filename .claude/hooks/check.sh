@@ -33,8 +33,9 @@ if grep -qE '\.py$|^pyproject\.toml$' <<<"$changed"; then
   fi
   run "backend tests (python3 -m unittest discover)" python3 -m unittest discover -q
 fi
-if grep -qE '^(static/(src|tests)/|vendor/owl-orm/|package(-lock)?\.json$|vitest|eslint)' <<<"$changed"; then
+if grep -qE '^(static/(src|tests)/|vendor/owl-orm/|package(-lock)?\.json$|tsconfig\.json$|vitest|eslint)' <<<"$changed"; then
   if [ -d node_modules ]; then
+    run "types (npm run typecheck:ts)" npm run -s typecheck:ts
     run "eslint (npm run lint)" npm run -s lint
     run "frontend tests (npm run test)" npm run -s test
     before=$(sha1sum static/dist/app.js)
