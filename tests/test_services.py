@@ -772,8 +772,8 @@ class NightlyServiceTest(unittest.TestCase):
 
     def test_fetch_build_detail_counts_and_child_rows(self):
         html = (
-            '<tr class="bg-success-subtle"><td><a href="/runbot/batch/1/build/200">x</a></td></tr>'
-            '<tr class="bg-danger-subtle"><td><a href="/runbot/batch/1/build/201">x</a></td></tr>'
+            '<tr class="bg-success-subtle"><td><a href="/runbot/build/200">x</a></td></tr>'
+            '<tr class="bg-danger-subtle"><td><a href="/runbot/build/201">x</a></td></tr>'
         )
         io = FakeIO(http={"build/100": (html, None)})
         svc = services.NightlyService(io, TTLCache(60))
@@ -781,8 +781,32 @@ class NightlyServiceTest(unittest.TestCase):
         self.assertEqual(detail["counts"], {"total": 2, "ok": 1, "warning": 0, "failed": 1})
         self.assertEqual(
             detail["child_rows"],
-            [("/runbot/batch/1/build/200", "success"), ("/runbot/batch/1/build/201", "danger")],
+            [("/runbot/build/200", "success"), ("/runbot/build/201", "danger")],
         )
+
+    @staticmethod
+    def _night_tile(date: str, build: int) -> str:
+        return (
+            f'<div class="batch_tile"><a href="/runbot/batch/1" title="{date} 17:30:00"></a>'
+            '<div class="slot_container">'
+            '<a class="btn btn-default slot_name"><span>Multi Qunit Community</span></a>'
+            '<span class="btn btn-success disabled">ok</span>'
+            f'<a href="/runbot/batch/1/build/{build}">x</a></div></div>'
+        )
+
+    def test_bundle_nights_reads_the_nightly_category_pages(self):
+        # the default bundle listing has no nightly batches; they live under
+        # ?category=2, paginated as /page/<n>
+        io = FakeIO(
+            http={
+                "bundle/1?category=2": (self._night_tile("2026-09-30", 10), None),
+                "bundle/1/page/2?category=2": (self._night_tile("2026-09-29", 11), None),
+            }
+        )
+        svc = services.NightlyService(io, TTLCache(60))
+        nights = svc._bundle_nights("1", max_nights=7)
+        self.assertEqual([n["date"] for n in nights], ["2026-09-30", "2026-09-29"])
+        self.assertEqual(nights[1]["community"]["url"], "/runbot/batch/1/build/11")
 
     def test_parse_child_errors(self):
         html = (

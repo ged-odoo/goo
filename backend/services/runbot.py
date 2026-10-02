@@ -785,10 +785,16 @@ class NightlyService:
 
     # ── bundle pages: the night index for one version ────────────────────────
 
+    # a bundle page lists only its default-category batches; nightly batches live
+    # under their own category tab, paginated as /page/<n>
+    _NIGHTLY_CATEGORY = 2
+
     @staticmethod
     def _bundle_url(bundle_id: str, page: int) -> str:
         url = f"{RUNBOT_BASE}/runbot/bundle/{bundle_id}"
-        return f"{url}?page={page}" if page > 1 else url
+        if page > 1:
+            url += f"/page/{page}"
+        return f"{url}?category={NightlyService._NIGHTLY_CATEGORY}"
 
     def _bundle_page_html(self, bundle_id: str, page: int, refresh: bool = False) -> str:
         key = ("bundle", bundle_id, page)
@@ -802,7 +808,7 @@ class NightlyService:
         """Fetch bundle pages until max_nights nightly builds are collected,
         stopping early if a page returns no new dates (history exhausted)."""
         all_nights, seen_dates = [], set()
-        for page in range(1, 8):  # up to 7 pages × ~10 nights = ~70 nights max
+        for page in range(1, 3):  # 50 nights per page, builds() caps max_nights at 84
             html = self._bundle_page_html(bundle_id, page, refresh=refresh)
             if not html:
                 break
@@ -893,7 +899,7 @@ class NightlyService:
             r'<tr class="bg-(success|warning|danger)-subtle">(.*?)</tr>', html, re.DOTALL
         ):
             row_status, row_body = row_m.group(1), row_m.group(2)
-            href_m = re.search(r'href="(/runbot/batch/\d+/build/\d+)"', row_body)
+            href_m = re.search(r'href="(/runbot/(?:batch/\d+/)?build/\d+)"', row_body)
             if href_m and href_m.group(1) not in seen:
                 seen.add(href_m.group(1))
                 child_rows.append((href_m.group(1), row_status))
