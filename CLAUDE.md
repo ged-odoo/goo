@@ -182,7 +182,11 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - **Tests check the outcome, not the command sent to a fake.** A test that asserts
   "ran `git worktree add …`" passes even when the result is broken; assert what the
   user would observe (the branch tracks its upstream, the commits are reordered,
-  the file exists). For git behavior, prefer a real repo in a temp dir.
+  the file exists). For git behavior, prefer a real repo in a temp dir. Test through
+  the real plugins (`mountApp`, a real `ConfigPlugin`), not hand-rolled fakes of them
+  — a fake config without the real dangling-parent heal hid a bug in three places.
+  `mountApp` fails a test on any request no route answers: route each action with
+  the reply shape `backend/server.py` really returns, never rely on a default `{}`.
 - **Comments describe what the code does now.** History ("used to…", "a bug we
   hit…", "moved from…") belongs in the commit message, not the code. When a file
   moves or is renamed, update every reference to it — `tests/test_doc_paths.py`
@@ -190,6 +194,8 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   exists.
 - **Delete dead code, don't leave it behind.** When a feature or caller is removed,
   remove what only it used (vulture + knip fail CI on unused code).
+- **Every commit builds on its own** and carries its regenerated `static/dist/app.js`
+  (check each one, e.g. in a temporary `git worktree`), so any commit can be checked out.
 - **Review in a separate session before every PR.** The session that wrote the code
   shares its blind spots — before opening (or updating) a PR, run `/code-review` on
   the branch in a fresh Claude Code session (or a subagent given only the diff, not
@@ -203,6 +209,14 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
   `npm install` under npm 11 can leave out of sync (optional `@emnapi/*` deps of knip's
   wasm resolver). After changing dependencies: `rm -rf node_modules package-lock.json &&
 npm install`, then check `npx npm@10 ci` passes in a copy before pushing.
+- Many endpoints report a failure in a **200** reply (`{ok: false, error}` or per-item
+  `results`); `postJSON` only throws on HTTP errors, so a caller must check `ok`.
+- Removing a workspace: remove the parent's worktree first (a failure keeps
+  everything, as a handle to retry), then `cascadeRemoveDescendants` while the parent
+  is still in config, then drop the parent — the config's dangling-parent heal
+  demotes a removed parent's children to root, so a later cascade finds none.
+- A plugin's pending timers must be cleared `onWillDestroy` (the tests destroy the app
+  between tests; a leftover debounced save posted into the next test's backend).
 - owl 3 is an early release version of owl, not fully compatible with owl 2 — it runs
   in tests from `static/lib/owl.js` itself (see `static/tests/setup.ts`), and mounting
   components in jsdom works (`static/tests/helpers/app.ts`; `await settle()` after each interaction).
