@@ -2813,6 +2813,45 @@ class GitServiceTest(unittest.TestCase):
         self.assertIn("fetch https://github.com/odoo-dev/odoo.git", cmd)
         self.assertIn("refs/pull/123/head:master-x", cmd)
 
+    def test_fetch_pr_head_falls_back_to_ssh_when_https_has_no_credentials(self):
+        io = FakeIO(
+            runs={
+                "fetch https://": completed(
+                    returncode=128,
+                    stderr="fatal: could not read Username for 'https://github.com'\n",
+                )
+            }
+        )
+        ok, err, _ = services.GitService(io).fetch_pr_head("/r", "odoo/enterprise", 5, "b")
+        self.assertEqual((ok, err), (True, None))
+        fetches = [" ".join(c) for c in io.run_calls if "fetch" in c]
+        self.assertEqual(len(fetches), 2)
+        self.assertIn("fetch git@github.com:odoo/enterprise.git refs/pull/5/head:b", fetches[1])
+
+    def test_fetch_pr_head_does_not_retry_over_ssh_on_other_failures(self):
+        io = FakeIO(runs={"fetch": completed(returncode=128, stderr="fatal: boom\n")})
+        ok, err, _ = services.GitService(io).fetch_pr_head("/r", "odoo/odoo", 5, "b")
+        self.assertEqual((ok, err), (False, "fatal: boom"))
+        self.assertEqual(len([c for c in io.run_calls if "fetch" in c]), 1)
+
+    def test_sync_pr_worktree_falls_back_to_ssh_when_https_has_no_credentials(self):
+        io = FakeIO(
+            runs={
+                "fetch https://": completed(
+                    returncode=128, stderr="fatal: could not read Username\n"
+                )
+            }
+        )
+        ok, err = services.GitService(io).sync_pr_worktree("/wt", "odoo/enterprise", 5)
+        self.assertEqual((ok, err), (True, None))
+        self.assertTrue(
+            any(
+                "fetch git@github.com:odoo/enterprise.git refs/pull/5/head" in " ".join(c)
+                for c in io.run_calls
+            )
+        )
+        self.assertTrue(any("reset --hard FETCH_HEAD" in " ".join(c) for c in io.run_calls))
+
     def test_fetch_pr_head_force_uses_plus_refspec(self):
         io = FakeIO()
         services.GitService(io).fetch_pr_head("/r", "odoo/odoo", 1, "master-x", force=True)

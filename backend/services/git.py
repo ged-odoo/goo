@@ -55,6 +55,14 @@ def parse_github_slug(url: str | None) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+# git's stderr when an HTTPS fetch has no credentials to offer
+_HTTPS_AUTH_FAILURES = (
+    "could not read Username",
+    "terminal prompts disabled",
+    "Authentication failed",
+)
+
+
 class GitService:
     """Local git operations on the user's repos, over the IO seam. Branch reads are
     volatile (dirty / current-branch state) and fast, so they're not cached — callers
@@ -1299,6 +1307,23 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         non_ff = bool(error) and r is not None and "non-fast-forward" in (r.stderr or "")
         return error is None, error, non_ff
 
+    def _fetch_github(
+        self, path: str, github: str, *refs: str
+    ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+        """Fetch <refs> straight from github.com/<github> over HTTPS; when HTTPS has
+        no credentials (a private repo on a machine whose git only authenticates over
+        SSH), retry the same fetch over SSH. Returns (result, error) like _git."""
+        r, error = self._git(
+            path, "fetch", f"https://github.com/{github}.git", *refs, timeout=60,
+            err="git fetch failed",
+        )  # fmt: skip
+        if r is not None and any(m in r.stderr for m in _HTTPS_AUTH_FAILURES):
+            r, error = self._git(
+                path, "fetch", f"git@github.com:{github}.git", *refs, timeout=60,
+                err="git fetch failed",
+            )  # fmt: skip
+        return r, error
+
     def fetch_pr_head(
         self, path: str, github: str, number: int, branch: str, force: bool = False
     ) -> tuple[bool, str | None, bool]:
@@ -1310,7 +1335,8 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         or a shared internal staging remote used for colleagues'/fw-bot's WIP
         branches) has no guarantee of actually being. Relies on git's normal
         credential resolution for github.com (e.g. `gh auth login`'s HTTPS
-        credential helper), same as any other github.com fetch. Onto the local
+        credential helper), same as any other github.com fetch, falling back to SSH
+        when HTTPS has no credentials (see _fetch_github). Onto the local
         branch <branch>. If <branch> is already checked out in a worktree (this
         one or another one entirely — e.g. a regular workspace someone already
         has open on it), git refuses to move the ref ("refusing to fetch into
@@ -1318,9 +1344,8 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         detect it and fall back to sync_pr_worktree's safe fetch-into-FETCH_HEAD-
         and-reset at the worktree path git names in its own error, so the caller
         still gets an up-to-date checkout. Returns (ok, error, non_ff)."""
-        url = f"https://github.com/{github}.git"
         refspec = f"{'+' if force else ''}refs/pull/{number}/head:{branch}"
-        r, error = self._git(path, "fetch", url, refspec, timeout=60, err="git fetch failed")
+        r, error = self._fetch_github(path, github, refspec)
         if error and r is not None:
             m = re.search(
                 r"refusing to fetch into branch '[^']*' checked out at '([^']*)'", r.stderr or ""
@@ -1348,13 +1373,10 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         if st.stdout.strip():
             return False, "worktree has uncommitted changes"
         label = repo or os.path.basename(p)
-        url = f"https://github.com/{github}.git"
         fid = uuid.uuid4().hex
         fetching = f"fetching PR #{number} ({label})"
         self.notify(fetching, event_id=fid, status="start")
-        _, error = self._git(
-            p, "fetch", url, f"refs/pull/{number}/head", timeout=60, err="git fetch failed"
-        )
+        _, error = self._fetch_github(p, github, f"refs/pull/{number}/head")
         self.notify(fetching, event_id=fid, status="error" if error else "done")
         if error:
             return False, error
