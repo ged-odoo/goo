@@ -397,6 +397,30 @@ describe("worktree workspace lifecycle", () => {
     ]);
   });
 
+  it("in docker mode the main workspace's links go through its container's nginx host", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await mount([ALPHA], { active: "alpha", config: { launch_mode: "docker" } });
+    sse.emit("server", {
+      id: "main",
+      state: "running",
+      workspace: "alpha",
+      docker_container: "dev",
+    });
+    await app.settle();
+    mustText(app.root, ".wt-detail-name-row button", "/odoo").click();
+    expect(open.mock.calls[0][0]).toBe(
+      `http://dev.localhost/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}`,
+    );
+  });
+
+  it("external mode has no /odoo or /web/tests for the main workspace", async () => {
+    await mount([ALPHA], { active: "alpha", config: { launch_mode: "external" } });
+    const labels = [...app.root.querySelectorAll(".wt-detail-name-row button")].map(
+      (b) => b.textContent,
+    );
+    expect(labels.some((l) => l?.includes("/odoo"))).toBe(false);
+  });
+
   it("Remove confirms, removes the worktree and drops it from the list", async () => {
     await mount([ALPHA, WT], { routes: { "/api/workspace/remove": removeRoute } });
     await select("feature-wt");

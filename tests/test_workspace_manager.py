@@ -570,8 +570,8 @@ class DockerStartFailureTest(_ProcessTestCase):
 
 class DockerMainServerTest(_ProcessTestCase):
     """The main server follows launch_mode like any workspace: in docker mode it is
-    a container (published on odoo's default ports, which the UI's links use), never a
-    local odoo-bin. A fake `docker` on PATH records its calls — the real one is never run."""
+    a container like every other workspace's (reached through nginx), never a local
+    odoo-bin. A fake `docker` on PATH records its calls — the real one is never run."""
 
     def setUp(self):
         super().setUp()
@@ -601,25 +601,25 @@ class DockerMainServerTest(_ProcessTestCase):
             "docker_worktree_dir": self.tmp,
         }
 
-    def test_main_server_runs_in_a_container_publishing_odoo_ports(self):
+    def test_main_server_runs_in_a_container(self):
         ok, detail = self.mgr.start("main", self.docker_config())
         self.assertTrue(ok, detail)
         self.assertEqual(self.mgr.entries["main"].docker_container, "dev")
         run = wait_for(lambda: self.docker_calls(), "docker run")[0]
         self.assertTrue(run.startswith("run "), run)
         self.assertIn("--name dev", run)
-        self.assertIn("-p 8069:8069 -p 8072:8072", run)
+        self.assertNotIn(" -p ", run)
+
+    def test_main_status_names_its_container_while_it_runs(self):
+        self.mgr.start("main", self.docker_config())
+        wait_for(lambda: self.docker_calls(), "docker run")
+        self.assertEqual(self.mgr.status()["docker_container"], "dev")
 
     def test_stopping_the_main_container_stops_it_through_docker(self):
         self.mgr.start("main", self.docker_config())
         wait_for(lambda: self.docker_calls(), "docker run")
         self.assertEqual(self.mgr.stop("main"), (True, "stopped"))
         self.assertIn("stop -t 10 dev", self.docker_calls())
-
-    def test_a_worktree_container_does_not_publish_ports(self):
-        self.mgr.start("w1", self.docker_config())
-        run = wait_for(lambda: self.docker_calls(), "docker run")[0]
-        self.assertNotIn("-p 8069", run)
 
 
 # ── HTTP / WebSocket endpoints ───────────────────────────────────────────────────

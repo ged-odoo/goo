@@ -404,6 +404,14 @@ class DockerCmdTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no worktree directory"):
             processes._docker_run_prefix(_docker_config(docker_worktree_dir=""))
 
+    def test_run_prefix_refuses_repos_that_are_not_siblings_under_the_mount_dir(self):
+        repos = [{"id": "community", "path": "/wt/feat/community"}]
+        processes._docker_run_prefix(_docker_config(repos=repos))  # laid out as mounted
+        with self.assertRaisesRegex(ValueError, "'enterprise' at /wt/feat/enterprise"):
+            processes._docker_run_prefix(
+                _docker_config(repos=[*repos, {"id": "enterprise", "path": "/elsewhere/ent"}])
+            )
+
     def test_shell_cmd(self):
         cmd = processes.build_docker_shell_cmd(_docker_config(), "mydb", "odoo:17")
         argv = shlex.split(cmd)

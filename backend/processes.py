@@ -233,6 +233,16 @@ def _docker_run_prefix(
     if not host_dir:
         raise ValueError("no worktree directory resolved for this Docker workspace")
 
+    # the single bind mount only reproduces the sibling layout <dir>/<repo_id>
+    repo_paths = {r.get("id"): r.get("path") for r in config.get("repos") or []}
+    for rid in addons_repo_ids:
+        path = repo_paths.get(rid)
+        if path and os.path.normpath(os.path.expanduser(path)) != os.path.join(host_dir, rid):
+            raise ValueError(
+                f"Docker mode needs '{rid}' at {os.path.join(host_dir, rid)} "
+                f"(a sibling of '{main_repo_id}'), not {path}"
+            )
+
     # every repo mounts as a direct SIBLING of the main repo — build_start_config's
     # worktree branch already gives every repo the uniform HOST path <dir>/<repo_id>,
     # so the in-container equivalent is just <mount_path>/<repo_id> regardless of the
