@@ -34,19 +34,6 @@ class PrFetchOverSshTest(unittest.TestCase):
         self.addCleanup(server.shutdown)
 
         remote_root = os.path.join(self.tmp, "remote")
-        bare = os.path.join(remote_root, "odoo", "enterprise.git")
-        os.makedirs(bare)
-        self.git(bare, "init", "-q", "--bare")
-        work = os.path.join(self.tmp, "work")
-        os.makedirs(work)
-        self.git(work, "init", "-q")
-        with open(os.path.join(work, "f"), "w") as f:
-            f.write("x")
-        self.git(work, "add", "f")
-        self.git(work, "commit", "-q", "-m", "pr head")
-        self.pr_head = self.git(work, "rev-parse", "HEAD")
-        self.git(work, "push", "-q", bare, "HEAD:refs/pull/5/head")
-
         gitconfig = os.path.join(self.tmp, "gitconfig")
         with open(gitconfig, "w") as f:
             f.write(
@@ -67,6 +54,19 @@ class PrFetchOverSshTest(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+        bare = os.path.join(remote_root, "odoo", "enterprise.git")
+        os.makedirs(bare)
+        self.git(bare, "init", "-q", "--bare")
+        work = os.path.join(self.tmp, "work")
+        os.makedirs(work)
+        self.git(work, "init", "-q")
+        with open(os.path.join(work, "f"), "w") as f:
+            f.write("x")
+        self.git(work, "add", "f")
+        self.git(work, "commit", "-q", "-m", "pr head")
+        self.pr_head = self.git(work, "rev-parse", "HEAD")
+        self.git(work, "push", "-q", bare, "HEAD:refs/pull/5/head")
 
         self.local = os.path.join(self.tmp, "local")
         os.makedirs(self.local)
