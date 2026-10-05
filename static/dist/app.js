@@ -14748,8 +14748,8 @@ var WorkspacesScreen = class extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button t-if="this.isWt(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <button class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -15670,13 +15670,18 @@ var WorkspacesScreen = class extends Component {
   }
   odooUrl(ws) {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
-    return `http://localhost:8069/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}`;
+    return this.mainLink(ws, "/odoo?debug=assets");
   }
   testsUrl(ws) {
     if (this.isWt(ws)) return this.wt.testsUrl(ws);
-    return `http://localhost:8069/dev/autologin?to=${encodeURIComponent(
-      "/web/tests?debug=assets&timeout=500000&manual=true"
-    )}`;
+    return this.mainLink(ws, "/web/tests?debug=assets&timeout=500000&manual=true");
+  }
+  // the main server is the one odoo on localhost:8069 (local, or its docker
+  // container publishing that port); a link only exists while it runs
+  mainLink(ws, path) {
+    if (this.stateOf(ws) !== "running") return "";
+    if (this.config.config.autologin_links === false) return `http://localhost:8069${path}`;
+    return `http://localhost:8069/dev/autologin?to=${encodeURIComponent(path)}`;
   }
   open(url) {
     if (url) window.open(url, "_blank", "noopener");

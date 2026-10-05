@@ -379,6 +379,24 @@ describe("worktree workspace lifecycle", () => {
     expect(open.mock.calls[1][0]).toContain(encodeURIComponent("/web/tests"));
   });
 
+  it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await mount([ALPHA], { active: "alpha" });
+    const button = (label: string) =>
+      mustText(app.root, ".wt-detail-name-row button", label) as HTMLButtonElement;
+    expect(button("/odoo").disabled).toBe(true);
+    expect(button("/web/tests").disabled).toBe(true);
+
+    sse.emit("server", { id: "main", state: "running", workspace: "alpha", port: 8069 });
+    await app.settle();
+    button("/odoo").click();
+    button("/web/tests").click();
+    expect(open.mock.calls.map((c) => c[0])).toEqual([
+      `http://localhost:8069/dev/autologin?to=${encodeURIComponent("/odoo?debug=assets")}`,
+      expect.stringContaining(encodeURIComponent("/web/tests")),
+    ]);
+  });
+
   it("Remove confirms, removes the worktree and drops it from the list", async () => {
     await mount([ALPHA, WT], { routes: { "/api/workspace/remove": removeRoute } });
     await select("feature-wt");
