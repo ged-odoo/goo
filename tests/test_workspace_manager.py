@@ -568,6 +568,60 @@ class DockerStartFailureTest(_ProcessTestCase):
         self.assertEqual(self.mgr.entries.get("w1", server._Entry("w1")).state, "stopped")
 
 
+class DockerMainServerTest(_ProcessTestCase):
+    """The main server follows launch_mode like any workspace: in docker mode it is
+    a container (published on odoo's default ports, which the UI's links use), never a
+    local odoo-bin. A fake `docker` on PATH records its calls — the real one is never run."""
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        self.calls = os.path.join(self.tmp, "docker-calls")
+        script = os.path.join(bindir, "docker")
+        with open(script, "w") as f:
+            f.write(
+                f'#!/bin/sh\necho "$@" >> {self.calls}\n[ "$1" = run ] && exec sleep 30\nexit 0\n'
+            )
+        os.chmod(script, 0o755)
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{bindir}:{old_path}"
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+
+    def docker_calls(self):
+        with contextlib.suppress(FileNotFoundError), open(self.calls) as f:
+            return f.read().splitlines()
+        return []
+
+    def docker_config(self):
+        return {
+            **self.config(),
+            "launch_mode": "docker",
+            "main_repo_id": "community",
+            "docker_worktree_dir": self.tmp,
+        }
+
+    def test_main_server_runs_in_a_container_publishing_odoo_ports(self):
+        ok, detail = self.mgr.start("main", self.docker_config())
+        self.assertTrue(ok, detail)
+        self.assertEqual(self.mgr.entries["main"].docker_container, "dev")
+        run = wait_for(lambda: self.docker_calls(), "docker run")[0]
+        self.assertTrue(run.startswith("run "), run)
+        self.assertIn("--name dev", run)
+        self.assertIn("-p 8069:8069 -p 8072:8072", run)
+
+    def test_stopping_the_main_container_stops_it_through_docker(self):
+        self.mgr.start("main", self.docker_config())
+        wait_for(lambda: self.docker_calls(), "docker run")
+        self.assertEqual(self.mgr.stop("main"), (True, "stopped"))
+        self.assertIn("stop -t 10 dev", self.docker_calls())
+
+    def test_a_worktree_container_does_not_publish_ports(self):
+        self.mgr.start("w1", self.docker_config())
+        run = wait_for(lambda: self.docker_calls(), "docker run")[0]
+        self.assertNotIn("-p 8069", run)
+
+
 # ── HTTP / WebSocket endpoints ───────────────────────────────────────────────────
 
 

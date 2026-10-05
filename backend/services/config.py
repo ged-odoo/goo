@@ -1,5 +1,6 @@
 """The server-owned config store + the launch-config builder."""
 
+import os
 import re
 import threading
 from collections.abc import Callable
@@ -171,6 +172,17 @@ def build_start_config(
         # Harmless to always set docker_worktree_dir/docker_branch: a
         # non-docker launch just ignores these extra cfg keys.
         cfg["docker_worktree_dir"] = d
+        main_checkout = next(
+            (c for c in target.get("checkouts") or [] if c.get("repo") == main_repo_id), None
+        )
+        cfg["docker_branch"] = (main_checkout or {}).get("branch", "")
+    else:
+        # a main-checkout workspace in docker mode bind-mounts the directory holding
+        # the repos, which are siblings there (<dir>/<repo_id>, as for a worktree)
+        main_repo_id = config.get("main_repo_id") or "community"
+        main_repo = next((r for r in config.get("repos", []) if r.get("id") == main_repo_id), None)
+        if main_repo and main_repo.get("path"):
+            cfg["docker_worktree_dir"] = os.path.dirname(os.path.expanduser(main_repo["path"]))
         main_checkout = next(
             (c for c in target.get("checkouts") or [] if c.get("repo") == main_repo_id), None
         )
