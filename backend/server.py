@@ -348,6 +348,8 @@ def build_docker_cmd(config: dict[str, Any], image: str) -> tuple[str, str, bool
     if extra_args:
         extra_args += " "
 
+    if config.get("docker_publish_ports"):
+        run += "-p 8069:8069 -p 8072:8072 "
     if config.get("docker_headed_browser"):
         # --shm-size: Chrome's default /dev/shm (64MB) is too small and crashes
         # under real page load, headed or not. --privileged: the image's own
@@ -572,7 +574,7 @@ class WorkspaceManager:
         if not wsid:
             return False, "missing workspace"
         main = wsid == "main"
-        is_docker = not main and config.get("launch_mode") == "docker"
+        is_docker = config.get("launch_mode") == "docker"
         # build the command before taking the lock — it runs a psql probe
         # (db_initialized) that must never stall the other workspaces; the
         # docker-mode ensure_*/image build/pull below can take minutes, for the
@@ -598,7 +600,9 @@ class WorkspaceManager:
             container = DOCKER_INFRA.next_container_slot()
             if not container:
                 return False, "docker: no free dev slot found"
-            config = {**config, "docker_container": container}
+            # main is the one server the UI reaches on localhost:8069 (its links,
+            # presets and hoot URLs), so its container publishes odoo's default ports
+            config = {**config, "docker_container": container, "docker_publish_ports": main}
             try:
                 cmd, db, is_new = build_docker_cmd(config, image)
             except ValueError as e:
@@ -768,10 +772,7 @@ class WorkspaceManager:
             # terminate_process already SIGKILLed odoo's whole process group, so the
             # port is normally free now — the lsof kill is the orphan fallback ("main"
             # only when something still listens; workspaces always, as before)
-            if main:
-                if port_busy(ODOO_PORT):
-                    kill_port(ODOO_PORT)
-            elif docker_container:
+            if docker_container:
                 # terminate_process signaled the local `docker run` client —
                 # Docker's --sig-proxy default forwards a graceful SIGTERM into
                 # the container, but a killed/hung client doesn't reliably stop
@@ -784,6 +785,9 @@ class WorkspaceManager:
                     )
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
+            elif main:
+                if port_busy(ODOO_PORT):
+                    kill_port(ODOO_PORT)
             elif port:
                 kill_port(port)
             if reader:

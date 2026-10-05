@@ -3739,11 +3739,19 @@ class WorkspaceResolutionTest(unittest.TestCase):
         self.assertNotIn("docker_container", cfg)
         self.assertEqual(cfg["docker_branch"], "feat")
 
-    def test_plain_workspace_has_no_docker_fields(self):
-        cfg = services.build_start_config(self.CFG, "w1")
-        self.assertNotIn("docker_worktree_dir", cfg)
+    def test_main_workspace_mounts_the_dir_holding_its_repos_in_docker_mode(self):
+        # the repos are siblings of the main repo's checkout; the container pool slot
+        # is picked at start time, never here
+        cfg = services.build_start_config(
+            {
+                **self.CFG,
+                "repos": [{"id": "community", "path": "/src/master/community"}],
+            },
+            "w1",
+        )
+        self.assertEqual(cfg["docker_worktree_dir"], "/src/master")
+        self.assertEqual(cfg["docker_branch"], "master")
         self.assertNotIn("docker_container", cfg)
-        self.assertNotIn("docker_branch", cfg)
 
     def test_missing_db_falls_back_to_workspace_name_slug(self):
         # a workspace created with a blank Database field must still start,
@@ -3948,6 +3956,10 @@ class BuildDockerCmdTest(unittest.TestCase):
             return server.build_docker_cmd(config, "goo-odoo-noble:latest")
         finally:
             server.DATABASE.db_initialized = orig
+
+    def test_publish_ports_only_when_asked(self):
+        self.assertNotIn(" -p ", self._cmd()[0])
+        self.assertIn("-p 8069:8069 -p 8072:8072 ", self._cmd(docker_publish_ports=True)[0])
 
     def test_basic_shape(self):
         from backend import server
