@@ -271,8 +271,8 @@ export class WorkspacesScreen extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
+              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -1363,6 +1363,11 @@ export class WorkspacesScreen extends Component {
     if (this.termUrl) this.config.workspace(ws.id)?.touchActivity();
   }
 
+  // external mode: odoo is launched by hand, goo never knows when main is up
+  hasUrlButtons(ws: WorkspaceConfig): boolean {
+    return this.isWt(ws) || this.config.config.launch_mode !== "external";
+  }
+
   odooUrl(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
@@ -1373,12 +1378,18 @@ export class WorkspacesScreen extends Component {
     return this.mainLink(ws, "/web/tests?debug=assets&timeout=500000&manual=true");
   }
 
-  // the main server is the one odoo on localhost:8069 (local, or its docker
-  // container publishing that port); a link only exists while it runs
+  // the main server's link: its container's nginx host in docker mode, else the
+  // one odoo on localhost:8069; only while it runs
   mainLink(ws: WorkspaceConfig, path: string): string {
-    if (this.stateOf(ws) !== "running") return "";
-    if (this.config.config.autologin_links === false) return `http://localhost:8069${path}`;
-    return `http://localhost:8069/dev/autologin?to=${encodeURIComponent(path)}`;
+    const server = this.store.serverFor(ws);
+    if (server?.state !== "running") return "";
+    const base =
+      this.config.config.launch_mode === "docker"
+        ? this.wt.dockerSlugUrl(server.docker_container)
+        : "http://localhost:8069/";
+    if (!base) return "";
+    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
+    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
   }
 
   open(url: string): void {

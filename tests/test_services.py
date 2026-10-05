@@ -3957,10 +3957,6 @@ class BuildDockerCmdTest(unittest.TestCase):
         finally:
             server.DATABASE.db_initialized = orig
 
-    def test_publish_ports_only_when_asked(self):
-        self.assertNotIn(" -p ", self._cmd()[0])
-        self.assertIn("-p 8069:8069 -p 8072:8072 ", self._cmd(docker_publish_ports=True)[0])
-
     def test_basic_shape(self):
         from backend import server
 

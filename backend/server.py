@@ -348,8 +348,6 @@ def build_docker_cmd(config: dict[str, Any], image: str) -> tuple[str, str, bool
     if extra_args:
         extra_args += " "
 
-    if config.get("docker_publish_ports"):
-        run += "-p 8069:8069 -p 8072:8072 "
     if config.get("docker_headed_browser"):
         # --shm-size: Chrome's default /dev/shm (64MB) is too small and crashes
         # under real page load, headed or not. --privileged: the image's own
@@ -475,6 +473,7 @@ class WorkspaceManager:
                 cmd=e.cmd if active else None,
                 mode=e.mode if active else None,
                 started_at=e.started_at if active else None,
+                docker_container=e.docker_container if active else None,
                 exited_unexpectedly=e.exited_unexpectedly,
                 returncode=e.returncode if e.exited_unexpectedly else None,
             )
@@ -600,9 +599,7 @@ class WorkspaceManager:
             container = DOCKER_INFRA.next_container_slot()
             if not container:
                 return False, "docker: no free dev slot found"
-            # main is the one server the UI reaches on localhost:8069 (its links,
-            # presets and hoot URLs), so its container publishes odoo's default ports
-            config = {**config, "docker_container": container, "docker_publish_ports": main}
+            config = {**config, "docker_container": container}
             try:
                 cmd, db, is_new = build_docker_cmd(config, image)
             except ValueError as e:

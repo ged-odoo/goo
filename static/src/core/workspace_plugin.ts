@@ -681,7 +681,10 @@ export class WorkspacePlugin extends Plugin {
   // (backend's next_container_slot — a pooled slot, not a fixed per-workspace
   // name, so it's read from live server state, never persisted/recomputed)
   dockerUrl(tgt: WorkspaceLike): string {
-    const slug = this.state(tgt).docker_container;
+    return this.dockerSlugUrl(this.state(tgt).docker_container);
+  }
+
+  dockerSlugUrl(slug: string | null | undefined): string {
     if (!slug) return "";
     const port = this.config.config.docker_nginx_port;
     return `http://${slug}.localhost${port && port !== "80" ? ":" + port : ""}/`;
