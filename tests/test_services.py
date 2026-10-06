@@ -3932,6 +3932,43 @@ class BuildOdooCmdTest(unittest.TestCase):
         )
 
 
+class WithTestDataFlagTest(unittest.TestCase):
+    """--with-test-data is passed to odoo-bin only when the checkout's odoo knows it
+    and the database doesn't exist yet."""
+
+    def _cmd(self, config_py, initialized):
+        import os
+        import tempfile
+
+        from backend import server
+
+        with tempfile.TemporaryDirectory() as root:
+            if config_py is not None:
+                os.makedirs(os.path.join(root, "odoo", "tools"))
+                with open(os.path.join(root, "odoo", "tools", "config.py"), "w") as f:
+                    f.write(config_py)
+            config = {
+                "repos": [{"id": "community", "path": root}],
+                "start": {"repos": ["community"], "db": "db1"},
+            }
+            orig = server.DATABASE.db_initialized
+            server.DATABASE.db_initialized = lambda db: initialized
+            try:
+                return server.build_odoo_cmd(config)[0]
+            finally:
+                server.DATABASE.db_initialized = orig
+
+    def test_new_db_on_supporting_odoo(self):
+        self.assertIn("--with-test-data", self._cmd("'--with-test-data'", False))
+
+    def test_existing_db_unchanged(self):
+        self.assertNotIn("--with-test-data", self._cmd("'--with-test-data'", True))
+
+    def test_older_odoo_never_gets_the_flag(self):
+        self.assertNotIn("--with-test-data", self._cmd("'--with-demo'", False))
+        self.assertNotIn("--with-test-data", self._cmd(None, False))
+
+
 class BuildDockerCmdTest(unittest.TestCase):
     """build_docker_cmd shares _odoo_bin_invocation's argument tail with
     build_odoo_cmd (see BuildOdooCmdTest) — these tests cover what's genuinely
