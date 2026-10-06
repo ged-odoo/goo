@@ -164,6 +164,16 @@ def _filestore(body: dict[str, Any] | None) -> str | None:
     return fs if isinstance(fs, str) and fs.strip() else None
 
 
+def _supports_test_data(config: dict[str, Any]) -> bool:
+    """Whether the community checkout's odoo-bin knows `--with-test-data` (master
+    and later; older branches reject the unknown flag)."""
+    for r in config.get("repos", []):
+        if isinstance(r, dict) and r.get("id") == "community" and r.get("path"):
+            src = effects.read_text(os.path.join(r["path"], "odoo", "tools", "config.py"))
+            return bool(src and "with-test-data" in src)
+    return False
+
+
 def _odoo_bin_invocation(
     config: dict[str, Any], prefix: str, db: str, addons_path: str, dump_dir: str | None = None
 ) -> tuple[str, bool]:
@@ -188,6 +198,9 @@ def _odoo_bin_invocation(
         f"--database {db} --no-database-list --without-demo {without_demo} "
         f"--addons-path {addons_path}"
     )
+    # test data is loaded at db creation only (implicit when the creating run is a test run)
+    if _supports_test_data(config) and not DATABASE.db_initialized(db):
+        cmd += " --with-test-data"
     if config.get("log_level"):
         cmd += f" --log-level {shlex.quote(config['log_level'])}"
 
