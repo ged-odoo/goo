@@ -454,6 +454,29 @@ export async function startNewWorkspaceWizard(plugins: WorkspacePlugins): Promis
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
+  // a community PR's bundle lists no `tree/` branch links — only its pull request,
+  // opened from a contributor's fork. Such a PR is fetched straight from its own
+  // repo (the branch name comes from the PR, not the bundle title, which is
+  // "owner:branch") into every configured repo no branch above already covers —
+  // one PR per repo, matched by repo name like the branches.
+  const prTargets: PrTarget[] = [];
+  const unmapped: string[] = [];
+  for (const pull of info.prs || []) {
+    const repoName = pull.github.split("/")[1];
+    const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
+    if (!r || !r.path || r.id === "owl") unmapped.push(`${pull.github}#${pull.number}`);
+    else if (!matches.some((m) => m.repo.id === r.id) && !prTargets.some((t) => t.repo.id === r.id))
+      prTargets.push({ repo: r, pull });
+  }
+  if (unmapped.length) {
+    dialogs.error(
+      "Some of the bundle's PRs were skipped",
+      `no configured repo for: ${unmapped.join(", ")}`,
+    );
+  }
+  if (!matches.length && prTargets.length) {
+    return createWorkspaceFromPRs(plugins, prTargets, info.dumps || []);
+  }
   if (!matches.length) {
     dialogs.open({
       title: "Workspace from bundle",
@@ -484,14 +507,17 @@ export async function startNewWorkspaceWizard(plugins: WorkspacePlugins): Promis
     );
     if (failed.length === results.length) return;
   }
-  const got = results.filter((r) => r.ok);
+  const got: { repo: Pick<RepoConfig, "id">; branch: string }[] = results.filter((r) => r.ok);
   // the fetched branches must show up in the form's world (branch pickers, the
   // created workspace's presence checks) — refresh just those repos
   await code.refreshBranches(new Set(got.map((m) => m.repo.id)));
+  if (prTargets.length) got.push(...((await resolvePrBranches(plugins, prTargets)) || []));
+  // a fork PR's bundle is titled "owner:branch" — the colon is no workspace/db name
+  const name = info.name.replace(/^[^:\s]+:/, "");
   return startCreateWorkspace(plugins, {
-    name: info.name,
+    name,
     config: repoBranchList.format(got.map((m) => ({ repo: m.repo.id, branch: m.branch }))),
-    db: info.name,
+    db: name,
     template: "",
     createBranches: false,
     // the dumps the bundle's latest batch left on runbot, already proven to exist
@@ -1105,6 +1131,7 @@ export async function createSubWorkspaceFromForwardPort(
 export async function createWorkspaceFromPRs(
   plugins: WorkspacePlugins,
   targets: PrTarget[],
+  dumps: RunbotDump[] = [],
 ): Promise<void> {
   const got = await resolvePrBranches(plugins, targets);
   if (!got) return;
@@ -1115,6 +1142,7 @@ export async function createWorkspaceFromPRs(
     db: name,
     template: "",
     createBranches: false,
+    dumps,
   });
 }
 

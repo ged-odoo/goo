@@ -458,6 +458,77 @@ describe("New workspace — from a runbot bundle", () => {
     expect(checkbox("Create branches").checked).toBe(false);
   });
 
+  it("fetches a community PR's head when the bundle only lists the pull request", async () => {
+    await fromBundle({
+      "/api/runbot/bundle-info": {
+        name: "ayoub3bidi:19.0-fix-label",
+        branches: [],
+        prs: [{ github: "odoo/odoo", number: 284157 }],
+        dumps: [],
+      },
+      "/api/prs/head": { branch: "19.0-fix-label" },
+      "/api/code/remote-branch/fetch-pr": { ok: true },
+    });
+    expect(app.callsTo("/api/code/remote-branch/fetch-pr").map((c) => c.body)).toEqual([
+      {
+        path: "/home/odoo/work/community",
+        github: "odoo/odoo",
+        number: 284157,
+        branch: "19.0-fix-label",
+        force: false,
+      },
+    ]);
+    expect(input("Name").value).toBe("19.0-fix-label");
+    expect(input("Config").value).toBe("community:19.0-fix-label");
+  });
+
+  it("matches a fork's PR to the configured repo by name and skips owl and unknown repos", async () => {
+    await fromBundle({
+      "/api/runbot/bundle-info": {
+        name: "someone:fix",
+        branches: [],
+        prs: [
+          { github: "odoo-dev/odoo", number: 7 },
+          { github: "odoo/owl", number: 8 },
+          { github: "acme/thing", number: 9 },
+        ],
+        dumps: [],
+      },
+      "/api/prs/head": { branch: "fix" },
+      "/api/code/remote-branch/fetch-pr": { ok: true },
+    });
+    expect(app.callsTo("/api/code/remote-branch/fetch-pr").map((c) => c.body)).toEqual([
+      {
+        path: "/home/odoo/work/community",
+        github: "odoo-dev/odoo",
+        number: 7,
+        branch: "fix",
+        force: false,
+      },
+    ]);
+    expect(input("Config").value).toBe("community:fix");
+    expect(document.body.textContent).toContain("odoo/owl#8");
+    expect(document.body.textContent).toContain("acme/thing#9");
+  });
+
+  it("fills the repos no branch covers from the bundle's PRs, named without the owner", async () => {
+    await fromBundle({
+      "/api/runbot/bundle-info": {
+        name: "someone:19.0-fix",
+        branches: [{ github: "odoo-dev/enterprise", branch: "19.0-fix" }],
+        prs: [{ github: "odoo/odoo", number: 7 }],
+        dumps: [],
+      },
+      "/api/code/remote-branch/fetch": { ok: true },
+      "/api/prs/head": { branch: "19.0-fix" },
+      "/api/code/remote-branch/fetch-pr": { ok: true },
+    });
+    expect(app.callsTo("/api/code/remote-branch/fetch").length).toBe(1);
+    expect(app.callsTo("/api/code/remote-branch/fetch-pr").length).toBe(1);
+    expect(input("Name").value).toBe("19.0-fix");
+    expect(input("Config").value).toBe("enterprise:19.0-fix,community:19.0-fix");
+  });
+
   it("asks before forking a repo the bundle didn't carry", async () => {
     await fromBundle({
       "/api/runbot/bundle-info": BUNDLE,
