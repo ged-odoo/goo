@@ -10474,23 +10474,23 @@ async function startNewWorkspaceWizard(plugins) {
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
-  if (!matches.length && info.prs?.length) {
-    const targets = info.prs.map((pull) => ({
-      repo: (config.config.repos || []).find((r) => r.github === pull.github && r.path),
-      pull
-    })).filter((t2) => !!t2.repo);
-    if (targets.length) {
-      const got2 = await resolvePrBranches(plugins, targets);
-      if (!got2) return;
-      return startCreateWorkspace(plugins, {
-        name: got2[0].branch,
-        config: repoBranchList.format(got2.map((g) => ({ repo: g.repo.id, branch: g.branch }))),
-        db: got2[0].branch,
-        template: "",
-        createBranches: false,
-        dumps: info.dumps || []
-      });
-    }
+  const prTargets = [];
+  const unmapped = [];
+  for (const pull of info.prs || []) {
+    const repoName = pull.github.split("/")[1];
+    const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
+    if (!r || !r.path || r.id === "owl") unmapped.push(`${pull.github}#${pull.number}`);
+    else if (!matches.some((m2) => m2.repo.id === r.id) && !prTargets.some((t2) => t2.repo.id === r.id))
+      prTargets.push({ repo: r, pull });
+  }
+  if (unmapped.length) {
+    dialogs.error(
+      "Some of the bundle's PRs were skipped",
+      `no configured repo for: ${unmapped.join(", ")}`
+    );
+  }
+  if (!matches.length && prTargets.length) {
+    return createWorkspaceFromPRs(plugins, prTargets, info.dumps || []);
   }
   if (!matches.length) {
     dialogs.open({
@@ -10523,10 +10523,12 @@ async function startNewWorkspaceWizard(plugins) {
   }
   const got = results.filter((r) => r.ok);
   await code.refreshBranches(new Set(got.map((m2) => m2.repo.id)));
+  if (prTargets.length) got.push(...await resolvePrBranches(plugins, prTargets) || []);
+  const name = info.name.replace(/^[^:\s]+:/, "");
   return startCreateWorkspace(plugins, {
-    name: info.name,
+    name,
     config: repoBranchList.format(got.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }))),
-    db: info.name,
+    db: name,
     template: "",
     createBranches: false,
     // the dumps the bundle's latest batch left on runbot, already proven to exist
@@ -10962,7 +10964,7 @@ async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) {
     category: parentWs.category || ""
   });
 }
-async function createWorkspaceFromPRs(plugins, targets) {
+async function createWorkspaceFromPRs(plugins, targets, dumps = []) {
   const got = await resolvePrBranches(plugins, targets);
   if (!got) return;
   const name = got[0].branch;
@@ -10971,7 +10973,8 @@ async function createWorkspaceFromPRs(plugins, targets) {
     config: repoBranchList.format(got.map((g) => ({ repo: g.repo.id, branch: g.branch }))),
     db: name,
     template: "",
-    createBranches: false
+    createBranches: false,
+    dumps
   });
 }
 var REVIEW_CATEGORY = "review";
