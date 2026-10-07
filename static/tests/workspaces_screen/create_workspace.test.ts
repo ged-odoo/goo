@@ -458,6 +458,30 @@ describe("New workspace — from a runbot bundle", () => {
     expect(checkbox("Create branches").checked).toBe(false);
   });
 
+  it("fetches a community PR's head when the bundle only lists the pull request", async () => {
+    await fromBundle({
+      "/api/runbot/bundle-info": {
+        name: "ayoub3bidi:19.0-fix-label",
+        branches: [],
+        prs: [{ github: "odoo/odoo", number: 284157 }],
+        dumps: [],
+      },
+      "/api/prs/head": { branch: "19.0-fix-label" },
+      "/api/code/remote-branch/fetch-pr": { ok: true },
+    });
+    expect(app.callsTo("/api/code/remote-branch/fetch-pr").map((c) => c.body)).toEqual([
+      {
+        path: "/home/odoo/work/community",
+        github: "odoo/odoo",
+        number: 284157,
+        branch: "19.0-fix-label",
+        force: false,
+      },
+    ]);
+    expect(input("Name").value).toBe("19.0-fix-label");
+    expect(input("Config").value).toBe("community:19.0-fix-label");
+  });
+
   it("asks before forking a repo the bundle didn't carry", async () => {
     await fromBundle({
       "/api/runbot/bundle-info": BUNDLE,

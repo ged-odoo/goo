@@ -454,6 +454,30 @@ export async function startNewWorkspaceWizard(plugins: WorkspacePlugins): Promis
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
+  // a community PR's bundle lists no `tree/` branch links — only its pull request,
+  // opened from a contributor's fork. Fetch the PR head straight from the PR's own
+  // repo instead (the branch name comes from the PR, not the bundle title, which
+  // is "owner:branch")
+  if (!matches.length && info.prs?.length) {
+    const targets = info.prs
+      .map((pull) => ({
+        repo: (config.config.repos || []).find((r) => r.github === pull.github && r.path),
+        pull,
+      }))
+      .filter((t): t is PrTarget & { repo: RepoConfig } => !!t.repo);
+    if (targets.length) {
+      const got = await resolvePrBranches(plugins, targets);
+      if (!got) return;
+      return startCreateWorkspace(plugins, {
+        name: got[0].branch,
+        config: repoBranchList.format(got.map((g) => ({ repo: g.repo.id, branch: g.branch }))),
+        db: got[0].branch,
+        template: "",
+        createBranches: false,
+        dumps: info.dumps || [],
+      });
+    }
+  }
   if (!matches.length) {
     dialogs.open({
       title: "Workspace from bundle",

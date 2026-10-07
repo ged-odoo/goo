@@ -10474,6 +10474,24 @@ async function startNewWorkspaceWizard(plugins) {
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
+  if (!matches.length && info.prs?.length) {
+    const targets = info.prs.map((pull) => ({
+      repo: (config.config.repos || []).find((r) => r.github === pull.github && r.path),
+      pull
+    })).filter((t2) => !!t2.repo);
+    if (targets.length) {
+      const got2 = await resolvePrBranches(plugins, targets);
+      if (!got2) return;
+      return startCreateWorkspace(plugins, {
+        name: got2[0].branch,
+        config: repoBranchList.format(got2.map((g) => ({ repo: g.repo.id, branch: g.branch }))),
+        db: got2[0].branch,
+        template: "",
+        createBranches: false,
+        dumps: info.dumps || []
+      });
+    }
+  }
   if (!matches.length) {
     dialogs.open({
       title: "Workspace from bundle",
