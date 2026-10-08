@@ -30,7 +30,7 @@ import type {
 } from "../core/config.ts";
 import type { ConfigPlugin } from "../core/config_plugin.ts";
 import type { CodePlugin } from "../core/code_plugin.ts";
-import type { DatabasePlugin } from "../core/database_plugin.ts";
+import type { DatabasePlugin, RunbotDump } from "../core/database_plugin.ts";
 import type { DialogField, DialogPlugin } from "../core/dialog_plugin.ts";
 import type { EventLogPlugin } from "../core/event_log_plugin.ts";
 import type { BranchInfo, ForwardPortRow } from "../core/observed_models.ts";
@@ -64,15 +64,6 @@ export interface ResolvedPrBranch {
   repo: Pick<RepoConfig, "id" | "path">;
   branch: string;
   ok: true;
-}
-
-// one database dump a runbot batch left behind (backend RunbotService dumps)
-export interface RunbotDump {
-  build?: string;
-  slot: string; // the build's name, e.g. "Enterprise Run"
-  db: string; // "all" | "base" | …
-  url: string;
-  size?: number;
 }
 
 // what the create form opens prefilled with (startCreateWorkspace)

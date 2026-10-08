@@ -144,6 +144,7 @@ describe("DatabasePlugin", () => {
           name: "bar",
           url: "http://runbot/dump.zip",
           filestore: "/fs",
+          cleanup: [],
         });
         return jsonOk({});
       }

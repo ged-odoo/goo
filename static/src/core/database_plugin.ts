@@ -20,6 +20,15 @@ export interface DatabaseInfo {
   size: number | null; // bytes, when readable
 }
 
+// one database dump a runbot batch left behind (backend RunbotService dumps)
+export interface RunbotDump {
+  build?: string;
+  slot: string; // the build's name, e.g. "Enterprise Run"
+  db: string; // "all" | "base" | …
+  url: string;
+  size?: number;
+}
+
 export class DatabasePlugin extends Plugin {
   static sequence = 3;
 
@@ -106,19 +115,56 @@ export class DatabasePlugin extends Plugin {
   }
 
   // restore a runbot build's database dump (see RunbotService.bundle_dumps) into a
-  // NEW database `target`; returns null on success or an error message. Unlike the
-  // other db actions this is slow enough to need a *timed* row — the backend
-  // downloads tens/hundreds of MB and replays them through psql — so it logs
-  // begin/finish rather than a single line, and the row keeps its animated "..."
-  // for as long as the restore really runs.
-  async restoreRunbotDump(url: string, target: string): Promise<string | null> {
-    const eid = this.eventLog.begin(`restoring runbot database into ${target}`);
-    try {
-      await postJSON("/api/databases/restore-dump", {
+  // NEW database `target`, then run the `cleanup` steps (backend RESTORE_CLEANUPS)
+  // on it; returns null on success or an error message.
+  async restoreRunbotDump(
+    url: string,
+    target: string,
+    cleanup: string[] = [],
+  ): Promise<string | null> {
+    return this._restore(target, "runbot database", () =>
+      postJSON("/api/databases/restore-dump", {
         name: target,
         url,
         filestore: this._filestore(),
+        cleanup,
+      }),
+    );
+  }
+
+  // restore a local dump file (an odoo .zip, or a .sql.gz) into a NEW database
+  // `target`: the file is uploaded as the raw request body, the rest rides in the
+  // query string. Returns null on success or an error message.
+  async restoreFile(file: File, target: string, cleanup: string[] = []): Promise<string | null> {
+    const query = new URLSearchParams({
+      name: target,
+      filename: file.name,
+      filestore: this._filestore(),
+      cleanup: cleanup.join(","),
+    });
+    return this._restore(target, file.name, async () => {
+      const resp = await fetch(`/api/databases/upload-dump?${query}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
       });
+      const data: { ok?: boolean; error?: string } = await resp.json().catch(() => ({}));
+      if (!data.ok) throw new Error(data.error || String(resp.status));
+    });
+  }
+
+  // the shared restore envelope. Unlike the other db actions a restore is slow
+  // enough to need a *timed* row — tens/hundreds of MB, replayed through psql — so
+  // it logs begin/finish rather than a single line, and the row keeps its animated
+  // "..." for as long as the restore really runs.
+  async _restore(
+    target: string,
+    what: string,
+    run: () => Promise<unknown>,
+  ): Promise<string | null> {
+    const eid = this.eventLog.begin(`restoring ${what} into ${target}`);
+    try {
+      await run();
       await this.load(true); // server cache was invalidated; pull the fresh list
       this.eventLog.finish(eid, "done");
       return null;
