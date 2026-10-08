@@ -15,7 +15,6 @@ import { RemoteBranchDialog } from "../core/dialogs.ts";
 import type { RemoteBranchPick } from "../core/dialogs.ts";
 import {
   errorMessage,
-  formatBytes,
   postJSON,
   repoBranchList,
   descendantWorkspaces,
@@ -30,6 +29,7 @@ import type {
 } from "../core/config.ts";
 import type { ConfigPlugin } from "../core/config_plugin.ts";
 import type { CodePlugin } from "../core/code_plugin.ts";
+import { dumpLabel } from "../core/database_plugin.ts";
 import type { DatabasePlugin, RunbotDump } from "../core/database_plugin.ts";
 import type { DialogField, DialogPlugin } from "../core/dialog_plugin.ts";
 import type { EventLogPlugin } from "../core/event_log_plugin.ts";
@@ -543,7 +543,7 @@ export async function startCreateWorkspace(
   // prefills these, so the field is absent everywhere else.
   const dumpOptions = (prefill.dumps || []).map((d) => ({
     value: d.url,
-    label: `${d.slot} — ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`,
+    label: dumpLabel(d),
   }));
   // ticked by default: whatever the prefilled config already covers, else every
   // non-external configured repo (a new task branch usually spans all of them;

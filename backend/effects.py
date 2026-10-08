@@ -324,11 +324,15 @@ def make_dirs(path: str) -> tuple[bool, str | None]:
         return False, str(e)
 
 
-def make_temp_dir(prefix: str = "goo-") -> str | None:
-    """Create a temporary directory and return its path, or None if it can't be
-    made. The caller owns it — pair it with remove_tree()."""
+def make_temp_dir(prefix: str = "goo-", parent: str | None = None) -> str | None:
+    """Create a temporary directory (under `parent`, created if missing; else the
+    system temp dir) and return its path, or None if it can't be made. The caller
+    owns it — pair it with remove_tree()."""
     try:
-        path = tempfile.mkdtemp(prefix=prefix)
+        root = os.path.expanduser(parent) if parent else None
+        if root:
+            os.makedirs(root, exist_ok=True)
+        path = tempfile.mkdtemp(prefix=prefix, dir=root)
     except OSError:
         return None
     trace("mkdtemp", path)

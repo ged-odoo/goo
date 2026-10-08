@@ -2417,12 +2417,15 @@ class Handler(BaseHTTPRequestHandler):
         def arg(key: str) -> str:
             return q.get(key, [""])[0]
 
-        tmp = effects.make_temp_dir("goo-upload-")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send_json(400, {"ok": False, "error": "bad Content-Length"})
+        tmp = effects.make_temp_dir("goo-upload-", services.DUMP_TMP_DIR)
         if not tmp:
             return self._send_json(500, {"ok": False, "error": "no temporary directory"})
         try:
             path = os.path.join(tmp, os.path.basename(arg("filename")) or "dump")
-            length = int(self.headers.get("Content-Length") or 0)
             ok, error = effects.save_stream(self.rfile, length, path)
             if ok:
                 cleanup = [s for s in arg("cleanup").split(",") if s]

@@ -4,7 +4,7 @@
 import { ServerPlugin } from "./server_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
 import { ConfigPlugin } from "./config_plugin.ts";
-import { errorMessage, postJSON } from "./utils.ts";
+import { errorMessage, formatBytes, postJSON } from "./utils.ts";
 import type { ServerStatus } from "./runtime_models.ts";
 
 import { Plugin, usePlugin, signal, useEffect } from "@odoo/owl";
@@ -27,6 +27,11 @@ export interface RunbotDump {
   db: string; // "all" | "base" | …
   url: string;
   size?: number;
+}
+
+// "Enterprise Run — all (51 MB)": how a dump is offered for restoring
+export function dumpLabel(d: RunbotDump): string {
+  return `${d.slot} — ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`;
 }
 
 export class DatabasePlugin extends Plugin {

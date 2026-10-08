@@ -1,6 +1,7 @@
 import { Component, computed, onWillUnmount, signal, t, useProps, xml } from "@odoo/owl";
 import type { Type } from "@odoo/owl";
-import { formatBytes, postJSON } from "../core/utils.ts";
+import { errorMessage, postJSON } from "../core/utils.ts";
+import { dumpLabel } from "../core/database_plugin.ts";
 import type { RunbotDump } from "../core/database_plugin.ts";
 
 // what ImportDatabaseDialog resolves with (null when discarded)
@@ -36,23 +37,23 @@ export class ImportDatabaseDialog extends Component {
           <div class="dialog-field">
             <label>Source</label>
             <select class="imp-source" t-att-value="this.source()" t-on-change="(ev) => this.source.set(ev.target.value)">
-              <option value="runbot">Runbot build</option>
-              <option value="file">Dump file (.zip / .sql.gz)</option>
+              <option value="runbot" t-att-selected="this.source() === 'runbot'">Runbot build</option>
+              <option value="file" t-att-selected="this.source() === 'file'">Dump file (.zip / .sql.gz)</option>
             </select>
           </div>
           <t t-if="this.source() === 'runbot'">
             <div class="dialog-field">
               <label>Version</label>
               <div t-if="!this.version()" class="dim">loading runbot versions…</div>
-              <select t-else="" class="imp-version" t-att-value="this.version()" t-on-change="(ev) => this.pickVersion(ev.target.value)">
-                <option t-foreach="this.versions()" t-as="v" t-key="v" t-att-value="v" t-out="v"/>
-                <option t-att-value="this.OTHER">Another bundle…</option>
+              <select t-else="" class="imp-version" t-on-change="(ev) => this.pickVersion(ev.target.value)">
+                <option t-foreach="this.versionOptions()" t-as="o" t-key="o.value" t-att-value="o.value" t-att-selected="this.version() === o.value" t-out="o.label"/>
               </select>
+              <div t-if="this.versionsError()" class="dialog-field-hint imp-versions-error" t-out="this.versionsError()"/>
             </div>
             <div t-if="this.version() === this.OTHER" class="dialog-field">
               <label>Bundle</label>
               <input type="text" class="imp-bundle" list="imp-bundles" placeholder="search runbot bundles…"
-                     t-att-value="this.other()"
+                     t-att-value="this.query()"
                      t-on-input="(ev) => this.onSearch(ev.target.value)"
                      t-on-change="(ev) => this.pickBundle(ev.target.value)"/>
               <datalist id="imp-bundles">
@@ -62,15 +63,15 @@ export class ImportDatabaseDialog extends Component {
             <div class="dialog-field">
               <label>Edition</label>
               <select class="imp-edition" t-att-value="this.edition()" t-on-change="(ev) => this.edition.set(ev.target.value)">
-                <option value="enterprise">Enterprise</option>
-                <option value="community">Community</option>
+                <option value="enterprise" t-att-selected="this.edition() === 'enterprise'">Enterprise</option>
+                <option value="community" t-att-selected="this.edition() === 'community'">Community</option>
               </select>
             </div>
             <div class="dialog-field">
               <label>Data</label>
               <select class="imp-data" t-att-value="this.data()" t-on-change="(ev) => this.data.set(ev.target.value)">
-                <option value="all">Full (all modules)</option>
-                <option value="base">Base</option>
+                <option value="all" t-att-selected="this.data() === 'all'">Full (all modules)</option>
+                <option value="base" t-att-selected="this.data() === 'base'">Base</option>
               </select>
               <div class="dialog-field-hint imp-dump" t-out="this.dumpHint()"/>
             </div>
@@ -93,7 +94,7 @@ export class ImportDatabaseDialog extends Component {
         </div>
         <div class="dialog-foot">
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
-          <button class="pbtn primary" t-att-disabled="!!this.error()" t-on-click="() => this.ok()">Import</button>
+          <button class="pbtn primary" t-att-disabled="!this.ready()" t-on-click="() => this.ok()">Import</button>
           <button class="pbtn" t-on-click="() => this.done(null)">Discard</button>
         </div>
       </div>
@@ -109,8 +110,10 @@ export class ImportDatabaseDialog extends Component {
   CLEANUPS = CLEANUPS;
   source = signal<string>("runbot");
   versions = signal<string[]>([]); // runbot's starred series, newest first
+  versionsError = signal("");
   version = signal(""); // a starred version, or OTHER
   other = signal(""); // the bundle picked under "Another bundle…"
+  query = signal(""); // what's typed in its search input (picked on change)
   matches = signal<string[]>([]); // runbot's search results for the typed bundle name
   edition = signal<string>("enterprise");
   data = signal<string>("all");
@@ -120,6 +123,12 @@ export class ImportDatabaseDialog extends Component {
   cleanup = signal<string[]>(CLEANUPS.map((c) => c.key));
   _timer?: ReturnType<typeof setTimeout>;
   _bundle = ""; // the bundle whose dumps are being looked up (drops stale replies)
+
+  // the version select's options: the starred versions, then "Another bundle…"
+  versionOptions = computed(() => [
+    ...this.versions().map((v) => ({ value: v, label: v })),
+    { value: OTHER, label: "Another bundle…" },
+  ]);
 
   // the runbot bundle the form currently points at ("" when none yet)
   bundle = computed(() => (this.version() === OTHER ? this.other() : this.version()));
@@ -150,17 +159,25 @@ export class ImportDatabaseDialog extends Component {
     if (this.dumps() === null) return "looking up the bundle's dumps…";
     const d = this.dump();
     if (!d) return `no ${this.edition()} ${this.data()} dump in the bundle's latest batches`;
-    return `${d.slot} — ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}, build ${d.build}`;
+    return `${dumpLabel(d)}, build ${d.build}`;
   });
 
   error = computed(() => {
     if (this.source() === "file") {
-      if (!this.file()) return "choose a dump file";
+      const file = this.file();
+      if (!file) return "choose a dump file";
+      if (!/\.(zip|sql\.gz)$/i.test(file.name))
+        return "only .zip and .sql.gz dumps can be imported";
+    } else if (this.dumps() === null) {
+      return ""; // still looking: the hint says so, and `ready` keeps Import off
     } else if (!this.dump()) {
       return this.bundle() ? "no dump to import" : "choose a version";
     }
     return this.props.badName(this.name().trim());
   });
+
+  // the form can be submitted: valid, and not waiting on runbot for the dumps
+  ready = computed(() => !this.error() && (this.source() === "file" || this.dumps() !== null));
 
   setup(): void {
     const onKey = (e: KeyboardEvent) => {
@@ -177,9 +194,10 @@ export class ImportDatabaseDialog extends Component {
   async _loadVersions(): Promise<void> {
     try {
       const res = await postJSON<{ versions?: string[] }>("/api/runbot/sticky");
-      this.versions.set(res.versions || []);
-    } catch {
-      this.versions.set([]);
+      if (!res.versions?.length) throw new Error("runbot is unreachable");
+      this.versions.set(res.versions);
+    } catch (e) {
+      this.versionsError.set(`could not load runbot's versions: ${errorMessage(e)}`);
     }
     if (!this.version()) this.pickVersion(this.versions()[0] || OTHER);
   }
@@ -196,6 +214,7 @@ export class ImportDatabaseDialog extends Component {
 
   // runbot's bundle search, debounced while typing (fills the input's datalist)
   onSearch(query: string): void {
+    this.query.set(query);
     clearTimeout(this._timer);
     const q = query.trim();
     if (q.length < 3) return this.matches.set([]);
@@ -234,7 +253,7 @@ export class ImportDatabaseDialog extends Component {
   }
 
   ok(): void {
-    if (this.error()) return;
+    if (!this.ready()) return;
     const common = { name: this.name().trim(), cleanup: this.cleanup() };
     const file = this.file();
     const dump = this.dump();

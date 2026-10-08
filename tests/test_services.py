@@ -129,8 +129,8 @@ class FakeIO:
                 return True, None
         return False, "nothing to unpack"
 
-    def make_temp_dir(self, prefix="goo-"):
-        self.fs_ops.append(("mkdtemp", prefix, None))
+    def make_temp_dir(self, prefix="goo-", parent=None):
+        self.fs_ops.append(("mkdtemp", prefix, parent))
         return self.temp_dir
 
     def make_dirs(self, path):
@@ -1809,9 +1809,10 @@ class DatabaseServiceTest(unittest.TestCase):
     def test_restore_file_refuses_other_formats(self):
         io = self._dump_io()
         svc = services.DatabaseService(io, TTLCache(ttl=0))
-        ok, err = svc.restore_file("gamma", "/up/dump.tar")
-        self.assertFalse(ok)
-        self.assertIn(".zip and .sql.gz", err)
+        for path in ("/up/dump.tar", "/up/files.tar.gz"):
+            ok, err = svc.restore_file("gamma", path)
+            self.assertFalse(ok)
+            self.assertIn(".zip and .sql.gz", err)
         self.assertEqual(io.run_calls, [])
 
 
