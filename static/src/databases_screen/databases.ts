@@ -6,6 +6,8 @@ import { ConfigPlugin } from "../core/config_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { ICONS, appBus, m } from "../core/common.ts";
 import { Panel } from "../core/panel.ts";
+import { ImportDatabaseDialog } from "./import_dialog.ts";
+import type { ImportPick } from "./import_dialog.ts";
 import type { ActionMenuDetail, MenuAction } from "../core/menus.ts";
 
 // one view-ready table row (see `rows` below)
@@ -37,6 +39,7 @@ export class DatabasesScreen extends Component {
         </t>
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn imp-open" t-on-click="() => this.importDb()">Import database</button>
           <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
       </Panel>
@@ -241,6 +244,20 @@ export class DatabasesScreen extends Component {
     if (this.db.databases().some((x) => x.name === name))
       return `a database named "${name}" already exists`;
     return "";
+  }
+
+  // "Import database": pick a runbot dump or a local dump file, then restore it
+  // into a new database; report any failure in a dialog
+  async importDb(): Promise<void> {
+    const pick = await this.dialogs.openComponent<ImportPick | null>(ImportDatabaseDialog, {
+      badName: (name: string) => this._badName(name),
+    });
+    if (!pick) return;
+    const error =
+      pick.source === "runbot"
+        ? await this.db.restoreRunbotDump(pick.url, pick.name, pick.cleanup)
+        : await this.db.restoreFile(pick.file, pick.name, pick.cleanup);
+    if (error) await this.dialogs.error("Import failed", error);
   }
 
   // ask for a target name, then clone; report any failure in a dialog. Cloning the
