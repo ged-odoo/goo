@@ -20,28 +20,37 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # A runbot build's dump, as RunbotService._dump_url builds it. restore_dump checks
 # the URL it is handed against this: the endpoint feeds a downloaded file straight
 # into psql, so it may fetch runbot dumps and nothing else — never an arbitrary
-# "download this and run it through my database" primitive.
+# "download this and run it through my database" primitive. (restore_file does
+# replay a file the user picked themselves, through goo's same-origin UI.)
 _RUNBOT_DUMP_URL_RE = re.compile(
     r"^https?://[\w.-]+\.odoo\.com/runbot/static/build/[\w.-]+/logs/[\w.-]+\.zip$"
 )
 
+# Where dumps are downloaded/uploaded and unpacked: on disk, not the system temp dir
+# (often a RAM-backed tmpfs) — a production backup inflates to many gigabytes.
+DUMP_TMP_DIR = "~/.cache/goo"
+
 # What "Import database" can run on a restored dump, by key (the frontend's checkboxes):
-# - crons: a copied production/runbot database must not start sending mails or
-#   calling out on its own;
+# - crons: disable the scheduled actions, so the copy doesn't run the mail queue or
+#   the other periodic jobs on its own (mail servers and integrations stay as-is);
 # - assets: the stored asset bundles were built from another checkout's code;
-# - admin: log in as admin/admin and every user with its login as password (user 2
-#   is the admin since Odoo 12; skipped when a user already has the "admin" login).
-#   Odoo's password hashing accepts a plaintext password and re-hashes it on login.
+# - admin: log in as admin/admin and every user with its login as password, without
+#   two-factor (user 2 is the admin since Odoo 12; skipped when a user already has
+#   the "admin" login). Odoo's password hashing accepts a plaintext password and
+#   re-hashes it on login.
 RESTORE_CLEANUPS = {
     "crons": "UPDATE ir_cron SET active = false",
     "assets": (
-        "DELETE FROM ir_attachment"
-        " WHERE url LIKE '/web/assets/%' OR url LIKE '/web/content/%assets_%'"
+        "DELETE FROM ir_attachment WHERE res_model = 'ir.ui.view' AND res_id = 0"
+        " AND (url LIKE '/web/assets/%' OR url LIKE '/web/content/%assets\\_%')"
     ),
     "admin": (
         "UPDATE res_users SET login = 'admin' WHERE id = 2"
         " AND NOT EXISTS (SELECT 1 FROM res_users WHERE login = 'admin');"
-        " UPDATE res_users SET password = login"
+        " UPDATE res_users SET password = login;"
+        " DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'res_users' AND column_name = 'totp_secret')"
+        " THEN UPDATE res_users SET totp_secret = NULL; END IF; END $$"
     ),
 }
 
@@ -225,8 +234,9 @@ class DatabaseService:
     ) -> tuple[bool, str | None]:
         """Restore a local dump file into a NEW database `name`, like restore_dump:
         an odoo zip (dump.sql + filestore/, as odoo.sh and the database manager
-        produce) or a bare gzipped SQL dump (.sql.gz — no filestore)."""
-        if not path.lower().endswith((".zip", ".gz")):
+        produce) or a bare gzipped SQL dump (.sql.gz — no filestore). Like odoo's own
+        restore, psql replays it as-is: import only dumps you trust."""
+        if not path.lower().endswith((".zip", ".sql.gz")):
             return False, "only .zip and .sql.gz dumps can be imported"
         return self._restore(name, lambda _tmp: (path, None), filestore, cleanup)
 
@@ -243,7 +253,7 @@ class DatabaseService:
             return False, f"invalid database name: {name}"
         if self.exists(name):
             return False, f'database "{name}" already exists'
-        tmp = self.io.make_temp_dir("goo-dump-")
+        tmp = self.io.make_temp_dir("goo-dump-", DUMP_TMP_DIR)
         if not tmp:
             return False, "could not create a temporary directory"
         try:
@@ -321,7 +331,9 @@ class DatabaseService:
             if not sql:
                 continue
             try:
-                r = self.io.run(["psql", "--quiet", "--dbname", name, "-c", sql], timeout=120)
+                r = self.io.run(
+                    ["psql", "--quiet", "--dbname", name, "-c", sql], timeout=120, quiet=True
+                )
                 err = r.stderr.strip() if r.returncode else None
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                 err = str(e)

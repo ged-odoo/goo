@@ -426,6 +426,12 @@ class FilesystemTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(path))
         self.assertTrue(os.path.basename(path).startswith("goo-test-"))
 
+    def test_make_temp_dir_under_a_parent_it_creates(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = effects.make_temp_dir(prefix="goo-test-", parent=os.path.join(root, "cache"))
+            self.assertTrue(os.path.isdir(path))
+            self.assertEqual(os.path.dirname(path), os.path.join(root, "cache"))
+
     def test_make_temp_dir_failure_is_none(self):
         old = tempfile.tempdir
         tempfile.tempdir = self.p("missing")

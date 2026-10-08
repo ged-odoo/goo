@@ -7754,6 +7754,9 @@ var SPECS = {
 };
 
 // static/src/core/database_plugin.ts
+function dumpLabel(d) {
+  return `${d.slot} \u2014 ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`;
+}
 var DatabasePlugin = class extends Plugin {
   static sequence = 3;
   server = usePlugin(ServerPlugin);
@@ -7941,23 +7944,23 @@ var ImportDatabaseDialog = class extends Component {
           <div class="dialog-field">
             <label>Source</label>
             <select class="imp-source" t-att-value="this.source()" t-on-change="(ev) => this.source.set(ev.target.value)">
-              <option value="runbot">Runbot build</option>
-              <option value="file">Dump file (.zip / .sql.gz)</option>
+              <option value="runbot" t-att-selected="this.source() === 'runbot'">Runbot build</option>
+              <option value="file" t-att-selected="this.source() === 'file'">Dump file (.zip / .sql.gz)</option>
             </select>
           </div>
           <t t-if="this.source() === 'runbot'">
             <div class="dialog-field">
               <label>Version</label>
               <div t-if="!this.version()" class="dim">loading runbot versions…</div>
-              <select t-else="" class="imp-version" t-att-value="this.version()" t-on-change="(ev) => this.pickVersion(ev.target.value)">
-                <option t-foreach="this.versions()" t-as="v" t-key="v" t-att-value="v" t-out="v"/>
-                <option t-att-value="this.OTHER">Another bundle…</option>
+              <select t-else="" class="imp-version" t-on-change="(ev) => this.pickVersion(ev.target.value)">
+                <option t-foreach="this.versionOptions()" t-as="o" t-key="o.value" t-att-value="o.value" t-att-selected="this.version() === o.value" t-out="o.label"/>
               </select>
+              <div t-if="this.versionsError()" class="dialog-field-hint imp-versions-error" t-out="this.versionsError()"/>
             </div>
             <div t-if="this.version() === this.OTHER" class="dialog-field">
               <label>Bundle</label>
               <input type="text" class="imp-bundle" list="imp-bundles" placeholder="search runbot bundles…"
-                     t-att-value="this.other()"
+                     t-att-value="this.query()"
                      t-on-input="(ev) => this.onSearch(ev.target.value)"
                      t-on-change="(ev) => this.pickBundle(ev.target.value)"/>
               <datalist id="imp-bundles">
@@ -7967,15 +7970,15 @@ var ImportDatabaseDialog = class extends Component {
             <div class="dialog-field">
               <label>Edition</label>
               <select class="imp-edition" t-att-value="this.edition()" t-on-change="(ev) => this.edition.set(ev.target.value)">
-                <option value="enterprise">Enterprise</option>
-                <option value="community">Community</option>
+                <option value="enterprise" t-att-selected="this.edition() === 'enterprise'">Enterprise</option>
+                <option value="community" t-att-selected="this.edition() === 'community'">Community</option>
               </select>
             </div>
             <div class="dialog-field">
               <label>Data</label>
               <select class="imp-data" t-att-value="this.data()" t-on-change="(ev) => this.data.set(ev.target.value)">
-                <option value="all">Full (all modules)</option>
-                <option value="base">Base</option>
+                <option value="all" t-att-selected="this.data() === 'all'">Full (all modules)</option>
+                <option value="base" t-att-selected="this.data() === 'base'">Base</option>
               </select>
               <div class="dialog-field-hint imp-dump" t-out="this.dumpHint()"/>
             </div>
@@ -7998,7 +8001,7 @@ var ImportDatabaseDialog = class extends Component {
         </div>
         <div class="dialog-foot">
           <span t-if="this.error()" class="form-error" t-out="this.error()"/>
-          <button class="pbtn primary" t-att-disabled="!!this.error()" t-on-click="() => this.ok()">Import</button>
+          <button class="pbtn primary" t-att-disabled="!this.ready()" t-on-click="() => this.ok()">Import</button>
           <button class="pbtn" t-on-click="() => this.done(null)">Discard</button>
         </div>
       </div>
@@ -8013,10 +8016,13 @@ var ImportDatabaseDialog = class extends Component {
   source = signal("runbot");
   versions = signal([]);
   // runbot's starred series, newest first
+  versionsError = signal("");
   version = signal("");
   // a starred version, or OTHER
   other = signal("");
   // the bundle picked under "Another bundle…"
+  query = signal("");
+  // what's typed in its search input (picked on change)
   matches = signal([]);
   // runbot's search results for the typed bundle name
   edition = signal("enterprise");
@@ -8030,6 +8036,11 @@ var ImportDatabaseDialog = class extends Component {
   _timer;
   _bundle = "";
   // the bundle whose dumps are being looked up (drops stale replies)
+  // the version select's options: the starred versions, then "Another bundle…"
+  versionOptions = computed(() => [
+    ...this.versions().map((v) => ({ value: v, label: v })),
+    { value: OTHER, label: "Another bundle\u2026" }
+  ]);
   // the runbot bundle the form currently points at ("" when none yet)
   bundle = computed(() => this.version() === OTHER ? this.other() : this.version());
   // the dump matching the edition + data choices, from that edition's Run build
@@ -8050,16 +8061,23 @@ var ImportDatabaseDialog = class extends Component {
     if (this.dumps() === null) return "looking up the bundle's dumps\u2026";
     const d = this.dump();
     if (!d) return `no ${this.edition()} ${this.data()} dump in the bundle's latest batches`;
-    return `${d.slot} \u2014 ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}, build ${d.build}`;
+    return `${dumpLabel(d)}, build ${d.build}`;
   });
   error = computed(() => {
     if (this.source() === "file") {
-      if (!this.file()) return "choose a dump file";
+      const file = this.file();
+      if (!file) return "choose a dump file";
+      if (!/\.(zip|sql\.gz)$/i.test(file.name))
+        return "only .zip and .sql.gz dumps can be imported";
+    } else if (this.dumps() === null) {
+      return "";
     } else if (!this.dump()) {
       return this.bundle() ? "no dump to import" : "choose a version";
     }
     return this.props.badName(this.name().trim());
   });
+  // the form can be submitted: valid, and not waiting on runbot for the dumps
+  ready = computed(() => !this.error() && (this.source() === "file" || this.dumps() !== null));
   setup() {
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
@@ -8074,9 +8092,10 @@ var ImportDatabaseDialog = class extends Component {
   async _loadVersions() {
     try {
       const res = await postJSON("/api/runbot/sticky");
-      this.versions.set(res.versions || []);
-    } catch {
-      this.versions.set([]);
+      if (!res.versions?.length) throw new Error("runbot is unreachable");
+      this.versions.set(res.versions);
+    } catch (e) {
+      this.versionsError.set(`could not load runbot's versions: ${errorMessage(e)}`);
     }
     if (!this.version()) this.pickVersion(this.versions()[0] || OTHER);
   }
@@ -8090,6 +8109,7 @@ var ImportDatabaseDialog = class extends Component {
   }
   // runbot's bundle search, debounced while typing (fills the input's datalist)
   onSearch(query) {
+    this.query.set(query);
     clearTimeout(this._timer);
     const q = query.trim();
     if (q.length < 3) return this.matches.set([]);
@@ -8121,7 +8141,7 @@ var ImportDatabaseDialog = class extends Component {
     this.props.done(result);
   }
   ok() {
-    if (this.error()) return;
+    if (!this.ready()) return;
     const common = { name: this.name().trim(), cleanup: this.cleanup() };
     const file = this.file();
     const dump = this.dump();
@@ -10781,7 +10801,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
   const dumpOptions = (prefill.dumps || []).map((d) => ({
     value: d.url,
-    label: `${d.slot} \u2014 ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`
+    label: dumpLabel(d)
   }));
   const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
   const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;

@@ -296,6 +296,38 @@ class PostRoutesTest(ServerTestCase):
         self.assertEqual(status, 400)
         self.assertIn(".zip and .sql.gz", json.loads(data)["error"])
 
+    def test_upload_dump_rejects_a_bad_content_length(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.putrequest("POST", "/api/databases/upload-dump?name=x&filename=a.zip")
+            conn.putheader("Content-Length", "lots")
+            conn.endheaders()
+            resp = conn.getresponse()
+            self.assertEqual(
+                (resp.status, json.loads(resp.read())),
+                (400, {"ok": False, "error": "bad Content-Length"}),
+            )
+        finally:
+            conn.close()
+
+    def test_runbot_sticky_and_search_routes(self):
+        class _Runbot:
+            def sticky_bundles(self):
+                return {"master": "1", "19.0": "2"}
+
+            def search_bundles(self, query):
+                return [f"master-{query}"]
+
+        with mock.patch.object(server, "RUNBOT", _Runbot()):
+            self.assertEqual(
+                self.json_request("POST", "/api/runbot/sticky", {}),
+                (200, {"ok": True, "versions": ["master", "19.0"]}),
+            )
+            self.assertEqual(
+                self.json_request("POST", "/api/runbot/search", {"query": "fix"}),
+                (200, {"ok": True, "bundles": ["master-fix"]}),
+            )
+
     def test_cross_origin_post_is_refused(self):
         status, body = self.json_request(
             "POST", "/api/event", {"text": "x"}, headers={"Origin": "http://evil.example"}
