@@ -4,6 +4,8 @@ module, or a fake of it, so services can be unit-tested without spawning command
 hitting the network, or touching disk.
 """
 
+import gzip
+import io
 import json
 import os
 import shutil
@@ -352,4 +354,41 @@ def unzip(path: str, dest: str) -> tuple[bool, str | None]:
             zf.extractall(root, members=safe)
         return True, None
     except (OSError, zipfile.BadZipFile) as e:
+        return False, str(e)
+
+
+def gunzip(path: str, dest: str) -> tuple[bool, str | None]:
+    """Decompress a gzip file into the file `dest` → (ok, error), streamed (a gzipped
+    SQL dump can be gigabytes once inflated). A partial `dest` is removed on failure."""
+    trace("gunzip", f"{path} → {dest}")
+    out = os.path.expanduser(dest)
+    try:
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with gzip.open(os.path.expanduser(path), "rb") as src, open(out, "wb") as f:
+            shutil.copyfileobj(src, f, 1 << 20)
+        return True, None
+    except (OSError, EOFError) as e:  # gzip.BadGzipFile is an OSError
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        return False, str(e)
+
+
+def save_stream(stream: io.BufferedIOBase, length: int, path: str) -> tuple[bool, str | None]:
+    """Copy exactly `length` bytes of `stream` (an upload's request body) into the
+    file `path` → (ok, error), 1 MB at a time. A short read is an error."""
+    trace("write", path)
+    p = os.path.expanduser(path)
+    try:
+        done = 0
+        with open(p, "wb") as f:
+            while done < length:
+                chunk = stream.read(min(1 << 20, length - done))
+                if not chunk:
+                    raise OSError(f"upload truncated: got {done} of {length} bytes")
+                f.write(chunk)
+                done += len(chunk)
+        return True, None
+    except OSError as e:
         return False, str(e)

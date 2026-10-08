@@ -259,6 +259,43 @@ class PostRoutesTest(ServerTestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body, {"ok": False, "error": "database gone does not exist"})
 
+    def test_upload_dump_restores_the_uploaded_file(self):
+        seen = {}
+
+        class _Db:
+            def restore_file(self, name, path, filestore=None, cleanup=None):
+                with open(path, "rb") as f:
+                    seen.update(name=name, body=f.read(), filestore=filestore, cleanup=cleanup)
+                seen["path"] = path
+                return True, None
+
+        with mock.patch.object(server, "DATABASE", _Db()):
+            status, _resp, data = self.request(
+                "POST",
+                "/api/databases/upload-dump?name=shop&filename=prod.sql.gz"
+                "&filestore=%2Ffs&cleanup=crons,admin",
+                raw=b"\x1f\x8b gzip bytes",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+        self.assertEqual((status, json.loads(data)), (200, {"ok": True, "error": None}))
+        self.assertEqual(seen["name"], "shop")
+        self.assertEqual(seen["body"], b"\x1f\x8b gzip bytes")
+        self.assertTrue(seen["path"].endswith("/prod.sql.gz"))
+        self.assertEqual((seen["filestore"], seen["cleanup"]), ("/fs", ["crons", "admin"]))
+        self.assertFalse(os.path.exists(seen["path"]))  # the upload's temp file is gone
+
+    def test_upload_dump_reports_a_failed_restore(self):
+        class _Db:
+            def restore_file(self, name, path, filestore=None, cleanup=None):
+                return False, "only .zip and .sql.gz dumps can be imported"
+
+        with mock.patch.object(server, "DATABASE", _Db()):
+            status, _resp, data = self.request(
+                "POST", "/api/databases/upload-dump?name=x&filename=a.tar", raw=b"zz"
+            )
+        self.assertEqual(status, 400)
+        self.assertIn(".zip and .sql.gz", json.loads(data)["error"])
+
     def test_cross_origin_post_is_refused(self):
         status, body = self.json_request(
             "POST", "/api/event", {"text": "x"}, headers={"Origin": "http://evil.example"}
