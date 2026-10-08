@@ -184,6 +184,15 @@ class RunbotService:
         html, err = self.io.http_get(f"{RUNBOT_BASE}/runbot/rd-1", timeout=20)
         return {} if err else dict(parse_starred_bundles(html))
 
+    def search_bundles(self, query: str) -> list[str]:
+        """The names of the R&D bundles runbot's own search matches (its rd-1 page
+        with ?search=), in page order — [] if the page can't be read."""
+        url = f"{RUNBOT_BASE}/runbot/rd-1?search={urllib.parse.quote(query)}"
+        html, err = self.io.http_get(url, timeout=20)
+        if err:
+            return []
+        return list(dict.fromkeys(name for _id, name in _BUNDLE_LINK_RE.findall(html)))
+
     def _bundle_html(self, branch: str) -> str:
         """The bundle page for `branch` ("" when there's none to read).
 

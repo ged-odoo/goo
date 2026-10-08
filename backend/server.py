@@ -1849,6 +1849,18 @@ def _api_runbot_dumps(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "dumps": RUNBOT.dumps(body["branch"], refresh=bool(body.get("refresh")))}
 
 
+@post_route("/api/runbot/sticky")
+def _api_runbot_sticky(body: dict[str, Any]) -> dict[str, Any]:
+    # runbot's starred series (master, 20.0, saas-19.4, …), newest first — the
+    # versions "Import runbot database" offers
+    return {"ok": True, "versions": list(RUNBOT.sticky_bundles())}
+
+
+@post_route("/api/runbot/search", "query:str")
+def _api_runbot_search(body: dict[str, Any]) -> dict[str, Any]:
+    return {"ok": True, "bundles": RUNBOT.search_bundles(body["query"])}
+
+
 @post_route("/api/nightly")
 def _api_nightly(body: dict[str, Any]) -> dict[str, Any]:
     max_nights = min(max(int(body.get("max_nights", 14)), 7), 84)
@@ -1960,11 +1972,19 @@ def _api_databases_clone(body: dict[str, Any]) -> RouteResult:
 @post_route("/api/databases/restore-dump", "name:str", "url:str")
 def _api_databases_restore_dump(body: dict[str, Any]) -> RouteResult:
     # download a runbot build's database dump and restore it locally under `name`
-    # (the create-from-bundle wizard's "Restore runbot database"). Long — tens to
+    # (the create-from-bundle wizard's "Restore runbot database" and the Databases
+    # screen's "Import database"). Long — tens to
     # hundreds of megabytes, then a psql replay — but the server is threaded, so it
     # only ties up this request; progress is narrated to the goo log.
-    ok, error = DATABASE.restore_dump(body["name"], body["url"], _filestore(body))
+    ok, error = DATABASE.restore_dump(
+        body["name"], body["url"], _filestore(body), cleanup=_cleanup(body.get("cleanup"))
+    )
     return (200 if ok else 400), {"ok": ok, "error": error}
+
+
+def _cleanup(steps: object) -> list[str]:
+    """The restore cleanup step names a request asks for (see RESTORE_CLEANUPS)."""
+    return [s for s in steps if isinstance(s, str)] if isinstance(steps, list) else []
 
 
 @post_route("/api/databases/rename", "name:str", "new_name:str")
@@ -2081,6 +2101,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._save_config()
         if path == "/api/cli/test":
             return self._handle_cli_test()
+        if path == "/api/databases/upload-dump":
+            return self._upload_dump()
         entry = POST_ROUTES.get(path)
         if not entry:
             return self._send_json(404, {"ok": False, "error": "not_found"})
@@ -2384,6 +2406,32 @@ class Handler(BaseHTTPRequestHandler):
             pass  # client gone
         finally:
             BUS.unsubscribe(q)
+
+    def _upload_dump(self) -> None:
+        """Restore an uploaded dump file (the raw request body) into a new database:
+        the query string carries name, filename (.zip or .sql.gz), filestore and
+        cleanup (comma-separated). The body is saved to a temp file first, whole —
+        answering before it is read would cut the browser's upload short."""
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+        def arg(key: str) -> str:
+            return q.get(key, [""])[0]
+
+        tmp = effects.make_temp_dir("goo-upload-")
+        if not tmp:
+            return self._send_json(500, {"ok": False, "error": "no temporary directory"})
+        try:
+            path = os.path.join(tmp, os.path.basename(arg("filename")) or "dump")
+            length = int(self.headers.get("Content-Length") or 0)
+            ok, error = effects.save_stream(self.rfile, length, path)
+            if ok:
+                cleanup = [s for s in arg("cleanup").split(",") if s]
+                ok, error = DATABASE.restore_file(
+                    arg("name"), path, _filestore({"filestore": arg("filestore")}), cleanup=cleanup
+                )
+        finally:
+            effects.remove_tree(tmp)
+        self._send_json(200 if ok else 400, {"ok": ok, "error": error})
 
     def _save_config(self) -> None:
         """Persist a config and/or state write from the browser, rev-checked. Body:

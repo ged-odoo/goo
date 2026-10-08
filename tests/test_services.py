@@ -109,6 +109,11 @@ class FakeIO:
                 return True, None
         return False, "not stubbed"
 
+    def gunzip(self, path, dest):
+        self.fs_ops.append(("gunzip", path, dest))
+        self._files[dest] = ""
+        return True, None
+
     def unzip(self, path, dest):
         self.fs_ops.append(("unzip", path, dest))
         if self.fs_fail and self.fs_fail in path:
@@ -191,6 +196,21 @@ class FakeIO:
 
 
 class RunbotServiceTest(unittest.TestCase):
+    def test_search_bundles_lists_each_match_once(self):
+        html = (
+            '<a href="/runbot/bundle/7" title="View Bundle 17.0-fix-x">17.0-fix-x</a>'
+            '<a href="/runbot/bundle/7" title="View Bundle 17.0-fix-x">again</a>'
+            '<a href="/runbot/bundle/9" title="View Bundle master-fix-x">master-fix-x</a>'
+        )
+        io = FakeIO(http={"rd-1?search=fix-x": (html, None)})
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        self.assertEqual(svc.search_bundles("fix-x"), ["17.0-fix-x", "master-fix-x"])
+
+    def test_search_bundles_is_empty_when_runbot_is_down(self):
+        io = FakeIO(http={"rd-1": ("", "boom")})
+        svc = services.RunbotService(io, TTLCache(ttl=0))
+        self.assertEqual(svc.search_bundles("x"), [])
+
     def test_bundle_pass_and_running(self):
         # a real branch: name match → 302 to the canonical page, which we then read
         html = (
@@ -1736,6 +1756,63 @@ class DatabaseServiceTest(unittest.TestCase):
             ["createdb", "--template=template0", "--encoding=unicode", "--lc-collate=C", "gamma"],
             io.run_calls,
         )
+
+    def _psql_commands(self, io):
+        return [c[-1] for c in io.run_calls if c[:2] == ["psql", "--quiet"] and c[-2] == "-c"]
+
+    def test_restore_dump_runs_the_requested_cleanups(self):
+        io = self._dump_io()
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump(
+            "gamma", self.DUMP_URL, log_progress=False, cleanup=["crons", "admin", "nope"]
+        )
+        self.assertTrue(ok, err)
+        self.assertEqual(
+            self._psql_commands(io),
+            [services.RESTORE_CLEANUPS["crons"], services.RESTORE_CLEANUPS["admin"]],
+        )
+
+    def test_restore_dump_failed_cleanup_keeps_the_database(self):
+        io = self._dump_io()
+        io._runs["ir_cron"] = completed(returncode=1, stderr='relation "ir_cron" does not exist')
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, log_progress=False, cleanup=["crons"])
+        self.assertTrue(ok, err)
+        self.assertNotIn(["dropdb", "--if-exists", "gamma"], io.run_calls)
+        self.assertTrue(any("cleanup crons failed" in line for line in io.logs))
+
+    def test_restore_file_zip_installs_its_filestore(self):
+        io = self._dump_io()
+        io.unpacks = {"backup.zip": ["dump.sql", "filestore/"]}
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_file("gamma", "/up/backup.zip", filestore="/fs")
+        self.assertTrue(ok, err)
+        self.assertEqual(io.downloads, [])
+        self.assertIn(
+            ["psql", "--quiet", "--dbname", "gamma", "--file", "/tmp/goo-fake/dump/dump.sql"],
+            io.run_calls,
+        )
+        self.assertIn(("move", "/tmp/goo-fake/dump/filestore", "/fs/gamma"), io.fs_ops)
+
+    def test_restore_file_sql_gz_is_inflated_and_replayed(self):
+        io = self._dump_io()
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_file("gamma", "/up/dump.sql.gz", filestore="/fs")
+        self.assertTrue(ok, err)
+        self.assertIn(("gunzip", "/up/dump.sql.gz", "/tmp/goo-fake/dump/dump.sql"), io.fs_ops)
+        self.assertIn(
+            ["psql", "--quiet", "--dbname", "gamma", "--file", "/tmp/goo-fake/dump/dump.sql"],
+            io.run_calls,
+        )
+        self.assertFalse(any(op == "move" for op, _s, _d in io.fs_ops))  # no filestore in it
+
+    def test_restore_file_refuses_other_formats(self):
+        io = self._dump_io()
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_file("gamma", "/up/dump.tar")
+        self.assertFalse(ok)
+        self.assertIn(".zip and .sql.gz", err)
+        self.assertEqual(io.run_calls, [])
 
 
 class ParseGithubSlugTest(unittest.TestCase):
