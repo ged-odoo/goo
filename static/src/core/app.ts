@@ -28,7 +28,6 @@ import { DatabasesScreen } from "../databases_screen/databases.ts";
 import { EventLog, ActivityBar } from "./event_log.ts";
 import { MemoryScreen } from "../memory_screen/memory.ts";
 import { ActionMenu, CiMenu, MbMenu } from "./menus.ts";
-import { NightlyScreen } from "../nightly_screen/nightly.ts";
 import { CiScreen } from "../ci_screen/ci.ts";
 import { ReviewsScreen } from "../reviews_screen/reviews.ts";
 import { TodoScreen } from "../todo_screen/todo.ts";
@@ -307,7 +306,6 @@ export const SCREENS: Record<string, ComponentConstructor | undefined> = {
   "review-queue": ReviewsScreen,
   todo: TodoScreen,
   databases: DatabasesScreen,
-  nightly: NightlyScreen,
   memory: MemoryScreen,
   ci: CiScreen,
   config: ConfigScreen,
@@ -322,7 +320,6 @@ export class App extends Component {
     ReviewsScreen,
     TodoScreen,
     DatabasesScreen,
-    NightlyScreen,
     MemoryScreen,
     CiScreen,
     ConfigScreen,

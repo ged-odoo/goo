@@ -155,8 +155,3 @@ export class ActivityBar extends Component {
     return this.pending[this.pending.length - 1];
   }
 }
-
-// ─────────────────────────── Nightly ───────────────────────────
-
-// one line-chart metric option in the graph sidebar; `fmt` formats both the
-// tooltip value and the y-axis ticks
