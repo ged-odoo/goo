@@ -80,7 +80,6 @@ export const ICONS = {
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><line x1="2.5" y1="12" x2="8.8" y2="12"/><line x1="15.2" y1="12" x2="21.5" y2="12"/></svg>`,
   info: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/><circle cx="12" cy="7.8" r="0.6" fill="currentColor" stroke="none"/></svg>`,
   worktree: `<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><line x1="6" y1="8.4" x2="6" y2="20"/><path d="M6 12h6a2 2 0 0 1 2 2v1"/><rect x="14" y="9" width="7" height="6" rx="1.5"/></svg>`,
-  nightly: `<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
   memory: `<svg viewBox="0 0 24 24"><polyline points="2 17 6 11 10 13 14 7 18 10 22 4"/><polyline points="22 4 22 9 17 9"/></svg>`,
   ci: `<svg viewBox="0 0 24 24"><path d="M3 12h4l2 5 3-11 2.5 8 1.5-4h5"/></svg>`,
   eye: `<svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>`,
@@ -109,7 +108,6 @@ export const NAV: NavItem[] = [
   { id: "review-queue", label: "Reviews", icon: ICONS.eye, optIn: true },
   { id: "todo", label: "Todo", icon: ICONS.todo, optIn: true },
   { id: "databases", label: "Databases", icon: ICONS.databases },
-  { id: "nightly", label: "Nightly", icon: ICONS.nightly, optIn: true },
   { id: "memory", label: "Memory", icon: ICONS.memory, optIn: true },
   { id: "ci", label: "CI", icon: ICONS.ci, optIn: true },
   { id: "config", label: "Configuration", icon: ICONS.config },
@@ -387,11 +385,6 @@ export function loadScript(src: string, isLoaded: () => unknown): Promise<Event 
     document.head.appendChild(s);
   });
 }
-
-// lazy-load Chart.js + its zoom/pan plugin (both vendored, not a CDN) on first
-// use — shared by the Nightly and Memory panels, each of which draws its own
-// line chart(s) on a <canvas>. Wheel-zooms and drag-pans; no pinch (that needs
-// hammer.js too, and this is a desktop dev tool).
 
 export interface DragResizeOptions {
   w?: number;

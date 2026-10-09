@@ -249,7 +249,7 @@ describe("Sidebar", () => {
       config: {
         tabs: [
           { id: "databases" },
-          { id: "nightly", visible: true },
+          { id: "memory", visible: true },
           { id: "workspaces", visible: false },
           { id: "config", visible: false },
           { id: "bogus" },
@@ -257,7 +257,7 @@ describe("Sidebar", () => {
       },
     });
     const labels = [...app.root.querySelectorAll(".sidebar .nav-label")].map((l) => l.textContent);
-    expect(labels).toEqual(["Databases", "Nightly", "Branches & PRs", "Configuration", "Collapse"]);
+    expect(labels).toEqual(["Databases", "Memory", "Branches & PRs", "Configuration", "Collapse"]);
   });
 
   it("collapses, persisting the choice across reloads", async () => {
