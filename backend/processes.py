@@ -24,6 +24,9 @@ HOST = "127.0.0.1"
 # static/ and addons/ live. Used for the self-update git, the launcher re-exec, etc.
 GOO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDONS_DIR = os.path.join(GOO_DIR, "addons")
+# repos a workspace can check out that hold no Odoo modules, so never go on the
+# addons path (odoo-bin refuses a path entry without modules)
+NON_ADDONS_REPOS = ("documentation", "owl", "upgrade")
 
 
 def free_port() -> int:
@@ -176,6 +179,8 @@ def _odoo_cmd_base(
         repo = repo_map.get(repo_id)
         if not repo:
             raise ValueError(f"unknown repo '{repo_id}' in start.repos")
+        if repo_id in NON_ADDONS_REPOS:
+            continue
         if repo_id == main_repo_id:
             addons_parts.append("addons")
         else:
@@ -253,7 +258,11 @@ def _docker_run_prefix(
     # would compute for this same sibling layout.
     mount_path = (config.get("docker_mount_path") or "/src").rstrip("/")
     addons_path = (
-        ",".join("addons" if rid == main_repo_id else f"../{rid}" for rid in addons_repo_ids)
+        ",".join(
+            "addons" if rid == main_repo_id else f"../{rid}"
+            for rid in addons_repo_ids
+            if rid not in NON_ADDONS_REPOS
+        )
         + f",{_DOCKER_GOO_ADDONS}"
     )
 

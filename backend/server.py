@@ -50,6 +50,7 @@ from .processes import (
     ADDONS_DIR,
     GOO_DIR,
     HOST,
+    NON_ADDONS_REPOS,
     RAW_BUF_MAX,
     _docker_run_prefix,
     _Entry,
@@ -1384,12 +1385,12 @@ def _api_workspace_create(body: dict[str, Any]) -> dict[str, Any]:
         worktree_parent = os.path.dirname(community_path)
         has_enterprise = any(r.get("repo") == "enterprise" for r in repos)
 
-        # documentation/owl aren't addons dirs — excluded from the addons_path,
-        # unlike every other extra repo (enterprise, …)
+        # documentation/owl/upgrade aren't addons dirs — excluded from the
+        # addons_path, unlike every other extra repo (enterprise, …)
         addon_repo_paths = [
             r["worktreePath"]
             for r in repos
-            if r.get("repo") not in (main_repo_id, "documentation", "owl") and r.get("worktreePath")
+            if r.get("repo") not in (main_repo_id, *NON_ADDONS_REPOS) and r.get("worktreePath")
         ]
         addons_path = ",".join(
             [os.path.join(community_path, "addons"), *addon_repo_paths, ADDONS_DIR]
