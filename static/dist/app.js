@@ -16163,7 +16163,11 @@ var WorkspacesScreen = class extends Component {
     if (!res) return;
     const checkouts = repoBranchList.parse(res.config.trim());
     const had = new Set(ws.checkouts.map((c) => c.repo));
-    if (!await this.wt.addRepos(ws, checkouts.filter((c) => !had.has(c.repo)))) return;
+    if (!await this.wt.addRepos(
+      ws,
+      checkouts.filter((c) => !had.has(c.repo))
+    ))
+      return;
     this.config.workspace(ws.id)?.applyEdit({
       name: res.name.trim(),
       checkouts,
