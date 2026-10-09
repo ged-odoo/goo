@@ -224,6 +224,7 @@ export class Repository extends Model {
   push_remote = fields.char();
   favorite = fields.bool();
   external = fields.bool();
+  opt_in = fields.bool();
   autoreload = fields.bool();
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "repository" });
 
@@ -639,6 +640,7 @@ const REPO_FIELDS: FieldSpec<RepoInput, Repository>[] = [
   { name: "push_remote", in: (v) => v || "dev", out: (r) => r.pushRemote() },
   bool("favorite"),
   bool("external"),
+  bool("opt_in"),
   bool("autoreload"),
 ];
 

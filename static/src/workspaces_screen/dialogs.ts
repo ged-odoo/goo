@@ -546,12 +546,12 @@ export async function startCreateWorkspace(
     label: dumpLabel(d),
   }));
   // ticked by default: whatever the prefilled config already covers, else every
-  // non-external configured repo (a new task branch usually spans all of them;
-  // external repos, e.g. odoo/owl, are outside the CI ecosystem and rarely need
-  // a matching branch, so leave them for the user to opt into)
+  // configured repo but the opt-in ones (a new task branch usually spans all of
+  // them). External repos, e.g. odoo/owl, are outside the CI ecosystem and rarely
+  // need a matching branch, so they're opt-in too.
   const prefillRepoIds = prefill.config
     ? repoBranchList.parse(prefill.config).map((c) => c.repo)
-    : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
+    : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
   // bundle / remote-branch / forward-port sources (createBranches: false) only
   // fetched a branch for `prefillRepoIds` — anything the user ticks beyond that
   // has no confirmed branch to attach; git worktree add for it fails with

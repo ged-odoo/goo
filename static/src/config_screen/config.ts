@@ -1109,6 +1109,15 @@ export const SPECS: Record<string, ListSpec> = {
         title:
           "a repo outside the odoo CI ecosystem (e.g. odoo/owl) — skip its mergebot/runbot lookups",
       },
+      {
+        key: "opt_in",
+        name: "opt-in",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title:
+          "left unticked in the New workspace form's Repositories (e.g. documentation, upgrade) — tick it there when a workspace needs it",
+      },
     ],
     validate(repos: EditItem[], config: Config): string | null {
       const mainRepoId = config.main_repo_id || "community";
