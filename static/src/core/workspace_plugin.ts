@@ -20,6 +20,7 @@ import { LogBuffer } from "./log_buffer.ts";
 import { errorMessage, postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.ts";
 
 import { Plugin, usePlugin, signal, markRaw } from "@odoo/owl";
+import { baseBranchOf } from "./config.ts";
 import type { CheckoutConfig, WorkspaceConfig } from "./config.ts";
 import type { ServerSnapshot, ServerStatus } from "./runtime_models.ts";
 
@@ -482,6 +483,69 @@ export class WorkspacePlugin extends Plugin {
     } catch (e) {
       this.eventLog.finish(eid, "error");
       return this._error("Workspace creation failed", (e as Error).message);
+    }
+  }
+
+  // Set up repos added to an existing workspace (its Edit form): a branch that
+  // already exists locally is attached as-is, any other is forked fresh from the
+  // base its name derives from (16.0-x → 16.0). A worktree workspace gets a git
+  // worktree per repo in its dir; a main-located one only needs the branch.
+  // Returns false once it has reported a failure.
+  async addRepos(tgt: WorkspaceLike, checkouts: CheckoutConfig[]): Promise<boolean> {
+    if (!checkouts.length) return true;
+    const g = this.code.groups();
+    const hasLocal = (repo: string, branch: string): boolean =>
+      this.code
+        .branchRepos()
+        .find((r) => r.id === repo)
+        ?.branches.some((b) => b.name === branch) ?? false;
+    if (!this.isWorktree(tgt)) {
+      await this.code.createBranches(
+        checkouts
+          .filter((c) => !hasLocal(c.repo, c.branch))
+          .map((c) => ({
+            path: g.pathByRepo[c.repo] || "",
+            name: c.branch,
+            startPoint: baseBranchOf(c.branch),
+            freshStart: true,
+          })),
+      );
+      return true;
+    }
+    const dir = this.dirPath(tgt);
+    const repos = checkouts
+      .filter((c) => g.pathByRepo[c.repo])
+      .map(({ repo, branch }) => ({
+        repo,
+        mainPath: g.pathByRepo[repo],
+        pull_remote: g.pullRemoteByRepo[repo],
+        worktreePath: `${dir}/${repo}`,
+        ...(hasLocal(repo, branch)
+          ? { branch }
+          : { newBranch: branch, startPoint: baseBranchOf(branch) }),
+      }));
+    if (!repos.length) return true;
+    const eid = this.eventLog.begin(
+      `adding ${repos.map((r) => r.repo).join(", ")} to workspace ${tgt.name}`,
+    );
+    try {
+      const res = await postJSON<{
+        ok: boolean;
+        results?: { ok: boolean; repo: string; error?: string }[];
+      }>("/api/workspace/create", { workspace: tgt.id, repos });
+      if (!res.ok) {
+        this.eventLog.finish(eid, "error");
+        const msg = (res.results || [])
+          .filter((r) => !r.ok)
+          .map((r) => `${r.repo}: ${r.error}`)
+          .join("\n");
+        return this._error("Adding repos failed", msg || "git worktree add failed");
+      }
+      this.eventLog.finish(eid, "done");
+      return true;
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      return this._error("Adding repos failed", errorMessage(e));
     }
   }
 

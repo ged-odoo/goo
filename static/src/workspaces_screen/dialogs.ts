@@ -132,7 +132,7 @@ export function categoryOptions(config: {
 // toggling an unrelated repo's checkbox or editing the name — only a repo with
 // no config entry yet (the user manually ticking one beyond what was fetched)
 // gets `branch` stamped as a best-effort guess.
-const configFromRepos = (
+export const configFromRepos = (
   repoIds: string[],
   branch: string,
   currentConfig = "",

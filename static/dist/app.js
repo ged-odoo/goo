@@ -3680,13 +3680,14 @@ var Workspace = class _Workspace extends Model {
     this.last_activity.set((/* @__PURE__ */ new Date()).toISOString());
     this._configPlugin().touch();
   }
-  // commit an inline edit onto the target (favorite/demo_data untouched — each is
-  // toggled directly via its own checkbox).
+  // commit an inline edit onto the target (favorite untouched — it's toggled
+  // directly via its own checkbox; demo_data only when the form carries it).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
-  applyEdit({ name, checkouts, db, on_create_args, category }) {
+  applyEdit({ name, checkouts, db, on_create_args, demo_data, category }) {
     this.name.set(name);
     this.db.set(db);
     this.on_create_args.set(on_create_args);
+    if (demo_data !== void 0) this.demo_data.set(demo_data);
     if (category !== void 0) this.setCategory(category);
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
     this.touchActivity();
@@ -4793,6 +4794,52 @@ var WorkspacePlugin = class extends Plugin {
     } catch (e) {
       this.eventLog.finish(eid, "error");
       return this._error("Workspace creation failed", e.message);
+    }
+  }
+  // Set up repos added to an existing workspace (its Edit form): a branch that
+  // already exists locally is attached as-is, any other is forked fresh from the
+  // base its name derives from (16.0-x → 16.0). A worktree workspace gets a git
+  // worktree per repo in its dir; a main-located one only needs the branch.
+  // Returns false once it has reported a failure.
+  async addRepos(tgt, checkouts) {
+    if (!checkouts.length) return true;
+    const g = this.code.groups();
+    const hasLocal = (repo, branch) => this.code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
+    if (!this.isWorktree(tgt)) {
+      await this.code.createBranches(
+        checkouts.filter((c) => !hasLocal(c.repo, c.branch)).map((c) => ({
+          path: g.pathByRepo[c.repo] || "",
+          name: c.branch,
+          startPoint: baseBranchOf(c.branch),
+          freshStart: true
+        }))
+      );
+      return true;
+    }
+    const dir = this.dirPath(tgt);
+    const repos = checkouts.filter((c) => g.pathByRepo[c.repo]).map(({ repo, branch }) => ({
+      repo,
+      mainPath: g.pathByRepo[repo],
+      pull_remote: g.pullRemoteByRepo[repo],
+      worktreePath: `${dir}/${repo}`,
+      ...hasLocal(repo, branch) ? { branch } : { newBranch: branch, startPoint: baseBranchOf(branch) }
+    }));
+    if (!repos.length) return true;
+    const eid = this.eventLog.begin(
+      `adding ${repos.map((r) => r.repo).join(", ")} to workspace ${tgt.name}`
+    );
+    try {
+      const res = await postJSON("/api/workspace/create", { workspace: tgt.id, repos });
+      if (!res.ok) {
+        this.eventLog.finish(eid, "error");
+        const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
+        return this._error("Adding repos failed", msg || "git worktree add failed");
+      }
+      this.eventLog.finish(eid, "done");
+      return true;
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      return this._error("Adding repos failed", errorMessage(e));
     }
   }
   // ── server lifecycle ─────────────────────────────────────────────────────────
@@ -16068,6 +16115,23 @@ var WorkspacesScreen = class extends Component {
       fields: [
         { key: "name", type: "text", label: "Name", value: ws.name },
         {
+          key: "repos",
+          type: "repo-checks",
+          label: "Repositories",
+          value: ws.checkouts.map((c) => c.repo),
+          options: this.config.config.repos.map((r) => ({ value: r.id, label: r.id })),
+          // a newly ticked repo gets the workspace's branch (its first checkout's);
+          // the repos already there keep theirs
+          onChange: (repoIds, values) => ({
+            config: configFromRepos(
+              repoIds,
+              repoBranchList.parse(values.config || "")[0]?.branch || values.name.trim(),
+              values.config,
+              true
+            )
+          })
+        },
+        {
           key: "config",
           type: "text",
           label: "Config",
@@ -16076,6 +16140,14 @@ var WorkspacesScreen = class extends Component {
         },
         { key: "db", type: "text", label: "Database", value: ws.db || "" },
         { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" },
+        ...this.config.config.launch_mode === "external" ? [] : [
+          {
+            key: "demoData",
+            type: "checkbox",
+            label: "Demo data",
+            value: ws.demo_data ?? true
+          }
+        ],
         ...this.categoriesEnabled ? [
           {
             key: "category",
@@ -16089,11 +16161,15 @@ var WorkspacesScreen = class extends Component {
       ]
     });
     if (!res) return;
+    const checkouts = repoBranchList.parse(res.config.trim());
+    const had = new Set(ws.checkouts.map((c) => c.repo));
+    if (!await this.wt.addRepos(ws, checkouts.filter((c) => !had.has(c.repo)))) return;
     this.config.workspace(ws.id)?.applyEdit({
       name: res.name.trim(),
-      checkouts: repoBranchList.parse(res.config.trim()),
+      checkouts,
       db: (res.db || "").trim(),
       on_create_args: (res.args || "").trim(),
+      ...this.config.config.launch_mode === "external" ? {} : { demo_data: !!res.demoData },
       ...this.categoriesEnabled ? { category: res.category || "" } : {}
     });
   }
