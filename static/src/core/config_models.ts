@@ -83,6 +83,7 @@ export interface WorkspaceEdit {
   checkouts: CheckoutConfig[];
   db: string;
   on_create_args: string;
+  demo_data?: boolean;
   category?: string;
 }
 
@@ -405,13 +406,14 @@ export class Workspace extends Model {
     this._configPlugin().touch();
   }
 
-  // commit an inline edit onto the target (favorite/demo_data untouched — each is
-  // toggled directly via its own checkbox).
+  // commit an inline edit onto the target (favorite untouched — it's toggled
+  // directly via its own checkbox; demo_data only when the form carries it).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
-  applyEdit({ name, checkouts, db, on_create_args, category }: WorkspaceEdit): void {
+  applyEdit({ name, checkouts, db, on_create_args, demo_data, category }: WorkspaceEdit): void {
     this.name.set(name);
     this.db.set(db);
     this.on_create_args.set(on_create_args);
+    if (demo_data !== undefined) this.demo_data.set(demo_data);
     if (category !== undefined) this.setCategory(category); // cascades in/out of "archived"
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
     this.touchActivity();
