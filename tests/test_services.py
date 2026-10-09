@@ -723,150 +723,18 @@ class MergebotServiceTest(unittest.TestCase):
         self.assertEqual(unsupported, [])
 
 
-class NightlyServiceTest(unittest.TestCase):
-    # ── extraction ────────────────────────────────────────────────────────
-
-    def test_fetch_versions_parses_starred_bundles_only(self):
+class ParseStarredBundlesTest(unittest.TestCase):
+    def test_keeps_starred_bundles_only(self):
         html = (
             '<div class="row bundle_row"><i class="fa fa-star"></i>'
             '<a href="/runbot/bundle/1" title="View Bundle master">master</a></div>'
             '<div class="row bundle_row">'  # not starred -> excluded
             '<a href="/runbot/bundle/2" title="View Bundle saas-19.4">saas-19.4</a></div>'
-            '<div class="row bundle_row"><i class="fa fa-star"></i>'  # starred but 16.0 -> excluded
-            '<a href="/runbot/bundle/3" title="View Bundle 16.0">16.0</a></div>'
         )
-        io = FakeIO(http={"rd-1": (html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
-        self.assertEqual(svc._versions(), [("master", "1")])
+        self.assertEqual(services.parse_starred_bundles(html), [("master", "1")])
 
-    def test_fetch_versions_falls_back_on_error(self):
-        io = FakeIO(http={"rd-1": ("", "boom")})
-        svc = services.NightlyService(io, TTLCache(60))
-        self.assertEqual(svc._versions(), list(services.NightlyService._VERSIONS_FALLBACK))
 
-    def test_parse_bundle_extracts_community_and_enterprise(self):
-        html = (
-            '<div class="batch_tile" title="2026-07-01 03:00:00">'
-            '<div class="slot_container">'
-            '<button class="btn btn-default slot_name"><span>Qunit Community</span></button>'
-            '<span class="btn btn-success disabled">ok</span>'
-            '<a href="/runbot/batch/1/build/10">x</a></div>'
-            '<div class="slot_container">'
-            '<button class="btn btn-default slot_name"><span>Qunit Enterprise</span></button>'
-            '<span class="btn btn-danger disabled">ko</span>'
-            '<a href="/runbot/batch/1/build/11">x</a></div>'
-            "</div>"
-        )
-        svc = services.NightlyService(FakeIO(), TTLCache(60))
-        nights = svc._parse_bundle(html)
-        self.assertEqual(
-            nights,
-            [
-                {
-                    "date": "2026-07-01",
-                    "community": {"status": "success", "url": "/runbot/batch/1/build/10"},
-                    "enterprise": {"status": "danger", "url": "/runbot/batch/1/build/11"},
-                }
-            ],
-        )
-
-    def test_fetch_build_detail_counts_and_child_rows(self):
-        html = (
-            '<tr class="bg-success-subtle"><td><a href="/runbot/build/200">x</a></td></tr>'
-            '<tr class="bg-danger-subtle"><td><a href="/runbot/build/201">x</a></td></tr>'
-        )
-        io = FakeIO(http={"build/100": (html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
-        detail = svc._build_detail("/runbot/batch/1/build/100")
-        self.assertEqual(detail["counts"], {"total": 2, "ok": 1, "warning": 0, "failed": 1})
-        self.assertEqual(
-            detail["child_rows"],
-            [("/runbot/build/200", "success"), ("/runbot/build/201", "danger")],
-        )
-
-    @staticmethod
-    def _night_tile(date: str, build: int) -> str:
-        return (
-            f'<div class="batch_tile"><a href="/runbot/batch/1" title="{date} 17:30:00"></a>'
-            '<div class="slot_container">'
-            '<a class="btn btn-default slot_name"><span>Multi Qunit Community</span></a>'
-            '<span class="btn btn-success disabled">ok</span>'
-            f'<a href="/runbot/batch/1/build/{build}">x</a></div></div>'
-        )
-
-    def test_bundle_nights_reads_the_nightly_category_pages(self):
-        # the default bundle listing has no nightly batches; they live under
-        # ?category=2, paginated as /page/<n>
-        io = FakeIO(
-            http={
-                "bundle/1?category=2": (self._night_tile("2026-09-30", 10), None),
-                "bundle/1/page/2?category=2": (self._night_tile("2026-09-29", 11), None),
-            }
-        )
-        svc = services.NightlyService(io, TTLCache(60))
-        nights = svc._bundle_nights("1", max_nights=7)
-        self.assertEqual([n["date"] for n in nights], ["2026-09-30", "2026-09-29"])
-        self.assertEqual(nights[1]["community"]["url"], "/runbot/batch/1/build/11")
-
-    def test_parse_child_errors(self):
-        html = (
-            '<tr class="log-server"><td>a</td><td>ERROR</td>'
-            '<td>[HOOT] Test "my.test.name" failed</td></tr>'
-            '<tr class="log-server"><td>a</td><td>ERROR</td>'
-            "<td>FAIL: my.module.test_x Script timeout exceeded</td></tr>"
-            '<tr class="log-runbot"><td>a</td><td>WARNING</td>'
-            "<td>Test time for my.suite: 125.5</td></tr>"
-        )
-        svc = services.NightlyService(FakeIO(), TTLCache(60))
-        errors = svc._parse_child_errors(html)
-        self.assertEqual(
-            errors,
-            [
-                {
-                    "test_name": "my.test.name",
-                    "status": "danger",
-                    "timeout": False,
-                    "known": False,
-                    "assignee": "",
-                },
-                {
-                    "test_name": "my.module.test_x: timeout",
-                    "status": "danger",
-                    "timeout": True,
-                    "known": False,
-                    "assignee": "",
-                },
-                {
-                    "test_name": "Test time for my.suite: 2m 5s",
-                    "status": "warning",
-                    "timeout": False,
-                    "known": False,
-                    "assignee": "",
-                },
-            ],
-        )
-
-    def test_parse_child_metrics(self):
-        html = (
-            "Average memory used for web.suite: 1048576\n"
-            "Max memory used for web.suite: 2097152\n"
-            "Test time for web.suite: 12.5\n"
-            "[HOOT] Passed 42 tests (100 assertions)\n"
-        )
-        svc = services.NightlyService(FakeIO(), TTLCache(60))
-        self.assertEqual(
-            svc._parse_child_metrics(html),
-            {
-                "web.suite": {
-                    "avg_mem": 1048576.0,
-                    "max_mem": 2097152.0,
-                    "time": 12.5,
-                    "tests": 42,
-                    "assertions": 100,
-                }
-            },
-        )
-
+class MemoryServiceTest(unittest.TestCase):
     def test_batch_builds_filters_start_qunit_only_links(self):
         html = (
             '<build-options-dropdown data-id="300" data-dest="300-master" '
@@ -877,7 +745,7 @@ class NightlyServiceTest(unittest.TestCase):
             'data-log_list="[&#34;install_all&#34;]"></build-options-dropdown>'
         )
         io = FakeIO(http={"batch/1/build/1": (html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
+        svc = services.MemoryService(io)
         self.assertEqual(
             svc.batch_builds("/runbot/batch/1/build/1"),
             [
@@ -899,7 +767,7 @@ class NightlyServiceTest(unittest.TestCase):
             'data-log_list="[&#34;install_all&#34;]"></build-options-dropdown>'
         )
         io = FakeIO(http={"batch/1/build/1": (html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
+        svc = services.MemoryService(io)
         self.assertEqual(
             svc.batch_builds("/runbot/batch/1/build/1"),
             [
@@ -921,7 +789,7 @@ class NightlyServiceTest(unittest.TestCase):
             "</build-options-dropdown>"
         )
         io = FakeIO(http={"batch/1/build/1": (html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
+        svc = services.MemoryService(io)
         self.assertEqual(
             svc.batch_builds("/runbot/batch/1/build/1"),
             [
@@ -932,105 +800,6 @@ class NightlyServiceTest(unittest.TestCase):
             ],
         )
 
-    # ── caching ──────────────────────────────────────────────────────────
-
-    def test_versions_cached_then_bypassed_on_refresh(self):
-        html = (
-            '<div class="row bundle_row"><i class="fa fa-star"></i>'
-            '<a href="/runbot/bundle/1" title="View Bundle master">master</a></div>'
-        )
-        io = FakeIO(http={"rd-1": (html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
-        svc._versions()
-        svc._versions()  # cache hit — no new fetch
-        self.assertEqual(len(io.http_calls), 1)
-        svc._versions(refresh=True)  # explicit refresh — bypasses the cache
-        self.assertEqual(len(io.http_calls), 2)
-
-    def test_build_detail_cached_forever_unless_running(self):
-        done_html = '<tr class="bg-success-subtle"><td>x</td></tr>'
-        running_html = '<tr class="bg-info-subtle">still building</td></tr>'
-        io = FakeIO(http={"build/10": (done_html, None), "build/11": (running_html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
-        for _ in range(3):
-            svc._build_detail("/runbot/batch/1/build/10", running=False)
-            svc._build_detail("/runbot/batch/1/build/11", running=True)
-        # a terminal build's page is fetched once no matter how many times it's asked for...
-        self.assertEqual(sum(1 for u in io.http_calls if "build/10" in u), 1)
-        # ...but a still-running build is re-fetched every time (its page keeps changing)
-        self.assertEqual(sum(1 for u in io.http_calls if "build/11" in u), 3)
-
-    def test_child_detail_fetched_at_most_once(self):
-        io = FakeIO(
-            http={
-                "build/200": (
-                    '<tr class="log-server"><td>a</td><td>ERROR</td>'
-                    '<td>[HOOT] Test "x" failed</td></tr>',
-                    None,
-                )
-            }
-        )
-        svc = services.NightlyService(io, TTLCache(60))
-        svc._child_detail("/runbot/batch/1/build/200", "danger")
-        svc._child_detail("/runbot/batch/1/build/200", "danger")
-        self.assertEqual(len(io.http_calls), 1)
-
-    def test_build_errors_reuses_the_parent_detail_cache(self):
-        # simulates builds() having already populated the parent's ("build", url)
-        # cache entry — build_errors() must not fetch that same parent URL again.
-        parent_url = "/runbot/batch/1/build/100"
-        parent_html = (
-            '<tr class="bg-success-subtle"><td><a href="/runbot/batch/1/build/200">x</a></td></tr>'
-        )
-        child_html = "no errors here"
-        io = FakeIO(http={"build/100": (parent_html, None), "build/200": (child_html, None)})
-        svc = services.NightlyService(io, TTLCache(60))
-        svc._build_detail(parent_url)
-        self.assertEqual(len(io.http_calls), 1)
-        result = svc.build_errors(parent_url)
-        self.assertEqual(result, {"errors": [], "metrics": {}})
-        self.assertEqual(sum(1 for u in io.http_calls if "build/100" in u), 1)  # not refetched
-        self.assertEqual(
-            sum(1 for u in io.http_calls if "build/200" in u), 1
-        )  # the new child fetch
-
-    def test_builds_end_to_end_with_refresh_semantics(self):
-        versions_html = (
-            '<div class="row bundle_row"><i class="fa fa-star"></i>'
-            '<a href="/runbot/bundle/1" title="View Bundle master">master</a></div>'
-        )
-        bundle_html = (
-            '<div class="batch_tile" title="2026-07-01 03:00:00">'
-            '<div class="slot_container">'
-            '<button class="btn btn-default slot_name"><span>Qunit Community</span></button>'
-            '<span class="btn btn-success disabled">ok</span>'
-            '<a href="/runbot/batch/1/build/10">x</a></div>'
-            "</div>"
-        )
-        build_html = '<tr class="bg-success-subtle"><td>x</td></tr>'
-        io = FakeIO(
-            http={
-                "rd-1": (versions_html, None),
-                "bundle/1": (bundle_html, None),
-                "build/10": (build_html, None),
-            }
-        )
-        svc = services.NightlyService(io, TTLCache(60))
-        result = svc.builds(max_nights=7)
-        self.assertEqual(result["versions"], ["master"])
-        self.assertEqual(result["nights"][0]["versions"]["master"]["community"]["counts"]["ok"], 1)
-        n_calls_after_first = len(io.http_calls)
-
-        svc.builds(max_nights=7)  # nothing changed — everything should be cache hits
-        self.assertEqual(len(io.http_calls), n_calls_after_first)
-
-        svc.builds(max_nights=7, refresh=True)  # re-fetches versions/bundle index...
-        self.assertGreater(len(io.http_calls), n_calls_after_first)
-        # ...but not the already-finished build's own page
-        self.assertEqual(sum(1 for u in io.http_calls if "build/10" in u), 1)
-
-
-class MemoryServiceTest(unittest.TestCase):
     def test_fetch_from_url(self):
         log = "a.WebSuite.Something.js:  [MEMINFO] @suite.one (after GC) - used: 100\n"
         io = FakeIO(http={"example.com": (log, None)})
@@ -5378,41 +5147,15 @@ class ApiPrsValidationTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
 
 
-class ApiNightlyAndCiMergeStatsTest(unittest.TestCase):
+class ApiCiMergeStatsTest(unittest.TestCase):
     def setUp(self):
         from backend import server
 
         self.server = server
-        self.orig_nightly = server.NIGHTLY
         self.orig_ci = server.CI
 
     def tearDown(self):
-        self.server.NIGHTLY = self.orig_nightly
         self.server.CI = self.orig_ci
-
-    def test_max_nights_is_clamped_between_7_and_84(self):
-        class FakeNightly:
-            def builds(self, refresh=False, max_nights=None):
-                self.seen = max_nights
-                return {"builds": []}
-
-        for requested, expected in [(1, 7), (7, 7), (30, 30), (84, 84), (200, 84)]:
-            with self.subTest(requested=requested):
-                fake = FakeNightly()
-                self.server.NIGHTLY = fake
-                self.server._api_nightly({"max_nights": requested})
-                self.assertEqual(fake.seen, expected)
-
-    def test_max_nights_defaults_to_14_when_absent(self):
-        class FakeNightly:
-            def builds(self, refresh=False, max_nights=None):
-                self.seen = max_nights
-                return {}
-
-        fake = FakeNightly()
-        self.server.NIGHTLY = fake
-        self.server._api_nightly({})
-        self.assertEqual(fake.seen, 14)
 
     def test_ci_merge_stats_days_is_clamped_between_1_and_60(self):
         class FakeCi:
@@ -5430,25 +5173,6 @@ class ApiNightlyAndCiMergeStatsTest(unittest.TestCase):
                 result = self.server._api_ci_merge_stats({"days": requested})
                 self.assertEqual(fake.seen_days, expected)
                 self.assertEqual(result["awaiting"], 3)
-
-    def test_nightly_errors_rejects_malformed_url(self):
-        for bad in ["", "/not/a/build/url", "/runbot/batch/x/build/1"]:
-            with self.subTest(url=bad):
-                status, payload = self.server._api_nightly_errors({"url": bad})
-                self.assertEqual(status, 400)
-                self.assertFalse(payload["ok"])
-
-    def test_nightly_errors_accepts_well_formed_url(self):
-        class FakeNightly:
-            def build_errors(self, url):
-                self.seen = url
-                return {"errors": [], "metrics": {}}
-
-        fake = FakeNightly()
-        self.server.NIGHTLY = fake
-        result = self.server._api_nightly_errors({"url": "/runbot/batch/123/build/456"})
-        self.assertTrue(result["ok"])
-        self.assertEqual(fake.seen, "/runbot/batch/123/build/456")
 
 
 class ApiAddonsTest(unittest.TestCase):

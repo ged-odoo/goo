@@ -62,7 +62,6 @@ from .runbot import (
     CiService,
     MemoryService,
     MergebotService,
-    NightlyService,
     RunbotService,
     parse_starred_bundles,
 )
@@ -88,7 +87,6 @@ __all__ = [
     "_PR_RE",
     "_NEXT_UNTIL_RE",
     "CiService",
-    "NightlyService",
     "MemoryService",
     "_DB_NAME_RE",
     "_RUNBOT_DUMP_URL_RE",

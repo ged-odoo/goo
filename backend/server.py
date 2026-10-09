@@ -1024,9 +1024,6 @@ RUST_BUNDLER = services.RustBundlerService(
     os.path.join(ADDONS_DIR, "rust_bundler", "native"),
     notify=BUS.publish_event,
 )
-# 24h is just a safety net for the versions/night-index keys (refresh=True bypasses
-# them); per-build detail keys are never invalidated — see NightlyService's docstring.
-NIGHTLY = services.NightlyService(effects, TTLCache(24 * 3600))
 MEMORY = services.MemoryService(effects)
 
 
@@ -1743,7 +1740,7 @@ def _api_code_commit_diff(body: dict[str, Any]) -> RouteResult:
     return (200 if ok else 400), {"ok": ok, "diff": diff or "", "error": error}
 
 
-# ── GitHub / runbot / mergebot / nightly ─────────────────────────────────────
+# ── GitHub / runbot / mergebot ──────────────────────────────────────────────
 
 
 @post_route("/api/prs", "repos:list")
@@ -1849,12 +1846,6 @@ def _api_runbot_dumps(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "dumps": RUNBOT.dumps(body["branch"], refresh=bool(body.get("refresh")))}
 
 
-@post_route("/api/nightly")
-def _api_nightly(body: dict[str, Any]) -> dict[str, Any]:
-    max_nights = min(max(int(body.get("max_nights", 14)), 7), 84)
-    return {"ok": True, **NIGHTLY.builds(refresh=bool(body.get("refresh")), max_nights=max_nights)}
-
-
 @post_route("/api/ci/merge-stats")
 def _api_ci_merge_stats(body: dict[str, Any]) -> dict[str, Any]:
     days = min(max(int(body.get("days", 14)), 1), 60)
@@ -1865,17 +1856,9 @@ def _api_ci_merge_stats(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@post_route("/api/nightly/errors")
-def _api_nightly_errors(body: dict[str, Any]) -> RouteResult:
-    url = body.get("url", "")
-    if not re.match(r"^/runbot/batch/\d+/build/\d+$", url):
-        return 400, {"ok": False, "error": "invalid url"}
-    return {"ok": True, **NIGHTLY.build_errors(url)}
-
-
 @post_route("/api/memory/batch", "url")
 def _api_memory_batch(body: dict[str, Any]) -> dict[str, Any]:
-    return {"ok": True, "builds": NIGHTLY.batch_builds(body["url"])}
+    return {"ok": True, "builds": MEMORY.batch_builds(body["url"])}
 
 
 @post_route("/api/memory/fetch", "builds:list")

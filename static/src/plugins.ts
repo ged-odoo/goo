@@ -13,7 +13,6 @@ import { DialogPlugin } from "./core/dialog_plugin.ts";
 import { UpdatePlugin } from "./core/update_plugin.ts";
 import { WorkspacePlugin } from "./core/workspace_plugin.ts";
 import { ClaudePlugin } from "./workspaces_screen/claude_plugin.ts";
-import { NightlyPlugin } from "./nightly_screen/nightly_plugin.ts";
 import { MemoryPlugin } from "./memory_screen/memory_plugin.ts";
 import { CiPlugin } from "./ci_screen/ci_plugin.ts";
 import { ReviewsPlugin } from "./reviews_screen/reviews_plugin.ts";
@@ -34,7 +33,6 @@ export const PLUGINS = [
   UpdatePlugin,
   WorkspacePlugin,
   ClaudePlugin,
-  NightlyPlugin,
   MemoryPlugin,
   CiPlugin,
   ReviewsPlugin,

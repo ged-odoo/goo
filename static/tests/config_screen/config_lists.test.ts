@@ -291,7 +291,6 @@ describe("Tabs editor", () => {
       "Reviews",
       "Todo",
       "Databases",
-      "Nightly",
       "Memory",
       "CI",
       "Configuration",
@@ -319,14 +318,14 @@ describe("Tabs editor", () => {
     const rows = block("Tabs").querySelectorAll(".edit-row");
     stack(rows);
     // drag Configuration (last) to the top
-    pointer("pointerdown", 0, 8 * 40 + 5, rows[8].querySelector(".row-handle")!);
+    pointer("pointerdown", 0, 7 * 40 + 5, rows[7].querySelector(".row-handle")!);
     pointer("pointermove", 0, 5);
     await app.settle();
     expect(tabLabels()[0]).toBe("Configuration");
     pointer("pointerup", 0, 5);
     const tabs = (await saved()).tabs!;
     expect(tabs[0]).toEqual({ id: "config", visible: true });
-    expect(tabs).toHaveLength(9);
+    expect(tabs).toHaveLength(8);
     expect(sidebar()[0]).toBe("Configuration");
   });
 

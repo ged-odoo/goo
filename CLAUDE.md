@@ -42,7 +42,7 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     happen (`run`, `http_get`, `read_text`/`list_dir`/`read_json_file`/…,
     `log_request`). Fake this in tests.
   - `services/` — domain services over the seam, one module per domain (`git.py`,
-    `github.py`, `runbot.py` (runbot/mergebot/CI/nightly/memory), `database.py`,
+    `github.py`, `runbot.py` (runbot/mergebot/CI/memory), `database.py`,
     `odoo.py` (venv/addons/assets/rust bundler), `docker.py`, `config.py`);
     `__init__.py` re-exports every name, so `services.X` is the import to use. They
     fetch + parse external state, cached server-side where it's worth it (PRs/runbot/
@@ -102,9 +102,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     reorderable list uses it, never HTML5 dnd). `appBus` is a single shared `EventBus` exported
     from `core/common.ts` — import it, never re-instantiate.
   - One folder per screen, each suffixed `_screen/` (`workspaces_screen/`,
-    `branches_screen/`, `todo_screen/`, `databases_screen/`, `nightly_screen/`,
+    `branches_screen/`, `todo_screen/`, `databases_screen/`,
     `memory_screen/`, `config_screen/`, `ci_screen/`, `reviews_screen/`): each holds its screen component; some also hold a dedicated plugin
-    (`workspaces_screen/claude_plugin.ts`, `nightly_screen/nightly_plugin.ts`,
+    (`workspaces_screen/claude_plugin.ts`,
     `memory_screen/memory_plugin.ts`, `ci_screen/ci_plugin.ts`,
     `reviews_screen/reviews_plugin.ts`). `workspaces_screen/` is the primary surface — the
     master-detail Workspaces screen, split one file per component: `workspaces.ts`
@@ -221,7 +221,7 @@ npm install`, then check `npx npm@10 ci` passes in a copy before pushing.
   in tests from `static/lib/owl.js` itself (see `static/tests/setup.ts`), and mounting
   components in jsdom works (`static/tests/helpers/app.ts`; `await settle()` after each interaction).
 - Frontend test exclusions (deliberate, not gaps): real pointer-drag geometry in
-  `drag.ts`'s `startRowDrag` and the nightly popover clamping (jsdom has no layout —
+  `drag.ts`'s `startRowDrag` (jsdom has no layout —
   `dropIndex` is tested against fixture rects), and the Chart.js/xterm lazy
   `<script>` loading. xterm, Chart.js, `WebSocket` and `EventSource` are replaced by
   small fakes in the tests that use them.
