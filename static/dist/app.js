@@ -3521,6 +3521,7 @@ var Repository = class extends Model {
   push_remote = fields.char();
   favorite = fields.bool();
   external = fields.bool();
+  opt_in = fields.bool();
   autoreload = fields.bool();
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "repository" });
   // the canonical GitHub slug — the stored value, else the built-in default for this id
@@ -3844,6 +3845,7 @@ var REPO_FIELDS = [
   { name: "push_remote", in: (v) => v || "dev", out: (r) => r.pushRemote() },
   bool("favorite"),
   bool("external"),
+  bool("opt_in"),
   bool("autoreload")
 ];
 var WORKSPACE_FIELDS = [
@@ -7638,6 +7640,14 @@ var SPECS = {
         optional: true,
         row: 2,
         title: "a repo outside the odoo CI ecosystem (e.g. odoo/owl) \u2014 skip its mergebot/runbot lookups"
+      },
+      {
+        key: "opt_in",
+        name: "opt-in",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title: "left unticked in the New workspace form's Repositories (e.g. documentation, upgrade) \u2014 tick it there when a workspace needs it"
       }
     ],
     validate(repos, config) {
@@ -10850,7 +10860,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
     value: d.url,
     label: dumpLabel(d)
   }));
-  const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
+  const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
   const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
   const wantsEnterprise = prefillRepoIds.includes("enterprise");
   const bestDump = (prefill.dumps || []).find(

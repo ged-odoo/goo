@@ -17,6 +17,7 @@ export interface RepoConfig {
   push_remote: string;
   favorite: boolean;
   external?: boolean; // not on mergebot/runbot — those scrapes are skipped
+  opt_in?: boolean; // left unticked in the New workspace form unless asked for
   autoreload?: boolean;
 }
 

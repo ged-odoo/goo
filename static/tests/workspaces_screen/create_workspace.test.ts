@@ -3,7 +3,12 @@
 // create form), a forward-port sub workspace, and "Adopt current checkout".
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mountApp, type MountedApp, type Route } from "../helpers/app.ts";
-import type { Config, TemplateConfig, WorkspaceConfig } from "../../src/core/config.ts";
+import {
+  DEFAULT_CONFIG,
+  type Config,
+  type TemplateConfig,
+  type WorkspaceConfig,
+} from "../../src/core/config.ts";
 import {
   branch,
   choose,
@@ -223,6 +228,25 @@ describe("New workspace — blank form", () => {
     setChecked(enterprise.querySelector("input")!, false);
     await app.settle();
     expect(input("Config").value).toBe("community:master-x");
+  });
+
+  it("leaves an opt-in repository unticked", async () => {
+    await mountScreen({
+      config: {
+        repos: [
+          ...DEFAULT_CONFIG.repos,
+          { ...DEFAULT_CONFIG.repos[1], id: "upgrade", path: "/w/upgrade", opt_in: true },
+        ],
+      },
+    });
+    await openWizard();
+    await continueWizard();
+    await type("Name", "master-x");
+    const upgrade = [...field("Repositories").querySelectorAll("label")].find((l) =>
+      l.textContent!.includes("upgrade"),
+    )!;
+    expect(upgrade.querySelector("input")!.checked).toBe(false);
+    expect(input("Config").value).toBe("community:master-x,enterprise:master-x");
   });
 
   it("keeps a hand-edited database name when the name changes later", async () => {
