@@ -631,9 +631,10 @@ export async function startCreateWorkspace(
             ),
           };
           // only stomp demoData while forking a fresh branch (same gating as
-          // config above) — attaching to an existing/remote branch shouldn't
-          // silently flip a checkbox the user didn't touch
-          if (forkingFresh) updates.demoData = defaultDemoData(newName.trim());
+          // config above) and with no template — attaching to an existing/remote
+          // branch shouldn't silently flip a checkbox the user didn't touch, and a
+          // template's own demo-data setting wins over the branch-based guess
+          if (forkingFresh && !tpl) updates.demoData = defaultDemoData(newName.trim());
           // db stays in lockstep with name as it's typed (a blank db otherwise
           // sails through Create silently, then fails Start with "no database
           // configured") — full stomp while db is still empty or still exactly

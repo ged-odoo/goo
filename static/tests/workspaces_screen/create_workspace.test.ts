@@ -372,6 +372,18 @@ describe("New workspace — from a template", () => {
     expect(hint("Restore runbot database")).toContain("downloaded from runbot");
   });
 
+  it("keeps the template's demo-data setting while the name is typed", async () => {
+    await mountScreen({
+      config: { templates: [{ ...TEMPLATE, demo_data: true }] },
+      routes: { "/api/runbot/dumps": { dumps: DUMPS } },
+    });
+    await openWizard();
+    await continueWizard();
+    expect(checkbox("Demo data").checked).toBe(true);
+    await type("Name", "saas-19.1-mytask");
+    expect(checkbox("Demo data").checked).toBe(true);
+  });
+
   it("forks from the template's branch and restores the dump last", async () => {
     await openTemplateForm({ "/api/databases/restore-dump": { ok: true } });
     await type("Name", "saas-19.1-mytask");
