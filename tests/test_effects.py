@@ -6,6 +6,7 @@ Run from the repo root: `python3 -m unittest discover`
 """
 
 import contextlib
+import gzip
 import http.server
 import io
 import os
@@ -256,6 +257,32 @@ class FilesystemTests(unittest.TestCase):
     def p(self, *parts):
         return os.path.join(self.dir, *parts)
 
+    def test_gunzip_inflates_into_the_target_file(self):
+        with gzip.open(self.p("dump.sql.gz"), "wb") as f:
+            f.write(BIG)
+        ok, err = effects.gunzip(self.p("dump.sql.gz"), self.p("out", "dump.sql"))
+        self.assertTrue(ok, err)
+        with open(self.p("out", "dump.sql"), "rb") as f:
+            self.assertEqual(f.read(), BIG)
+
+    def test_gunzip_of_a_non_gzip_file_fails_and_leaves_nothing(self):
+        effects.write_text(self.p("dump.sql.gz"), "plain text")
+        ok, err = effects.gunzip(self.p("dump.sql.gz"), self.p("dump.sql"))
+        self.assertFalse(ok)
+        self.assertTrue(err)
+        self.assertFalse(os.path.exists(self.p("dump.sql")))
+
+    def test_save_stream_copies_exactly_length_bytes(self):
+        ok, err = effects.save_stream(io.BytesIO(BIG + b"trailing"), len(BIG), self.p("up"))
+        self.assertTrue(ok, err)
+        with open(self.p("up"), "rb") as f:
+            self.assertEqual(f.read(), BIG)
+
+    def test_save_stream_short_body_is_an_error(self):
+        ok, err = effects.save_stream(io.BytesIO(b"abc"), 10, self.p("up"))
+        self.assertFalse(ok)
+        self.assertIn("truncated", err)
+
     def test_is_dir_is_file(self):
         effects.write_text(self.p("f"), "x")
         self.assertTrue(effects.is_dir(self.dir))
@@ -398,6 +425,12 @@ class FilesystemTests(unittest.TestCase):
         self.addCleanup(effects.remove_tree, path)
         self.assertTrue(os.path.isdir(path))
         self.assertTrue(os.path.basename(path).startswith("goo-test-"))
+
+    def test_make_temp_dir_under_a_parent_it_creates(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = effects.make_temp_dir(prefix="goo-test-", parent=os.path.join(root, "cache"))
+            self.assertTrue(os.path.isdir(path))
+            self.assertEqual(os.path.dirname(path), os.path.join(root, "cache"))
 
     def test_make_temp_dir_failure_is_none(self):
         old = tempfile.tempdir

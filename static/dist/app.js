@@ -3521,6 +3521,7 @@ var Repository = class extends Model {
   push_remote = fields.char();
   favorite = fields.bool();
   external = fields.bool();
+  opt_in = fields.bool();
   autoreload = fields.bool();
   checkouts = fields.one2many({ comodel: () => Checkout, inverse: "repository" });
   // the canonical GitHub slug — the stored value, else the built-in default for this id
@@ -3680,13 +3681,14 @@ var Workspace = class _Workspace extends Model {
     this.last_activity.set((/* @__PURE__ */ new Date()).toISOString());
     this._configPlugin().touch();
   }
-  // commit an inline edit onto the target (favorite/demo_data untouched — each is
-  // toggled directly via its own checkbox).
+  // commit an inline edit onto the target (favorite untouched — it's toggled
+  // directly via its own checkbox; demo_data only when the form carries it).
   // The caller validates; checkouts arrive already parsed as [{repo, branch}].
-  applyEdit({ name, checkouts, db, on_create_args, category }) {
+  applyEdit({ name, checkouts, db, on_create_args, demo_data, category }) {
     this.name.set(name);
     this.db.set(db);
     this.on_create_args.set(on_create_args);
+    if (demo_data !== void 0) this.demo_data.set(demo_data);
     if (category !== void 0) this.setCategory(category);
     reconcileCheckouts(this.orm, { id: this.id, checkouts });
     this.touchActivity();
@@ -3843,6 +3845,7 @@ var REPO_FIELDS = [
   { name: "push_remote", in: (v) => v || "dev", out: (r) => r.pushRemote() },
   bool("favorite"),
   bool("external"),
+  bool("opt_in"),
   bool("autoreload")
 ];
 var WORKSPACE_FIELDS = [
@@ -4596,12 +4599,12 @@ var WorkspacePlugin = class extends Plugin {
   // reflects goo's own subprocess/container), so it can't tell a db an external
   // container is actively serving from an unused one. Returns null (never
   // blocks the caller) on a failed check.
-  async checkDbInUse(dbName) {
-    if (!dbName) return null;
+  async checkDbInUse(dbName2) {
+    if (!dbName2) return null;
     try {
       const res = await postJSON(
         "/api/workspace/external_status",
-        { name: dbName }
+        { name: dbName2 }
       );
       return { running: !!res.running, url: res.url || "" };
     } catch {
@@ -4703,7 +4706,7 @@ var WorkspacePlugin = class extends Plugin {
   //         forkRepos? }
   async createWorktree({
     name,
-    dbName,
+    dbName: dbName2,
     cloneSource,
     checkouts,
     startPointByRepo = {},
@@ -4729,7 +4732,7 @@ var WorkspacePlugin = class extends Plugin {
       favorite,
       category,
       parent,
-      db: dbName,
+      db: dbName2,
       on_create_args,
       demo_data,
       location: "worktree",
@@ -4761,7 +4764,7 @@ var WorkspacePlugin = class extends Plugin {
       if (cloneSource) {
         await postJSON("/api/databases/clone", {
           source: cloneSource,
-          dest: dbName,
+          dest: dbName2,
           filestore: this.config.config.filestore
         });
       }
@@ -4793,6 +4796,52 @@ var WorkspacePlugin = class extends Plugin {
     } catch (e) {
       this.eventLog.finish(eid, "error");
       return this._error("Workspace creation failed", e.message);
+    }
+  }
+  // Set up repos added to an existing workspace (its Edit form): a branch that
+  // already exists locally is attached as-is, any other is forked fresh from the
+  // base its name derives from (16.0-x → 16.0). A worktree workspace gets a git
+  // worktree per repo in its dir; a main-located one only needs the branch.
+  // Returns false once it has reported a failure.
+  async addRepos(tgt, checkouts) {
+    if (!checkouts.length) return true;
+    const g = this.code.groups();
+    const hasLocal = (repo, branch) => this.code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
+    if (!this.isWorktree(tgt)) {
+      await this.code.createBranches(
+        checkouts.filter((c) => !hasLocal(c.repo, c.branch)).map((c) => ({
+          path: g.pathByRepo[c.repo] || "",
+          name: c.branch,
+          startPoint: baseBranchOf(c.branch),
+          freshStart: true
+        }))
+      );
+      return true;
+    }
+    const dir = this.dirPath(tgt);
+    const repos = checkouts.filter((c) => g.pathByRepo[c.repo]).map(({ repo, branch }) => ({
+      repo,
+      mainPath: g.pathByRepo[repo],
+      pull_remote: g.pullRemoteByRepo[repo],
+      worktreePath: `${dir}/${repo}`,
+      ...hasLocal(repo, branch) ? { branch } : { newBranch: branch, startPoint: baseBranchOf(branch) }
+    }));
+    if (!repos.length) return true;
+    const eid = this.eventLog.begin(
+      `adding ${repos.map((r) => r.repo).join(", ")} to workspace ${tgt.name}`
+    );
+    try {
+      const res = await postJSON("/api/workspace/create", { workspace: tgt.id, repos });
+      if (!res.ok) {
+        this.eventLog.finish(eid, "error");
+        const msg = (res.results || []).filter((r) => !r.ok).map((r) => `${r.repo}: ${r.error}`).join("\n");
+        return this._error("Adding repos failed", msg || "git worktree add failed");
+      }
+      this.eventLog.finish(eid, "done");
+      return true;
+    } catch (e) {
+      this.eventLog.finish(eid, "error");
+      return this._error("Adding repos failed", errorMessage(e));
     }
   }
   // ── server lifecycle ─────────────────────────────────────────────────────────
@@ -7591,6 +7640,14 @@ var SPECS = {
         optional: true,
         row: 2,
         title: "a repo outside the odoo CI ecosystem (e.g. odoo/owl) \u2014 skip its mergebot/runbot lookups"
+      },
+      {
+        key: "opt_in",
+        name: "opt-in",
+        type: "checkbox",
+        optional: true,
+        row: 2,
+        title: "left unticked in the New workspace form's Repositories (e.g. documentation, upgrade) \u2014 tick it there when a workspace needs it"
       }
     ],
     validate(repos, config) {
@@ -7754,6 +7811,9 @@ var SPECS = {
 };
 
 // static/src/core/database_plugin.ts
+function dumpLabel(d) {
+  return `${d.slot} \u2014 ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`;
+}
 var DatabasePlugin = class extends Plugin {
   static sequence = 3;
   server = usePlugin(ServerPlugin);
@@ -7830,19 +7890,48 @@ var DatabasePlugin = class extends Plugin {
     }
   }
   // restore a runbot build's database dump (see RunbotService.bundle_dumps) into a
-  // NEW database `target`; returns null on success or an error message. Unlike the
-  // other db actions this is slow enough to need a *timed* row — the backend
-  // downloads tens/hundreds of MB and replays them through psql — so it logs
-  // begin/finish rather than a single line, and the row keeps its animated "..."
-  // for as long as the restore really runs.
-  async restoreRunbotDump(url, target) {
-    const eid = this.eventLog.begin(`restoring runbot database into ${target}`);
-    try {
-      await postJSON("/api/databases/restore-dump", {
+  // NEW database `target`, then run the `cleanup` steps (backend RESTORE_CLEANUPS)
+  // on it; returns null on success or an error message.
+  async restoreRunbotDump(url, target, cleanup = []) {
+    return this._restore(
+      target,
+      "runbot database",
+      () => postJSON("/api/databases/restore-dump", {
         name: target,
         url,
-        filestore: this._filestore()
+        filestore: this._filestore(),
+        cleanup
+      })
+    );
+  }
+  // restore a local dump file (an odoo .zip, or a .sql.gz) into a NEW database
+  // `target`: the file is uploaded as the raw request body, the rest rides in the
+  // query string. Returns null on success or an error message.
+  async restoreFile(file, target, cleanup = []) {
+    const query = new URLSearchParams({
+      name: target,
+      filename: file.name,
+      filestore: this._filestore(),
+      cleanup: cleanup.join(",")
+    });
+    return this._restore(target, file.name, async () => {
+      const resp = await fetch(`/api/databases/upload-dump?${query}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file
       });
+      const data = await resp.json().catch(() => ({}));
+      if (!data.ok) throw new Error(data.error || String(resp.status));
+    });
+  }
+  // the shared restore envelope. Unlike the other db actions a restore is slow
+  // enough to need a *timed* row — tens/hundreds of MB, replayed through psql — so
+  // it logs begin/finish rather than a single line, and the row keeps its animated
+  // "..." for as long as the restore really runs.
+  async _restore(target, what, run) {
+    const eid = this.eventLog.begin(`restoring ${what} into ${target}`);
+    try {
+      await run();
       await this.load(true);
       this.eventLog.finish(eid, "done");
       return null;
@@ -7893,6 +7982,231 @@ var DatabasePlugin = class extends Plugin {
   }
 };
 
+// static/src/databases_screen/import_dialog.ts
+var OTHER = "__other__";
+var CLEANUPS = [
+  { key: "crons", label: "Disable scheduled actions (crons)" },
+  { key: "assets", label: "Clear cached asset bundles" },
+  { key: "admin", label: "Log in as admin/admin (every password = its login)" }
+];
+function dbName(text) {
+  return text.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "");
+}
+var ImportDatabaseDialog = class extends Component {
+  static template = xml`
+    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+      <div class="dialog" t-on-click.stop="() => {}">
+        <h2 class="dialog-title">Import database</h2>
+        <div class="dialog-body" data-form-type="other">
+          <div class="dialog-field">
+            <label>Source</label>
+            <select class="imp-source" t-att-value="this.source()" t-on-change="(ev) => this.source.set(ev.target.value)">
+              <option value="runbot" t-att-selected="this.source() === 'runbot'">Runbot build</option>
+              <option value="file" t-att-selected="this.source() === 'file'">Dump file (.zip / .sql.gz)</option>
+            </select>
+          </div>
+          <t t-if="this.source() === 'runbot'">
+            <div class="dialog-field">
+              <label>Version</label>
+              <div t-if="!this.version()" class="dim">loading runbot versions…</div>
+              <select t-else="" class="imp-version" t-on-change="(ev) => this.pickVersion(ev.target.value)">
+                <option t-foreach="this.versionOptions()" t-as="o" t-key="o.value" t-att-value="o.value" t-att-selected="this.version() === o.value" t-out="o.label"/>
+              </select>
+              <div t-if="this.versionsError()" class="dialog-field-hint imp-versions-error" t-out="this.versionsError()"/>
+            </div>
+            <div t-if="this.version() === this.OTHER" class="dialog-field">
+              <label>Bundle</label>
+              <input type="text" class="imp-bundle" list="imp-bundles" placeholder="search runbot bundles…"
+                     t-att-value="this.query()"
+                     t-on-input="(ev) => this.onSearch(ev.target.value)"
+                     t-on-change="(ev) => this.pickBundle(ev.target.value)"/>
+              <datalist id="imp-bundles">
+                <option t-foreach="this.matches()" t-as="b" t-key="b" t-att-value="b"/>
+              </datalist>
+            </div>
+            <div class="dialog-field">
+              <label>Edition</label>
+              <select class="imp-edition" t-att-value="this.edition()" t-on-change="(ev) => this.edition.set(ev.target.value)">
+                <option value="enterprise" t-att-selected="this.edition() === 'enterprise'">Enterprise</option>
+                <option value="community" t-att-selected="this.edition() === 'community'">Community</option>
+              </select>
+            </div>
+            <div class="dialog-field">
+              <label>Data</label>
+              <select class="imp-data" t-att-value="this.data()" t-on-change="(ev) => this.data.set(ev.target.value)">
+                <option value="all" t-att-selected="this.data() === 'all'">Full (all modules)</option>
+                <option value="base" t-att-selected="this.data() === 'base'">Base</option>
+              </select>
+              <div class="dialog-field-hint imp-dump" t-out="this.dumpHint()"/>
+            </div>
+          </t>
+          <div t-else="" class="dialog-field">
+            <label>Dump file</label>
+            <input type="file" class="imp-file" accept=".zip,.gz" t-on-change="(ev) => this.file.set(ev.target.files[0] || null)"/>
+          </div>
+          <div class="dialog-field">
+            <label>Database name</label>
+            <input type="text" class="imp-name" t-att-value="this.name()" t-att-placeholder="this.defaultName()"
+                   t-on-input="(ev) => this.typedName.set(ev.target.value)"/>
+          </div>
+          <div class="dialog-field">
+            <label t-foreach="this.CLEANUPS" t-as="c" t-key="c.key" class="edit-check">
+              <input type="checkbox" t-att-checked="this.cleanup().includes(c.key)" t-on-change="(ev) => this.toggleCleanup(c.key, ev.target.checked)"/>
+              <t t-out="c.label"/>
+            </label>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <span t-if="this.error()" class="form-error" t-out="this.error()"/>
+          <button class="pbtn primary" t-att-disabled="!this.ready()" t-on-click="() => this.ok()">Import</button>
+          <button class="pbtn" t-on-click="() => this.done(null)">Discard</button>
+        </div>
+      </div>
+    </div>`;
+  props = useProps({
+    done: t.function(),
+    // the screen's database-name check ("" when the name is usable)
+    badName: t.any()
+  });
+  OTHER = OTHER;
+  CLEANUPS = CLEANUPS;
+  source = signal("runbot");
+  versions = signal([]);
+  // runbot's starred series, newest first
+  versionsError = signal("");
+  version = signal("");
+  // a starred version, or OTHER
+  other = signal("");
+  // the bundle picked under "Another bundle…"
+  query = signal("");
+  // what's typed in its search input (picked on change)
+  matches = signal([]);
+  // runbot's search results for the typed bundle name
+  edition = signal("enterprise");
+  data = signal("all");
+  dumps = signal([]);
+  // the bundle's dumps; null while looking them up
+  file = signal(null);
+  typedName = signal(null);
+  // null until the user types a name
+  cleanup = signal(CLEANUPS.map((c) => c.key));
+  _timer;
+  _bundle = "";
+  // the bundle whose dumps are being looked up (drops stale replies)
+  // the version select's options: the starred versions, then "Another bundle…"
+  versionOptions = computed(() => [
+    ...this.versions().map((v) => ({ value: v, label: v })),
+    { value: OTHER, label: "Another bundle\u2026" }
+  ]);
+  // the runbot bundle the form currently points at ("" when none yet)
+  bundle = computed(() => this.version() === OTHER ? this.other() : this.version());
+  // the dump matching the edition + data choices, from that edition's Run build
+  dump = computed(
+    () => (this.dumps() || []).find(
+      (d) => d.db === this.data() && /\brun\b/i.test(d.slot) && d.slot.toLowerCase().includes(this.edition())
+    )
+  );
+  defaultName = computed(() => {
+    if (this.source() === "file")
+      return dbName(this.file()?.name.replace(/\.(zip|sql\.gz|gz)$/i, "") || "");
+    const bundle = this.bundle();
+    return bundle ? dbName(`${bundle}-${this.edition() === "enterprise" ? "ent" : "com"}-${this.data()}`) : "";
+  });
+  name = computed(() => this.typedName() ?? this.defaultName());
+  dumpHint = computed(() => {
+    if (!this.bundle()) return "";
+    if (this.dumps() === null) return "looking up the bundle's dumps\u2026";
+    const d = this.dump();
+    if (!d) return `no ${this.edition()} ${this.data()} dump in the bundle's latest batches`;
+    return `${dumpLabel(d)}, build ${d.build}`;
+  });
+  error = computed(() => {
+    if (this.source() === "file") {
+      const file = this.file();
+      if (!file) return "choose a dump file";
+      if (!/\.(zip|sql\.gz)$/i.test(file.name))
+        return "only .zip and .sql.gz dumps can be imported";
+    } else if (this.dumps() === null) {
+      return "";
+    } else if (!this.dump()) {
+      return this.bundle() ? "no dump to import" : "choose a version";
+    }
+    return this.props.badName(this.name().trim());
+  });
+  // the form can be submitted: valid, and not waiting on runbot for the dumps
+  ready = computed(() => !this.error() && (this.source() === "file" || this.dumps() !== null));
+  setup() {
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => {
+      document.removeEventListener("keydown", onKey);
+      clearTimeout(this._timer);
+    });
+    this._loadVersions();
+  }
+  async _loadVersions() {
+    try {
+      const res = await postJSON("/api/runbot/sticky");
+      if (!res.versions?.length) throw new Error("runbot is unreachable");
+      this.versions.set(res.versions);
+    } catch (e) {
+      this.versionsError.set(`could not load runbot's versions: ${errorMessage(e)}`);
+    }
+    if (!this.version()) this.pickVersion(this.versions()[0] || OTHER);
+  }
+  pickVersion(version) {
+    this.version.set(version);
+    this._loadDumps(this.bundle());
+  }
+  pickBundle(name) {
+    this.other.set(name.trim());
+    this._loadDumps(this.bundle());
+  }
+  // runbot's bundle search, debounced while typing (fills the input's datalist)
+  onSearch(query) {
+    this.query.set(query);
+    clearTimeout(this._timer);
+    const q = query.trim();
+    if (q.length < 3) return this.matches.set([]);
+    this._timer = setTimeout(async () => {
+      try {
+        const res = await postJSON("/api/runbot/search", { query: q });
+        this.matches.set(res.bundles || []);
+      } catch {
+        this.matches.set([]);
+      }
+    }, 300);
+  }
+  async _loadDumps(bundle) {
+    this._bundle = bundle;
+    if (!bundle) return this.dumps.set([]);
+    this.dumps.set(null);
+    let dumps = [];
+    try {
+      dumps = (await postJSON("/api/runbot/dumps", { branch: bundle })).dumps || [];
+    } catch {
+    }
+    if (bundle === this._bundle) this.dumps.set(dumps);
+  }
+  toggleCleanup(key, checked) {
+    const rest = this.cleanup().filter((k) => k !== key);
+    this.cleanup.set(checked ? [...rest, key] : rest);
+  }
+  done(result) {
+    this.props.done(result);
+  }
+  ok() {
+    if (!this.ready()) return;
+    const common = { name: this.name().trim(), cleanup: this.cleanup() };
+    const file = this.file();
+    const dump = this.dump();
+    if (this.source() === "file" && file) this.done({ ...common, source: "file", file });
+    else if (dump) this.done({ ...common, source: "runbot", url: dump.url });
+  }
+};
+
 // static/src/databases_screen/databases.ts
 var DatabasesScreen = class extends Component {
   static components = { Panel };
@@ -7907,6 +8221,7 @@ var DatabasesScreen = class extends Component {
         </t>
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
+          <button class="pbtn imp-open" t-on-click="() => this.importDb()">Import database</button>
           <button class="pbtn" t-on-click="() => this.db.load(true)"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
       </Panel>
@@ -8096,6 +8411,16 @@ var DatabasesScreen = class extends Component {
     if (this.db.databases().some((x) => x.name === name))
       return `a database named "${name}" already exists`;
     return "";
+  }
+  // "Import database": pick a runbot dump or a local dump file, then restore it
+  // into a new database; report any failure in a dialog
+  async importDb() {
+    const pick = await this.dialogs.openComponent(ImportDatabaseDialog, {
+      badName: (name) => this._badName(name)
+    });
+    if (!pick) return;
+    const error = pick.source === "runbot" ? await this.db.restoreRunbotDump(pick.url, pick.name, pick.cleanup) : await this.db.restoreFile(pick.file, pick.name, pick.cleanup);
+    if (error) await this.dialogs.error("Import failed", error);
   }
   // ask for a target name, then clone; report any failure in a dialog. Cloning the
   // active db requires exclusive access (postgres createdb -T), so the server is
@@ -10516,8 +10841,8 @@ async function startNewWorkspaceWizard(plugins) {
     dumps: info.dumps || []
   });
 }
-async function restoreRunbotDump({ db, dialogs }, url, dbName) {
-  const error = await db.restoreRunbotDump(url, dbName);
+async function restoreRunbotDump({ db, dialogs }, url, dbName2) {
+  const error = await db.restoreRunbotDump(url, dbName2);
   if (error) dialogs.error("Restoring the runbot database failed", error);
 }
 async function startCreateWorkspace(plugins, prefill = {}) {
@@ -10533,9 +10858,9 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
   const dumpOptions = (prefill.dumps || []).map((d) => ({
     value: d.url,
-    label: `${d.slot} \u2014 ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`
+    label: dumpLabel(d)
   }));
-  const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
+  const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
   const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
   const wantsEnterprise = prefillRepoIds.includes("enterprise");
   const bestDump = (prefill.dumps || []).find(
@@ -10598,7 +10923,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
               !forkingFresh
             )
           };
-          if (forkingFresh) updates.demoData = defaultDemoData(newName.trim());
+          if (forkingFresh && !tpl) updates.demoData = defaultDemoData(newName.trim());
           const trimmed = newName.trim();
           if (!currentValues.db || currentValues.db === oldValues.name) {
             updates.db = trimmed;
@@ -15800,6 +16125,23 @@ var WorkspacesScreen = class extends Component {
       fields: [
         { key: "name", type: "text", label: "Name", value: ws.name },
         {
+          key: "repos",
+          type: "repo-checks",
+          label: "Repositories",
+          value: ws.checkouts.map((c) => c.repo),
+          options: this.config.config.repos.map((r) => ({ value: r.id, label: r.id })),
+          // a newly ticked repo gets the workspace's branch (its first checkout's);
+          // the repos already there keep theirs
+          onChange: (repoIds, values) => ({
+            config: configFromRepos(
+              repoIds,
+              repoBranchList.parse(values.config || "")[0]?.branch || values.name.trim(),
+              values.config,
+              true
+            )
+          })
+        },
+        {
           key: "config",
           type: "text",
           label: "Config",
@@ -15808,6 +16150,14 @@ var WorkspacesScreen = class extends Component {
         },
         { key: "db", type: "text", label: "Database", value: ws.db || "" },
         { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" },
+        ...this.config.config.launch_mode === "external" ? [] : [
+          {
+            key: "demoData",
+            type: "checkbox",
+            label: "Demo data",
+            value: ws.demo_data ?? true
+          }
+        ],
         ...this.categoriesEnabled ? [
           {
             key: "category",
@@ -15821,11 +16171,19 @@ var WorkspacesScreen = class extends Component {
       ]
     });
     if (!res) return;
+    const checkouts = repoBranchList.parse(res.config.trim());
+    const had = new Set(ws.checkouts.map((c) => c.repo));
+    if (!await this.wt.addRepos(
+      ws,
+      checkouts.filter((c) => !had.has(c.repo))
+    ))
+      return;
     this.config.workspace(ws.id)?.applyEdit({
       name: res.name.trim(),
-      checkouts: repoBranchList.parse(res.config.trim()),
+      checkouts,
       db: (res.db || "").trim(),
       on_create_args: (res.args || "").trim(),
+      ...this.config.config.launch_mode === "external" ? {} : { demo_data: !!res.demoData },
       ...this.categoriesEnabled ? { category: res.category || "" } : {}
     });
   }

@@ -34,6 +34,7 @@ import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../
 import {
   adoptCurrentCheckout,
   categoryOptions,
+  configFromRepos,
   deleteWorkspaceDialog,
   startCreateWorkspace,
   startNewWorkspaceWizard,
@@ -1519,6 +1520,23 @@ export class WorkspacesScreen extends Component {
       fields: [
         { key: "name", type: "text", label: "Name", value: ws.name },
         {
+          key: "repos",
+          type: "repo-checks",
+          label: "Repositories",
+          value: ws.checkouts.map((c) => c.repo),
+          options: this.config.config.repos.map((r) => ({ value: r.id, label: r.id })),
+          // a newly ticked repo gets the workspace's branch (its first checkout's);
+          // the repos already there keep theirs
+          onChange: (repoIds, values) => ({
+            config: configFromRepos(
+              repoIds,
+              repoBranchList.parse(values.config || "")[0]?.branch || values.name.trim(),
+              values.config,
+              true,
+            ),
+          }),
+        },
+        {
           key: "config",
           type: "text",
           label: "Config",
@@ -1527,6 +1545,16 @@ export class WorkspacesScreen extends Component {
         },
         { key: "db", type: "text", label: "Database", value: ws.db || "" },
         { key: "args", type: "text", label: "Start args", value: ws.on_create_args || "" },
+        ...(this.config.config.launch_mode === "external"
+          ? []
+          : [
+              {
+                key: "demoData",
+                type: "checkbox" as const,
+                label: "Demo data",
+                value: ws.demo_data ?? true,
+              },
+            ]),
         ...(this.categoriesEnabled
           ? [
               {
@@ -1542,11 +1570,22 @@ export class WorkspacesScreen extends Component {
       ],
     });
     if (!res) return;
+    const checkouts = repoBranchList.parse(res.config.trim());
+    const had = new Set(ws.checkouts.map((c) => c.repo));
+    // a repo added here only joins the workspace once its checkout exists
+    if (
+      !(await this.wt.addRepos(
+        ws,
+        checkouts.filter((c) => !had.has(c.repo)),
+      ))
+    )
+      return;
     this.config.workspace(ws.id)?.applyEdit({
       name: res.name.trim(),
-      checkouts: repoBranchList.parse(res.config.trim()),
+      checkouts,
       db: (res.db || "").trim(),
       on_create_args: (res.args || "").trim(),
+      ...(this.config.config.launch_mode === "external" ? {} : { demo_data: !!res.demoData }),
       ...(this.categoriesEnabled ? { category: res.category || "" } : {}),
     });
   }

@@ -20,7 +20,7 @@ import {
   ws,
   type Sse,
 } from "../helpers/workspaces_fixtures.ts";
-import type { WorkspaceConfig } from "../../src/core/config.ts";
+import { DEFAULT_CONFIG, type WorkspaceConfig } from "../../src/core/config.ts";
 import type { RepoStatusWire } from "../../src/core/observed_models.ts";
 
 let app: MountedApp;
@@ -76,8 +76,12 @@ async function mount(workspaces: WorkspaceConfig[], opts: Opts = {}) {
 
 // alpha as the app last saved it (the debounced config POST), if it saved yet
 function savedAlpha(): WorkspaceConfig | undefined {
+  return savedWs("alpha");
+}
+
+function savedWs(id: string): WorkspaceConfig | undefined {
   if (!app.callsTo("/api/config").some((c) => c.method === "POST")) return undefined;
-  return lastSavedConfig(app).workspaces.find((w) => w.id === "alpha");
+  return lastSavedConfig(app).workspaces.find((w) => w.id === id);
 }
 
 async function select(name: string) {
@@ -555,6 +559,87 @@ describe("header menu", () => {
       db: "alpha2-db",
       checkouts: [{ repo: "community", branch: "master-alpha" }],
     });
+  });
+
+  it("Edit adds a repo to a worktree workspace (its worktree first) and saves demo data", async () => {
+    await mount([ALPHA, WT], {
+      config: {
+        repos: [
+          ...DEFAULT_CONFIG.repos,
+          {
+            id: "upgrade",
+            path: "/home/odoo/work/upgrade",
+            github: "odoo/upgrade",
+            pull_remote: "origin",
+            push_remote: "origin",
+            favorite: false,
+          },
+        ],
+      },
+      git: [...GIT(), repo("upgrade", "master", ["master"])],
+      routes: { "/api/workspace/create": { ok: true, results: [] } },
+    });
+    await select("feature-wt");
+    (await kebab("Edit workspace…")).click();
+    await app.settle();
+    const d = dialog()!;
+    const check = (label: string) =>
+      mustText(d, ".edit-check", label).querySelector<HTMLInputElement>("input")!;
+    expect(check("Demo data").checked).toBe(true);
+    check("upgrade").click();
+    check("Demo data").click();
+    await app.settle();
+    expect(d.querySelectorAll<HTMLInputElement>("input[type=text]")[1].value).toBe(
+      "community:master-wt1,enterprise:master,upgrade:master-wt1",
+    );
+    await dialogButton("Save");
+    const [create] = app.callsTo("/api/workspace/create");
+    expect(create.body).toEqual({
+      workspace: "wt1",
+      repos: [
+        {
+          repo: "upgrade",
+          mainPath: "/home/odoo/work/upgrade",
+          pull_remote: "origin",
+          worktreePath: "/home/odoo/work-trees/wt1/upgrade",
+          newBranch: "master-wt1",
+          startPoint: "master",
+        },
+      ],
+    });
+    await waitFor(app, () => savedWs("wt1")?.checkouts.length === 3);
+    expect(savedWs("wt1")).toMatchObject({
+      demo_data: false,
+      checkouts: [
+        { repo: "community", branch: "master-wt1" },
+        { repo: "enterprise", branch: "master" },
+        { repo: "upgrade", branch: "master-wt1" },
+      ],
+    });
+  });
+
+  it("Edit keeps the repos unchanged when adding one's worktree fails", async () => {
+    await mount([ALPHA, WT], {
+      git: GIT(),
+      routes: {
+        "/api/workspace/create": {
+          ok: false,
+          results: [{ repo: "enterprise", ok: false, error: "already exists" }],
+        },
+      },
+      config: { workspaces: [{ ...WT, checkouts: [{ repo: "community", branch: "master-wt1" }] }] },
+    });
+    await select("feature-wt");
+    (await kebab("Edit workspace…")).click();
+    await app.settle();
+    mustText(dialog()!, ".edit-check", "enterprise").querySelector("input")!.click();
+    await app.settle();
+    await dialogButton("Save");
+    expect(mustText(dialog()!, ".dialog-title", "Adding repos failed").textContent).toContain(
+      "Adding repos failed",
+    );
+    expect(dialog()!.textContent).toContain("enterprise: already exists");
+    expect(app.callsTo("/api/config").filter((c) => c.method === "POST")).toEqual([]);
   });
 
   it("Edit offers the category when categories are on; double-clicking the name opens it too", async () => {

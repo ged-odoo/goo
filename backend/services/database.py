@@ -1,4 +1,4 @@
-"""PostgreSQL databases (list/create/drop/restore runbot dumps)."""
+"""PostgreSQL databases (list/create/drop/restore runbot and local dumps)."""
 
 import os
 import re
@@ -20,10 +20,39 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # A runbot build's dump, as RunbotService._dump_url builds it. restore_dump checks
 # the URL it is handed against this: the endpoint feeds a downloaded file straight
 # into psql, so it may fetch runbot dumps and nothing else — never an arbitrary
-# "download this and run it through my database" primitive.
+# "download this and run it through my database" primitive. (restore_file does
+# replay a file the user picked themselves, through goo's same-origin UI.)
 _RUNBOT_DUMP_URL_RE = re.compile(
     r"^https?://[\w.-]+\.odoo\.com/runbot/static/build/[\w.-]+/logs/[\w.-]+\.zip$"
 )
+
+# Where dumps are downloaded/uploaded and unpacked: on disk, not the system temp dir
+# (often a RAM-backed tmpfs) — a production backup inflates to many gigabytes.
+DUMP_TMP_DIR = "~/.cache/goo"
+
+# What "Import database" can run on a restored dump, by key (the frontend's checkboxes):
+# - crons: disable the scheduled actions, so the copy doesn't run the mail queue or
+#   the other periodic jobs on its own (mail servers and integrations stay as-is);
+# - assets: the stored asset bundles were built from another checkout's code;
+# - admin: log in as admin/admin and every user with its login as password, without
+#   two-factor (user 2 is the admin since Odoo 12; skipped when a user already has
+#   the "admin" login). Odoo's password hashing accepts a plaintext password and
+#   re-hashes it on login.
+RESTORE_CLEANUPS = {
+    "crons": "UPDATE ir_cron SET active = false",
+    "assets": (
+        "DELETE FROM ir_attachment WHERE res_model = 'ir.ui.view' AND res_id = 0"
+        " AND (url LIKE '/web/assets/%' OR url LIKE '/web/content/%assets\\_%')"
+    ),
+    "admin": (
+        "UPDATE res_users SET login = 'admin' WHERE id = 2"
+        " AND NOT EXISTS (SELECT 1 FROM res_users WHERE login = 'admin');"
+        " UPDATE res_users SET password = login;"
+        " DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'res_users' AND column_name = 'totp_secret')"
+        " THEN UPDATE res_users SET totp_secret = NULL; END IF; END $$"
+    ),
+}
 
 
 def _valid_db_name(name: object) -> bool:
@@ -160,7 +189,12 @@ class DatabaseService:
         return r.returncode == 0 and r.stdout.strip() == "1"
 
     def restore_dump(
-        self, name: str, url: str, filestore: str | None = None, log_progress: bool = True
+        self,
+        name: str,
+        url: str,
+        filestore: str | None = None,
+        log_progress: bool = True,
+        cleanup: list[str] | None = None,
     ) -> tuple[bool, str | None]:
         """Download a runbot database dump and restore it into a NEW database `name`.
         Returns (ok, error); invalidates the list cache on success.
@@ -169,43 +203,81 @@ class DatabaseService:
         this is odoo's own restore: create the database the way odoo would
         (template0 / unicode / LC_COLLATE C, which is what its dumps expect), replay
         dump.sql through psql, and drop the filestore alongside as <filestore>/<name>
-        so the restored attachments actually resolve.
+        so the restored attachments actually resolve. `cleanup` names the
+        RESTORE_CLEANUPS steps to run on the restored database.
 
         `name` must not exist yet: replaying a dump over a live database would merge
         two schemas into rubble. A failure after the database was created takes it
         back down rather than leaving an unusable shell behind, and the download +
         extraction live in a temp directory that's removed either way."""
-        if not _valid_db_name(name):
-            return False, f"invalid database name: {name}"
         if not _RUNBOT_DUMP_URL_RE.match(url or ""):
             return False, "not a runbot dump URL"
+
+        def download(tmp: str) -> tuple[str, str | None]:
+            zip_path = os.path.join(tmp, "dump.zip")
+            ok, err = self.io.http_download(
+                url,
+                zip_path,
+                timeout=1800,
+                on_progress=self._download_logger(url) if log_progress else None,
+            )
+            return zip_path, None if ok else f"could not download the dump: {err}"
+
+        return self._restore(name, download, filestore, cleanup)
+
+    def restore_file(
+        self,
+        name: str,
+        path: str,
+        filestore: str | None = None,
+        cleanup: list[str] | None = None,
+    ) -> tuple[bool, str | None]:
+        """Restore a local dump file into a NEW database `name`, like restore_dump:
+        an odoo zip (dump.sql + filestore/, as odoo.sh and the database manager
+        produce) or a bare gzipped SQL dump (.sql.gz — no filestore). Like odoo's own
+        restore, psql replays it as-is: import only dumps you trust."""
+        if not path.lower().endswith((".zip", ".sql.gz")):
+            return False, "only .zip and .sql.gz dumps can be imported"
+        return self._restore(name, lambda _tmp: (path, None), filestore, cleanup)
+
+    def _restore(
+        self,
+        name: str,
+        fetch: Callable[[str], tuple[str, str | None]],
+        filestore: str | None,
+        cleanup: list[str] | None,
+    ) -> tuple[bool, str | None]:
+        """The shared restore: check `name`, then in a temp directory (removed either
+        way) `fetch(tmp)` → (archive path, error) and restore that archive."""
+        if not _valid_db_name(name):
+            return False, f"invalid database name: {name}"
         if self.exists(name):
             return False, f'database "{name}" already exists'
-        tmp = self.io.make_temp_dir("goo-dump-")
+        tmp = self.io.make_temp_dir("goo-dump-", DUMP_TMP_DIR)
         if not tmp:
             return False, "could not create a temporary directory"
         try:
-            return self._restore_dump(name, url, tmp, filestore, log_progress)
+            archive, err = fetch(tmp)
+            if err:
+                return False, err
+            ok, err = self._restore_archive(name, archive, tmp, filestore)
+            if ok:
+                self._clean_restored(name, cleanup or [])
+            return ok, err
         finally:
             ok, err = self.io.remove_tree(tmp)
             if not ok:
                 self.io.log(f"{getattr(self.io, 'TAG', '[goo]')} could not clean up {tmp}: {err}")
 
-    def _restore_dump(
-        self, name: str, url: str, tmp: str, filestore: str | None, log_progress: bool
+    def _restore_archive(
+        self, name: str, archive: str, tmp: str, filestore: str | None
     ) -> tuple[bool, str | None]:
-        """The body of restore_dump, inside the temp directory it cleans up."""
-        zip_path = os.path.join(tmp, "dump.zip")
-        ok, err = self.io.http_download(
-            url,
-            zip_path,
-            timeout=1800,
-            on_progress=self._download_logger(url) if log_progress else None,
-        )
-        if not ok:
-            return False, f"could not download the dump: {err}"
+        """Unpack `archive` (.zip, else gzipped SQL) into `tmp` and restore it."""
         unpacked = os.path.join(tmp, "dump")
-        ok, err = self.io.unzip(zip_path, unpacked)
+        if archive.lower().endswith(".zip"):
+            ok, err = self.io.unzip(archive, unpacked)
+        else:
+            ok, err = self.io.gunzip(archive, os.path.join(unpacked, "dump.sql"))
         if not ok:
             return False, f"could not unpack the dump: {err}"
         sql = os.path.join(unpacked, "dump.sql")
@@ -250,6 +322,25 @@ class DatabaseService:
         if not ok:
             self._log_filestore("install", src, dst, err)
         return True, None
+
+    def _clean_restored(self, name: str, steps: list[str]) -> None:
+        """Run the RESTORE_CLEANUPS `steps` on a freshly restored database. Each is
+        best-effort: the database is restored either way, so a failure is logged."""
+        for step in steps:
+            sql = RESTORE_CLEANUPS.get(step)
+            if not sql:
+                continue
+            try:
+                r = self.io.run(
+                    ["psql", "--quiet", "--dbname", name, "-c", sql], timeout=120, quiet=True
+                )
+                err = r.stderr.strip() if r.returncode else None
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                err = str(e)
+            if err:
+                self.io.log(
+                    f"{getattr(self.io, 'TAG', '[goo]')} {name}: cleanup {step} failed: {err}"
+                )
 
     def _drop_quietly(self, name: str) -> None:
         """Take a half-restored database back down — the restore failed, so the shell

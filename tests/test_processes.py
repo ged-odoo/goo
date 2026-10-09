@@ -295,6 +295,15 @@ class OdooCmdTests(unittest.TestCase):
         self.assertEqual(cmd, "cd /src/odoo && /src/odoo/odoo-bin")
         self.assertEqual(addons, f"addons,../enterprise,{processes.ADDONS_DIR}")
 
+    def test_base_skips_repos_without_addons(self):
+        cfg = _config()
+        cfg["repos"] += [
+            {"id": "documentation", "path": "/src/documentation"},
+            {"id": "upgrade", "path": "/src/upgrade"},
+        ]
+        _, addons = processes._odoo_cmd_base(cfg)
+        self.assertEqual(addons, f"addons,../enterprise,{processes.ADDONS_DIR}")
+
     def test_base_subset_and_order(self):
         _, addons = processes._odoo_cmd_base(_config(), ["enterprise", "community"])
         self.assertEqual(addons, f"../enterprise,addons,{processes.ADDONS_DIR}")
@@ -362,6 +371,11 @@ def _docker_config(**kw):
 
 
 class DockerCmdTests(unittest.TestCase):
+    def test_run_prefix_skips_repos_without_addons(self):
+        cfg = _docker_config(start={"repos": ["community", "upgrade", "enterprise"]})
+        _, _, _, addons = processes._docker_run_prefix(cfg)
+        self.assertEqual(addons, "addons,../enterprise,/goo-addons")
+
     def test_run_prefix_defaults(self):
         run, mount, main, addons = processes._docker_run_prefix(_docker_config())
         self.assertEqual((mount, main), ("/src", "community"))

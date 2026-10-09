@@ -15,7 +15,6 @@ import { RemoteBranchDialog } from "../core/dialogs.ts";
 import type { RemoteBranchPick } from "../core/dialogs.ts";
 import {
   errorMessage,
-  formatBytes,
   postJSON,
   repoBranchList,
   descendantWorkspaces,
@@ -30,7 +29,8 @@ import type {
 } from "../core/config.ts";
 import type { ConfigPlugin } from "../core/config_plugin.ts";
 import type { CodePlugin } from "../core/code_plugin.ts";
-import type { DatabasePlugin } from "../core/database_plugin.ts";
+import { dumpLabel } from "../core/database_plugin.ts";
+import type { DatabasePlugin, RunbotDump } from "../core/database_plugin.ts";
 import type { DialogField, DialogPlugin } from "../core/dialog_plugin.ts";
 import type { EventLogPlugin } from "../core/event_log_plugin.ts";
 import type { BranchInfo, ForwardPortRow } from "../core/observed_models.ts";
@@ -64,15 +64,6 @@ export interface ResolvedPrBranch {
   repo: Pick<RepoConfig, "id" | "path">;
   branch: string;
   ok: true;
-}
-
-// one database dump a runbot batch left behind (backend RunbotService dumps)
-export interface RunbotDump {
-  build?: string;
-  slot: string; // the build's name, e.g. "Enterprise Run"
-  db: string; // "all" | "base" | …
-  url: string;
-  size?: number;
 }
 
 // what the create form opens prefilled with (startCreateWorkspace)
@@ -141,7 +132,7 @@ export function categoryOptions(config: {
 // toggling an unrelated repo's checkbox or editing the name — only a repo with
 // no config entry yet (the user manually ticking one beyond what was fetched)
 // gets `branch` stamped as a best-effort guess.
-const configFromRepos = (
+export const configFromRepos = (
   repoIds: string[],
   branch: string,
   currentConfig = "",
@@ -552,15 +543,15 @@ export async function startCreateWorkspace(
   // prefills these, so the field is absent everywhere else.
   const dumpOptions = (prefill.dumps || []).map((d) => ({
     value: d.url,
-    label: `${d.slot} — ${d.db}${d.size ? ` (${formatBytes(d.size)})` : ""}`,
+    label: dumpLabel(d),
   }));
   // ticked by default: whatever the prefilled config already covers, else every
-  // non-external configured repo (a new task branch usually spans all of them;
-  // external repos, e.g. odoo/owl, are outside the CI ecosystem and rarely need
-  // a matching branch, so leave them for the user to opt into)
+  // configured repo but the opt-in ones (a new task branch usually spans all of
+  // them). External repos, e.g. odoo/owl, are outside the CI ecosystem and rarely
+  // need a matching branch, so they're opt-in too.
   const prefillRepoIds = prefill.config
     ? repoBranchList.parse(prefill.config).map((c) => c.repo)
-    : (config.config.repos || []).filter((r) => !r.external).map((r) => r.id);
+    : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
   // bundle / remote-branch / forward-port sources (createBranches: false) only
   // fetched a branch for `prefillRepoIds` — anything the user ticks beyond that
   // has no confirmed branch to attach; git worktree add for it fails with
@@ -640,9 +631,10 @@ export async function startCreateWorkspace(
             ),
           };
           // only stomp demoData while forking a fresh branch (same gating as
-          // config above) — attaching to an existing/remote branch shouldn't
-          // silently flip a checkbox the user didn't touch
-          if (forkingFresh) updates.demoData = defaultDemoData(newName.trim());
+          // config above) and with no template — attaching to an existing/remote
+          // branch shouldn't silently flip a checkbox the user didn't touch, and a
+          // template's own demo-data setting wins over the branch-based guess
+          if (forkingFresh && !tpl) updates.demoData = defaultDemoData(newName.trim());
           // db stays in lockstep with name as it's typed (a blank db otherwise
           // sails through Create silently, then fails Start with "no database
           // configured") — full stomp while db is still empty or still exactly

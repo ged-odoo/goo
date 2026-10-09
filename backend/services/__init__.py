@@ -20,6 +20,8 @@ from .config import (
 from .database import (
     _DB_NAME_RE,
     _RUNBOT_DUMP_URL_RE,
+    DUMP_TMP_DIR,
+    RESTORE_CLEANUPS,
     DatabaseService,
     _valid_db_name,
 )
@@ -68,6 +70,8 @@ from .runbot import (
 )
 
 __all__ = [
+    "DUMP_TMP_DIR",
+    "RESTORE_CLEANUPS",
     "CiCheck",
     "CiRollup",
     "PullRequest",
