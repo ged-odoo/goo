@@ -4149,6 +4149,12 @@ tr.active td.brg-commit {
   padding: 0;
   font-size: 13px;
   color: var(--l-text);
+  /* a long label (e.g. a long database name) wraps instead of squeezing the box */
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.dialog-field .edit-check input {
+  flex: none;
 }
 /* one checkbox per repo (e.g. new-workspace's "Repositories") — wraps, since a
    config can have several repos */
