@@ -10866,7 +10866,7 @@ async function startCreateWorkspace(plugins, prefill = {}) {
               !forkingFresh
             )
           };
-          if (forkingFresh) updates.demoData = defaultDemoData(newName.trim());
+          if (forkingFresh && !tpl) updates.demoData = defaultDemoData(newName.trim());
           const trimmed = newName.trim();
           if (!currentValues.db || currentValues.db === oldValues.name) {
             updates.db = trimmed;
