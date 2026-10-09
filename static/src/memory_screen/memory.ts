@@ -1,8 +1,51 @@
 import { Component, onPatched, onWillUnmount, usePlugin, signal, xml } from "@odoo/owl";
 import { MemoryPlugin } from "./memory_plugin.ts";
-import { ICONS, m } from "../core/common.ts";
+import { ICONS, loadScript, m } from "../core/common.ts";
 import { Panel } from "../core/panel.ts";
-import { CHART_COLORS, CHART_ZOOM_OPTIONS, loadChartJs } from "../nightly_screen/nightly.ts";
+
+// lazy-load Chart.js + its zoom/pan plugin (both vendored, not a CDN) on first
+// use. Wheel-zooms and drag-pans; no pinch (that needs hammer.js too, and this
+// is a desktop dev tool).
+let _chartJsReady: Promise<void> | null = null;
+
+function loadChartJs(): Promise<void> {
+  if (!_chartJsReady) {
+    _chartJsReady = loadScript("/static/lib/chart/chart.umd.min.js", () => window.Chart)
+      .then(() =>
+        loadScript("/static/lib/chart/chartjs-plugin-zoom.min.js", () => window.ChartZoom),
+      )
+      .then(() => window.Chart.register(window.ChartZoom))
+      .catch((e) => {
+        _chartJsReady = null; // allow retry
+        throw e;
+      });
+  }
+  return _chartJsReady;
+}
+
+// options.plugins.zoom config: wheel-zoom + drag-to-pan, double-click to reset
+const CHART_ZOOM_OPTIONS = {
+  pan: { enabled: true, mode: "x" },
+  zoom: {
+    wheel: { enabled: true },
+    drag: { enabled: true, modifierKey: "shift" },
+    mode: "x",
+  },
+};
+
+// categorical palette for the Chart.js datasets (Tableau-10-ish)
+const CHART_COLORS = [
+  "#4e79a7",
+  "#f28e2b",
+  "#e15759",
+  "#76b7b2",
+  "#59a14f",
+  "#edc948",
+  "#b07aa1",
+  "#ff9da7",
+  "#9c755f",
+  "#bab0ac",
+];
 
 // the slice of a Chart.js instance this screen touches (window.Chart itself is untyped)
 interface MemoryChart {

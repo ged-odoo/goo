@@ -6,8 +6,8 @@ declare global {
   var owl: typeof import("@odoo/owl");
 
   // xterm.js + its fit addon (static/lib/xterm/, loaded by core/terminal.ts) and
-  // Chart.js + its zoom plugin (static/lib/chart/, loaded by the nightly/memory
-  // screens). Vendored UMD builds with no type package in the repo: `any` is
+  // Chart.js + its zoom plugin (static/lib/chart/, loaded by the memory
+  // screen). Vendored UMD builds with no type package in the repo: `any` is
   // deliberate — the few calls goo makes are covered where they're used.
   /* eslint-disable @typescript-eslint/no-explicit-any */
   var Terminal: any;

@@ -30,9 +30,6 @@ export function loadXterm(): Promise<unknown> {
   return _xtermReady;
 }
 
-// lazy-load a <script> and resolve once it has run (or already has, e.g. Chart.js
-// itself once both the Nightly and Memory panel have asked for it)
-
 export async function attachXterm(
   el: HTMLElement,
   wsUrl: string,

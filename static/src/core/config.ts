@@ -395,7 +395,6 @@ export const SECTIONS = [
   "review-queue",
   "todo",
   "databases",
-  "nightly",
   "memory",
   "ci",
   "config",
