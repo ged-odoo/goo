@@ -8016,13 +8016,16 @@ var ImportDatabaseDialog = class extends Component {
             </div>
             <div t-if="this.version() === this.OTHER" class="dialog-field">
               <label>Bundle</label>
-              <input type="text" class="imp-bundle" list="imp-bundles" placeholder="search runbot bundles…"
+              <input type="text" class="imp-bundle" autocomplete="off" placeholder="search runbot bundles…"
                      t-att-value="this.query()"
                      t-on-input="(ev) => this.onSearch(ev.target.value)"
                      t-on-change="(ev) => this.pickBundle(ev.target.value)"/>
-              <datalist id="imp-bundles">
-                <option t-foreach="this.matches()" t-as="b" t-key="b" t-att-value="b"/>
-              </datalist>
+              <div t-if="this.matches().length" class="rbd-results imp-matches">
+                <div t-foreach="this.matches()" t-as="b" t-key="b" class="rbd-row"
+                     t-att-class="{selected: this.other() === b}" t-on-click="() => this.pickMatch(b)">
+                  <span class="rbd-branch" t-out="b"/>
+                </div>
+              </div>
             </div>
             <div class="dialog-field">
               <label>Edition</label>
@@ -8164,7 +8167,12 @@ var ImportDatabaseDialog = class extends Component {
     this.other.set(name.trim());
     this._loadDumps(this.bundle());
   }
-  // runbot's bundle search, debounced while typing (fills the input's datalist)
+  // a bundle clicked in the search results
+  pickMatch(name) {
+    this.query.set(name);
+    this.pickBundle(name);
+  }
+  // runbot's bundle search, debounced while typing (fills the results list)
   onSearch(query) {
     this.query.set(query);
     clearTimeout(this._timer);
