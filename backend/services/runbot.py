@@ -18,9 +18,9 @@ MERGEBOT_BASE = "https://mergebot.odoo.com"
 # ─────────────────────────── Runbot (HTML scraping) ─────────────────────────
 
 # runbot's rd-1 page lists every bundle of the R&D project; the starred ones are the
-# sticky series (master, 19.0, saas-19.4, …). Both the Nightly screen (which walks
-# each series' night builds) and the dump lookup (which needs a series' canonical
-# bundle id — see RunbotService._bundle_html) read it through here.
+# sticky series (master, 19.0, saas-19.4, …). The Nightly screen (which walks each
+# series' night builds) and the dump lookup (which reads a bundle's row — see
+# RunbotService._bundle_html) read it through here.
 _BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
 _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
 
@@ -194,29 +194,22 @@ class RunbotService:
         return list(dict.fromkeys(name for _id, name in _BUNDLE_LINK_RE.findall(html)))
 
     def _bundle_html(self, branch: str) -> str:
-        """The bundle page for `branch` ("" when there's none to read).
+        """The R&D listing's row for `branch`'s bundle, with its latest batch tiles
+        newest first ("" when there's none to read).
 
-        A sticky series is addressed by the bundle id runbot's own starred list gives
-        it, never by name: /runbot/bundle/saas-19.4 redirects to `saas-194`, an
-        unrelated (and private → 403) dev bundle, so name resolution silently answers
-        for the wrong series. By id, the 301 to the canonical slug is the right
-        canonicalization and is simply followed.
-
-        Any other branch is a real branch name, resolved under the usual rules — a
-        302 is a genuine name match, a 301 means runbot read a trailing "-<n>" as
-        some other bundle's id (see _status)."""
-        bundle_id = self.sticky_bundles().get(branch)
-        if bundle_id:
-            html, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/bundle/{bundle_id}")
-            return html or ""
-        url = f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}"
-        status, location, html, _ = self.io.http_get_nofollow(url)
-        if status == 302:  # name match → the canonical bundle page
-            html, _ = self.io.http_get(urllib.parse.urljoin(RUNBOT_BASE, location))
-            return html or ""
-        if status != 200:  # 301 (id-misresolve to a foreign bundle), 404, or error
+        Read off runbot's search listing (r-d-1?search=), not the bundle page: bundle
+        pages sit behind a bot check that only a browser passes. The row is matched on
+        the exact bundle name, since the search also lists every bundle whose name
+        merely contains it (and the starred series)."""
+        url = f"{RUNBOT_BASE}/runbot/r-d-1?search={urllib.parse.quote(branch)}"
+        html, err = self.io.http_get(url, timeout=20)
+        if err or not html:
             return ""
-        return html or ""
+        for row in _BUNDLE_ROW_RE.split(html)[1:]:
+            m = _BUNDLE_LINK_RE.search(row)
+            if m and html_lib.unescape(m.group(2)) == branch:
+                return row
+        return ""
 
     _MAX_BATCHES = 4  # how far back bundle_dumps looks for a batch that still has dumps
 
