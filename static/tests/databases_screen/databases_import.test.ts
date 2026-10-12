@@ -125,11 +125,16 @@ describe("Databases screen — Import database", () => {
     await select(".imp-version", "__other__");
     const input = field<HTMLInputElement>(".imp-bundle");
     type(input, "fix-thing", false);
-    await until(app, () => dialog()!.querySelectorAll("#imp-bundles option").length === 2);
+    await until(app, () => dialog()!.querySelectorAll(".imp-matches .rbd-row").length === 2);
     expect(app.callsTo("/api/runbot/search").map((c) => c.body)).toEqual([{ query: "fix-thing" }]);
 
-    type(input, "17.0-fix-thing");
+    const row = [...dialog()!.querySelectorAll<HTMLElement>(".imp-matches .rbd-row")].find(
+      (r) => r.textContent === "17.0-fix-thing",
+    )!;
+    row.click();
     await app.settle();
+    expect(input.value).toBe("17.0-fix-thing");
+    expect(row.classList.contains("selected")).toBe(true);
     await select(".imp-edition", "community");
     await select(".imp-data", "base");
     await answer(app, true);
@@ -158,7 +163,7 @@ describe("Databases screen — Import database", () => {
     await openImport();
     await select(".imp-version", "__other__");
     type(field<HTMLInputElement>(".imp-bundle"), "fix-thing", false);
-    await until(app, () => dialog()!.querySelectorAll("#imp-bundles option").length === 2);
+    await until(app, () => dialog()!.querySelectorAll(".imp-matches .rbd-row").length === 2);
     expect(field<HTMLInputElement>(".imp-bundle").value).toBe("fix-thing");
   });
 
