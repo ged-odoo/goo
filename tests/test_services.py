@@ -515,46 +515,50 @@ class RunbotServiceTest(unittest.TestCase):
             [(d["build"], d["db"]) for d in info["dumps"]], [("13", "all"), ("13", "base")]
         )
 
+    def _listing(self, *names):
+        """runbot's r-d-1 search listing: one bundle row per name, each carrying the
+        batch tiles of _bundle_with_batches."""
+        tiles = self._bundle_with_batches().split("</title>", 1)[1]
+        return "".join(
+            f'<div class="row bundle_row"><a href="/runbot/bundle/{i}" '
+            f'title="View Bundle {name}">{name}</a>{tiles}</div>'
+            for i, name in enumerate(names, 1)
+        )
+
     def test_dumps_by_branch_name(self):
-        # "the runbot database for master" — the same parse, reached by bundle NAME
-        # (302 → canonical page) instead of a pasted URL
+        # "the runbot database for master" — the bundle's row of runbot's search
+        # listing (bundle pages need a browser), matched on the exact name among the
+        # bundles whose name merely contains it
+        listing = self._listing("master-x-older", "master")
+        listing = listing.replace("runbot9", "runbot7", 1)  # the first row's builds
         io = FakeIO(
-            http_nofollow={"bundle/master": (302, "/runbot/bundle/master-1", "")},
-            http={"bundle/master-1": (self._bundle_with_batches(), None)},
+            http={"r-d-1?search=master": (listing, None)},
             http_head={"runbot9.odoo.com": (200, 4096)},
         )
         svc = services.RunbotService(io, TTLCache(ttl=60))
         dumps = svc.dumps("master")
         self.assertEqual(
-            [(d["build"], d["db"]) for d in dumps],
-            [("12", "all"), ("13", "all"), ("13", "base")],
+            [(d["build"], d["db"], d["url"].split("/")[2]) for d in dumps],
+            [
+                ("12", "all", "runbot9.odoo.com"),
+                ("13", "all", "runbot9.odoo.com"),
+                ("13", "base", "runbot9.odoo.com"),
+            ],
         )
+        self.assertFalse(any("/runbot/bundle/" in c for c in io.http_calls))
         # cached per branch under its own key — a second open costs no requests
         before = len(io.http_calls)
         svc.dumps("master")
         self.assertEqual(len(io.http_calls), before)
 
-    def test_dumps_resolves_a_sticky_series_by_bundle_id(self):
-        # /runbot/bundle/saas-19.4 redirects to `saas-194`, an unrelated private dev
-        # bundle — a sticky series must be addressed by the id the starred list gives
-        # it, and never through that name lookup
-        rd1 = (
-            '<div class="row bundle_row"><i class="fa fa-star"></i>'
-            '<a href="/runbot/bundle/483750" title="View Bundle saas-19.4">v</a></div>'
-        )
-        io = FakeIO(
-            http={"rd-1": (rd1, None), "bundle/483750": (self._bundle_with_batches(), None)},
-            http_head={"runbot9.odoo.com": (200, 8)},
-        )
-        dumps = services.RunbotService(io, TTLCache(ttl=0)).dumps("saas-19.4")
-        self.assertEqual([d["build"] for d in dumps], ["12", "13", "13"])
-        # the misleading name URL was never requested
-        self.assertFalse(any("bundle/saas-19.4" in c for c in io.http_calls))
-
     def test_dumps_by_branch_absent_bundle(self):
-        # 301 = runbot read the trailing number as some other bundle's id: no offer
-        io = FakeIO(http_nofollow={"bundle/nope-33": (301, "/runbot/bundle/foreign-33", "")})
-        self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("nope-33"), [])
+        # the search only finds bundles whose name contains it: no exact row, no offer
+        io = FakeIO(http={"r-d-1?search=nope": (self._listing("nope-more"), None)})
+        self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("nope"), [])
+
+    def test_dumps_unreadable_listing(self):
+        io = FakeIO(http={"r-d-1": ("", "HTTP Error 503")})
+        self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("master"), [])
 
     def test_bundle_dumps_absent_without_batches(self):
         io = FakeIO(http_nofollow={"bundle/x": (200, "", self.BUNDLE_HTML)})
