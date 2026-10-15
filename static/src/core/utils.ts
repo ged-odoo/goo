@@ -486,3 +486,63 @@ export const repoBranchList = {
         return { repo, branch };
       }),
 };
+
+// Three-way merge of JSON values: `mine` and `theirs` both derive from `base`. A
+// value only one side changed takes that side's; when both changed it, mine wins.
+// Objects merge per key. Arrays of {id} records merge per id: either side's
+// additions survive, a removal on either side wins over an edit on the other, and
+// mine's order is kept only if mine reordered. Arrays of plain values keep both
+// sides' additions (mine's first) and removals, in mine's order if mine reordered.
+// Other arrays are taken whole.
+export function merge3(base: unknown, mine: unknown, theirs: unknown): unknown {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (same(mine, base)) return theirs;
+  if (same(theirs, base) || same(mine, theirs)) return mine;
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const records = (v: unknown): Record<string, unknown>[] | null =>
+    Array.isArray(v) && v.every((r) => isObj(r) && typeof r.id === "string")
+      ? (v as Record<string, unknown>[])
+      : null;
+  const plain = (v: unknown): unknown[] | null =>
+    Array.isArray(v) && v.every((x) => x === null || typeof x !== "object") ? v : null;
+  const [b, m, t] = [records(base ?? []), records(mine), records(theirs)];
+  if (b && m && t) {
+    const byId = (rs: Record<string, unknown>[]) => new Map(rs.map((r) => [r.id as string, r]));
+    const [bm, mm, tm] = [byId(b), byId(m), byId(t)];
+    const ids = (rs: Record<string, unknown>[]) => rs.map((r) => r.id as string);
+    const mineReordered = !same(
+      ids(m).filter((id) => bm.has(id)),
+      ids(b).filter((id) => mm.has(id)),
+    );
+    const order = [...new Set(mineReordered ? [...ids(m), ...ids(t)] : [...ids(t), ...ids(m)])];
+    const out: unknown[] = [];
+    for (const id of order) {
+      if (bm.has(id) && (!mm.has(id) || !tm.has(id))) continue; // removed on a side
+      out.push(merge3(bm.get(id), mm.get(id), tm.get(id)));
+    }
+    return out;
+  }
+  const [pb, pm, pt] = [plain(base ?? []), plain(mine), plain(theirs)];
+  if (pb && pm && pt) {
+    const removed = (x: unknown) => pb.includes(x) && (!pm.includes(x) || !pt.includes(x));
+    const mineReordered = !same(
+      pm.filter((x) => pb.includes(x)),
+      pb.filter((x) => pm.includes(x)),
+    );
+    const merged = mineReordered
+      ? [...pm, ...pt.filter((x) => !pb.includes(x))]
+      : [...pm.filter((x) => !pb.includes(x)), ...pt];
+    return [...new Set(merged.filter((x) => !removed(x)))];
+  }
+  if (isObj(mine) && isObj(theirs)) {
+    const bo = isObj(base) ? base : {};
+    const out: Record<string, unknown> = {};
+    for (const k of new Set([...Object.keys(theirs), ...Object.keys(mine)])) {
+      const v = merge3(bo[k], mine[k], theirs[k]);
+      if (v !== undefined) out[k] = v;
+    }
+    return out;
+  }
+  return mine;
+}

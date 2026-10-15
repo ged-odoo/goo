@@ -15,7 +15,7 @@
 import { BASE_BRANCH_RE, DEFAULT_CONFIG, SECTIONS } from "./config.ts";
 import { PRESETS } from "./presets.ts";
 import type { Preset } from "./presets.ts";
-import { errorMessage, worktreeDirFor } from "./utils.ts";
+import { errorMessage, merge3, worktreeDirFor } from "./utils.ts";
 import type {
   AppStateBlob,
   Config,
@@ -389,6 +389,11 @@ export class ConfigPlugin extends Plugin {
   // record changes, so the ~72 `config.config.*` consumers stay reactive + cheap
   _configView = computed(() => merge(toConfig(this.orm)));
   _dirty = { config: false, state: false }; // blobs edited since the last flush
+  _inFlight = 0; // saves in flight (their dirty flags already cleared)
+  _sending: { config?: ConfigBlob; state?: Partial<AppStateBlob> }[] = []; // their bodies
+  // the config + state as last synced with the server: the base another tab's write
+  // is merged against, so neither side's edit is lost (see _mergeServer)
+  _synced = this._snapshot();
   _timer: ReturnType<typeof setTimeout> | undefined = undefined;
 
   override setup(): void {
@@ -416,6 +421,40 @@ export class ConfigPlugin extends Plugin {
     for (const M of CONFIG_MODELS) for (const rec of this.orm.records(M)) this.orm.delete(rec);
     const norm = normalizeConfigState(merge(config), state || {});
     toModels(this.orm, norm.config, norm.state);
+  }
+
+  _snapshot(): { config: ConfigBlob; state: Partial<AppStateBlob> } {
+    return { config: toConfig(this.orm), state: toState(this.orm) };
+  }
+
+  // adopt the server's config + state (another tab's write) while keeping this tab's
+  // own unsynced edits: a three-way merge against what was last synced
+  _mergeServer(theirs: { config?: ConfigInput; state?: StateInput }): void {
+    const mine = this._snapshot();
+    this._reload(theirs.config, theirs.state);
+    const server = this._snapshot();
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    // the echo of a save of ours still in flight: it holds no edit of another tab,
+    // and what we sent (not the older _synced) is the base of the edits since
+    const echo = this._sending.some(
+      (b) => same(b.config, server.config) && same(b.state, server.state),
+    );
+    const base = echo ? server : this._synced;
+    // merge3 of three blobs of one shape is a blob of that shape
+    const config = merge3(base.config, mine.config, server.config) as ConfigBlob;
+    // a workspace only this tab has, on a port another one took meanwhile (both
+    // tabs picked the next free port): dealt the next free one instead
+    const serverIds = new Set(server.config.workspaces.map((w) => w.id));
+    for (const w of config.workspaces) {
+      if (serverIds.has(w.id) || !w.port) continue;
+      if (!config.workspaces.some((o) => o !== w && o.port === w.port)) continue;
+      const used = new Set([...RESERVED_PORTS, ...config.workspaces.map((o) => o.port)]);
+      let port = 8070;
+      while (used.has(port)) port++;
+      w.port = port;
+    }
+    this._reload(config, merge3(base.state, mine.state, server.state) as StateInput);
+    this._synced = server;
   }
 
   get config(): Config {
@@ -477,46 +516,77 @@ export class ConfigPlugin extends Plugin {
   // tab wrote), adopt the server's rev and retry so our edit lands on top
   // (last-write-wins — fine for a single user); bounded so a pathological loop can't
   // hang. Clears the dirty flags optimistically and re-sets them on failure/conflict.
-  async _flush(tries = 0): Promise<void> {
+  async _flush(): Promise<void> {
     if (!this._dirty.config && !this._dirty.state) return;
+    this._inFlight++;
+    try {
+      await this._send(0);
+    } finally {
+      this._inFlight--;
+    }
+  }
+
+  async _send(tries: number): Promise<void> {
     const sent = { ...this._dirty };
     this._dirty = { config: false, state: false };
     const body: { rev: number; config?: ConfigBlob; state?: Partial<AppStateBlob> } = {
       rev: this.rev(),
     };
-    if (sent.config) body.config = toConfig(this.orm);
-    if (sent.state) body.state = toState(this.orm);
+    // both blobs every time, so the echo of this save is told apart from another
+    // tab's write by its whole content (see _mergeServer)
+    body.config = toConfig(this.orm);
+    body.state = toState(this.orm);
+    this._sending.push(body);
     try {
       const resp = await fetch("/api/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const res: { rev: number; error?: string } = await resp.json().catch(() => ({}));
+      const res: { rev: number; error?: string; config?: ConfigInput; state?: StateInput } =
+        await resp.json().catch(() => ({}));
+      this._sending = this._sending.filter((b) => b !== body);
       if (resp.status === 409 && tries < 3) {
-        this.rev.set(res.rev);
+        // another tab wrote first: merge its write in (unless a newer broadcast
+        // already did), then resend on the newest rev
+        if (res.rev > this.rev()) {
+          if (res.config || res.state) this._mergeServer(res);
+          this.rev.set(res.rev);
+        }
         this._dirty.config ||= sent.config;
         this._dirty.state ||= sent.state;
-        return this._flush(tries + 1);
+        return this._send(tries + 1);
       }
       if (!resp.ok) throw new Error(res.error || String(resp.status));
-      this.rev.set(res.rev);
+      // a newer write merged in meanwhile (a broadcast) stays the base
+      if (res.rev > this.rev()) {
+        this.rev.set(res.rev);
+        this._synced = {
+          config: body.config ?? this._synced.config,
+          state: body.state ?? this._synced.state,
+        };
+      }
     } catch (e) {
+      this._sending = this._sending.filter((b) => b !== body);
       this._dirty.config ||= sent.config;
       this._dirty.state ||= sent.state;
       console.error(`[goo] config save failed: ${errorMessage(e)}`);
     }
   }
 
-  // apply a config broadcast from another tab (SSE "config"). Ignored while we have a
-  // pending local edit (our own flush reconciles via the 409 retry) or when the rev
-  // isn't newer than ours (stale, or the echo of our own write).
+  // apply a config broadcast from another tab (SSE "config"), unless its rev isn't
+  // newer than ours (stale, or the echo of our own write). With a local edit pending
+  // or in flight, the broadcast is merged in so the edit survives (the save sends it).
   applyBroadcast(payload: Partial<ConfigPayload> | null | undefined): void {
     if (!payload || typeof payload.rev !== "number") return;
-    if (this._dirty.config || this._dirty.state) return;
     if (payload.rev <= this.rev()) return;
     this.rev.set(payload.rev);
-    this._reload(payload.config, payload.state);
+    if (this._dirty.config || this._dirty.state || this._inFlight) {
+      this._mergeServer(payload);
+    } else {
+      this._reload(payload.config, payload.state);
+      this._synced = this._snapshot();
+    }
   }
 
   // ── reset / presets (immediate, awaited so the caller can reload) ─────────────
@@ -536,6 +606,7 @@ export class ConfigPlugin extends Plugin {
       });
       const res: { rev?: number } = await resp.json();
       if (res.rev !== undefined) this.rev.set(res.rev);
+      this._synced = this._snapshot();
     } catch (e) {
       console.error(`[goo] config save failed: ${errorMessage(e)}`);
     }
