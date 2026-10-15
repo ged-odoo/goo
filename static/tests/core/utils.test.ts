@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
+  merge3,
   timeAgo,
   formatBytes,
   escapeHtml,
@@ -263,5 +264,57 @@ describe("repoBranchList", () => {
 
   it("parses '' as an empty list", () => {
     expect(repoBranchList.parse("")).toEqual([]);
+  });
+});
+
+describe("merge3", () => {
+  it("keeps a value only mine changed, else takes theirs; mine wins a clash", () => {
+    const base = { a: 1, b: 1, c: 1 };
+    expect(merge3(base, { a: 2, b: 1, c: 2 }, { a: 1, b: 3, c: 3 })).toEqual({ a: 2, b: 3, c: 2 });
+  });
+
+  it("a removal on either side wins over an edit on the other", () => {
+    const base = [
+      { id: "a", v: 1 },
+      { id: "b", v: 1 },
+    ];
+    expect(merge3(base, [{ id: "a", v: 2 }], [{ id: "b", v: 2 }])).toEqual([]);
+  });
+
+  it("keeps both sides' additions to a list of plain values, mine's first", () => {
+    expect(merge3(["a"], ["b", "a"], ["c", "a"])).toEqual(["b", "c", "a"]);
+    expect(merge3(["a", "b"], ["b"], ["c", "a", "b"])).toEqual(["c", "b"]);
+    // mine moved "b" to the front (a re-run test tag) while theirs added "c"
+    expect(merge3(["a", "b"], ["b", "a"], ["c", "a", "b"])).toEqual(["b", "a", "c"]);
+  });
+
+  it("merges {id} records per id: both sides' additions, edits and removals survive", () => {
+    const base = [
+      { id: "x", v: 1 },
+      { id: "gone-mine", v: 1 },
+      { id: "gone-theirs", v: 1 },
+    ];
+    const mine = [{ id: "x", v: 2 }, { id: "gone-theirs", v: 1 }, { id: "new-mine" }];
+    const theirs = [{ id: "x", v: 1, w: 9 }, { id: "gone-mine", v: 1 }, { id: "new-theirs" }];
+    expect(merge3(base, mine, theirs)).toEqual([
+      { id: "x", v: 2, w: 9 },
+      { id: "new-theirs" },
+      { id: "new-mine" },
+    ]);
+  });
+
+  it("keeps mine's order when mine reordered the records", () => {
+    const base = [{ id: "a" }, { id: "b" }];
+    expect(merge3(base, [{ id: "b" }, { id: "a" }], [...base, { id: "c" }])).toEqual([
+      { id: "b" },
+      { id: "a" },
+      { id: "c" },
+    ]);
+  });
+
+  it("takes other arrays and scalars whole", () => {
+    expect(merge3([{ x: 1 }], [{ x: 2 }], [{ x: 3 }])).toEqual([{ x: 2 }]);
+    expect(merge3([{ x: 1 }], [{ x: 1 }], [{ x: 3 }])).toEqual([{ x: 3 }]);
+    expect(merge3("a", "a", "b")).toBe("b");
   });
 });

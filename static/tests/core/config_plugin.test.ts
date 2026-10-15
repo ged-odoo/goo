@@ -287,6 +287,150 @@ describe("ConfigPlugin", () => {
     expect(plugin.rev()).toBe(6);
   });
 
+  it("keeps an in-flight edit when another tab's write is broadcast before the 409", async () => {
+    vi.useFakeTimers();
+    let release!: (r: unknown) => void;
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (release = r)))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ rev: 6 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    plugin.updateConfig({ db_user: "mine" });
+    await vi.advanceTimersByTimeAsync(250); // the save is in flight
+    // another tab saved meanwhile: its broadcast arrives, then our save's 409
+    plugin.applyBroadcast({ rev: 5, config: { db_user: "theirs" }, state: {} });
+    release({ ok: false, status: 409, json: async () => ({ rev: 5 }) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentBody(fetchMock.mock.calls[1][1]).config.db_user).toBe("mine");
+    expect(plugin.config.db_user).toBe("mine");
+  });
+
+  const wsInput = (id: string) => ({ id, name: id, location: "main", checkouts: [] });
+
+  it("merges another tab's write that lands during a save: both edits survive", async () => {
+    vi.useFakeTimers();
+    let release!: (r: unknown) => void;
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (release = r)))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ rev: 6 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const { config, state } = plugin.snapshot();
+    plugin.updateConfig({ db_user: "mine" });
+    await vi.advanceTimersByTimeAsync(250); // the save is in flight
+    // the other tab created a workspace: its broadcast, then our 409 carrying it
+    const theirs = { config: { ...config, workspaces: [wsInput("theirs")] }, state };
+    plugin.applyBroadcast({ rev: 5, ...theirs });
+    release({ ok: false, status: 409, json: async () => ({ rev: 5, ...theirs }) });
+    await vi.advanceTimersByTimeAsync(0);
+    const resent = sentBody(fetchMock.mock.calls[1][1]);
+    expect(resent.rev).toBe(5);
+    expect(resent.config.db_user).toBe("mine");
+    expect(resent.config.workspaces.map((w: { id: string }) => w.id)).toEqual(["theirs"]);
+    expect(plugin.config.workspaces.map((w) => w.id)).toEqual(["theirs"]);
+    expect(plugin.rev()).toBe(6);
+  });
+
+  it("merges another tab's write into a pending edit: a new workspace isn't dropped", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rev: 6 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { config, state } = plugin.snapshot();
+    plugin.updateConfig({ workspaces: [wsInput("mine")] });
+    plugin.applyBroadcast({ rev: 5, config: { ...config, db_password: "theirs" }, state });
+    expect(plugin.config.workspaces.map((w) => w.id)).toEqual(["mine"]);
+    await vi.advanceTimersByTimeAsync(250);
+    const sent = sentBody(fetchMock.mock.calls[0][1]);
+    expect(sent.rev).toBe(5);
+    expect(sent.config.workspaces.map((w: { id: string }) => w.id)).toEqual(["mine"]);
+    expect(sent.config.db_password).toBe("theirs");
+  });
+
+  it("an edit made while a save is in flight survives that save's own echo", async () => {
+    vi.useFakeTimers();
+    let release!: (r: unknown) => void;
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (release = r)))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ rev: 2 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    plugin.updateConfig({ workspaces: [wsInput("keep"), wsInput("w")] });
+    await vi.advanceTimersByTimeAsync(250); // the save creating w is in flight
+    plugin.updateConfig({ workspaces: [wsInput("keep")] }); // w removed again meanwhile
+    const sent = sentBody(fetchMock.mock.calls[0][1]);
+    plugin.applyBroadcast({ rev: 1, config: sent.config, state: plugin.snapshot().state }); // the echo
+    expect(plugin.config.workspaces.map((w) => w.id)).toEqual(["keep"]);
+    release({ ok: true, status: 200, json: async () => ({ rev: 1 }) });
+    await vi.advanceTimersByTimeAsync(250);
+    const resent = sentBody(fetchMock.mock.calls[1][1]).config;
+    expect(resent.workspaces.map((w: { id: string }) => w.id)).toEqual(["keep"]);
+  });
+
+  it("another tab's state-only write isn't mistaken for the echo of our save", async () => {
+    vi.useFakeTimers();
+    let release!: (r: unknown) => void;
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (release = r)))
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ rev: 9 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    plugin.updateConfig({ db_user: "mine" });
+    await vi.advanceTimersByTimeAsync(250);
+    const sent = sentBody(fetchMock.mock.calls[0][1]);
+    plugin.applyBroadcast({ rev: 1, config: sent.config, state: sent.state }); // our echo
+    plugin.setState("claude_model", "mine"); // a new local edit, pending
+    // the other tab switches the active workspace: same config, new state
+    plugin.applyBroadcast({
+      rev: 2,
+      config: sent.config,
+      state: { ...sent.state, active_workspace: "theirs" },
+    });
+    expect(plugin.getState("active_workspace")).toBe("theirs");
+    expect(plugin.getState("claude_model")).toBe("mine");
+    release({ ok: true, status: 200, json: async () => ({ rev: 1 }) });
+    await vi.advanceTimersByTimeAsync(250);
+  });
+
+  it("a 409 older than a broadcast already merged doesn't roll it back", async () => {
+    vi.useFakeTimers();
+    let release!: (r: unknown) => void;
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (release = r)))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ rev: 8 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const { config, state } = plugin.snapshot();
+    plugin.updateConfig({ db_user: "mine" });
+    await vi.advanceTimersByTimeAsync(250);
+    plugin.applyBroadcast({ rev: 7, config: { ...config, db_password: "newest" }, state });
+    release({
+      ok: false,
+      status: 409,
+      json: async () => ({ rev: 6, config: { ...config, db_password: "older" }, state }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const resent = sentBody(fetchMock.mock.calls[1][1]);
+    expect(resent.rev).toBe(7);
+    expect(resent.config.db_password).toBe("newest");
+    expect(resent.config.db_user).toBe("mine");
+  });
+
+  it("re-deals the port of a workspace merged in on a port another tab took", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn());
+    const { config, state } = plugin.snapshot();
+    plugin.updateConfig({ workspaces: [{ ...wsInput("mine"), location: "worktree", port: 8070 }] });
+    const theirs = { ...wsInput("theirs"), location: "worktree", port: 8070 };
+    plugin.applyBroadcast({ rev: 5, config: { ...config, workspaces: [theirs] }, state });
+    const ports = Object.fromEntries(plugin.config.workspaces.map((w) => [w.id, w.port]));
+    expect(ports).toEqual({ theirs: 8070, mine: 8071 });
+  });
+
   it("re-marks the change dirty on a network failure, so a later flush can retry", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -330,7 +474,7 @@ describe("ConfigPlugin", () => {
     expect(body.state.claude_model).toBe("opus");
   });
 
-  it("applyBroadcast ignores a stale/equal rev and a broadcast while a local edit is pending", () => {
+  it("applyBroadcast ignores a stale/equal rev, and keeps a pending local edit of the same key", () => {
     vi.useFakeTimers();
     vi.stubGlobal(
       "fetch",
@@ -341,7 +485,7 @@ describe("ConfigPlugin", () => {
 
     plugin.updateConfig({ db_user: "local-edit" }); // now dirty
     plugin.applyBroadcast({ rev: 5, config: { db_user: "remote" }, state: {} });
-    expect(plugin.config.db_user).toBe("local-edit"); // dropped: a local edit is pending
+    expect(plugin.config.db_user).toBe("local-edit"); // merged: the pending local edit wins
   });
 
   it("applyBroadcast reloads from a newer rev when nothing local is pending", () => {

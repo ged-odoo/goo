@@ -49,7 +49,6 @@ export class TestsPlugin extends Plugin {
   store = usePlugin(StorePlugin); // one-shot runs live in the shared store's runs map
   server = usePlugin(ServerPlugin);
   eventLog = usePlugin(EventLogPlugin);
-  history = signal<string[]>(this._readHistory()); // last test tags run, most recent first (global)
   _failSeq = 0; // monotonic id source for failure-row anchors (global, never reset)
   // slotId -> per-slot run/console state. Raw (not deep-reactive): the Tests pane
   // reads this via a getter evaluated during render, and the reactive Map proxy
@@ -87,9 +86,11 @@ export class TestsPlugin extends Plugin {
     return this.currentRun(slotId)?.state === "running";
   }
 
-  _readHistory(): string[] {
+  // last test tags run, most recent first (global) — read live from the config, so
+  // another tab's runs show up as soon as its write is merged in
+  history(): string[] {
     const h = this.config.getState("test_history", []);
-    return Array.isArray(h) ? h : [];
+    return Array.isArray(h) ? h.slice(0, HISTORY_MAX) : []; // a merge may run over the cap
   }
 
   // record a run's tag at the front, deduped, capped at HISTORY_MAX
@@ -97,7 +98,6 @@ export class TestsPlugin extends Plugin {
     tag = tag.trim();
     if (!tag) return;
     const h = [tag, ...this.history().filter((t) => t !== tag)].slice(0, HISTORY_MAX);
-    this.history.set(h);
     this.config.setState("test_history", h);
   }
 

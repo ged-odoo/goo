@@ -11,7 +11,12 @@ type LogListener = (d: { server: string; line: string }) => void;
 
 function makePlugin() {
   const store = new StorePlugin(NO_MANAGER);
-  const config = { getState: () => [], setState: vi.fn() };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => new Promise(() => {})), // the config's debounced save never answers
+  );
+  const config = new ConfigPlugin(NO_MANAGER);
+  vi.spyOn(config, "setState");
   const logListeners = new Set<LogListener>();
   const server = {
     status: () => ({ state: "stopped" }),
@@ -132,6 +137,18 @@ describe("TestsPlugin history", () => {
       "web:WebSuite",
       "mail:MailSuite",
     ]);
+  });
+
+  it("shows another tab's runs once its write is merged into the config", () => {
+    const { plugin, config } = makePlugin();
+    plugin._pushHistory("web:WebSuite");
+    const { config: blob, state } = config.snapshot();
+    config.applyBroadcast({
+      rev: 5,
+      config: blob,
+      state: { ...state, test_history: ["mail:MailSuite"] },
+    });
+    expect(plugin.history()).toEqual(["web:WebSuite", "mail:MailSuite"]);
   });
 
   it("ignores a blank tag", () => {

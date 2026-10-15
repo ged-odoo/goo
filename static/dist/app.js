@@ -713,6 +713,51 @@ var repoBranchList = {
     return { repo, branch };
   })
 };
+function merge3(base, mine, theirs) {
+  const same = (a, b2) => JSON.stringify(a) === JSON.stringify(b2);
+  if (same(mine, base)) return theirs;
+  if (same(theirs, base) || same(mine, theirs)) return mine;
+  const isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+  const records = (v) => Array.isArray(v) && v.every((r) => isObj(r) && typeof r.id === "string") ? v : null;
+  const plain = (v) => Array.isArray(v) && v.every((x) => x === null || typeof x !== "object") ? v : null;
+  const [b, m2, t2] = [records(base ?? []), records(mine), records(theirs)];
+  if (b && m2 && t2) {
+    const byId = (rs) => new Map(rs.map((r) => [r.id, r]));
+    const [bm, mm, tm] = [byId(b), byId(m2), byId(t2)];
+    const ids = (rs) => rs.map((r) => r.id);
+    const mineReordered = !same(
+      ids(m2).filter((id) => bm.has(id)),
+      ids(b).filter((id) => mm.has(id))
+    );
+    const order = [...new Set(mineReordered ? [...ids(m2), ...ids(t2)] : [...ids(t2), ...ids(m2)])];
+    const out = [];
+    for (const id of order) {
+      if (bm.has(id) && (!mm.has(id) || !tm.has(id))) continue;
+      out.push(merge3(bm.get(id), mm.get(id), tm.get(id)));
+    }
+    return out;
+  }
+  const [pb, pm, pt] = [plain(base ?? []), plain(mine), plain(theirs)];
+  if (pb && pm && pt) {
+    const removed = (x) => pb.includes(x) && (!pm.includes(x) || !pt.includes(x));
+    const mineReordered = !same(
+      pm.filter((x) => pb.includes(x)),
+      pb.filter((x) => pm.includes(x))
+    );
+    const merged = mineReordered ? [...pm, ...pt.filter((x) => !pb.includes(x))] : [...pm.filter((x) => !pb.includes(x)), ...pt];
+    return [...new Set(merged.filter((x) => !removed(x)))];
+  }
+  if (isObj(mine) && isObj(theirs)) {
+    const bo = isObj(base) ? base : {};
+    const out = {};
+    for (const k of /* @__PURE__ */ new Set([...Object.keys(theirs), ...Object.keys(mine)])) {
+      const v = merge3(bo[k], mine[k], theirs[k]);
+      if (v !== void 0) out[k] = v;
+    }
+    return out;
+  }
+  return mine;
+}
 
 // vendor/owl-orm/orm.ts
 var Model = class {
@@ -4277,6 +4322,13 @@ var ConfigPlugin = class extends Plugin {
   _configView = computed(() => merge(toConfig(this.orm)));
   _dirty = { config: false, state: false };
   // blobs edited since the last flush
+  _inFlight = 0;
+  // saves in flight (their dirty flags already cleared)
+  _sending = [];
+  // their bodies
+  // the config + state as last synced with the server: the base another tab's write
+  // is merged against, so neither side's edit is lost (see _mergeServer)
+  _synced = this._snapshot();
   _timer = void 0;
   setup() {
     onWillDestroy(() => clearTimeout(this._timer));
@@ -4299,6 +4351,33 @@ var ConfigPlugin = class extends Plugin {
     for (const M of CONFIG_MODELS) for (const rec of this.orm.records(M)) this.orm.delete(rec);
     const norm = normalizeConfigState(merge(config), state || {});
     toModels(this.orm, norm.config, norm.state);
+  }
+  _snapshot() {
+    return { config: toConfig(this.orm), state: toState(this.orm) };
+  }
+  // adopt the server's config + state (another tab's write) while keeping this tab's
+  // own unsynced edits: a three-way merge against what was last synced
+  _mergeServer(theirs) {
+    const mine = this._snapshot();
+    this._reload(theirs.config, theirs.state);
+    const server = this._snapshot();
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const echo = this._sending.some(
+      (b) => same(b.config, server.config) && same(b.state, server.state)
+    );
+    const base = echo ? server : this._synced;
+    const config = merge3(base.config, mine.config, server.config);
+    const serverIds = new Set(server.config.workspaces.map((w) => w.id));
+    for (const w of config.workspaces) {
+      if (serverIds.has(w.id) || !w.port) continue;
+      if (!config.workspaces.some((o) => o !== w && o.port === w.port)) continue;
+      const used = /* @__PURE__ */ new Set([...RESERVED_PORTS, ...config.workspaces.map((o) => o.port)]);
+      let port = 8070;
+      while (used.has(port)) port++;
+      w.port = port;
+    }
+    this._reload(config, merge3(base.state, mine.state, server.state));
+    this._synced = server;
   }
   get config() {
     return this._configView();
@@ -4345,15 +4424,24 @@ var ConfigPlugin = class extends Plugin {
   // tab wrote), adopt the server's rev and retry so our edit lands on top
   // (last-write-wins — fine for a single user); bounded so a pathological loop can't
   // hang. Clears the dirty flags optimistically and re-sets them on failure/conflict.
-  async _flush(tries = 0) {
+  async _flush() {
     if (!this._dirty.config && !this._dirty.state) return;
+    this._inFlight++;
+    try {
+      await this._send(0);
+    } finally {
+      this._inFlight--;
+    }
+  }
+  async _send(tries) {
     const sent = { ...this._dirty };
     this._dirty = { config: false, state: false };
     const body = {
       rev: this.rev()
     };
-    if (sent.config) body.config = toConfig(this.orm);
-    if (sent.state) body.state = toState(this.orm);
+    body.config = toConfig(this.orm);
+    body.state = toState(this.orm);
+    this._sending.push(body);
     try {
       const resp = await fetch("/api/config", {
         method: "POST",
@@ -4361,29 +4449,44 @@ var ConfigPlugin = class extends Plugin {
         body: JSON.stringify(body)
       });
       const res = await resp.json().catch(() => ({}));
+      this._sending = this._sending.filter((b) => b !== body);
       if (resp.status === 409 && tries < 3) {
-        this.rev.set(res.rev);
+        if (res.rev > this.rev()) {
+          if (res.config || res.state) this._mergeServer(res);
+          this.rev.set(res.rev);
+        }
         this._dirty.config ||= sent.config;
         this._dirty.state ||= sent.state;
-        return this._flush(tries + 1);
+        return this._send(tries + 1);
       }
       if (!resp.ok) throw new Error(res.error || String(resp.status));
-      this.rev.set(res.rev);
+      if (res.rev > this.rev()) {
+        this.rev.set(res.rev);
+        this._synced = {
+          config: body.config ?? this._synced.config,
+          state: body.state ?? this._synced.state
+        };
+      }
     } catch (e) {
+      this._sending = this._sending.filter((b) => b !== body);
       this._dirty.config ||= sent.config;
       this._dirty.state ||= sent.state;
       console.error(`[goo] config save failed: ${errorMessage(e)}`);
     }
   }
-  // apply a config broadcast from another tab (SSE "config"). Ignored while we have a
-  // pending local edit (our own flush reconciles via the 409 retry) or when the rev
-  // isn't newer than ours (stale, or the echo of our own write).
+  // apply a config broadcast from another tab (SSE "config"), unless its rev isn't
+  // newer than ours (stale, or the echo of our own write). With a local edit pending
+  // or in flight, the broadcast is merged in so the edit survives (the save sends it).
   applyBroadcast(payload) {
     if (!payload || typeof payload.rev !== "number") return;
-    if (this._dirty.config || this._dirty.state) return;
     if (payload.rev <= this.rev()) return;
     this.rev.set(payload.rev);
-    this._reload(payload.config, payload.state);
+    if (this._dirty.config || this._dirty.state || this._inFlight) {
+      this._mergeServer(payload);
+    } else {
+      this._reload(payload.config, payload.state);
+      this._synced = this._snapshot();
+    }
   }
   // ── reset / presets (immediate, awaited so the caller can reload) ─────────────
   async _pushNow(config, state) {
@@ -4402,6 +4505,7 @@ var ConfigPlugin = class extends Plugin {
       });
       const res = await resp.json();
       if (res.rev !== void 0) this.rev.set(res.rev);
+      this._synced = this._snapshot();
     } catch (e) {
       console.error(`[goo] config save failed: ${errorMessage(e)}`);
     }
@@ -8505,8 +8609,6 @@ var TestsPlugin = class extends Plugin {
   // one-shot runs live in the shared store's runs map
   server = usePlugin(ServerPlugin);
   eventLog = usePlugin(EventLogPlugin);
-  history = signal(this._readHistory());
-  // last test tags run, most recent first (global)
   _failSeq = 0;
   // monotonic id source for failure-row anchors (global, never reset)
   // slotId -> per-slot run/console state. Raw (not deep-reactive): the Tests pane
@@ -8549,16 +8651,17 @@ var TestsPlugin = class extends Plugin {
   runningFor(slotId) {
     return this.currentRun(slotId)?.state === "running";
   }
-  _readHistory() {
+  // last test tags run, most recent first (global) — read live from the config, so
+  // another tab's runs show up as soon as its write is merged in
+  history() {
     const h = this.config.getState("test_history", []);
-    return Array.isArray(h) ? h : [];
+    return Array.isArray(h) ? h.slice(0, HISTORY_MAX) : [];
   }
   // record a run's tag at the front, deduped, capped at HISTORY_MAX
   _pushHistory(tag) {
     tag = tag.trim();
     if (!tag) return;
     const h = [tag, ...this.history().filter((t2) => t2 !== tag)].slice(0, HISTORY_MAX);
-    this.history.set(h);
     this.config.setState("test_history", h);
   }
   // the current/last test run on a slot (backend-minted, from the shared store)
