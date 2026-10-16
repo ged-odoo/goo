@@ -61,7 +61,8 @@ export class TrackCell extends Component {
   props = useProps({ pr: t.any() as Type<RequestedPr>, screen: t.any() as Type<ReviewsScreen> });
   static template = xml`
     <span class="brg-act">
-      <button class="pbtn" t-on-click="() => this.props.screen.trackRequested(this.props.pr)">Track</button>
+      <span t-if="this.props.screen.isTracked(this.props.pr)" class="pr-state open">tracked</span>
+      <button t-else="" class="pbtn" t-on-click="() => this.props.screen.trackRequested(this.props.pr)">Track</button>
     </span>`;
 }
 
@@ -81,6 +82,7 @@ export class PrCell extends Component {
         <a class="pr-link" target="_blank" t-att-href="this.row.url" t-out="'#' + this.row.number"/>
         <span class="rev-pr-title" t-out="this.row.title"/>
         <span class="pr-state" t-att-class="this.state" t-out="this.state"/>
+        <span t-if="this.props.screen.isRequested(this.row)" class="pr-state open" title="GitHub lists this PR in your review requests">requested</span>
       </t>
       <span t-else="" class="dim" t-out="'#' + this.row.number + '…'"/>
     </span>`;

@@ -569,7 +569,9 @@ describe("requested of you", () => {
     expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(2);
     await click(button(row, "Track"));
     await savedConfig((c) => expect(c.reviews.map((r) => r.id)).toContain("odoo/odoo#99"));
-    expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(1);
+    expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(2);
+    expect(text(app.root.querySelector(".rq-card .rl-row .pr-state.open"))).toBe("tracked");
+    expect(button(app.root.querySelector<HTMLElement>(".rq-card")!, "Track")).toBeDefined();
   });
 
   it("shows a failed search instead of an empty list", async () => {
@@ -578,6 +580,23 @@ describe("requested of you", () => {
       { review_requests: true },
     );
     expect(text(app.root.querySelector(".br-empty"))).toContain("gh: not logged in");
+  });
+
+  it("tags a watchlist row that GitHub still lists as requested", async () => {
+    app = await mount(
+      { "/api/prs/review-requests": { ok: true, prs: [{ ...requested, number: 1 }] } },
+      { review_requests: true },
+    );
+    const tags = [...app.root.querySelectorAll(".rev-pr .pr-state")].map(text);
+    expect(tags.filter((t) => t === "requested")).toHaveLength(1);
+  });
+
+  it("first searches with the default query", async () => {
+    localStorage.removeItem("goo-review-requests-query");
+    app = await mountRequested();
+    expect(app.callsTo("/api/prs/review-requests")[0].body).toEqual({
+      query: "review-requested:@me state:open archived:false label:framework-js-review",
+    });
   });
 
   it("searches again with the edited query and remembers it", async () => {
