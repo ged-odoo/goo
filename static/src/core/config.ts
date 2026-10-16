@@ -143,6 +143,7 @@ export interface Config {
   cleanup_enabled: boolean;
   auto_workspace_on_review: boolean;
   auto_claude_review: boolean;
+  review_requests: boolean;
   default_workspace_location: string; // "main" | "worktree"
   rust_bundler: boolean;
   update_check: boolean;
@@ -259,6 +260,8 @@ export const DEFAULT_CONFIG: Config = {
   // review_prompt.md template (edited in the Configuration screen). The manual
   // "Review" action in the Reviews screen works regardless of this setting.
   auto_claude_review: false,
+  // the Reviews screen's "Requested of you" list (a GitHub review-request search)
+  review_requests: false,
   // the create-workspace dialog's Location field default: "main" (one loaded
   // at a time) or "worktree" (its own checkout, runs concurrently). Only the
   // dialog's own initial value — never overwrites what the user picks there.

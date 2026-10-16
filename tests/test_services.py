@@ -1246,6 +1246,26 @@ class GitHubServiceTest(unittest.TestCase):
         svc = services.GitHubService(io, TTLCache(ttl=0))
         self.assertEqual(svc.pr_infos([{"github": "odoo/odoo", "number": 1}]), [])
 
+    def test_review_requests_parses_search_lines_and_reports_errors(self):
+        line = (
+            '{"github": "odoo/odoo", "number": 7, "title": "t", "url": "u",'
+            ' "author": "bob", "draft": false, "labels": ["x"], "updated_at": "z"}\n'
+        )
+        io = FakeIO(run_result=completed(stdout=line))
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        prs, error = svc.review_requests("review-requested:@me")
+        self.assertIsNone(error)
+        self.assertEqual(
+            (prs[0]["github"], prs[0]["number"], prs[0]["author"]), ("odoo/odoo", 7, "bob")
+        )
+        self.assertIn("q=is:pr review-requested:@me", io.run_calls[0])
+        bad = services.GitHubService(
+            FakeIO(run_result=completed(returncode=1, stderr="boom")), TTLCache(ttl=0)
+        )
+        self.assertEqual(bad.review_requests("x"), ([], "boom"))
+        junk = services.GitHubService(FakeIO(run_result=completed(stdout="not json")), TTLCache(0))
+        self.assertEqual(junk.review_requests("x"), ([], "unreadable gh output"))
+
     def test_review_statuses_reviewed_when_review_after_last_request(self):
         # GitHub's own "current reviewRequests" doesn't clear on a plain Comment
         # review (only Approve/Request-changes) — the real signal is whether the

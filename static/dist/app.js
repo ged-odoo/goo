@@ -109,6 +109,8 @@ var DEFAULT_CONFIG = {
   // review_prompt.md template (edited in the Configuration screen). The manual
   // "Review" action in the Reviews screen works regardless of this setting.
   auto_claude_review: false,
+  // the Reviews screen's "Requested of you" list (a GitHub review-request search)
+  review_requests: false,
   // the create-workspace dialog's Location field default: "main" (one loaded
   // at a time) or "worktree" (its own checkout, runs concurrently). Only the
   // dialog's own initial value — never overwrites what the user picks there.
@@ -3473,7 +3475,8 @@ var SETTINGS_BOOLS = [
   "cleanup_enabled",
   "docker_headed_browser",
   "auto_workspace_on_review",
-  "auto_claude_review"
+  "auto_claude_review",
+  "review_requests"
 ];
 var SETTINGS_JSON = [
   "start",
@@ -3525,6 +3528,9 @@ var Settings = class extends Model {
   // freshly-created review workspace. The manual "Review" action in the
   // Reviews screen works regardless of this setting.
   auto_claude_review = fields.bool();
+  // off by default -- the Reviews screen lists the PRs GitHub says await my review
+  // (a user-editable search) above the watchlist, with a Track button each.
+  review_requests = fields.bool();
   // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.ts).
   // Replaces the old hide_start_controls boolean (migrated in toModels below);
   // "docker"/"local" both get goo's own Start/Stop/logs/terminal, "external" hides them.
@@ -7457,6 +7463,10 @@ var ConfigScreen = class extends Component {
             <input id="setting-auto-workspace-on-review" type="checkbox" class="settings-check" title="When a PR is added in the Reviews screen — including any sibling PR auto-discovered on the same branch in another repo — automatically create a worktree workspace for it, in its own &quot;review&quot; category. Not activated on creation."
                    t-att-checked="this.config.config.auto_workspace_on_review"
                    t-on-change="ev => this.config.updateConfig({ auto_workspace_on_review: ev.target.checked })"/>
+            <label for="setting-review-requests" title="In the Reviews screen, list the PRs GitHub says are waiting for your review (a search you can edit), each with a Track button.">list requested reviews</label>
+            <input id="setting-review-requests" type="checkbox" class="settings-check" title="In the Reviews screen, list the PRs GitHub says are waiting for your review (a search you can edit), each with a Track button."
+                   t-att-checked="this.config.config.review_requests"
+                   t-on-change="ev => this.config.updateConfig({ review_requests: ev.target.checked })"/>
             <t t-if="this.config.config.auto_workspace_on_review">
               <label for="setting-auto-claude-review" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting.">auto-run Claude review</label>
               <input id="setting-auto-claude-review" type="checkbox" class="settings-check" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting."
@@ -10414,6 +10424,11 @@ var ReviewsPlugin = class extends Plugin {
   error = signal("");
   at = signal(0);
   // last successful prInfo fetch (drives the screen's "updated…" stamp)
+  requested = signal([]);
+  // PRs GitHub says are waiting for my review
+  requestedError = signal("");
+  _requestSeq = 0;
+  // drops the reply of a superseded loadRequested
   _pending = /* @__PURE__ */ new Set();
   // in-flight keys, so overlapping effects don't double-fetch
   // full PR info (title/url/state/ci/...) for tracked pairs not already held.
@@ -10444,6 +10459,23 @@ var ReviewsPlugin = class extends Plugin {
     } finally {
       keys.forEach((k) => this._pending.delete(k));
       this.loading.set(false);
+    }
+  }
+  // the PRs matching `query` (the review-request search); errors land in requestedError
+  async loadRequested(query) {
+    const seq = ++this._requestSeq;
+    try {
+      const res = await postJSON(
+        "/api/prs/review-requests",
+        { query }
+      );
+      if (seq !== this._requestSeq) return;
+      this.requested.set((res.prs || []).map((pr) => ({ ...pr, id: `${pr.github}#${pr.number}` })));
+      this.requestedError.set(res.ok ? "" : res.error || "search failed");
+    } catch (e) {
+      if (seq !== this._requestSeq) return;
+      this.requested.set([]);
+      this.requestedError.set(errorMessage(e));
     }
   }
   // "have I reviewed this" for tracked pairs not already held.
@@ -11621,6 +11653,22 @@ async function deleteWorkspaceDialog(ws, {
 function isMerged(row, mbState) {
   return row.state === "merged" || mbState === "merged";
 }
+var RequestedPrCell = class extends Component {
+  props = useProps({ pr: t.any(), screen: t.any() });
+  static template = xml`
+    <span class="rev-pr">
+      <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
+      <span class="rev-pr-title" t-out="this.props.pr.title"/>
+      <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
+    </span>`;
+};
+var TrackCell = class extends Component {
+  props = useProps({ pr: t.any(), screen: t.any() });
+  static template = xml`
+    <span class="brg-act">
+      <button class="pbtn" t-on-click="() => this.props.screen.trackRequested(this.props.pr)">Track</button>
+    </span>`;
+};
 var PrCell2 = class extends Component {
   // { row, screen } — ReviewsScreen._cell (neither validated at runtime)
   props = useProps({
@@ -11751,6 +11799,15 @@ var ForwardPortsCell = class extends Component {
 };
 
 // static/src/reviews_screen/reviews.ts
+var REQUEST_QUERY_KEY = "goo-review-requests-query";
+var DEFAULT_REQUEST_QUERY = "review-requested:@me state:open archived:false";
+function readRequestQuery() {
+  try {
+    return localStorage.getItem(REQUEST_QUERY_KEY) || DEFAULT_REQUEST_QUERY;
+  } catch {
+    return DEFAULT_REQUEST_QUERY;
+  }
+}
 function parsePrRef(text) {
   const url = /github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/.exec(text);
   if (url) return { github: url[1], number: Number(url[2]) };
@@ -11790,11 +11847,26 @@ var ReviewsScreen = class extends Component {
           <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
       </Panel>
+      <div t-if="this.config.config.review_requests" class="rq-bar">
+        <b>Requested of you</b>
+        <span class="sub" t-out="this.requestedCount"/>
+        <input class="rq-query" type="text" t-att-value="this.requestQuery()" spellcheck="false"
+               title="GitHub PR search"
+               t-on-change="ev => this.setRequestQuery(ev.target.value)"/>
+        <button class="pbtn" t-on-click="() => this.loadRequested()">Search</button>
+        <button class="pbtn" t-att-disabled="!this.untrackedRequested().length" t-on-click="() => this.trackAllRequested()">Track all</button>
+      </div>
       <div class="content br-fill">
+        <div t-if="this.showRequested" class="br-card rq-card">
+          <div class="brg-table rev-table">
+            <RecordList recordset="this.requestedRs"/>
+          </div>
+        </div>
+        <div t-if="this.config.config.review_requests and this.reviews.requestedError()" class="dim br-empty" t-out="this.reviews.requestedError()"/>
         <div t-if="this.reviews.error()" class="dim br-empty" t-out="'Failed to load: ' + this.reviews.error()"/>
         <div t-elif="!this.groupsView().length" class="dim br-empty">No PRs tracked yet — paste one above.</div>
         <div t-else="" class="br-card">
-          <div class="brg-table">
+          <div class="brg-table rev-table">
             <RecordList recordset="this.rs" groupBy="this.groupByBranch"
                         collapsible="true" stateKey="'goo-review-queue-collapsed'">
               <t t-set-slot="group-header" t-slot-scope="scope">
@@ -11836,6 +11908,12 @@ var ReviewsScreen = class extends Component {
   addPrNote = signal("");
   statusFilter = signal("");
   // "" = all
+  requestQuery = signal(readRequestQuery());
+  // the requested PRs not yet on the watchlist
+  untrackedRequested = computed(() => {
+    const tracked = new Set((this.config.config.reviews || []).map((r) => r.id));
+    return this.reviews.requested().filter((p) => !tracked.has(`${p.github}#${p.number}`));
+  });
   // one row per tracked {id, github, number}, enriched with fetched PR info +
   // review status once they've loaded (loaded=false until then).
   allRows = computed(() => {
@@ -11904,6 +11982,7 @@ var ReviewsScreen = class extends Component {
     { name: "act", label: "", component: ActionsCell, cellProps: this._cell }
   ]);
   setup() {
+    this.loadRequested();
     useEffect(() => {
       const tracked = this.config.config.reviews || [];
       if (!tracked.length) return;
@@ -11954,6 +12033,47 @@ var ReviewsScreen = class extends Component {
     if (this.reviews.loading()) return "refreshing\u2026";
     return this.reviews.at() ? `updated ${timeAgo(new Date(this.reviews.at()).toISOString())}` : "";
   }
+  get requestedCount() {
+    const n = this.untrackedRequested().length;
+    return n ? `${n} new` : "nothing new";
+  }
+  get showRequested() {
+    return this.config.config.review_requests && this.untrackedRequested().length > 0;
+  }
+  _requestCell = (pr) => ({
+    pr,
+    screen: this
+  });
+  requestedRs = recordset(
+    () => this.untrackedRequested(),
+    [
+      { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
+      { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
+      { name: "author", label: "Author", get: (p) => p.author },
+      { name: "when", label: "Updated", get: (p) => timeAgo(p.updated_at) },
+      { name: "act", label: "", component: TrackCell, cellProps: this._requestCell }
+    ]
+  );
+  async loadRequested() {
+    if (!this.config.config.review_requests) return;
+    return this.reviews.loadRequested(this.requestQuery());
+  }
+  setRequestQuery(text) {
+    const query = text.trim() || DEFAULT_REQUEST_QUERY;
+    this.requestQuery.set(query);
+    try {
+      localStorage.setItem(REQUEST_QUERY_KEY, query);
+    } catch {
+    }
+    this.loadRequested();
+  }
+  trackRequested(pr) {
+    return this.trackRef({ github: pr.github, number: pr.number });
+  }
+  // one at a time: each track may create a workspace (auto_workspace_on_review)
+  async trackAllRequested() {
+    for (const pr of this.untrackedRequested()) await this.trackRequested(pr);
+  }
   async addPr() {
     const text = this.addPrText().trim();
     if (!text) return;
@@ -11962,8 +12082,11 @@ var ReviewsScreen = class extends Component {
       this.addPrNote.set("paste a GitHub PR URL or owner/repo#123");
       return;
     }
-    const added = this.reviews.track(this.config, ref.github, ref.number);
     this.addPrText.set("");
+    await this.trackRef(ref);
+  }
+  async trackRef(ref) {
+    const added = this.reviews.track(this.config, ref.github, ref.number);
     if (!added) {
       this.addPrNote.set("already tracked");
       return;
@@ -12007,6 +12130,7 @@ var ReviewsScreen = class extends Component {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
+      this.loadRequested(),
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),

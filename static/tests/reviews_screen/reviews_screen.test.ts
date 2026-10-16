@@ -538,3 +538,73 @@ describe("Reviews screen — Claude reviews", () => {
     expect(document.querySelector(".review-panel")).toBeNull();
   });
 });
+
+describe("requested of you", () => {
+  const requested = {
+    github: "odoo/odoo",
+    number: 99,
+    title: "[FIX] web: something",
+    url: "https://github.com/odoo/odoo/pull/99",
+    author: "bob",
+    draft: false,
+    labels: [],
+    updated_at: "2026-10-15T10:00:00Z",
+  };
+
+  const mountRequested = () =>
+    mount(
+      {
+        "/api/prs/review-requests": {
+          ok: true,
+          prs: [requested, { ...requested, number: 98, title: "other" }],
+        },
+      },
+      { review_requests: true },
+    );
+
+  it("lists a requested PR and tracks it on click", async () => {
+    app = await mountRequested();
+    const row = app.root.querySelector<HTMLElement>(".rl-row")!;
+    expect(text(row)).toContain("[FIX] web: something");
+    expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(2);
+    await click(button(row, "Track"));
+    await savedConfig((c) => expect(c.reviews.map((r) => r.id)).toContain("odoo/odoo#99"));
+    expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(1);
+  });
+
+  it("shows a failed search instead of an empty list", async () => {
+    app = await mount(
+      { "/api/prs/review-requests": { ok: false, prs: [], error: "gh: not logged in" } },
+      { review_requests: true },
+    );
+    expect(text(app.root.querySelector(".br-empty"))).toContain("gh: not logged in");
+  });
+
+  it("searches again with the edited query and remembers it", async () => {
+    app = await mountRequested();
+    const input = app.root.querySelector<HTMLInputElement>(".rq-query")!;
+    input.value = "review-requested:@me label:x";
+    input.dispatchEvent(new Event("change"));
+    await app.settle();
+    expect(app.callsTo("/api/prs/review-requests").at(-1)?.body).toEqual({
+      query: "review-requested:@me label:x",
+    });
+    expect(localStorage.getItem("goo-review-requests-query")).toBe("review-requested:@me label:x");
+  });
+
+  it("Track all tracks every requested PR", async () => {
+    app = await mountRequested();
+    await click(button(app.root.querySelector<HTMLElement>(".rq-bar")!, "Track all"));
+    await savedConfig((c) =>
+      expect(c.reviews.map((r) => r.id)).toEqual(
+        expect.arrayContaining(["odoo/odoo#99", "odoo/odoo#98"]),
+      ),
+    );
+  });
+
+  it("is off unless the setting is on", async () => {
+    app = await mount();
+    expect(app.root.querySelector(".rq-query")).toBeNull();
+    expect(app.callsTo("/api/prs/review-requests")).toHaveLength(0);
+  });
+});

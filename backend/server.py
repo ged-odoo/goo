@@ -1769,6 +1769,12 @@ def _api_prs_review_status(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "statuses": statuses}
 
 
+@post_route("/api/prs/review-requests", "query")
+def _api_prs_review_requests(body: dict[str, Any]) -> dict[str, Any]:
+    prs, error = GITHUB.review_requests(str(body["query"]))
+    return {"ok": error is None, "prs": prs, **({"error": error} if error else {})}
+
+
 @post_route("/api/prs/close", "repo", "number")
 def _api_prs_close(body: dict[str, Any]) -> RouteResult:
     ok, error = GITHUB.close_pr(body["repo"], body["number"])
