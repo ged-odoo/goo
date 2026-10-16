@@ -30,6 +30,17 @@ export interface ReviewsConfig {
   updateConfig(patch: ConfigInput): void;
 }
 
+// a PR from the GitHub review-request search (GitHubService.review_requests)
+export interface RequestedPr extends PrRef {
+  id: string; // "github#number", the list row key
+  title: string;
+  url: string;
+  author: string;
+  draft: boolean;
+  labels: string[];
+  updated_at: string;
+}
+
 export class ReviewsPlugin extends Plugin {
   static sequence = 4;
 
@@ -38,6 +49,9 @@ export class ReviewsPlugin extends Plugin {
   loading = signal(false);
   error = signal("");
   at = signal(0); // last successful prInfo fetch (drives the screen's "updated…" stamp)
+  requested = signal<RequestedPr[]>([]); // PRs GitHub says are waiting for my review
+  requestedError = signal("");
+  _requestSeq = 0; // drops the reply of a superseded loadRequested
   _pending = new Set<string>(); // in-flight keys, so overlapping effects don't double-fetch
 
   // full PR info (title/url/state/ci/...) for tracked pairs not already held.
@@ -71,6 +85,24 @@ export class ReviewsPlugin extends Plugin {
     } finally {
       keys.forEach((k) => this._pending.delete(k));
       this.loading.set(false);
+    }
+  }
+
+  // the PRs matching `query` (the review-request search); errors land in requestedError
+  async loadRequested(query: string): Promise<void> {
+    const seq = ++this._requestSeq;
+    try {
+      const res = await postJSON<{ ok: boolean; prs?: Omit<RequestedPr, "id">[]; error?: string }>(
+        "/api/prs/review-requests",
+        { query },
+      );
+      if (seq !== this._requestSeq) return; // a newer search is in flight
+      this.requested.set((res.prs || []).map((pr) => ({ ...pr, id: `${pr.github}#${pr.number}` })));
+      this.requestedError.set(res.ok ? "" : res.error || "search failed");
+    } catch (e) {
+      if (seq !== this._requestSeq) return;
+      this.requested.set([]);
+      this.requestedError.set(errorMessage(e));
     }
   }
 

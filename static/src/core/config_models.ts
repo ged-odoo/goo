@@ -129,6 +129,7 @@ const SETTINGS_BOOLS = [
   "docker_headed_browser",
   "auto_workspace_on_review",
   "auto_claude_review",
+  "review_requests",
 ] as const;
 const SETTINGS_JSON = [
   "start",
@@ -185,6 +186,9 @@ export class Settings extends Model {
   // freshly-created review workspace. The manual "Review" action in the
   // Reviews screen works regardless of this setting.
   auto_claude_review = fields.bool();
+  // off by default -- the Reviews screen lists the PRs GitHub says await my review
+  // (a user-editable search) above the watchlist, with a Track button each.
+  review_requests = fields.bool();
   // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.ts).
   // Replaces the old hide_start_controls boolean (migrated in toModels below);
   // "docker"/"local" both get goo's own Start/Stop/logs/terminal, "external" hides them.

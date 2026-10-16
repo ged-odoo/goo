@@ -10,7 +10,7 @@ import { CodePlugin } from "../core/code_plugin.ts";
 import type { PrRef } from "../core/code_plugin.ts";
 import type { ForwardPortPull, ForwardPortRow } from "../core/observed_models.ts";
 import { ReviewsPlugin } from "./reviews_plugin.ts";
-import type { ReviewStatus } from "./reviews_plugin.ts";
+import type { RequestedPr, ReviewStatus } from "./reviews_plugin.ts";
 import type { ReviewsScreen } from "./reviews.ts";
 import { mbIsRPlus } from "../core/common.ts";
 
@@ -44,6 +44,25 @@ export interface MergebotView {
 // (rare, e.g. someone merged by hand) fallback.
 export function isMerged(row: { state?: string }, mbState: string): boolean {
   return row.state === "merged" || mbState === "merged";
+}
+
+// Requested of you: the PR's title (a link, with a draft badge) / its Track button.
+export class RequestedPrCell extends Component {
+  props = useProps({ pr: t.any() as Type<RequestedPr>, screen: t.any() as Type<ReviewsScreen> });
+  static template = xml`
+    <span class="rev-pr">
+      <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
+      <span class="rev-pr-title" t-out="this.props.pr.title"/>
+      <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
+    </span>`;
+}
+
+export class TrackCell extends Component {
+  props = useProps({ pr: t.any() as Type<RequestedPr>, screen: t.any() as Type<ReviewsScreen> });
+  static template = xml`
+    <span class="brg-act">
+      <button class="pbtn" t-on-click="() => this.props.screen.trackRequested(this.props.pr)">Track</button>
+    </span>`;
 }
 
 // PR: "#number" link + title + open/closed/merged/draft state badge (a dash

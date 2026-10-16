@@ -29,7 +29,7 @@ import {
 } from "../workspaces_screen/dialogs.ts";
 import { ActionsCell } from "../branches_screen/cells.ts";
 import type { ReviewRow } from "./cells.ts";
-import type { SiblingPr } from "./reviews_plugin.ts";
+import type { RequestedPr, SiblingPr } from "./reviews_plugin.ts";
 import type { PrRef } from "../core/code_plugin.ts";
 import type { RepoConfig, WorkspaceConfig } from "../core/config.ts";
 import type { PrTarget } from "../workspaces_screen/dialogs.ts";
@@ -37,6 +37,8 @@ import type { ActionMenuDetail, MenuAction } from "../core/menus.ts";
 import type { ForwardPortRow } from "../core/observed_models.ts";
 import {
   ForwardPortsCell,
+  RequestedPrCell,
+  TrackCell,
   isMerged,
   PrCell,
   STATUS_META,
@@ -54,6 +56,17 @@ type RepoTarget = PrTarget & { repo: RepoConfig };
 interface ReviewGroup {
   key: string; // the branch
   rows: ReviewRow[];
+}
+
+const REQUEST_QUERY_KEY = "goo-review-requests-query";
+const DEFAULT_REQUEST_QUERY = "review-requested:@me state:open archived:false";
+
+function readRequestQuery(): string {
+  try {
+    return localStorage.getItem(REQUEST_QUERY_KEY) || DEFAULT_REQUEST_QUERY;
+  } catch {
+    return DEFAULT_REQUEST_QUERY;
+  }
 }
 
 // a pasted GitHub PR URL or "owner/repo#123" shorthand → {github, number}, or null
@@ -97,11 +110,26 @@ export class ReviewsScreen extends Component {
           <button class="pbtn" t-on-click="() => this.refresh()"><t t-out="this.refreshIcon"/>Refresh</button>
         </t>
       </Panel>
+      <div t-if="this.config.config.review_requests" class="rq-bar">
+        <b>Requested of you</b>
+        <span class="sub" t-out="this.requestedCount"/>
+        <input class="rq-query" type="text" t-att-value="this.requestQuery()" spellcheck="false"
+               title="GitHub PR search"
+               t-on-change="ev => this.setRequestQuery(ev.target.value)"/>
+        <button class="pbtn" t-on-click="() => this.loadRequested()">Search</button>
+        <button class="pbtn" t-att-disabled="!this.untrackedRequested().length" t-on-click="() => this.trackAllRequested()">Track all</button>
+      </div>
       <div class="content br-fill">
+        <div t-if="this.showRequested" class="br-card rq-card">
+          <div class="brg-table rev-table">
+            <RecordList recordset="this.requestedRs"/>
+          </div>
+        </div>
+        <div t-if="this.config.config.review_requests and this.reviews.requestedError()" class="dim br-empty" t-out="this.reviews.requestedError()"/>
         <div t-if="this.reviews.error()" class="dim br-empty" t-out="'Failed to load: ' + this.reviews.error()"/>
         <div t-elif="!this.groupsView().length" class="dim br-empty">No PRs tracked yet — paste one above.</div>
         <div t-else="" class="br-card">
-          <div class="brg-table">
+          <div class="brg-table rev-table">
             <RecordList recordset="this.rs" groupBy="this.groupByBranch"
                         collapsible="true" stateKey="'goo-review-queue-collapsed'">
               <t t-set-slot="group-header" t-slot-scope="scope">
@@ -143,6 +171,13 @@ export class ReviewsScreen extends Component {
   addPrText = signal("");
   addPrNote = signal("");
   statusFilter = signal(""); // "" = all
+  requestQuery = signal(readRequestQuery());
+
+  // the requested PRs not yet on the watchlist
+  untrackedRequested = computed((): RequestedPr[] => {
+    const tracked = new Set((this.config.config.reviews || []).map((r) => r.id));
+    return this.reviews.requested().filter((p) => !tracked.has(`${p.github}#${p.number}`));
+  });
 
   // one row per tracked {id, github, number}, enriched with fetched PR info +
   // review status once they've loaded (loaded=false until then).
@@ -219,6 +254,7 @@ export class ReviewsScreen extends Component {
   ]);
 
   setup(): void {
+    this.loadRequested();
     useEffect(() => {
       const tracked = this.config.config.reviews || [];
       if (!tracked.length) return;
@@ -284,6 +320,56 @@ export class ReviewsScreen extends Component {
     return this.reviews.at() ? `updated ${timeAgo(new Date(this.reviews.at()).toISOString())}` : "";
   }
 
+  get requestedCount(): string {
+    const n = this.untrackedRequested().length;
+    return n ? `${n} new` : "nothing new";
+  }
+
+  get showRequested(): boolean {
+    return this.config.config.review_requests && this.untrackedRequested().length > 0;
+  }
+
+  _requestCell = (pr: RequestedPr): { pr: RequestedPr; screen: ReviewsScreen } => ({
+    pr,
+    screen: this,
+  });
+
+  requestedRs = recordset(
+    () => this.untrackedRequested(),
+    [
+      { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
+      { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
+      { name: "author", label: "Author", get: (p) => p.author },
+      { name: "when", label: "Updated", get: (p) => timeAgo(p.updated_at) },
+      { name: "act", label: "", component: TrackCell, cellProps: this._requestCell },
+    ],
+  );
+
+  async loadRequested(): Promise<void> {
+    if (!this.config.config.review_requests) return;
+    return this.reviews.loadRequested(this.requestQuery());
+  }
+
+  setRequestQuery(text: string): void {
+    const query = text.trim() || DEFAULT_REQUEST_QUERY;
+    this.requestQuery.set(query);
+    try {
+      localStorage.setItem(REQUEST_QUERY_KEY, query);
+    } catch {
+      /* storage unavailable: the query just isn't remembered */
+    }
+    this.loadRequested();
+  }
+
+  trackRequested(pr: RequestedPr): Promise<void> {
+    return this.trackRef({ github: pr.github, number: pr.number });
+  }
+
+  // one at a time: each track may create a workspace (auto_workspace_on_review)
+  async trackAllRequested(): Promise<void> {
+    for (const pr of this.untrackedRequested()) await this.trackRequested(pr);
+  }
+
   async addPr(): Promise<void> {
     const text = this.addPrText().trim();
     if (!text) return;
@@ -292,8 +378,12 @@ export class ReviewsScreen extends Component {
       this.addPrNote.set("paste a GitHub PR URL or owner/repo#123");
       return;
     }
-    const added = this.reviews.track(this.config, ref.github, ref.number);
     this.addPrText.set("");
+    await this.trackRef(ref);
+  }
+
+  async trackRef(ref: PrRef): Promise<void> {
+    const added = this.reviews.track(this.config, ref.github, ref.number);
     if (!added) {
       this.addPrNote.set("already tracked");
       return;
@@ -343,6 +433,7 @@ export class ReviewsScreen extends Component {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
+      this.loadRequested(),
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),

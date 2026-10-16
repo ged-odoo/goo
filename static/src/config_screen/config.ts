@@ -793,6 +793,10 @@ export class ConfigScreen extends Component {
             <input id="setting-auto-workspace-on-review" type="checkbox" class="settings-check" title="When a PR is added in the Reviews screen — including any sibling PR auto-discovered on the same branch in another repo — automatically create a worktree workspace for it, in its own &quot;review&quot; category. Not activated on creation."
                    t-att-checked="this.config.config.auto_workspace_on_review"
                    t-on-change="ev => this.config.updateConfig({ auto_workspace_on_review: ev.target.checked })"/>
+            <label for="setting-review-requests" title="In the Reviews screen, list the PRs GitHub says are waiting for your review (a search you can edit), each with a Track button.">list requested reviews</label>
+            <input id="setting-review-requests" type="checkbox" class="settings-check" title="In the Reviews screen, list the PRs GitHub says are waiting for your review (a search you can edit), each with a Track button."
+                   t-att-checked="this.config.config.review_requests"
+                   t-on-change="ev => this.config.updateConfig({ review_requests: ev.target.checked })"/>
             <t t-if="this.config.config.auto_workspace_on_review">
               <label for="setting-auto-claude-review" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting.">auto-run Claude review</label>
               <input id="setting-auto-claude-review" type="checkbox" class="settings-check" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting."

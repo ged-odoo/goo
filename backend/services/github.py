@@ -375,6 +375,32 @@ class GitHubService:
                 at_times.append(obj["at"])
         return max(at_times) if at_times else ""
 
+    def review_requests(self, query: str) -> tuple[list[dict[str, Any]], str | None]:
+        """The PRs a GitHub issue search returns (e.g. `review-requested:@me`), newest
+        update first, as ({github, number, title, url, author, draft, labels,
+        updated_at}, error). Uncached: a review request is waited on, not polled."""
+        return self._fetch_review_requests(query)
+
+    def _fetch_review_requests(self, query: str) -> tuple[list[dict[str, Any]], str | None]:
+        self.io.log_request(f"gh api search/issues q={query}")
+        jq = (
+            '.items[] | {github: (.repository_url | sub(".*/repos/"; "")), number, title,'
+            " url: .html_url, author: .user.login, draft, labels: [.labels[].name],"
+            " updated_at}"
+        )
+        cmd = ["gh", "api", "-X", "GET", "search/issues", "-f", f"q=is:pr {query}"]
+        cmd += ["-f", "sort=updated", "-f", "per_page=100", "--jq", jq]
+        try:
+            r = self.io.run(cmd, timeout=30)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return [], str(e) or "gh unavailable"
+        if r.returncode != 0:
+            return [], (r.stderr or "").strip() or "gh failed"
+        try:
+            return [json.loads(line) for line in r.stdout.splitlines() if line.strip()], None
+        except json.JSONDecodeError:
+            return [], "unreadable gh output"
+
     def _me(self) -> str:
         """The authenticated `gh` user's login, cached for the service's lifetime."""
         if self._login is None:

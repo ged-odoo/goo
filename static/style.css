@@ -2914,6 +2914,50 @@ tr.active td.brg-commit {
   border-radius: 6px;
   padding: 5px 8px;
 }
+.content.br-fill > .rq-card {
+  flex: none;
+  max-height: 40%;
+  border-bottom: 1px solid var(--l-line);
+}
+/* the requested list and the watchlist share one column grid */
+.rev-table {
+  width: 100%;
+}
+.rev-table .rl-table {
+  width: 100%;
+  table-layout: fixed;
+}
+.rev-table th:nth-child(1) {
+  width: 140px;
+}
+.rev-table th:nth-child(3) {
+  width: 150px;
+}
+.rev-table th:nth-child(4) {
+  width: 420px;
+}
+.rev-table th:nth-child(5) {
+  width: 70px;
+}
+.rq-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 24px;
+  background: var(--l-card);
+  border-bottom: 1px solid var(--l-panel-line);
+}
+.rq-query {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  background: var(--l-card);
+  color: var(--l-text);
+  font-size: 12.5px;
+}
 .rev-add-note {
   font-size: 12px;
 }
