@@ -11666,7 +11666,8 @@ var TrackCell = class extends Component {
   props = useProps({ pr: t.any(), screen: t.any() });
   static template = xml`
     <span class="brg-act">
-      <button class="pbtn" t-on-click="() => this.props.screen.trackRequested(this.props.pr)">Track</button>
+      <span t-if="this.props.screen.isTracked(this.props.pr)" class="pr-state open">tracked</span>
+      <button t-else="" class="pbtn" t-on-click="() => this.props.screen.trackRequested(this.props.pr)">Track</button>
     </span>`;
 };
 var PrCell2 = class extends Component {
@@ -11682,6 +11683,7 @@ var PrCell2 = class extends Component {
         <a class="pr-link" target="_blank" t-att-href="this.row.url" t-out="'#' + this.row.number"/>
         <span class="rev-pr-title" t-out="this.row.title"/>
         <span class="pr-state" t-att-class="this.state" t-out="this.state"/>
+        <span t-if="this.props.screen.isRequested(this.row)" class="pr-state open" title="GitHub lists this PR in your review requests">requested</span>
       </t>
       <span t-else="" class="dim" t-out="'#' + this.row.number + '…'"/>
     </span>`;
@@ -11800,7 +11802,7 @@ var ForwardPortsCell = class extends Component {
 
 // static/src/reviews_screen/reviews.ts
 var REQUEST_QUERY_KEY = "goo-review-requests-query";
-var DEFAULT_REQUEST_QUERY = "review-requested:@me state:open archived:false";
+var DEFAULT_REQUEST_QUERY = "review-requested:@me state:open archived:false label:framework-js-review";
 function readRequestQuery() {
   try {
     return localStorage.getItem(REQUEST_QUERY_KEY) || DEFAULT_REQUEST_QUERY;
@@ -12037,15 +12039,22 @@ var ReviewsScreen = class extends Component {
     const n = this.untrackedRequested().length;
     return n ? `${n} new` : "nothing new";
   }
+  isTracked(pr) {
+    return (this.config.config.reviews || []).some((r) => r.id === pr.id);
+  }
+  // a watchlist row GitHub still lists as waiting for my review
+  isRequested(row) {
+    return this.reviews.requested().some((p) => p.id === row.id);
+  }
   get showRequested() {
-    return this.config.config.review_requests && this.untrackedRequested().length > 0;
+    return this.config.config.review_requests && this.reviews.requested().length > 0;
   }
   _requestCell = (pr) => ({
     pr,
     screen: this
   });
   requestedRs = recordset(
-    () => this.untrackedRequested(),
+    () => this.reviews.requested(),
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },

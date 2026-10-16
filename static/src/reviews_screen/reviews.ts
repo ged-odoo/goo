@@ -59,7 +59,8 @@ interface ReviewGroup {
 }
 
 const REQUEST_QUERY_KEY = "goo-review-requests-query";
-const DEFAULT_REQUEST_QUERY = "review-requested:@me state:open archived:false";
+const DEFAULT_REQUEST_QUERY =
+  "review-requested:@me state:open archived:false label:framework-js-review";
 
 function readRequestQuery(): string {
   try {
@@ -325,8 +326,17 @@ export class ReviewsScreen extends Component {
     return n ? `${n} new` : "nothing new";
   }
 
+  isTracked(pr: RequestedPr): boolean {
+    return (this.config.config.reviews || []).some((r) => r.id === pr.id);
+  }
+
+  // a watchlist row GitHub still lists as waiting for my review
+  isRequested(row: ReviewRow): boolean {
+    return this.reviews.requested().some((p) => p.id === row.id);
+  }
+
   get showRequested(): boolean {
-    return this.config.config.review_requests && this.untrackedRequested().length > 0;
+    return this.config.config.review_requests && this.reviews.requested().length > 0;
   }
 
   _requestCell = (pr: RequestedPr): { pr: RequestedPr; screen: ReviewsScreen } => ({
@@ -335,7 +345,7 @@ export class ReviewsScreen extends Component {
   });
 
   requestedRs = recordset(
-    () => this.untrackedRequested(),
+    () => this.reviews.requested(),
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
