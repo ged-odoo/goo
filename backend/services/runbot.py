@@ -4,6 +4,7 @@
 import html as html_lib
 import json
 import re
+import unicodedata
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -17,10 +18,11 @@ MERGEBOT_BASE = "https://mergebot.odoo.com"
 
 # ─────────────────────────── Runbot (HTML scraping) ─────────────────────────
 
-# runbot's rd-1 page lists every bundle of the R&D project; the starred ones are the
-# sticky series (master, 19.0, saas-19.4, …). The Nightly screen (which walks each
-# series' night builds) and the dump lookup (which reads a bundle's row — see
-# RunbotService._bundle_html) read it through here.
+# runbot's rd-1 page lists the bundles of the R&D project, one row each (name, github
+# branch/PR links, latest batch tiles with their build slots); the starred ones are the
+# sticky series (master, 19.0, saas-19.4, …). The CI status, the pasted-bundle lookup
+# and the dump lookup read a bundle's row (RunbotService._bundle_html); the Nightly
+# screen walks the starred series.
 _BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
 _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
 
@@ -41,6 +43,13 @@ def parse_starred_bundles(html: str) -> list[tuple[str, str]]:
     return out
 
 
+def _slugify(name: str) -> str:
+    """The name as runbot's canonical URLs spell it (Odoo's slugify: ASCII, lowercase,
+    every run of non-alphanumerics a single dash)."""
+    ascii_name = unicodedata.normalize("NFKD", html_lib.unescape(name)).encode("ascii", "ignore")
+    return re.sub(r"[\W_]+", "-", ascii_name.decode().lower()).strip("-")
+
+
 class RunbotService:
     """Runbot CI status for a branch's bundle, read from runbot.odoo.com's R&D listing."""
 
@@ -57,6 +66,7 @@ class RunbotService:
         if refresh:
             for b in branches:
                 self.cache.invalidate(b)
+                self.cache.invalidate(("listing", b))
         with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
             states = pool.map(lambda b: self.cache.get(b, lambda b=b: self._status(b)), branches)
             return dict(zip(branches, states, strict=False))
@@ -102,19 +112,15 @@ class RunbotService:
         lists the github repos carrying the branch (the row's `tree` links — dev forks
         for colleagues' work); `prs` the pull requests the bundle shows. Read off the
         bundle's row of the R&D listing, found by the name in the URL: either the
-        bundle name itself or the canonical `<name>-<id>` slug (the id must then be
-        the bundle's own)."""
+        bundle name itself or the canonical `<name>-<id>` slug (see _bundle_html_by_id).
+        A bare id names nothing to look up."""
         m = re.match(r"https?://runbot\.odoo\.com/runbot/bundle/([^\s?#/]+)", (url or "").strip())
         if not m:
             return None, "not a runbot bundle URL (https://runbot.odoo.com/runbot/bundle/…)"
         slug = urllib.parse.unquote(m.group(1))
-        row = self._bundle_html(slug)
-        name, _, bundle_id = slug.rpartition("-")
-        if not row and name and bundle_id.isdigit():
-            row = self._bundle_html(name)
-            link = _BUNDLE_LINK_RE.search(row)
-            if not link or link.group(1) != bundle_id:
-                row = ""
+        row = ""
+        if not slug.isdigit():  # a bare id has no name to look up
+            row = self._bundle_html(slug) or self._bundle_html_by_id(slug)
         link = _BUNDLE_LINK_RE.search(row)
         if not link:
             return None, (
@@ -163,8 +169,8 @@ class RunbotService:
     def dumps(self, branch: str, refresh: bool = False) -> list[dict[str, Any]]:
         """The dumps of `branch`'s bundle — "the runbot database for master / 19.0 /
         saas-19.4 / …", for a workspace forked off a sticky series rather than picked
-        up from a pasted bundle URL. Works for any branch with a bundle (see
-        _bundle_html for how each kind is resolved); [] when there's none, in which
+        up from a pasted bundle URL. Works for any branch with a bundle in the R&D
+        listing; [] when there's none, in which
         case the create form simply doesn't offer the restore.
 
         Cached under a tuple key, out of the way of the bare branch names the status
@@ -173,6 +179,7 @@ class RunbotService:
         key = ("dumps", branch)
         if refresh:
             self.cache.invalidate(key)
+            self.cache.invalidate(("listing", branch))
         return self.cache.get(key, lambda: self._dumps(branch))
 
     def _dumps(self, branch: str) -> list[dict[str, Any]]:
@@ -200,6 +207,22 @@ class RunbotService:
             return []
         return list(dict.fromkeys(name for _id, name in _BUNDLE_LINK_RE.findall(html)))
 
+    def _listing_rows(self, query: str) -> list[str]:
+        """The bundle rows of runbot's R&D listing whose name contains `query` (a
+        literal substring match, at most one page of them), cached per query so a
+        branch's status, dumps and bundle lookup share one fetch of the page. An
+        unreadable listing is not cached."""
+        key = ("listing", query)
+        rows = self.cache.get(key, lambda: self._fetch_rows(query))
+        if not rows:
+            self.cache.invalidate(key)
+        return rows
+
+    def _fetch_rows(self, query: str) -> list[str]:
+        url = f"{RUNBOT_BASE}/runbot/r-d-1?search={urllib.parse.quote(query)}"
+        html, err = self.io.http_get(url, timeout=20)
+        return [] if err or not html else _BUNDLE_ROW_RE.split(html)[1:]
+
     def _bundle_html(self, branch: str) -> str:
         """The R&D listing's row for `branch`'s bundle, with its latest batch tiles
         newest first ("" when there's none to read).
@@ -208,14 +231,25 @@ class RunbotService:
         pages sit behind a bot check that only a browser passes. The row is matched on
         the exact bundle name, since the search also lists every bundle whose name
         merely contains it (and the starred series)."""
-        url = f"{RUNBOT_BASE}/runbot/r-d-1?search={urllib.parse.quote(branch)}"
-        html, err = self.io.http_get(url, timeout=20)
-        if err or not html:
-            return ""
-        for row in _BUNDLE_ROW_RE.split(html)[1:]:
+        for row in self._listing_rows(branch):
             m = _BUNDLE_LINK_RE.search(row)
             if m and html_lib.unescape(m.group(2)) == branch:
                 return row
+        return ""
+
+    def _bundle_html_by_id(self, slug: str) -> str:
+        """The row of the bundle a canonical `<name>-<id>` slug names ("" if none).
+        The slug's name is slugified (`master-fix_x` → `master-fix-x`), so it can't be
+        searched as a name: search its longest words instead (any bundle containing
+        one is listed) and take the row carrying the slug's own id."""
+        name, _, bundle_id = slug.rpartition("-")
+        if not name or not bundle_id.isdigit():
+            return ""
+        for word in sorted(dict.fromkeys(name.split("-")), key=len, reverse=True)[:3]:
+            for row in self._listing_rows(word):
+                m = _BUNDLE_LINK_RE.search(row)
+                if m and m.group(1) == bundle_id and _slugify(m.group(2)) == name.lower():
+                    return row
         return ""
 
     _MAX_BATCHES = 4  # how far back bundle_dumps looks for a batch that still has dumps
