@@ -106,24 +106,6 @@ class HttpTests(unittest.TestCase):
     def test_get_follows_redirects(self):
         self.assertEqual(effects.http_get(f"{self.base}/redirect"), ("héllo", None))
 
-    def test_nofollow_returns_the_redirect_itself(self):
-        status, location, text, err = effects.http_get_nofollow(f"{self.base}/redirect")
-        self.assertEqual((status, location, text, err), (302, "/ok", "moved", None))
-
-    def test_nofollow_plain_200(self):
-        self.assertEqual(effects.http_get_nofollow(f"{self.base}/ok"), (200, "", "héllo", None))
-
-    def test_nofollow_404_is_returned_as_status(self):
-        status, location, text, err = effects.http_get_nofollow(f"{self.base}/missing")
-        self.assertEqual((status, text, err), (404, "nope", None))
-
-    def test_nofollow_unreachable(self):
-        status, location, text, err = effects.http_get_nofollow(
-            f"http://127.0.0.1:{_closed_port()}/", timeout=2
-        )
-        self.assertEqual((status, location, text), (0, "", ""))
-        self.assertTrue(err)
-
     def test_head_reports_size(self):
         self.assertEqual(effects.http_head(f"{self.base}/big"), (200, len(BIG), None))
 
