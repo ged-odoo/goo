@@ -333,6 +333,69 @@ class RunbotServiceTest(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(info["name"], "master-test-33")
 
+    def test_bundle_info_slugified_canonical_url(self):
+        # runbot's canonical URL slugifies the name (`_` → `-`), which a name search
+        # can't match: the bundle is found through its words and confirmed by its id
+        listing = self._row(485999, "master-fix_fast_delete_open-jebou", self.GITHUB_LINKS)
+        info, error = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-fix-fast-delete-open-jebou-485999",
+            listing,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(info["name"], "master-fix_fast_delete_open-jebou")
+        # the id alone isn't enough: the starred `master` (id 1) is listed for the
+        # word "master", but isn't the bundle the slug names
+        listing += self._row(1, "master", self._tile("success"))
+        info, error = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-fix-fast-delete-open-jebou-1", listing
+        )
+        self.assertIsNone(info)
+        self.assertIn("no such bundle", error)
+
+    def test_bundle_info_html_escaped_name(self):
+        listing = self._row(8, "master-a&amp;b", self.GITHUB_LINKS)
+        info, _ = self._bundle_info("https://runbot.odoo.com/runbot/bundle/master-a%26b", listing)
+        self.assertEqual(info["name"], "master-a&b")
+
+    def test_bundle_info_unreadable_listing(self):
+        io = FakeIO(http={"r-d-1": ("", "HTTP Error 503")})
+        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-x"
+        )
+        self.assertIsNone(info)
+        self.assertIn("no such bundle", error)
+
+    def test_bundle_info_bare_id_asks_for_no_page(self):
+        io = FakeIO()
+        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/475950"
+        )
+        self.assertIsNone(info)
+        self.assertIn("not only its id", error)
+        self.assertEqual(io.http_calls, [])
+
+    def test_listing_is_fetched_once_per_branch(self):
+        # status, dumps and the bundle lookup of one branch share the listing page
+        listing = self._listing("master-x")
+        io = FakeIO(
+            http={"r-d-1?search=master-x": (listing, None)},
+            http_head={"runbot9.odoo.com": (200, 1)},
+        )
+        svc = services.RunbotService(io, TTLCache(ttl=60))
+        svc.statuses(["master-x"])
+        svc.dumps("master-x")
+        svc.bundle_info("https://runbot.odoo.com/runbot/bundle/master-x")
+        self.assertEqual(sum("r-d-1" in c for c in io.http_calls), 1)
+        svc.statuses(["master-x"], refresh=True)
+        self.assertEqual(sum("r-d-1" in c for c in io.http_calls), 2)
+
+    def test_unreadable_listing_is_retried_not_cached(self):
+        io = FakeIO(http={"r-d-1": ("", "boom")})
+        svc = services.RunbotService(io, TTLCache(ttl=60))
+        svc.dumps("master")
+        svc.bundle_info("https://runbot.odoo.com/runbot/bundle/master")
+        self.assertGreaterEqual(sum("r-d-1" in c for c in io.http_calls), 2)
+
     def test_bundle_info_rejects_foreign_and_missing(self):
         svc = services.RunbotService(FakeIO(), TTLCache(ttl=0))
         info, error = svc.bundle_info("https://example.com/runbot/bundle/x")
@@ -348,7 +411,7 @@ class RunbotServiceTest(unittest.TestCase):
         self.assertIsNone(info)
         self.assertIn("no such bundle", error)
 
-    # ── database dumps off a bundle page ────────────────────────────────────
+    # ── database dumps off a bundle's listing row ────────────────────────────────────
 
     # two batch tiles (newest first), each with build slots carrying the data
     # attributes the dump URL is assembled from. The Documentation slot dumps no
