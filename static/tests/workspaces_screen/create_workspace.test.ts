@@ -153,6 +153,14 @@ describe("New workspace wizard — source step", () => {
     await app.settle();
     expect(mustText(wizard()!, "Continue").disabled).toBe(false);
   });
+
+  it("the bundle URL field explains which address runbot lets goo read", async () => {
+    await mountScreen();
+    await openWizard();
+    const input = wizard()!.querySelector<HTMLInputElement>(".ws-wiz-url")!;
+    expect(input.title).toContain("…/bundle/525170");
+    expect(input.title).toContain("redirected it to the name form");
+  });
 });
 
 describe("New workspace — blank form", () => {

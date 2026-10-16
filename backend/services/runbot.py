@@ -117,7 +117,10 @@ class RunbotService:
                 row = ""
         link = _BUNDLE_LINK_RE.search(row)
         if not link:
-            return None, "no such bundle in runbot's R&D listing (use the bundle's name URL)"
+            return None, (
+                "no such bundle in runbot's R&D listing — paste the bundle's address with its "
+                "name (…/runbot/bundle/<name>-<id>), not only its id"
+            )
         branches, prs, seen = [], [], set()
         for github, branch in re.findall(r'github\.com/([\w.-]+/[\w.-]+)/tree/([^"\s<>]+)', row):
             if ("t", github, branch) not in seen:

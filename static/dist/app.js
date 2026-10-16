@@ -10862,6 +10862,7 @@ var WorkspaceSourceDialog = class extends Component {
               <span class="ws-wiz-opt-title">From a runbot bundle</span>
               <span class="ws-wiz-opt-hint dim">paste a bundle URL (e.g. a colleague's work) — goo fetches its branches locally</span>
               <input type="text" class="ws-wiz-url" placeholder="https://runbot.odoo.com/runbot/bundle/…"
+                     title="Paste the bundle's address from your browser, e.g. …/runbot/bundle/master-fix-x-525170. An address with only the id (…/bundle/525170) can't be read: copy it after runbot has redirected it to the name form."
                      t-att-value="this.url()" t-att-disabled="this.source() !== 'bundle'"
                      t-on-input="(ev) => this.url.set(ev.target.value)"
                      t-on-keydown="(ev) => ev.key === 'Enter' &amp;&amp; this.continue_()"/>
