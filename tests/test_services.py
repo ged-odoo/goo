@@ -34,7 +34,6 @@ class FakeIO:
         run_result=None,
         runs=None,
         http=None,
-        http_nofollow=None,
         http_head=None,
         dirs=None,
         files=None,
@@ -44,8 +43,6 @@ class FakeIO:
         self._run_result = run_result if run_result is not None else completed()
         self._runs = runs or {}  # {cmd_substring: CompletedProcess} — first match wins
         self._http = http or {}  # {url_substring: (text, error)}
-        # {url_substring: (status, location, text)} for http_get_nofollow
-        self._http_nofollow = http_nofollow or {}
         self._http_head = http_head or {}  # {url_substring: (status, size)}
         self._dirs = dirs or {}  # {dir path: [entry names]}
         self._files = files or {}  # {file path: text content}
@@ -81,13 +78,6 @@ class FakeIO:
             if needle in url:
                 return resp
         return "", "not stubbed"
-
-    def http_get_nofollow(self, url, **kwargs):
-        self.http_calls.append(url)
-        for needle, resp in self._http_nofollow.items():
-            if needle in url:
-                return (*resp, None)
-        return 0, "", "", "not stubbed"
 
     def http_head(self, url, **kwargs):
         self.http_calls.append(url)
@@ -211,98 +201,84 @@ class RunbotServiceTest(unittest.TestCase):
         svc = services.RunbotService(io, TTLCache(ttl=0))
         self.assertEqual(svc.search_bundles("x"), [])
 
+    @staticmethod
+    def _row(bundle_id, name, body=""):
+        """One bundle row of runbot's r-d-1 listing: the bundle link, then `body`."""
+        return (
+            f'<div class="row bundle_row"><a href="/runbot/bundle/{bundle_id}" '
+            f'title="View Bundle {name}"><b>{name}</b></a>{body}</div>'
+        )
+
+    @staticmethod
+    def _tile(colour, extra=""):
+        return f'<div class="batch_tile"><div class="card bg-{colour}-subtle">{extra}</div></div>'
+
+    def _status(self, listing, branch="master", http=None):
+        io = FakeIO(http={f"r-d-1?search={branch}": (listing, None), **(http or {})})
+        return services.RunbotService(io, TTLCache(ttl=0)).statuses([branch])[branch]
+
     def test_bundle_pass_and_running(self):
-        # a real branch: name match → 302 to the canonical page, which we then read
-        html = (
-            '<link rel="shortcut icon" href="/web/static/icon_ok.png">'
-            '<div class="batch_tile"><div class="card bg-info-subtle">'
-            '<i class="fa fa-spin"></i>building</div></div>'
-            '<div class="batch_tile">older</div>'
+        # the newest batch is still building; the result is the newest finished one's
+        row = self._row(
+            1, "master", self._tile("info", '<i class="fa fa-spin"></i>') + self._tile("success")
         )
-        io = FakeIO(
-            http_nofollow={"bundle/master": (302, "/runbot/bundle/master-1", "")},
-            http={"bundle/master-1": (html, None)},
-        )
-        svc = services.RunbotService(io, TTLCache(ttl=0))
         self.assertEqual(
-            svc.statuses(["master"]),
+            self._status(row),
             {
-                "master": {
-                    "result": "success",
-                    "running": True,
-                    "url": "https://runbot.odoo.com/runbot/bundle/master-1",
-                }
+                "result": "success",
+                "running": True,
+                "url": "https://runbot.odoo.com/runbot/bundle/1",
             },
         )
 
     def test_bundle_pass_not_running_with_connect_links(self):
         # every finished slot has an `fa-sign-in btn-info` connect link — a bare
         # btn-info must NOT be read as "still running"
-        html = (
-            '<link rel="shortcut icon" href="/web/static/icon_ok.png">'
-            '<div class="batch_tile"><div class="card bg-success-subtle">'
-            '<a class="fa fa-sign-in btn btn-info" href="/runbot/run/1"></a></div></div>'
+        row = self._row(
+            1, "master", self._tile("success", '<a class="fa fa-sign-in btn btn-info"></a>')
         )
-        io = FakeIO(
-            http_nofollow={"bundle/master": (302, "/runbot/bundle/master-1", "")},
-            http={"bundle/master-1": (html, None)},
+        self.assertEqual(self._status(row)["running"], False)
+        self.assertEqual(self._status(row)["result"], "success")
+
+    def test_bundle_fail_and_killed_are_failures(self):
+        for colour in ("danger", "killed"):
+            row = self._row(1, "master", self._tile(colour) + self._tile("success"))
+            self.assertEqual(self._status(row)["result"], "failure", colour)
+
+    def test_bundle_without_finished_batch_has_no_result(self):
+        row = self._row(1, "master", self._tile("info"))
+        status = self._status(row)
+        self.assertEqual((status["result"], status["running"]), ("", True))
+
+    def test_status_matches_the_exact_bundle_name(self):
+        # the search also lists bundles whose name merely contains the branch
+        listing = self._row(7, "master-x", self._tile("danger")) + self._row(
+            9, "master", self._tile("success")
         )
-        svc = services.RunbotService(io, TTLCache(ttl=0))
+        status = self._status(listing)
         self.assertEqual(
-            svc.statuses(["master"]),
-            {
-                "master": {
-                    "result": "success",
-                    "running": False,
-                    "url": "https://runbot.odoo.com/runbot/bundle/master-1",
-                }
-            },
+            (status["result"], status["url"]),
+            ("success", "https://runbot.odoo.com/runbot/bundle/9"),
         )
 
-    def test_bundle_fail_not_running(self):
-        # a canonical URL hit directly (200) is parsed straight from the body
-        html = '<link rel="icon" href="x/icon_ko.png"><div class="batch_tile">done</div>'
-        io = FakeIO(http_nofollow={"bundle/b": (200, "", html)})
-        svc = services.RunbotService(io, TTLCache(ttl=0))
+    def test_bundle_absent(self):
+        # not in the listing, and the badge 404s too
         self.assertEqual(
-            svc.statuses(["b"]),
-            {
-                "b": {
-                    "result": "failure",
-                    "running": False,
-                    "url": services.RUNBOT_BASE + "/runbot/bundle/b",
-                }
-            },
+            self._status(self._row(7, "master-x"), "master"),
+            {"result": "", "running": False, "url": ""},
         )
 
-    def test_slug_misresolve_301_is_not_reported(self):
-        # a never-pushed `master-test-33` has no bundle of that name, so runbot reads
-        # the trailing 33 as a bundle id and 301-redirects to an unrelated bundle —
-        # which we must NOT report (the bug: it showed that foreign bundle's "ko").
-        io = FakeIO(
-            http_nofollow={
-                "bundle/master-test-33": (
-                    301,
-                    "/runbot/bundle/master-decimal-rounding-fix-jar-33",
-                    "",
-                )
-            }
-        )
-        svc = services.RunbotService(io, TTLCache(ttl=0))
-        self.assertEqual(
-            svc.statuses(["master-test-33"]),
-            {"master-test-33": {"result": "", "running": False, "url": ""}},
-        )
+    def test_badge_fallback_when_bundle_not_listed(self):
+        for label, expected in (("success", ("success", False)), ("pending", ("", True))):
+            status = self._status(
+                "",
+                "b",
+                http={"badge": (f"<svg><text>x</text><text>{label}</text></svg>", None)},
+            )
+            self.assertEqual((status["result"], status["running"]), expected)
+            self.assertEqual(status["url"], "https://runbot.odoo.com/runbot/bundle/b")
 
-    def test_bundle_absent_404(self):
-        io = FakeIO(http_nofollow={"bundle/gone": (404, "", "")})
-        svc = services.RunbotService(io, TTLCache(ttl=0))
-        self.assertEqual(
-            svc.statuses(["gone"]), {"gone": {"result": "", "running": False, "url": ""}}
-        )
-
-    BUNDLE_HTML = (
-        "<title>Bundle master-tref-pr-3-nby</title>"
+    GITHUB_LINKS = (
         '<a href="https://github.com/odoo-dev/odoo/tree/master-tref-pr-3-nby">branch</a>'
         '<a href="https://github.com/odoo/odoo/pull/269266">old pr</a>'
         '<a href="https://github.com/odoo/odoo/pull/274706">pr</a>'
@@ -311,14 +287,14 @@ class RunbotServiceTest(unittest.TestCase):
         '<a href="https://github.com/odoo/enterprise/pull/123261">pr again</a>'
     )
 
-    def test_bundle_info_canonical_url(self):
-        # a canonical /runbot/bundle/<id> URL answers 200 directly
-        io = FakeIO(
-            http_nofollow={"bundle/master-tref-pr-3-nby-475950": (200, "", self.BUNDLE_HTML)}
-        )
-        svc = services.RunbotService(io, TTLCache(ttl=0))
-        info, error = svc.bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby-475950"
+    def _bundle_info(self, url, listing, **io_kwargs):
+        io = FakeIO(http={"r-d-1?search=": (listing, None)}, **io_kwargs)
+        return services.RunbotService(io, TTLCache(ttl=0)).bundle_info(url)
+
+    def test_bundle_info_name_url(self):
+        listing = self._row(475950, "master-tref-pr-3-nby", self.GITHUB_LINKS)
+        info, error = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby", listing
         )
         self.assertIsNone(error)
         self.assertEqual(info["name"], "master-tref-pr-3-nby")
@@ -339,58 +315,38 @@ class RunbotServiceTest(unittest.TestCase):
             ],
         )
 
-    def test_bundle_info_name_url_follows_302(self):
-        # a name URL 302-redirects to the canonical page, which is then read
-        io = FakeIO(
-            http_nofollow={"bundle/master-tref-pr-3-nby": (302, "/runbot/bundle/475950", "")},
-            http={"bundle/475950": (self.BUNDLE_HTML, None)},
+    def test_bundle_info_canonical_url_with_id(self):
+        # the canonical URL is <name>-<id>: the name is searched without the id
+        listing = self._row(475950, "master-tref-pr-3-nby", self.GITHUB_LINKS)
+        info, error = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby-475950", listing
         )
-        svc = services.RunbotService(io, TTLCache(ttl=0))
-        info, error = svc.bundle_info("https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby")
         self.assertIsNone(error)
         self.assertEqual(info["name"], "master-tref-pr-3-nby")
+
+    def test_bundle_info_name_ending_in_digits(self):
+        # a bundle really named "…-33" is found under its full name
+        listing = self._row(5, "master-test-33", self.GITHUB_LINKS)
+        info, error = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-test-33", listing
+        )
+        self.assertIsNone(error)
+        self.assertEqual(info["name"], "master-test-33")
 
     def test_bundle_info_rejects_foreign_and_missing(self):
         svc = services.RunbotService(FakeIO(), TTLCache(ttl=0))
         info, error = svc.bundle_info("https://example.com/runbot/bundle/x")
         self.assertIsNone(info)
         self.assertIn("not a runbot bundle URL", error)
-        # 301 = id-misresolve (no bundle of that name) — must not follow
-        io = FakeIO(http_nofollow={"bundle/nope-33": (301, "/runbot/bundle/foreign-33", "")})
-        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/nope-33"
-        )
+        # a slug whose trailing number is another bundle's id must not resolve to it
+        listing = self._row(7, "nope", self.GITHUB_LINKS)
+        info, error = self._bundle_info("https://runbot.odoo.com/runbot/bundle/nope-33", listing)
         self.assertIsNone(info)
         self.assertIn("no such bundle", error)
-
-    def test_bundle_info_non_bundle_page(self):
-        io = FakeIO(http_nofollow={"bundle/x": (200, "", "<title>Odoo runbot</title>")})
-        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/x"
-        )
+        # a bare id carries no name to search for
+        info, error = self._bundle_info("https://runbot.odoo.com/runbot/bundle/475950", listing)
         self.assertIsNone(info)
-        self.assertIn("not a runbot bundle", error)
-
-    def test_badge_fallback_when_bundle_unreachable(self):
-        # name match (302), but the canonical page can't be read → name-keyed badge
-        io = FakeIO(
-            http_nofollow={"bundle/b": (302, "/runbot/bundle/b-9", "")},
-            http={
-                "bundle/b-9": ("", "boom"),
-                "badge": ("<svg><text>x</text><text>success</text></svg>", None),
-            },
-        )
-        svc = services.RunbotService(io, TTLCache(ttl=0))
-        self.assertEqual(
-            svc.statuses(["b"]),
-            {
-                "b": {
-                    "result": "success",
-                    "running": False,
-                    "url": services.RUNBOT_BASE + "/runbot/bundle/b-9",
-                }
-            },
-        )
+        self.assertIn("no such bundle", error)
 
     # ── database dumps off a bundle page ────────────────────────────────────
 
@@ -437,7 +393,7 @@ class RunbotServiceTest(unittest.TestCase):
         # every dump the latest batch offers, each probed and sized; the older
         # batch's build (runbot1) is never even looked at
         io = FakeIO(
-            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_batches())},
+            http={"r-d-1?search=master-x": (self._listing("master-x"), None)},
             http_head={"runbot9.odoo.com": (200, 4096)},
         )
         info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
@@ -476,7 +432,12 @@ class RunbotServiceTest(unittest.TestCase):
         # a batch created moments ago has no build slots yet — read the one before it
         # rather than reporting that the bundle has no database to restore
         io = FakeIO(
-            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_fresh_empty_batch())},
+            http={
+                "r-d-1?search=master-x": (
+                    self._listing("master-x", batches=self._bundle_with_fresh_empty_batch()),
+                    None,
+                )
+            },
             http_head={"runbot9.odoo.com": (200, 4096)},
         )
         info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
@@ -491,7 +452,7 @@ class RunbotServiceTest(unittest.TestCase):
         # the newest batch's builds are all gone from disk → the previous batch's
         # (runbot1) dumps are offered instead
         io = FakeIO(
-            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_batches())},
+            http={"r-d-1?search=master-x": (self._listing("master-x"), None)},
             http_head={"runbot9.odoo.com": (404, 0), "runbot1.odoo.com": (200, 77)},
         )
         info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
@@ -505,7 +466,7 @@ class RunbotServiceTest(unittest.TestCase):
         # runbot cleans old build directories up: a candidate whose zip is gone is
         # not offered at all, rather than failing after the workspace exists
         io = FakeIO(
-            http_nofollow={"bundle/master-x": (200, "", self._bundle_with_batches())},
+            http={"r-d-1?search=master-x": (self._listing("master-x"), None)},
             http_head={"13-master": (200, 10), "12-master": (404, 0)},
         )
         info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
@@ -515,10 +476,10 @@ class RunbotServiceTest(unittest.TestCase):
             [(d["build"], d["db"]) for d in info["dumps"]], [("13", "all"), ("13", "base")]
         )
 
-    def _listing(self, *names):
+    def _listing(self, *names, batches=None):
         """runbot's r-d-1 search listing: one bundle row per name, each carrying the
-        batch tiles of _bundle_with_batches."""
-        tiles = self._bundle_with_batches().split("</title>", 1)[1]
+        batch tiles of _bundle_with_batches (or of `batches`)."""
+        tiles = (batches or self._bundle_with_batches()).split("</title>", 1)[1]
         return "".join(
             f'<div class="row bundle_row"><a href="/runbot/bundle/{i}" '
             f'title="View Bundle {name}">{name}</a>{tiles}</div>'
@@ -561,9 +522,8 @@ class RunbotServiceTest(unittest.TestCase):
         self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("master"), [])
 
     def test_bundle_dumps_absent_without_batches(self):
-        io = FakeIO(http_nofollow={"bundle/x": (200, "", self.BUNDLE_HTML)})
-        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/x"
+        info, _ = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/x", self._row(1, "x", self.GITHUB_LINKS)
         )
         self.assertEqual(info["dumps"], [])
 

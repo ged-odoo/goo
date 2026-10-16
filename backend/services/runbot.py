@@ -42,7 +42,7 @@ def parse_starred_bundles(html: str) -> list[tuple[str, str]]:
 
 
 class RunbotService:
-    """Runbot CI status for a branch's bundle, scraped from runbot.odoo.com."""
+    """Runbot CI status for a branch's bundle, read from runbot.odoo.com's R&D listing."""
 
     def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
@@ -62,80 +62,84 @@ class RunbotService:
             return dict(zip(branches, states, strict=False))
 
     def _status(self, branch: str) -> dict[str, Any]:
-        """{result, running, url} for a branch's runbot bundle.
+        """{result, running, url} for a branch's runbot bundle, read off its row of
+        the R&D listing (see _bundle_html): `running` is true when the newest batch
+        tile is still in progress (runbot tints it `bg-info-subtle`, vs
+        `bg-success-subtle` / `bg-danger-subtle` / `bg-killed-subtle` once done), and
+        `result` ("success"/"failure"/"") is the newest finished tile's colour.
+        `url` is the canonical bundle page (""=no bundle); the UI links to it.
 
-        `/runbot/bundle/<name>` resolves the *name* and 302-redirects to the bundle's
-        canonical URL. But when no bundle has that name, runbot/Odoo instead treats a
-        trailing "-<n>" as a record id and 301-redirects to whatever bundle has id n —
-        a *different* branch (e.g. a fresh, never-pushed `master-test-33` resolves to
-        bundle 33, `master-decimal-rounding-fix-jar`). We must not report that foreign
-        bundle's status, so we don't follow redirects ourselves: a 302 is a real name
-        match (follow it), a 301 means "no such bundle" (the trailing number was read
-        as an id), and 404 is plainly absent.
-
-        `result` ("success"/"failure"/"") comes from the bundle page favicon
-        (icon_ok/icon_ko/icon_killed …). `running` is true when the latest batch still
-        has a build in progress: runbot tints the batch card `bg-info-subtle` (vs
-        `bg-success-subtle`/`bg-danger-subtle` once done) and spins the building slot's
-        icon (`fa-spin`). NB: a bare `btn-info` is *not* a running signal — every
-        finished slot carries an `fa-sign-in btn-info` "connect to live build" link.
-        `url` is the canonical bundle page (""=no bundle); the UI links to it."""
-        url = f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}"
-        status, location, html, _ = self.io.http_get_nofollow(url)
-        if status == 302:  # name match → the canonical bundle page
-            url = urllib.parse.urljoin(RUNBOT_BASE, location)
-            html, _ = self.io.http_get(url)
-        elif status != 200:  # 301 (id-misresolve to a foreign bundle), 404, or error
-            return {"result": "", "running": False, "url": ""}
-        if not html:  # canonical page unreadable → fall back to the name-keyed badge
+        A bundle the listing doesn't show falls back to the name-keyed badge, which
+        only knows the result of the last finished batch."""
+        row = self._bundle_html(branch)
+        m = _BUNDLE_LINK_RE.search(row)
+        if not m:
             s = self._badge(branch)
+            if not s:
+                return {"result": "", "running": False, "url": ""}
             r = s if s in ("success", "failure") else ""
+            url = f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}"
             return {"result": r, "running": s == "pending", "url": url}
-        m = re.search(r'rel="[^"]*icon"[^>]*href="[^"]*?icon_([a-z]+)\.', html)
-        state = m.group(1) if m else ""
-        result = "failure" if state in ("ko", "killed") else "success" if state == "ok" else ""
-        parts = html.split('class="batch_tile', 1)
-        latest = parts[1].split('class="batch_tile', 1)[0] if len(parts) > 1 else ""
-        running = "bg-info-subtle" in latest or "fa-spin" in latest
-        return {"result": result, "running": running, "url": url}
+        tiles = row.split('class="batch_tile')[1:]
+        running = bool(tiles) and ("bg-info-subtle" in tiles[0] or "fa-spin" in tiles[0])
+        result = ""
+        for tile in tiles[1:] if running else tiles:
+            if "bg-success-subtle" in tile:
+                result = "success"
+            elif "bg-danger-subtle" in tile or "bg-killed-subtle" in tile:
+                result = "failure"
+            if result:
+                break
+        return {
+            "result": result,
+            "running": running,
+            "url": f"{RUNBOT_BASE}/runbot/bundle/{m.group(1)}",
+        }
 
     def bundle_info(self, url: str | None) -> tuple[dict[str, Any] | None, str | None]:
         """The bundle a pasted runbot URL names: (info, error) with info =
-        {name, branches, prs}. `name` is the bundle (= branch) name from the
-        page title; `branches` lists the github repos carrying the branch (the
-        page's `tree` links — dev forks for colleagues' work); `prs` the pull
-        requests the bundle shows. Accepts canonical (/runbot/bundle/<id>) and
-        name URLs — same 302-follow / 301-misresolve rules as _status."""
-        m = re.match(r"https?://runbot\.odoo\.com(/runbot/bundle/[^\s?#]+)", (url or "").strip())
+        {name, branches, prs, dumps}. `name` is the bundle (= branch) name; `branches`
+        lists the github repos carrying the branch (the row's `tree` links — dev forks
+        for colleagues' work); `prs` the pull requests the bundle shows. Read off the
+        bundle's row of the R&D listing, found by the name in the URL: either the
+        bundle name itself or the canonical `<name>-<id>` slug (the id must then be
+        the bundle's own)."""
+        m = re.match(r"https?://runbot\.odoo\.com/runbot/bundle/([^\s?#/]+)", (url or "").strip())
         if not m:
             return None, "not a runbot bundle URL (https://runbot.odoo.com/runbot/bundle/…)"
-        status, location, html, _ = self.io.http_get_nofollow(RUNBOT_BASE + m.group(1))
-        if status == 302:  # name URL → the canonical bundle page
-            html, _ = self.io.http_get(urllib.parse.urljoin(RUNBOT_BASE, location))
-        elif status != 200:  # 301 (id-misresolve), 404, or error
-            return None, f"no such bundle (HTTP {status or 'unreachable'})"
-        if not html:
-            return None, "could not read the bundle page"
-        tm = re.search(r"<title>\s*Bundle\s+([^<]+?)\s*</title>", html)
-        if not tm:
-            return None, "that page is not a runbot bundle"
+        slug = urllib.parse.unquote(m.group(1))
+        row = self._bundle_html(slug)
+        name, _, bundle_id = slug.rpartition("-")
+        if not row and name and bundle_id.isdigit():
+            row = self._bundle_html(name)
+            link = _BUNDLE_LINK_RE.search(row)
+            if not link or link.group(1) != bundle_id:
+                row = ""
+        link = _BUNDLE_LINK_RE.search(row)
+        if not link:
+            return None, "no such bundle in runbot's R&D listing (use the bundle's name URL)"
         branches, prs, seen = [], [], set()
-        for github, branch in re.findall(r'github\.com/([\w.-]+/[\w.-]+)/tree/([^"\s<>]+)', html):
+        for github, branch in re.findall(r'github\.com/([\w.-]+/[\w.-]+)/tree/([^"\s<>]+)', row):
             if ("t", github, branch) not in seen:
                 seen.add(("t", github, branch))
                 branches.append({"github": github, "branch": branch})
-        for github, number in re.findall(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", html):
+        for github, number in re.findall(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", row):
             if ("p", github, number) not in seen:
                 seen.add(("p", github, number))
                 prs.append({"github": github, "number": int(number)})
-        dumps = self.bundle_dumps(html)
-        return {"name": tm.group(1), "branches": branches, "prs": prs, "dumps": dumps}, None
+        info = {
+            "name": html_lib.unescape(link.group(2)),
+            "branches": branches,
+            "prs": prs,
+            "dumps": self.bundle_dumps(row),
+        }
+        return info, None
 
     # ── database dumps ───────────────────────────────────────────────────────
     # Every runbot build leaves its databases dumped next to its logs, as
     # <host>/runbot/static/build/<dest>/logs/<dest>-<db_suffix>.zip (an odoo dump:
     # dump.sql + filestore/) — that's the very URL runbot's own `restore` build step
-    # downloads to seed a child build. The bundle page never links it, but the
+    # downloads to seed a child build. The listing never links it, but the
     # <build-options-dropdown> element on each build slot carries all three parts as
     # data attributes, so we can address it ourselves. Used by "Restore runbot
     # database" in the create-workspace wizard — for a pasted bundle (bundle_info)
