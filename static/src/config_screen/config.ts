@@ -823,6 +823,7 @@ export class ConfigScreen extends Component {
                 <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
               </ul>
             </li>
+            <li>odoo.com keys last 90 days at most. When yours expires, the Task buttons show "key expired?", the event log says so once, and Check says Odoo rejects the key. Renew it: create a new key (step 1) and replace the old one the same way as in step 2 (for the service: <code>systemctl --user edit goo.service</code>, swap the key, then <code>systemctl --user restart goo.service</code>).</li>
           </ol>
           <p>
             <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>

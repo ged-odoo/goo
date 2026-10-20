@@ -4,6 +4,10 @@ odoo.com through its JSON-2 API with the user's API key."""
 from typing import Any
 
 ODOO_URL = "https://www.odoo.com"
+KEY_REJECTED = (
+    "Odoo rejects the API key (invalid or expired: odoo.com keys last 90 days at most)"
+    " - create a new one"
+)
 
 
 class TaskService:
@@ -24,7 +28,7 @@ class TaskService:
             timeout=15,
         )
         if error is not None:
-            return {}, error
+            return {}, KEY_REJECTED if error.startswith("HTTP 401") else error
         if not isinstance(rows, list):
             return {}, "unexpected reply from Odoo"
         return {

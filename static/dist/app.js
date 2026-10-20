@@ -6813,10 +6813,15 @@ var TasksPlugin = class extends Plugin {
   static sequence = 2;
   // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
   config = usePlugin(ConfigPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   tasks = signal({});
   // task id -> its name and stage
   error = signal("");
   // why the last request failed ("" when it worked)
+  keyRejected = signal(false);
+  // Odoo refused the key (odoo.com keys expire after 90 days)
+  _warned = false;
+  // the event log hears about a rejected key once per session
   _asked = /* @__PURE__ */ new Set();
   // ids already requested (answered or in flight)
   _queue = [];
@@ -6855,6 +6860,11 @@ var TasksPlugin = class extends Plugin {
     try {
       const res = await postJSON("/api/tasks", { ids: ids.map(Number) });
       this.error.set(res.ok ? "" : res.error || "failed");
+      this.keyRejected.set(!!res.key_rejected);
+      if (res.key_rejected && !this._warned) {
+        this._warned = true;
+        this.eventLog.add(`Odoo task stages: ${res.error}`, "", "error");
+      }
       if (res.tasks && Object.keys(res.tasks).length) {
         this.tasks.set({ ...this.tasks(), ...res.tasks });
       }
@@ -7566,6 +7576,7 @@ var ConfigScreen = class extends Component {
                 <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
               </ul>
             </li>
+            <li>odoo.com keys last 90 days at most. When yours expires, the Task buttons show "key expired?", the event log says so once, and Check says Odoo rejects the key. Renew it: create a new key (step 1) and replace the old one the same way as in step 2 (for the service: <code>systemctl --user edit goo.service</code>, swap the key, then <code>systemctl --user restart goo.service</code>).</li>
           </ol>
           <p>
             <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>
@@ -10356,6 +10367,7 @@ var TaskButton = class extends Component {
     <t t-if="this.id">
       <a class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.url" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
       <span t-if="this.info" class="pr-state task-stage" t-att-title="this.info.name" t-out="this.info.stage"/>
+      <span t-elif="this.tasks.keyRejected()" class="pr-state task-stage" title="Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration">key expired?</span>
     </t>`;
   setup() {
     useEffect(() => {

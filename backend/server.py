@@ -1784,7 +1784,11 @@ def _api_tasks(body: dict[str, Any]) -> dict[str, Any]:
     if not (CONFIG.get().get("config") or {}).get("odoo_tasks"):
         return {"ok": False, "tasks": {}, "error": "disabled in the settings"}
     tasks, error = TASKS.read(os.environ.get("GOO_ODOO_API_KEY", ""), body["ids"])
-    return {"ok": error is None, "tasks": tasks, **({"error": error} if error else {})}
+    return {
+        "ok": error is None,
+        "tasks": tasks,
+        **({"error": error, "key_rejected": error == services.KEY_REJECTED} if error else {}),
+    }
 
 
 @post_route("/api/prs/close", "repo", "number")

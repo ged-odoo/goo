@@ -75,6 +75,18 @@ describe("Config screen — Odoo task stage", () => {
     await until(app, () => app.root.textContent?.includes("✓ the key works"));
   });
 
+  it("says when Odoo rejects the key, and how to renew it", async () => {
+    const error =
+      "Odoo rejects the API key (invalid or expired: odoo.com keys last 90 days at most)";
+    await openConfig(
+      { odoo_tasks: true },
+      { "/api/tasks": { ok: false, tasks: {}, error, key_rejected: true } },
+    );
+    await until(app, () => app.root.textContent?.includes(`✗ ${error}`));
+    expect(app.root.textContent).toContain("odoo.com keys last 90 days at most");
+    expect(app.root.textContent).toContain("swap the key");
+  });
+
   it("asks nothing while the setting is off", async () => {
     await openConfig({}, { "/api/tasks": OFF });
     expect(app.callsTo("/api/tasks")).toHaveLength(0);

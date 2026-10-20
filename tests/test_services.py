@@ -1143,12 +1143,12 @@ class TaskServiceTest(unittest.TestCase):
 
     def test_read_with_no_ids_still_checks_the_key(self):
         io = FakeIO(http={"/json/2/": (None, "HTTP 401: Invalid apikey")})
-        self.assertEqual(services.TaskService(io).read("bad", []), ({}, "HTTP 401: Invalid apikey"))
+        self.assertEqual(services.TaskService(io).read("bad", []), ({}, services.KEY_REJECTED))
         self.assertEqual(len(io.http_calls), 1)
 
     def test_read_reports_a_failed_call(self):
-        io = FakeIO(http={"/json/2/": (None, "HTTP 401: Invalid apikey")})
-        self.assertEqual(services.TaskService(io).read("k", [1]), ({}, "HTTP 401: Invalid apikey"))
+        io = FakeIO(http={"/json/2/": (None, "HTTP 500")})
+        self.assertEqual(services.TaskService(io).read("k", [1]), ({}, "HTTP 500"))
         io = FakeIO(http={"/json/2/": ({"not": "a list"}, None)})
         self.assertEqual(
             services.TaskService(io).read("k", [1]), ({}, "unexpected reply from Odoo")

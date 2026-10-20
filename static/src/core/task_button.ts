@@ -17,6 +17,7 @@ export class TaskButton extends Component {
     <t t-if="this.id">
       <a class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.url" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
       <span t-if="this.info" class="pr-state task-stage" t-att-title="this.info.name" t-out="this.info.stage"/>
+      <span t-elif="this.tasks.keyRejected()" class="pr-state task-stage" title="Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration">key expired?</span>
     </t>`;
 
   setup(): void {

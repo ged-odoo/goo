@@ -5,6 +5,7 @@
 // asks made within a few ms leave as one request.
 
 import { ConfigPlugin } from "./config_plugin.ts";
+import { EventLogPlugin } from "./event_log_plugin.ts";
 import { errorMessage, postJSON } from "./utils.ts";
 
 import { Plugin, usePlugin, signal, onWillDestroy } from "@odoo/owl";
@@ -18,6 +19,7 @@ interface TasksReply {
   ok: boolean;
   tasks?: Record<string, TaskInfo>;
   error?: string;
+  key_rejected?: boolean; // Odoo answered 401: the key is wrong or has expired
 }
 
 const BATCH_DELAY_MS = 30;
@@ -26,8 +28,11 @@ export class TasksPlugin extends Plugin {
   static sequence = 2; // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
 
   config = usePlugin(ConfigPlugin);
+  eventLog = usePlugin(EventLogPlugin);
   tasks = signal<Record<string, TaskInfo>>({}); // task id -> its name and stage
   error = signal(""); // why the last request failed ("" when it worked)
+  keyRejected = signal(false); // Odoo refused the key (odoo.com keys expire after 90 days)
+  _warned = false; // the event log hears about a rejected key once per session
   _asked = new Set<string>(); // ids already requested (answered or in flight)
   _queue: string[] = [];
   _timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,6 +77,11 @@ export class TasksPlugin extends Plugin {
     try {
       const res = await postJSON<TasksReply>("/api/tasks", { ids: ids.map(Number) });
       this.error.set(res.ok ? "" : res.error || "failed");
+      this.keyRejected.set(!!res.key_rejected);
+      if (res.key_rejected && !this._warned) {
+        this._warned = true;
+        this.eventLog.add(`Odoo task stages: ${res.error}`, "", "error");
+      }
       if (res.tasks && Object.keys(res.tasks).length) {
         this.tasks.set({ ...this.tasks(), ...res.tasks });
       }
