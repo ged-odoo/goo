@@ -122,7 +122,7 @@ interface MbStatus {
   rows: (MbRow & { cls: MbCategory; url: string })[];
 }
 
-// a trailing list pill (listPills)
+// a list pill (listPills, odooPill)
 interface ListPill {
   key: string;
   cls: string;
@@ -222,6 +222,8 @@ export class WorkspacesScreen extends Component {
                         <span t-if="pill.sym" class="wt-pill-sym" t-out="pill.sym"/><t t-out="pill.label"/>
                       </span>
                     </span>
+                    <t t-set="odoo" t-value="this.odooPill(row.ws)"/>
+                    <span t-if="odoo" class="wt-item-odoo"><span class="wt-pill" t-att-class="odoo.cls" t-att-title="odoo.title" t-out="odoo.label"/></span>
                   </button>
                 </div>
               </t>
@@ -849,12 +851,11 @@ export class WorkspacesScreen extends Component {
             },
       );
     }
-    const odoo = this.odooPill(ws);
-    if (odoo) pills.push(odoo);
     return pills;
   }
 
-  // the small, non-clickable stage of the workspace's odoo.com task (the header's pill links to it)
+  // the small, non-clickable stage of the workspace's odoo.com task, on a line of its own under
+  // the repo chips and CI pills (the header's pill is the link)
   odooPill(ws: WorkspaceConfig): ListPill | null {
     const info = this.tasks.tasks()[this.taskIdOf(ws)];
     if (!info) return null;

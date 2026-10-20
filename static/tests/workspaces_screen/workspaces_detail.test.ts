@@ -451,6 +451,9 @@ describe("worktree workspace lifecycle", () => {
     expect(pills[0].classList.contains("progress")).toBe(true);
     expect(pills[0].title).toBe("Odoo task: Fix the thing\nStage: In Progress");
     expect(pills[0].closest(".wt-item")?.textContent).toContain("with-task");
+    // on a line of its own, so the CI / merge pills keep their room
+    expect(pills[0].closest(".wt-item-bot")).toBeNull();
+    expect(pills[0].parentElement?.classList.contains("wt-item-odoo")).toBe(true);
   });
 
   describe("Task tab", () => {
