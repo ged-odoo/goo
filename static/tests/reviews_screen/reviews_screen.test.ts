@@ -339,6 +339,29 @@ describe("Reviews screen — task stage", () => {
     expect(calls).toBe(2);
   });
 
+  it("flags a rejected (expired) key on the Task button and tells the event log once", async () => {
+    const error =
+      "Odoo rejects the API key (invalid or expired: odoo.com keys last 90 days at most)";
+    app = await mount(
+      {
+        "/api/prs/info": { prs },
+        "/api/tasks": { ok: false, tasks: {}, error, key_rejected: true },
+        "/api/event": { ok: true },
+      },
+      { odoo_tasks: true },
+    );
+    await vi.waitFor(() =>
+      expect(text(app.root.querySelector(".rl-group-head .task-stage"))).toBe("key expired?"),
+    );
+    await click(button(app.root, "Refresh")); // asked again: still rejected
+    expect(app.callsTo("/api/tasks").length).toBeGreaterThanOrEqual(2);
+    const logged = app
+      .callsTo("/api/event")
+      .map((c) => (c.body as { text: string }).text)
+      .filter((t) => t.includes("Odoo rejects the API key"));
+    expect(logged).toHaveLength(1);
+  });
+
   it("shows no stage when Odoo does not answer for the task", async () => {
     app = await mount(
       {

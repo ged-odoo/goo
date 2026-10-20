@@ -264,6 +264,19 @@ class PostRoutesTest(ServerTestCase):
         self.assertEqual(body, {"ok": True, "tasks": {"7": {"name": "t", "stage": "Done"}}})
         self.assertEqual(fake.calls, [("secret", [7])])
 
+    def test_tasks_flag_a_rejected_key(self):
+        class Rejecting:
+            def read(self, *args):
+                return {}, services.KEY_REJECTED
+
+        self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
+        with mock.patch.object(server, "TASKS", Rejecting()):
+            _, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
+        self.assertEqual(
+            body,
+            {"ok": False, "tasks": {}, "error": services.KEY_REJECTED, "key_rejected": True},
+        )
+
     def test_route_success_and_error_through_a_swapped_singleton(self):
         db = _FakeDatabase({"keep", "gone"})
         with mock.patch.object(server, "DATABASE", db):
