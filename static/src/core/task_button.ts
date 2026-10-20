@@ -4,21 +4,29 @@
 
 import { Component, usePlugin, useProps, useEffect, xml, t } from "@odoo/owl";
 import type { Type } from "@odoo/owl";
-import { ICONS, m } from "./common.ts";
 import { TasksPlugin } from "./tasks_plugin.ts";
 import type { TaskInfo } from "./tasks_plugin.ts";
 import { taskId, taskUrl } from "./utils.ts";
 
+// the pill's colour from the stage's name; Odoo stages are free text, so unknown ones stay plain
+export function stageClass(stage: string): string {
+  if (/cancel|refus|reject/i.test(stage)) return "merged";
+  if (/done|closed|resolved|deliver|complete/i.test(stage)) return "ready";
+  if (/progress|develop|dev\b|review|test|doing|ongoing/i.test(stage)) return "progress";
+  if (/block|wait|hold/i.test(stage)) return "blocked";
+  return "other";
+}
+
 export class TaskButton extends Component {
-  props = useProps({ texts: t.any() as Type<(string | undefined)[]> });
+  // `ci`: drawn like the runbot / mergebot pills of the Workspaces header (a dot, no padding change)
+  props = useProps({
+    texts: t.any() as Type<(string | undefined)[]>,
+    ci: t.boolean().optional(),
+  });
+
   tasks = usePlugin(TasksPlugin);
-  externalIcon = m(ICONS.external);
   static template = xml`
-    <t t-if="this.id">
-      <a class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.url" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
-      <span t-if="this.info" class="pr-state task-stage" t-att-title="this.info.name" t-out="this.info.stage"/>
-      <span t-elif="this.tasks.keyRejected()" class="pr-state task-stage" title="Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration">key expired?</span>
-    </t>`;
+    <a t-if="this.id" class="rev-task" t-att-class="this.cls" target="_blank" rel="noopener" t-att-href="this.url" t-att-title="this.title" t-on-click.stop=""><span t-if="this.props.ci" class="dash-ci-dot"/><t t-out="this.label"/><span class="rev-task-arrow">↗</span></a>`;
 
   setup(): void {
     useEffect(() => {
@@ -36,5 +44,28 @@ export class TaskButton extends Component {
 
   get info(): TaskInfo | undefined {
     return this.tasks.tasks()[this.id];
+  }
+
+  // "Odoo: <stage>" once the stage is known, so it is not mistaken for the GitHub status
+  get label(): string {
+    if (this.info) return `Odoo: ${this.info.stage}`;
+    return this.tasks.keyRejected() ? "Odoo: key expired?" : "Odoo task";
+  }
+
+  get cls(): string {
+    const category = this.info
+      ? stageClass(this.info.stage)
+      : this.tasks.keyRejected()
+        ? "blocked"
+        : "other";
+    return `${this.props.ci ? "dash-ci dash-mb" : "dash-pr-state"} ${category}`;
+  }
+
+  get title(): string {
+    if (this.info) return `${this.info.name} — open the task on odoo.com`;
+    if (this.tasks.keyRejected()) {
+      return "Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration. Click to open the task on odoo.com";
+    }
+    return "open the task on odoo.com";
   }
 }

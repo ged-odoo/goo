@@ -126,7 +126,7 @@ export class ReviewsScreen extends Component {
       </div>
       <div class="content br-fill">
         <div t-if="this.showRequested" class="br-card rq-card">
-          <div class="brg-table rev-table">
+          <div class="brg-table rev-table rev-requested">
             <RecordList recordset="this.requestedRs"/>
           </div>
         </div>
@@ -140,8 +140,8 @@ export class ReviewsScreen extends Component {
               <t t-set-slot="group-header" t-slot-scope="scope">
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
-                <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
                 <TaskButton texts="this.taskTexts(scope.g.rows)"/>
+                <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
