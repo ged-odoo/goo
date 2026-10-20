@@ -13,7 +13,7 @@ import type { PullRequestWire } from "../core/models.ts";
 import { Plugin, signal } from "@odoo/owl";
 
 // GitHubService.review_statuses: has the authenticated user reviewed it
-export type ReviewStatus = "reviewed" | "to_review";
+export type ReviewStatus = "reviewed" | "commented" | "to_review";
 
 // a {github, branch} pair for the sibling-PR lookup (GitHubService.prs_for_branches)
 export interface BranchRef {
@@ -45,7 +45,7 @@ export class ReviewsPlugin extends Plugin {
   static sequence = 4;
 
   prInfo = signal<Record<string, PullRequestWire>>({}); // "github#number" -> PullRequest dict
-  reviewStatus = signal<Record<string, ReviewStatus>>({}); // "github#number" -> "reviewed" | "to_review"
+  reviewStatus = signal<Record<string, ReviewStatus>>({}); // "github#number" -> ReviewStatus
   loading = signal(false);
   error = signal("");
   at = signal(0); // last successful prInfo fetch (drives the screen's "updated…" stamp)
@@ -89,7 +89,7 @@ export class ReviewsPlugin extends Plugin {
   }
 
   // the PRs matching `query` (the review-request search); errors land in requestedError
-  async loadRequested(query: string): Promise<void> {
+  async loadRequested(query: string, force = false): Promise<void> {
     const seq = ++this._requestSeq;
     try {
       const res = await postJSON<{ ok: boolean; prs?: Omit<RequestedPr, "id">[]; error?: string }>(
@@ -99,6 +99,7 @@ export class ReviewsPlugin extends Plugin {
       if (seq !== this._requestSeq) return; // a newer search is in flight
       this.requested.set((res.prs || []).map((pr) => ({ ...pr, id: `${pr.github}#${pr.number}` })));
       this.requestedError.set(res.ok ? "" : res.error || "search failed");
+      this.loadReviewStatus(this.requested(), force);
     } catch (e) {
       if (seq !== this._requestSeq) return;
       this.requested.set([]);
@@ -123,7 +124,9 @@ export class ReviewsPlugin extends Plugin {
       );
       // same guard as loadPrInfo: no write (so no effect re-run) when nothing arrived
       const statuses = res.statuses || {};
-      if (Object.keys(statuses).length) this.reviewStatus.set({ ...have, ...statuses });
+      if (Object.keys(statuses).length) {
+        this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
+      }
     } catch {
       /* leave status blank on failure */
     } finally {

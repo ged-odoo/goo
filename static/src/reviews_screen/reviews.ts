@@ -38,6 +38,7 @@ import type { ForwardPortRow } from "../core/observed_models.ts";
 import {
   ForwardPortsCell,
   RequestedPrCell,
+  RequestedStatusCell,
   TrackCell,
   isMerged,
   PrCell,
@@ -100,6 +101,7 @@ export class ReviewsScreen extends Component {
           <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by status">
             <option value="">All</option>
             <option value="to_review">To review</option>
+            <option value="commented">Commented</option>
             <option value="reviewed">Reviewed</option>
             <option value="rplus">R+'d</option>
             <option value="merged">Merged</option>
@@ -349,15 +351,25 @@ export class ReviewsScreen extends Component {
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
+      {
+        name: "status",
+        label: "Status",
+        component: RequestedStatusCell,
+        cellProps: this._requestCell,
+      },
       { name: "author", label: "Author", get: (p) => p.author },
       { name: "when", label: "Updated", get: (p) => timeAgo(p.updated_at) },
       { name: "act", label: "", component: TrackCell, cellProps: this._requestCell },
     ],
   );
 
-  async loadRequested(): Promise<void> {
+  // force=true (Refresh) re-asks the status of every requested PR, bypassing the caches
+  async loadRequested(force = false): Promise<void> {
     if (!this.config.config.review_requests) return;
-    return this.reviews.loadRequested(this.requestQuery());
+    await this.reviews.loadRequested(this.requestQuery(), force);
+    const requested = this.reviews.requested();
+    if (force) this.code.refreshStatuses([], requested);
+    else this.code.loadMergebot(requested);
   }
 
   setRequestQuery(text: string): void {
@@ -443,7 +455,7 @@ export class ReviewsScreen extends Component {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
-      this.loadRequested(),
+      this.loadRequested(true),
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),
