@@ -2939,6 +2939,20 @@ tr.active td.brg-commit {
 .rev-table th:nth-child(5) {
   width: 70px;
 }
+/* the requested list has its own columns (repo, PR, status, author, updated, Track): the PR
+   title takes what the narrow status / author / updated / button columns leave */
+.rev-requested th:nth-child(3) {
+  width: 110px;
+}
+.rev-requested th:nth-child(4) {
+  width: 130px;
+}
+.rev-requested th:nth-child(5) {
+  width: 80px;
+}
+.rev-requested th:nth-child(6) {
+  width: 76px;
+}
 .rq-bar {
   flex: none;
   display: flex;
@@ -3006,15 +3020,22 @@ tr.active td.brg-commit {
 .rl-table tbody tr.rl-group-head:hover .rev-important {
   opacity: 1;
 }
+/* the Odoo task pill: a link coloured like the status pills (see stageClass) */
 .rev-task {
   flex: none;
-  padding: 3px 9px;
+  display: inline-flex;
+  align-items: center;
   gap: 5px;
-  font-size: 12px;
+  margin-left: 4px;
+  white-space: nowrap;
+  cursor: pointer;
 }
-.rev-task svg {
-  width: 13px;
-  height: 13px;
+.rev-task-arrow {
+  font-size: 12px;
+  line-height: 1;
+}
+.rev-task:hover {
+  filter: brightness(0.94);
 }
 .rev-important:hover {
   background: var(--l-panel);

@@ -391,13 +391,13 @@ describe("worktree workspace lifecycle", () => {
       checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
     });
     await mount([withTask], { active: "" });
-    const link = app.root.querySelector<HTMLAnchorElement>(".wt-detail-name-row a.pbtn")!;
-    expect(link.textContent).toContain("Task");
+    const link = app.root.querySelector<HTMLAnchorElement>(".wt-detail-name-row a.rev-task")!;
+    expect(link.textContent).toBe("Odoo task↗");
     expect(link.href).toBe("https://www.odoo.com/odoo/all-tasks/4939265");
     app.destroy();
 
     await mount([WT], { active: "" });
-    expect(app.root.querySelector(".wt-detail-name-row a.pbtn")).toBeNull();
+    expect(app.root.querySelector(".wt-detail-name-row a.rev-task")).toBeNull();
   });
 
   it("the Task button shows the task's stage when the Odoo integration is on", async () => {
@@ -414,10 +414,13 @@ describe("worktree workspace lifecycle", () => {
         "/api/tasks": { ok: true, tasks: { "4939265": { name: "Fix", stage: "In Progress" } } },
       },
     });
-    await waitFor(app, () => !!app.root.querySelector(".wt-detail-name-row .task-stage"));
-    expect(app.root.querySelector(".wt-detail-name-row .task-stage")?.textContent).toBe(
-      "In Progress",
-    );
+    await waitFor(app, () => !!app.root.querySelector(".wt-detail-name-row a.rev-task"));
+    const pill = app.root.querySelector(".wt-detail-name-row a.rev-task")!;
+    expect(pill.textContent).toBe("Odoo: In Progress↗");
+    expect(pill.classList.contains("dash-ci")).toBe(true); // drawn like the runbot / mergebot pills
+    // …and placed with them, before the Refresh button
+    const refresh = mustText(app.root, ".wt-detail-name-row button", "Refresh");
+    expect(pill.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [4939265] });
   });
 

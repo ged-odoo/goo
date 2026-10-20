@@ -270,6 +270,7 @@ export class WorkspacesScreen extends Component {
               <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                 <span class="dash-ci-dot"/><t t-out="mb.label"/>
               </a>
+              <TaskButton texts="this.taskTexts(this.sel)" ci="true"/>
               <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
               <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
@@ -277,7 +278,6 @@ export class WorkspacesScreen extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-              <TaskButton texts="this.taskTexts(this.sel)"/>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">

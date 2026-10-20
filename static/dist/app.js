@@ -10359,16 +10359,22 @@ var CiScreen = class extends Component {
 };
 
 // static/src/core/task_button.ts
+function stageClass(stage) {
+  if (/cancel|refus|reject/i.test(stage)) return "merged";
+  if (/done|closed|resolved|deliver|complete/i.test(stage)) return "ready";
+  if (/progress|develop|dev\b|review|test|doing|ongoing/i.test(stage)) return "progress";
+  if (/block|wait|hold/i.test(stage)) return "blocked";
+  return "other";
+}
 var TaskButton = class extends Component {
-  props = useProps({ texts: t.any() });
+  // `ci`: drawn like the runbot / mergebot pills of the Workspaces header (a dot, no padding change)
+  props = useProps({
+    texts: t.any(),
+    ci: t.boolean().optional()
+  });
   tasks = usePlugin(TasksPlugin);
-  externalIcon = m(ICONS.external);
   static template = xml`
-    <t t-if="this.id">
-      <a class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.url" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
-      <span t-if="this.info" class="pr-state task-stage" t-att-title="this.info.name" t-out="this.info.stage"/>
-      <span t-elif="this.tasks.keyRejected()" class="pr-state task-stage" title="Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration">key expired?</span>
-    </t>`;
+    <a t-if="this.id" class="rev-task" t-att-class="this.cls" target="_blank" rel="noopener" t-att-href="this.url" t-att-title="this.title" t-on-click.stop=""><span t-if="this.props.ci" class="dash-ci-dot"/><t t-out="this.label"/><span class="rev-task-arrow">↗</span></a>`;
   setup() {
     useEffect(() => {
       if (this.id) this.tasks.want(this.id);
@@ -10382,6 +10388,22 @@ var TaskButton = class extends Component {
   }
   get info() {
     return this.tasks.tasks()[this.id];
+  }
+  // "Odoo: <stage>" once the stage is known, so it is not mistaken for the GitHub status
+  get label() {
+    if (this.info) return `Odoo: ${this.info.stage}`;
+    return this.tasks.keyRejected() ? "Odoo: key expired?" : "Odoo task";
+  }
+  get cls() {
+    const category = this.info ? stageClass(this.info.stage) : this.tasks.keyRejected() ? "blocked" : "other";
+    return `${this.props.ci ? "dash-ci dash-mb" : "dash-pr-state"} ${category}`;
+  }
+  get title() {
+    if (this.info) return `${this.info.name} \u2014 open the task on odoo.com`;
+    if (this.tasks.keyRejected()) {
+      return "Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration. Click to open the task on odoo.com";
+    }
+    return "open the task on odoo.com";
   }
 };
 
@@ -12045,7 +12067,7 @@ var ReviewsScreen = class extends Component {
       </div>
       <div class="content br-fill">
         <div t-if="this.showRequested" class="br-card rq-card">
-          <div class="brg-table rev-table">
+          <div class="brg-table rev-table rev-requested">
             <RecordList recordset="this.requestedRs"/>
           </div>
         </div>
@@ -12059,8 +12081,8 @@ var ReviewsScreen = class extends Component {
               <t t-set-slot="group-header" t-slot-scope="scope">
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
-                <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
                 <TaskButton texts="this.taskTexts(scope.g.rows)"/>
+                <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
@@ -15522,6 +15544,7 @@ var WorkspacesScreen = class extends Component {
               <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                 <span class="dash-ci-dot"/><t t-out="mb.label"/>
               </a>
+              <TaskButton texts="this.taskTexts(this.sel)" ci="true"/>
               <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
               <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
@@ -15529,7 +15552,6 @@ var WorkspacesScreen = class extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-              <TaskButton texts="this.taskTexts(this.sel)"/>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">

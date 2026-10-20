@@ -290,23 +290,31 @@ describe("Reviews screen — task stage", () => {
       ]),
     ),
   });
+  // the Task pills that carry a stage ("Odoo: <stage>"), not the plain "Odoo task" ones
   const stages = () =>
-    [...app.root.querySelectorAll(".rl-group-head .task-stage")].map((e) => text(e));
+    [...app.root.querySelectorAll(".rl-group-head a.rev-task")]
+      .map((e) => text(e).replace("↗", ""))
+      .filter((label) => label.startsWith("Odoo: "));
 
   it("shows the stage of every named task, read in one request", async () => {
     app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute }, { odoo_tasks: true });
-    await vi.waitFor(() => expect(stages()).toEqual(["In Progress"]));
+    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
     const calls = app.callsTo("/api/tasks");
     expect(calls).toHaveLength(1); // the whole screen's tasks leave together
     expect(calls[0].body).toEqual({ ids: [4939265] });
-    expect(app.root.querySelector(".rl-group-head .task-stage")?.getAttribute("title")).toBe(
-      "Task 4939265",
-    );
+    const pill = app.root.querySelector<HTMLAnchorElement>(".rl-group-head a.rev-task")!;
+    expect(pill.title).toContain("Task 4939265");
+    expect(pill.href).toBe("https://www.odoo.com/odoo/all-tasks/4939265"); // the pill is the link
+    expect(pill.classList.contains("dash-pr-state")).toBe(true); // a pill, like the Status badges
+    expect(pill.classList.contains("progress")).toBe(true); // "In Progress" is coloured as such
+    // it sits before the PR count, next to the status badge
+    const count = groupHead("18.0-task-x").querySelector(".rl-group-count")!;
+    expect(pill.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("Refresh re-reads the stages", async () => {
     app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute }, { odoo_tasks: true });
-    await vi.waitFor(() => expect(stages()).toEqual(["In Progress"]));
+    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
     await click(button(app.root, "Refresh"));
     expect(app.callsTo("/api/tasks").at(-1)?.body).toEqual({ ids: [4939265] });
     expect(app.callsTo("/api/tasks")).toHaveLength(2);
@@ -335,7 +343,7 @@ describe("Reviews screen — task stage", () => {
     expect(stages()).toEqual([]);
     await app.navigate("todo");
     await app.navigate("review-queue");
-    await vi.waitFor(() => expect(stages()).toEqual(["In Progress"]));
+    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
     expect(calls).toBe(2);
   });
 
@@ -351,7 +359,7 @@ describe("Reviews screen — task stage", () => {
       { odoo_tasks: true },
     );
     await vi.waitFor(() =>
-      expect(text(app.root.querySelector(".rl-group-head .task-stage"))).toBe("key expired?"),
+      expect(text(app.root.querySelector(".rl-group-head a.rev-task"))).toBe("Odoo: key expired?↗"),
     );
     await click(button(app.root, "Refresh")); // asked again: still rejected
     expect(app.callsTo("/api/tasks").length).toBeGreaterThanOrEqual(2);
@@ -714,7 +722,9 @@ describe("requested of you", () => {
       { review_requests: true },
     );
     await app.settle();
-    const badges = [...app.root.querySelectorAll(".rq-card .rl-row .dash-pr-state")].map(text);
+    const badges = [
+      ...app.root.querySelectorAll(".rq-card .rl-row .dash-pr-state:not(.rev-task)"),
+    ].map(text);
     expect(badges).toEqual(["To review", "Commented"]);
   });
 
@@ -736,7 +746,7 @@ describe("requested of you", () => {
       { review_requests: true, odoo_tasks: true },
     );
     await vi.waitFor(() =>
-      expect(text(app.root.querySelector(".rq-card .task-stage"))).toBe("Done"),
+      expect(text(app.root.querySelector(".rq-card a.rev-task"))).toBe("Odoo: Done↗"),
     );
     expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [3969567] });
   });
