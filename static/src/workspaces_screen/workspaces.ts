@@ -20,6 +20,8 @@ import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
 import type { WorkspaceConfig } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
+import { TaskButton } from "../core/task_button.ts";
+import { TasksPlugin } from "../core/tasks_plugin.ts";
 import type {
   ActionMenuDetail,
   CiMenuDetail,
@@ -30,13 +32,7 @@ import type {
 import { branchKey } from "../core/models.ts";
 import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
 import type { BranchInfo } from "../core/observed_models.ts";
-import {
-  repoBranchList,
-  timeAgo,
-  nestByParent,
-  descendantWorkspaces,
-  taskUrl,
-} from "../core/utils.ts";
+import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
   categoryOptions,
@@ -144,6 +140,7 @@ interface ListGroup {
 
 export class WorkspacesScreen extends Component {
   static components = {
+    TaskButton,
     LogConsole,
     ClaudeChat,
     CodePane,
@@ -280,7 +277,7 @@ export class WorkspacesScreen extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-              <a t-if="this.taskLink(this.sel)" class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.taskLink(this.sel)" title="open the odoo.com task (from the branch / PR)"><t t-out="this.externalIcon"/>Task</a>
+              <TaskButton texts="this.taskTexts(this.sel)"/>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -383,6 +380,7 @@ export class WorkspacesScreen extends Component {
   wt = usePlugin(WorkspacePlugin);
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
@@ -622,7 +620,10 @@ export class WorkspacesScreen extends Component {
     if (this.refreshingStatuses()) return;
     this.refreshingStatuses.set(true);
     try {
-      await this.code.refreshStatuses(this._runbotBranches(), this._prs());
+      await Promise.all([
+        this.code.refreshStatuses(this._runbotBranches(), this._prs()),
+        this.tasks.reload(),
+      ]);
     } finally {
       this.refreshingStatuses.set(false);
     }
@@ -1381,14 +1382,14 @@ export class WorkspacesScreen extends Component {
     return this.mainLink(ws, "/odoo?debug=assets");
   }
 
-  // the odoo.com task named by the workspace's branches, else by its PRs' titles / bodies
-  taskLink(ws: WorkspaceConfig): string {
+  // where the workspace may name its odoo.com task: its branches, then its PRs' titles / bodies
+  taskTexts(ws: WorkspaceConfig): (string | undefined)[] {
     const prs = this.prRows(ws).map((r) => r.pr);
-    return taskUrl(
+    return [
       ...(ws.checkouts || []).map((c) => c.branch),
       ...prs.map((pr) => pr.title),
       ...prs.map((pr) => pr.body),
-    );
+    ];
   }
 
   testsUrl(ws: WorkspaceConfig): string {

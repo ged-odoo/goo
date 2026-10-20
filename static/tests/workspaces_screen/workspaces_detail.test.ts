@@ -400,6 +400,27 @@ describe("worktree workspace lifecycle", () => {
     expect(app.root.querySelector(".wt-detail-name-row a.pbtn")).toBeNull();
   });
 
+  it("the Task button shows the task's stage when the Odoo integration is on", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], {
+      active: "",
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": { ok: true, tasks: { "4939265": { name: "Fix", stage: "In Progress" } } },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-detail-name-row .task-stage"));
+    expect(app.root.querySelector(".wt-detail-name-row .task-stage")?.textContent).toBe(
+      "In Progress",
+    );
+    expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [4939265] });
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });

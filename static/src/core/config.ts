@@ -144,6 +144,7 @@ export interface Config {
   auto_workspace_on_review: boolean;
   auto_claude_review: boolean;
   review_requests: boolean;
+  odoo_tasks: boolean;
   default_workspace_location: string; // "main" | "worktree"
   rust_bundler: boolean;
   update_check: boolean;
@@ -262,6 +263,8 @@ export const DEFAULT_CONFIG: Config = {
   auto_claude_review: false,
   // the Reviews screen's "Requested of you" list (a GitHub review-request search)
   review_requests: false,
+  // show the stage of the odoo.com task a branch / PR names (the key comes from GOO_ODOO_API_KEY)
+  odoo_tasks: false,
   // the create-workspace dialog's Location field default: "main" (one loaded
   // at a time) or "worktree" (its own checkout, runs concurrently). Only the
   // dialog's own initial value — never overwrites what the user picks there.

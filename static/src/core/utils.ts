@@ -10,20 +10,22 @@ export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// The odoo.com task a branch / PR refers to: the first `task-123`, `opw-123`,
+// The id of the odoo.com task a branch / PR refers to: the first `task-123`, `opw-123`,
 // `task-id: 123`, `**Task**: 123`, an odoo.com `/tasks/123` link… found in `texts`, tried in order (branch names,
 // then the PR title, then its body). 5+ digits and no line break after the word, so
 // "task 2024" or "task\n\n1234 items" in prose don't count. "" when none mentions one.
 const TASK_REF =
   /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[*]*[-_:# \t]*(\d{5,})|odoo\.com\/odoo\/(?:[\w-]+\/\d+\/)?(?:all-)?tasks\/(\d+)/i;
-export function taskUrl(...texts: (string | undefined)[]): string {
+export function taskId(...texts: (string | undefined)[]): string {
   for (const text of texts) {
     const match = TASK_REF.exec(text || "");
     const id = match?.[1] || match?.[2];
-    if (id) return `https://www.odoo.com/odoo/all-tasks/${id}`;
+    if (id) return id;
   }
   return "";
 }
+
+export const taskUrl = (id: string): string => `https://www.odoo.com/odoo/all-tasks/${id}`;
 
 export function timeAgo(ts: string): string {
   // either ISO8601 with timezone (git) or naive UTC "2026-06-11 12:34:56" (odoo)

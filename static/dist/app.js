@@ -111,6 +111,8 @@ var DEFAULT_CONFIG = {
   auto_claude_review: false,
   // the Reviews screen's "Requested of you" list (a GitHub review-request search)
   review_requests: false,
+  // show the stage of the odoo.com task a branch / PR names (the key comes from GOO_ODOO_API_KEY)
+  odoo_tasks: false,
   // the create-workspace dialog's Location field default: "main" (one loaded
   // at a time) or "worktree" (its own checkout, runs concurrently). Only the
   // dialog's own initial value — never overwrites what the user picks there.
@@ -386,14 +388,15 @@ function errorMessage(e) {
   return e instanceof Error ? e.message : String(e);
 }
 var TASK_REF = /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[*]*[-_:# \t]*(\d{5,})|odoo\.com\/odoo\/(?:[\w-]+\/\d+\/)?(?:all-)?tasks\/(\d+)/i;
-function taskUrl(...texts) {
+function taskId(...texts) {
   for (const text of texts) {
     const match = TASK_REF.exec(text || "");
     const id = match?.[1] || match?.[2];
-    if (id) return `https://www.odoo.com/odoo/all-tasks/${id}`;
+    if (id) return id;
   }
   return "";
 }
+var taskUrl = (id) => `https://www.odoo.com/odoo/all-tasks/${id}`;
 function timeAgo(ts) {
   const date = ts.includes("T") ? new Date(ts) : /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
   if (isNaN(date.getTime())) return ts;
@@ -3486,7 +3489,8 @@ var SETTINGS_BOOLS = [
   "docker_headed_browser",
   "auto_workspace_on_review",
   "auto_claude_review",
-  "review_requests"
+  "review_requests",
+  "odoo_tasks"
 ];
 var SETTINGS_JSON = [
   "start",
@@ -3541,6 +3545,8 @@ var Settings = class extends Model {
   // off by default -- the Reviews screen lists the PRs GitHub says await my review
   // (a user-editable search) above the watchlist, with a Track button each.
   review_requests = fields.bool();
+  // off by default -- the stage of the odoo.com task a branch / PR names, read with the key in GOO_ODOO_API_KEY
+  odoo_tasks = fields.bool();
   // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.ts).
   // Replaces the old hide_start_controls boolean (migrated in toModels below);
   // "docker"/"local" both get goo's own Start/Stop/logs/terminal, "external" hides them.
@@ -6801,6 +6807,60 @@ var BranchesScreen = class extends Component {
   }
 };
 
+// static/src/core/tasks_plugin.ts
+var BATCH_DELAY_MS = 30;
+var TasksPlugin = class extends Plugin {
+  static sequence = 2;
+  // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
+  config = usePlugin(ConfigPlugin);
+  tasks = signal({});
+  // task id -> its name and stage
+  error = signal("");
+  // why the last request failed ("" when it worked)
+  _asked = /* @__PURE__ */ new Set();
+  // ids already requested (answered or in flight)
+  _queue = [];
+  _timer;
+  setup() {
+    onWillDestroy(() => clearTimeout(this._timer));
+  }
+  get enabled() {
+    return this.config.config.odoo_tasks;
+  }
+  // ask for a task's stage, once; a no-op when the feature is off
+  want(id) {
+    if (!this.enabled || this._asked.has(id)) return;
+    this._asked.add(id);
+    this._queue.push(id);
+    this._timer ??= setTimeout(() => this._flush(), BATCH_DELAY_MS);
+  }
+  // re-read every task asked for so far (the screens' Refresh)
+  reload() {
+    return this._request([...this._asked]);
+  }
+  // whether the backend can see the key, as the reason when it can't ("" when it can)
+  async check() {
+    await this._request([]);
+    return this.error();
+  }
+  async _flush() {
+    this._timer = void 0;
+    await this._request(this._queue.splice(0));
+  }
+  async _request(ids) {
+    if (!this.enabled) return;
+    try {
+      const res = await postJSON("/api/tasks", { ids: ids.map(Number) });
+      this.error.set(res.ok ? "" : res.error || "failed");
+      if (res.tasks && Object.keys(res.tasks).length) {
+        this.tasks.set({ ...this.tasks(), ...res.tasks });
+      }
+    } catch (e) {
+      this.error.set(errorMessage(e));
+    }
+  }
+};
+
 // static/src/core/drag.ts
 function startRowDrag(ev, { row, onMove, onEnd }) {
   if (ev.button !== 0 || !row) return null;
@@ -7477,6 +7537,10 @@ var ConfigScreen = class extends Component {
             <input id="setting-review-requests" type="checkbox" class="settings-check" title="In the Reviews screen, list the PRs GitHub says are waiting for your review (a search you can edit), each with a Track button."
                    t-att-checked="this.config.config.review_requests"
                    t-on-change="ev => this.config.updateConfig({ review_requests: ev.target.checked })"/>
+            <label for="setting-odoo-tasks" title="Next to each Task button, show the stage of the odoo.com task (read with your API key — see the Odoo task stage section that appears).">show Odoo task stage</label>
+            <input id="setting-odoo-tasks" type="checkbox" class="settings-check" title="Next to each Task button, show the stage of the odoo.com task (read with your API key — see the Odoo task stage section that appears)."
+                   t-att-checked="this.config.config.odoo_tasks"
+                   t-on-change="ev => this.config.updateConfig({ odoo_tasks: ev.target.checked })"/>
             <t t-if="this.config.config.auto_workspace_on_review">
               <label for="setting-auto-claude-review" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting.">auto-run Claude review</label>
               <input id="setting-auto-claude-review" type="checkbox" class="settings-check" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting."
@@ -7484,6 +7548,25 @@ var ConfigScreen = class extends Component {
                      t-on-change="ev => this.config.updateConfig({ auto_claude_review: ev.target.checked })"/>
             </t>
           </div>
+        </div>
+        <div t-if="this.config.config.odoo_tasks" class="config-block">
+          <h2 class="subtitle">Odoo task stage</h2>
+          <p class="dim">Shows the stage of each task (New, In Progress, …) next to its Task button, read from odoo.com in a single request. goo never stores the API key: it reads it from the <code>GOO_ODOO_API_KEY</code> environment variable of the goo process, so this config file, which you may commit, never holds it.</p>
+          <ol class="dim">
+            <li>Create a key on odoo.com: your avatar → My Profile → Account Security → New API Key. Copy it, it is shown only once.</li>
+            <li>Give it to the process that runs goo, then restart goo:
+              <ul>
+                <li>bash / zsh: add <code>export GOO_ODOO_API_KEY=the-key</code> to <code>~/.bashrc</code> / <code>~/.zshrc</code></li>
+                <li>fish: run <code>set -Ux GOO_ODOO_API_KEY the-key</code> once (fish remembers it)</li>
+                <li>goo as a systemd user service: <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
+              </ul>
+            </li>
+            <li>Another instance (a runbot, for example): also set <code>GOO_ODOO_URL</code> (default https://www.odoo.com) and, on a multi-database server, <code>GOO_ODOO_DB</code>.</li>
+          </ol>
+          <p>
+            <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>
+            <button class="pbtn" t-on-click="() => this.checkTaskKey()">Check</button>
+          </p>
         </div>
         <div class="config-block">
           <h2 class="subtitle">Claude review prompt</h2>
@@ -7522,7 +7605,11 @@ var ConfigScreen = class extends Component {
   update = usePlugin(UpdatePlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
+  tasks = usePlugin(TasksPlugin);
   refreshIcon = m(ICONS.refresh);
+  taskKeyStatus = signal("");
+  // can goo's backend see GOO_ODOO_API_KEY, and does Odoo accept it
+  taskKeyOk = signal(false);
   checking = signal(false);
   upToDate = signal(false);
   // brief green check by the button when already up to date
@@ -7546,8 +7633,18 @@ var ConfigScreen = class extends Component {
   }
   setup() {
     onMounted(() => this.checkRustBundler());
+    useEffect(() => {
+      if (this.tasks.enabled) this.checkTaskKey();
+    });
     onMounted(() => fetchReviewPrompt().then((c) => this.reviewPromptText.set(c)));
     onWillUnmount(() => clearTimeout(this._reviewPromptTimer));
+  }
+  async checkTaskKey() {
+    this.taskKeyStatus.set("checking\u2026");
+    this.taskKeyOk.set(false);
+    const error = await this.tasks.check();
+    this.taskKeyOk.set(!error);
+    this.taskKeyStatus.set(error ? `\u2717 ${error}` : "\u2713 the key works: task stages are shown");
   }
   onReviewPromptInput(value) {
     this.reviewPromptText.set(value);
@@ -10246,6 +10343,32 @@ var CiScreen = class extends Component {
   }
 };
 
+// static/src/core/task_button.ts
+var TaskButton = class extends Component {
+  props = useProps({ texts: t.any() });
+  tasks = usePlugin(TasksPlugin);
+  externalIcon = m(ICONS.external);
+  static template = xml`
+    <t t-if="this.id">
+      <a class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.url" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
+      <span t-if="this.info" class="pr-state task-stage" t-att-title="this.info.name" t-out="this.info.stage"/>
+    </t>`;
+  setup() {
+    useEffect(() => {
+      if (this.id) this.tasks.want(this.id);
+    });
+  }
+  get id() {
+    return taskId(...this.props.texts);
+  }
+  get url() {
+    return taskUrl(this.id);
+  }
+  get info() {
+    return this.tasks.tasks()[this.id];
+  }
+};
+
 // static/src/workspaces_screen/claude_plugin.ts
 var CLAUDE_MODELS = [
   { value: "", label: "Default model" },
@@ -11679,18 +11802,15 @@ function isMerged(row, mbState) {
   return row.state === "merged" || mbState === "merged";
 }
 var RequestedPrCell = class extends Component {
+  static components = { TaskButton };
   props = useProps({ pr: t.any(), screen: t.any() });
   static template = xml`
     <span class="rev-pr">
       <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
       <span class="rev-pr-title" t-out="this.props.pr.title"/>
       <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
-      <a t-if="this.taskLink" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink" title="open the odoo.com task"><t t-out="this.externalIcon"/>Task</a>
+      <TaskButton texts="[this.props.pr.title, this.props.pr.body]"/>
     </span>`;
-  externalIcon = m(ICONS.external);
-  get taskLink() {
-    return taskUrl(this.props.pr.title, this.props.pr.body);
-  }
 };
 var RequestedStatusCell = class extends Component {
   props = useProps({ pr: t.any(), screen: t.any() });
@@ -11866,7 +11986,7 @@ function parsePrRef(text) {
   return null;
 }
 var ReviewsScreen = class extends Component {
-  static components = { Panel, RecordList };
+  static components = { Panel, RecordList, TaskButton };
   static template = xml`
     <section>
       <Panel title="'Reviews'">
@@ -11924,7 +12044,7 @@ var ReviewsScreen = class extends Component {
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
-                <a t-if="this.taskLink(scope.g.rows)" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink(scope.g.rows)" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
+                <TaskButton texts="this.taskTexts(scope.g.rows)"/>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
@@ -11944,6 +12064,7 @@ var ReviewsScreen = class extends Component {
       </div>
     </section>`;
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   config = usePlugin(ConfigPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
@@ -11954,7 +12075,6 @@ var ReviewsScreen = class extends Component {
   reviews = usePlugin(ReviewsPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
-  externalIcon = m(ICONS.external);
   warningIcon = m(ICONS.warning);
   claudeIcon = m(ICONS.claude);
   addPrText = signal("");
@@ -12204,7 +12324,8 @@ var ReviewsScreen = class extends Component {
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),
-      this.code.refreshStatuses([], [...tracked, ...fpPairs])
+      this.code.refreshStatuses([], [...tracked, ...fpPairs]),
+      this.tasks.reload()
     ]);
   }
   _dialogPlugins() {
@@ -12427,14 +12548,14 @@ var ReviewsScreen = class extends Component {
     const ws = this.reviewWorkspaceFor(branch);
     if (ws) await this.wt.removeSilently(ws);
   }
-  // the odoo.com task named by the task's branch, else by its PRs' titles / bodies
-  taskLink(rows) {
+  // where a task may name its odoo.com task: its branch, then its PRs' titles / bodies
+  taskTexts(rows) {
     const prInfo = this.reviews.prInfo();
-    return taskUrl(
+    return [
       ...rows.map((r) => r.branch),
       ...rows.map((r) => r.title),
       ...rows.map((r) => prInfo[r.id]?.body)
-    );
+    ];
   }
   // a task's (group header's) menu: Create workspace always; Open on GitHub /
   // Open on mergebot only for a single-PR task (ambiguous which PR otherwise —
@@ -15256,6 +15377,7 @@ function savedCollapsedGroups() {
 }
 var WorkspacesScreen = class extends Component {
   static components = {
+    TaskButton,
     LogConsole,
     ClaudeChat,
     CodePane,
@@ -15391,7 +15513,7 @@ var WorkspacesScreen = class extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
-              <a t-if="this.taskLink(this.sel)" class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.taskLink(this.sel)" title="open the odoo.com task (from the branch / PR)"><t t-out="this.externalIcon"/>Task</a>
+              <TaskButton texts="this.taskTexts(this.sel)"/>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -15493,6 +15615,7 @@ var WorkspacesScreen = class extends Component {
   wt = usePlugin(WorkspacePlugin);
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
@@ -15691,7 +15814,10 @@ var WorkspacesScreen = class extends Component {
     if (this.refreshingStatuses()) return;
     this.refreshingStatuses.set(true);
     try {
-      await this.code.refreshStatuses(this._runbotBranches(), this._prs());
+      await Promise.all([
+        this.code.refreshStatuses(this._runbotBranches(), this._prs()),
+        this.tasks.reload()
+      ]);
     } finally {
       this.refreshingStatuses.set(false);
     }
@@ -16318,14 +16444,14 @@ var WorkspacesScreen = class extends Component {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
   }
-  // the odoo.com task named by the workspace's branches, else by its PRs' titles / bodies
-  taskLink(ws) {
+  // where the workspace may name its odoo.com task: its branches, then its PRs' titles / bodies
+  taskTexts(ws) {
     const prs = this.prRows(ws).map((r) => r.pr);
-    return taskUrl(
+    return [
       ...(ws.checkouts || []).map((c) => c.branch),
       ...prs.map((pr) => pr.title),
       ...prs.map((pr) => pr.body)
-    );
+    ];
   }
   testsUrl(ws) {
     if (this.isWt(ws)) return this.wt.testsUrl(ws);
@@ -16843,7 +16969,8 @@ var PLUGINS = [
   NightlyPlugin,
   MemoryPlugin,
   CiPlugin,
-  ReviewsPlugin
+  ReviewsPlugin,
+  TasksPlugin
 ];
 
 // static/src/main.ts

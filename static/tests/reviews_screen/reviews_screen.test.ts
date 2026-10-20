@@ -274,6 +274,67 @@ describe("Reviews screen — task link", () => {
   });
 });
 
+describe("Reviews screen — task stage", () => {
+  const prs = [
+    prWire("odoo/odoo", 1, "18.0-task-x", { body: "task-4939265" }),
+    prWire("odoo/enterprise", 2, "18.0-task-x", { body: "opw-1234567" }),
+    prWire("odoo/odoo", 3, "17.0-fix-y"),
+    prWire("other/lib", 4, "ext-branch"),
+  ];
+  const tasksRoute = (body: unknown) => ({
+    ok: true,
+    tasks: Object.fromEntries(
+      (body as { ids: number[] }).ids.map((id) => [
+        id,
+        { name: `Task ${id}`, stage: "In Progress" },
+      ]),
+    ),
+  });
+  const stages = () =>
+    [...app.root.querySelectorAll(".rl-group-head .task-stage")].map((e) => text(e));
+
+  it("shows the stage of every named task, read in one request", async () => {
+    app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute }, { odoo_tasks: true });
+    await vi.waitFor(() => expect(stages()).toEqual(["In Progress"]));
+    const calls = app.callsTo("/api/tasks");
+    expect(calls).toHaveLength(1); // the whole screen's tasks leave together
+    expect(calls[0].body).toEqual({ ids: [4939265] });
+    expect(app.root.querySelector(".rl-group-head .task-stage")?.getAttribute("title")).toBe(
+      "Task 4939265",
+    );
+  });
+
+  it("Refresh re-reads the stages", async () => {
+    app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute }, { odoo_tasks: true });
+    await vi.waitFor(() => expect(stages()).toEqual(["In Progress"]));
+    await click(button(app.root, "Refresh"));
+    expect(app.callsTo("/api/tasks").at(-1)?.body).toEqual({ ids: [4939265] });
+    expect(app.callsTo("/api/tasks")).toHaveLength(2);
+  });
+
+  it("asks nothing when the setting is off, and still links the task", async () => {
+    app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute });
+    await app.settle();
+    expect(app.callsTo("/api/tasks")).toHaveLength(0);
+    expect(stages()).toEqual([]);
+    expect(app.root.querySelector("a.rev-task")).not.toBeNull();
+  });
+
+  it("shows no stage when Odoo does not answer for the task", async () => {
+    app = await mount(
+      {
+        "/api/prs/info": { prs },
+        "/api/tasks": { ok: false, tasks: {}, error: "HTTP 401: Invalid apikey" },
+      },
+      { odoo_tasks: true },
+    );
+    await vi.waitFor(() => expect(app.callsTo("/api/tasks")).toHaveLength(1));
+    await app.settle();
+    expect(stages()).toEqual([]);
+    expect(app.root.querySelector("a.rev-task")).not.toBeNull(); // the link works regardless
+  });
+});
+
 describe("Reviews screen — untracking", () => {
   // every forward port merged too → the 17.0-fix-y task is fully merged
   const ALL_MERGED = mergebotRoute({
@@ -622,6 +683,20 @@ describe("requested of you", () => {
       .map((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
     expect(asked.every((prs) => prs.length === 1)).toBe(true);
     expect(asked.flat()).toEqual(expect.arrayContaining([98, 99]));
+  });
+
+  it("shows the stage of a requested PR's task", async () => {
+    app = await mount(
+      {
+        "/api/prs/review-requests": { ok: true, prs: [requested] },
+        "/api/tasks": { ok: true, tasks: { "3969567": { name: "Docs links", stage: "Done" } } },
+      },
+      { review_requests: true, odoo_tasks: true },
+    );
+    await vi.waitFor(() =>
+      expect(text(app.root.querySelector(".rq-card .task-stage"))).toBe("Done"),
+    );
+    expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [3969567] });
   });
 
   it("Refresh re-asks the status of the requested PRs, bypassing the caches", async () => {
