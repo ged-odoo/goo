@@ -257,6 +257,23 @@ describe("Reviews screen — adding a PR", () => {
   });
 });
 
+describe("Reviews screen — task link", () => {
+  it("links the odoo.com task a PR's branch, title or body names, per task", async () => {
+    const prs = [
+      prWire("odoo/odoo", 1, "18.0-task-x", { body: "Fixes the crash\n\ntask-4939265" }),
+      prWire("odoo/enterprise", 2, "18.0-task-x"),
+      prWire("odoo/odoo", 3, "17.0-opw-1234567-fix-y"),
+      prWire("other/lib", 4, "ext-branch"),
+    ];
+    app = await mount({ "/api/prs/info": { prs } });
+    const link = (branch: string) =>
+      groupHead(branch).querySelector<HTMLAnchorElement>("a.rev-task")?.href;
+    expect(link("18.0-task-x")).toBe("https://www.odoo.com/odoo/all-tasks/4939265");
+    expect(link("17.0-opw-1234567-fix-y")).toBe("https://www.odoo.com/odoo/all-tasks/1234567");
+    expect(link("ext-branch")).toBeUndefined();
+  });
+});
+
 describe("Reviews screen — untracking", () => {
   // every forward port merged too → the 17.0-fix-y task is fully merged
   const ALL_MERGED = mergebotRoute({
@@ -544,6 +561,7 @@ describe("requested of you", () => {
     github: "odoo/odoo",
     number: 99,
     title: "[FIX] web: something",
+    body: "**Task**: https://www.odoo.com/odoo/project/133/tasks/3969567",
     url: "https://github.com/odoo/odoo/pull/99",
     author: "bob",
     draft: false,
@@ -572,6 +590,70 @@ describe("requested of you", () => {
     expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(2);
     expect(text(app.root.querySelector(".rq-card .rl-row .pr-state.open"))).toBe("tracked");
     expect(button(app.root.querySelector<HTMLElement>(".rq-card")!, "Track")).toBeDefined();
+  });
+
+  it("badges each requested PR with the status the tracked list shows", async () => {
+    app = await mount(
+      {
+        "/api/prs/review-requests": {
+          ok: true,
+          prs: [requested, { ...requested, number: 98, title: "other" }],
+        },
+        "/api/prs/review-status": (body: unknown) => ({
+          statuses: Object.fromEntries(
+            (body as { prs: { github: string; number: number }[] }).prs.map((p) => [
+              `${p.github}#${p.number}`,
+              p.number === 98 ? "commented" : "to_review",
+            ]),
+          ),
+        }),
+      },
+      { review_requests: true },
+    );
+    await app.settle();
+    const badges = [...app.root.querySelectorAll(".rq-card .rl-row .dash-pr-state")].map(text);
+    expect(badges).toEqual(["To review", "Commented"]);
+  });
+
+  it("asks the status of each requested PR on its own, so a slow one doesn't hold the others", async () => {
+    app = await mountRequested();
+    const asked = app
+      .callsTo("/api/prs/review-status")
+      .map((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
+    expect(asked.every((prs) => prs.length === 1)).toBe(true);
+    expect(asked.flat()).toEqual(expect.arrayContaining([98, 99]));
+  });
+
+  it("Refresh re-asks the status of the requested PRs, bypassing the caches", async () => {
+    app = await mountRequested();
+    await click(button(app.root, "Refresh"));
+    const forced = app
+      .callsTo("/api/prs/review-status")
+      .filter((c) => (c.body as { refresh: boolean }).refresh)
+      .flatMap((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
+    expect(forced).toContain(99);
+    const mergebot = app
+      .callsTo("/api/mergebot")
+      .filter((c) => (c.body as { refresh: boolean }).refresh)
+      .flatMap((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
+    expect(mergebot).toContain(99);
+  });
+
+  it("links the odoo.com task a requested PR names, and only then", async () => {
+    app = await mount(
+      {
+        "/api/prs/review-requests": {
+          ok: true,
+          prs: [requested, { ...requested, number: 98, title: "other", body: "" }],
+        },
+      },
+      { review_requests: true },
+    );
+    const rows = [...app.root.querySelectorAll<HTMLElement>(".rq-card .rl-row")];
+    expect(rows[0].querySelector<HTMLAnchorElement>("a.rev-task")?.href).toBe(
+      "https://www.odoo.com/odoo/all-tasks/3969567",
+    );
+    expect(rows[1].querySelector("a.rev-task")).toBeNull(); // #98 names no task
   });
 
   it("shows a failed search instead of an empty list", async () => {

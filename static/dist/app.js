@@ -385,6 +385,15 @@ var PRESETS = [
 function errorMessage(e) {
   return e instanceof Error ? e.message : String(e);
 }
+var TASK_REF = /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[*]*[-_:# \t]*(\d{5,})|odoo\.com\/odoo\/(?:[\w-]+\/\d+\/)?(?:all-)?tasks\/(\d+)/i;
+function taskUrl(...texts) {
+  for (const text of texts) {
+    const match = TASK_REF.exec(text || "");
+    const id = match?.[1] || match?.[2];
+    if (id) return `https://www.odoo.com/odoo/all-tasks/${id}`;
+  }
+  return "";
+}
 function timeAgo(ts) {
   const date = ts.includes("T") ? new Date(ts) : /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
   if (isNaN(date.getTime())) return ts;
@@ -2154,6 +2163,7 @@ var PullRequest = {
       github: raw.github || "",
       number: raw.number,
       title: raw.title || "",
+      body: raw.body || "",
       url: raw.url || "",
       state: (raw.state || "").toLowerCase(),
       // open | closed | merged
@@ -10414,12 +10424,13 @@ var ClaudePlugin = class extends Plugin {
 };
 
 // static/src/reviews_screen/reviews_plugin.ts
+var REVIEW_STATUS_PARALLEL = 4;
 var ReviewsPlugin = class extends Plugin {
   static sequence = 4;
   prInfo = signal({});
   // "github#number" -> PullRequest dict
   reviewStatus = signal({});
-  // "github#number" -> "reviewed" | "to_review"
+  // "github#number" -> ReviewStatus
   loading = signal(false);
   error = signal("");
   at = signal(0);
@@ -10462,7 +10473,7 @@ var ReviewsPlugin = class extends Plugin {
     }
   }
   // the PRs matching `query` (the review-request search); errors land in requestedError
-  async loadRequested(query) {
+  async loadRequested(query, force = false) {
     const seq = ++this._requestSeq;
     try {
       const res = await postJSON(
@@ -10472,6 +10483,7 @@ var ReviewsPlugin = class extends Plugin {
       if (seq !== this._requestSeq) return;
       this.requested.set((res.prs || []).map((pr) => ({ ...pr, id: `${pr.github}#${pr.number}` })));
       this.requestedError.set(res.ok ? "" : res.error || "search failed");
+      this.loadReviewStatus(this.requested(), force);
     } catch (e) {
       if (seq !== this._requestSeq) return;
       this.requested.set([]);
@@ -10489,13 +10501,25 @@ var ReviewsPlugin = class extends Plugin {
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this._pending.add(`rs:${k}`));
     try {
-      const res = await postJSON(
-        "/api/prs/review-status",
-        { prs: todo, refresh: force }
+      const queue = [...todo];
+      const worker = async () => {
+        for (let pr = queue.shift(); pr; pr = queue.shift()) {
+          try {
+            const res = await postJSON(
+              "/api/prs/review-status",
+              { prs: [pr], refresh: force }
+            );
+            const statuses = res.statuses || {};
+            if (Object.keys(statuses).length) {
+              this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
+            }
+          } catch {
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(REVIEW_STATUS_PARALLEL, todo.length) }, worker)
       );
-      const statuses = res.statuses || {};
-      if (Object.keys(statuses).length) this.reviewStatus.set({ ...have, ...statuses });
-    } catch {
     } finally {
       keys.forEach((k) => this._pending.delete(`rs:${k}`));
     }
@@ -11661,7 +11685,28 @@ var RequestedPrCell = class extends Component {
       <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
       <span class="rev-pr-title" t-out="this.props.pr.title"/>
       <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
+      <a t-if="this.taskLink" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink" title="open the odoo.com task"><t t-out="this.externalIcon"/>Task</a>
     </span>`;
+  externalIcon = m(ICONS.external);
+  get taskLink() {
+    return taskUrl(this.props.pr.title, this.props.pr.body);
+  }
+};
+var RequestedStatusCell = class extends Component {
+  props = useProps({ pr: t.any(), screen: t.any() });
+  code = usePlugin(CodePlugin);
+  reviews = usePlugin(ReviewsPlugin);
+  static template = xml`
+    <span t-if="this.meta" class="dash-pr-state" t-att-class="this.meta.cls" t-out="this.meta.label"/>
+    <span t-else="" class="brg-dash">—</span>`;
+  get meta() {
+    const pr = this.props.pr;
+    const reviewStatus = this.reviews.reviewStatus()[pr.id];
+    if (!reviewStatus) return void 0;
+    const mbState = this.code.mergebot()[pr.id] || "";
+    const mbDetail = this.code.mbDetails()[pr.id] || "";
+    return STATUS_META[statusKey({ reviewStatus }, mbState, mbDetail)];
+  }
 };
 var TrackCell = class extends Component {
   props = useProps({ pr: t.any(), screen: t.any() });
@@ -11700,6 +11745,7 @@ var PrCell2 = class extends Component {
 var STATUS_META = {
   merged: { label: "Merged", cls: "merged" },
   rplus: { label: "R+'d", cls: "ready" },
+  commented: { label: "Commented", cls: "progress" },
   reviewed: { label: "Reviewed", cls: "progress" },
   to_review: { label: "To review", cls: "blocked" }
 };
@@ -11707,9 +11753,10 @@ function statusKey(row, mbState, mbDetail) {
   if (isMerged(row, mbState)) return "merged";
   if (mbIsRPlus(mbState, mbDetail)) return "rplus";
   if (row.reviewStatus === "reviewed") return "reviewed";
+  if (row.reviewStatus === "commented") return "commented";
   return "to_review";
 }
-var PRECEDENCE = ["to_review", "reviewed", "rplus", "merged"];
+var PRECEDENCE = ["to_review", "commented", "reviewed", "rplus", "merged"];
 function worstStatusKey(keys) {
   let worst = "merged";
   for (const k of keys) {
@@ -11839,6 +11886,7 @@ var ReviewsScreen = class extends Component {
           <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by status">
             <option value="">All</option>
             <option value="to_review">To review</option>
+            <option value="commented">Commented</option>
             <option value="reviewed">Reviewed</option>
             <option value="rplus">R+'d</option>
             <option value="merged">Merged</option>
@@ -11876,6 +11924,7 @@ var ReviewsScreen = class extends Component {
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
+                <a t-if="this.taskLink(scope.g.rows)" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink(scope.g.rows)" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
@@ -11905,6 +11954,7 @@ var ReviewsScreen = class extends Component {
   reviews = usePlugin(ReviewsPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
+  externalIcon = m(ICONS.external);
   warningIcon = m(ICONS.warning);
   claudeIcon = m(ICONS.claude);
   addPrText = signal("");
@@ -12059,14 +12109,24 @@ var ReviewsScreen = class extends Component {
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
+      {
+        name: "status",
+        label: "Status",
+        component: RequestedStatusCell,
+        cellProps: this._requestCell
+      },
       { name: "author", label: "Author", get: (p) => p.author },
       { name: "when", label: "Updated", get: (p) => timeAgo(p.updated_at) },
       { name: "act", label: "", component: TrackCell, cellProps: this._requestCell }
     ]
   );
-  async loadRequested() {
+  // force=true (Refresh) re-asks the status of every requested PR, bypassing the caches
+  async loadRequested(force = false) {
     if (!this.config.config.review_requests) return;
-    return this.reviews.loadRequested(this.requestQuery());
+    await this.reviews.loadRequested(this.requestQuery(), force);
+    const requested = this.reviews.requested();
+    if (force) this.code.refreshStatuses([], requested);
+    else this.code.loadMergebot(requested);
   }
   setRequestQuery(text) {
     const query = text.trim() || DEFAULT_REQUEST_QUERY;
@@ -12140,7 +12200,7 @@ var ReviewsScreen = class extends Component {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
-      this.loadRequested(),
+      this.loadRequested(true),
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),
@@ -12366,6 +12426,15 @@ var ReviewsScreen = class extends Component {
     if (this.allRows().some((r) => r.branch === branch)) return;
     const ws = this.reviewWorkspaceFor(branch);
     if (ws) await this.wt.removeSilently(ws);
+  }
+  // the odoo.com task named by the task's branch, else by its PRs' titles / bodies
+  taskLink(rows) {
+    const prInfo = this.reviews.prInfo();
+    return taskUrl(
+      ...rows.map((r) => r.branch),
+      ...rows.map((r) => r.title),
+      ...rows.map((r) => prInfo[r.id]?.body)
+    );
   }
   // a task's (group header's) menu: Create workspace always; Open on GitHub /
   // Open on mergebot only for a single-PR task (ambiguous which PR otherwise —
@@ -15322,6 +15391,7 @@ var WorkspacesScreen = class extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <a t-if="this.taskLink(this.sel)" class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.taskLink(this.sel)" title="open the odoo.com task (from the branch / PR)"><t t-out="this.externalIcon"/>Task</a>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -16247,6 +16317,15 @@ var WorkspacesScreen = class extends Component {
   odooUrl(ws) {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
+  }
+  // the odoo.com task named by the workspace's branches, else by its PRs' titles / bodies
+  taskLink(ws) {
+    const prs = this.prRows(ws).map((r) => r.pr);
+    return taskUrl(
+      ...(ws.checkouts || []).map((c) => c.branch),
+      ...prs.map((pr) => pr.title),
+      ...prs.map((pr) => pr.body)
+    );
   }
   testsUrl(ws) {
     if (this.isWt(ws)) return this.wt.testsUrl(ws);

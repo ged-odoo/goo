@@ -3006,6 +3006,16 @@ tr.active td.brg-commit {
 .rl-table tbody tr.rl-group-head:hover .rev-important {
   opacity: 1;
 }
+.rev-task {
+  flex: none;
+  padding: 3px 9px;
+  gap: 5px;
+  font-size: 12px;
+}
+.rev-task svg {
+  width: 13px;
+  height: 13px;
+}
 .rev-important:hover {
   background: var(--l-panel);
 }

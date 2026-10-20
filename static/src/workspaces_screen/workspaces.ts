@@ -30,7 +30,13 @@ import type {
 import { branchKey } from "../core/models.ts";
 import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
 import type { BranchInfo } from "../core/observed_models.ts";
-import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
+import {
+  repoBranchList,
+  timeAgo,
+  nestByParent,
+  descendantWorkspaces,
+  taskUrl,
+} from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
   categoryOptions,
@@ -274,6 +280,7 @@ export class WorkspacesScreen extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <a t-if="this.taskLink(this.sel)" class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.taskLink(this.sel)" title="open the odoo.com task (from the branch / PR)"><t t-out="this.externalIcon"/>Task</a>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -1372,6 +1379,16 @@ export class WorkspacesScreen extends Component {
   odooUrl(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
+  }
+
+  // the odoo.com task named by the workspace's branches, else by its PRs' titles / bodies
+  taskLink(ws: WorkspaceConfig): string {
+    const prs = this.prRows(ws).map((r) => r.pr);
+    return taskUrl(
+      ...(ws.checkouts || []).map((c) => c.branch),
+      ...prs.map((pr) => pr.title),
+      ...prs.map((pr) => pr.body),
+    );
   }
 
   testsUrl(ws: WorkspaceConfig): string {

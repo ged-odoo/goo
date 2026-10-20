@@ -44,6 +44,10 @@ describe("statusKey", () => {
     expect(statusKey({ state: "open", reviewStatus: "reviewed" }, "", "")).toBe("reviewed");
   });
 
+  it("commented when reviewStatus says commented and not merged/rplus", () => {
+    expect(statusKey({ state: "open", reviewStatus: "commented" }, "", "")).toBe("commented");
+  });
+
   it("falls back to to_review", () => {
     expect(statusKey({ state: "open", reviewStatus: "to_review" }, "", "")).toBe("to_review");
   });
@@ -52,10 +56,12 @@ describe("statusKey", () => {
 describe("worstStatusKey", () => {
   it("picks the least-done key across a set", () => {
     expect(worstStatusKey(["merged", "rplus", "to_review"])).toBe("to_review");
-    // precedence order is to_review < reviewed < rplus < merged, so "reviewed"
+    // precedence order is to_review < commented < reviewed < rplus < merged, so "reviewed"
     // is worse (less done) than "rplus" here, not the other way around
     expect(worstStatusKey(["merged", "rplus", "reviewed"])).toBe("reviewed");
     expect(worstStatusKey(["merged", "merged"])).toBe("merged");
+    // commented sits between to_review and reviewed
+    expect(worstStatusKey(["reviewed", "commented"])).toBe("commented");
   });
 
   it("defaults to merged (best) for an empty set", () => {

@@ -12,7 +12,8 @@ import type { ForwardPortPull, ForwardPortRow } from "../core/observed_models.ts
 import { ReviewsPlugin } from "./reviews_plugin.ts";
 import type { RequestedPr, ReviewStatus } from "./reviews_plugin.ts";
 import type { ReviewsScreen } from "./reviews.ts";
-import { mbIsRPlus } from "../core/common.ts";
+import { ICONS, m, mbIsRPlus } from "../core/common.ts";
+import { taskUrl } from "../core/utils.ts";
 
 // one tracked PR as the Reviews list shows it (ReviewsScreen.allRows): the
 // config.reviews entry enriched with its fetched PR info + review status
@@ -54,7 +55,33 @@ export class RequestedPrCell extends Component {
       <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
       <span class="rev-pr-title" t-out="this.props.pr.title"/>
       <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
+      <a t-if="this.taskLink" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink" title="open the odoo.com task"><t t-out="this.externalIcon"/>Task</a>
     </span>`;
+
+  externalIcon = m(ICONS.external);
+
+  get taskLink(): string {
+    return taskUrl(this.props.pr.title, this.props.pr.body);
+  }
+}
+
+// Requested of you: the same status pill as the tracked list (StatusCell).
+export class RequestedStatusCell extends Component {
+  props = useProps({ pr: t.any() as Type<RequestedPr>, screen: t.any() as Type<ReviewsScreen> });
+  code = usePlugin(CodePlugin);
+  reviews = usePlugin(ReviewsPlugin);
+  static template = xml`
+    <span t-if="this.meta" class="dash-pr-state" t-att-class="this.meta.cls" t-out="this.meta.label"/>
+    <span t-else="" class="brg-dash">—</span>`;
+
+  get meta(): { label: string; cls: string } | undefined {
+    const pr = this.props.pr;
+    const reviewStatus = this.reviews.reviewStatus()[pr.id];
+    if (!reviewStatus) return undefined;
+    const mbState = this.code.mergebot()[pr.id] || "";
+    const mbDetail = this.code.mbDetails()[pr.id] || "";
+    return STATUS_META[statusKey({ reviewStatus }, mbState, mbDetail)];
+  }
 }
 
 export class TrackCell extends Component {
@@ -98,7 +125,7 @@ export class PrCell extends Component {
   }
 }
 
-// Status: the one primary indicator — merged > r+'d > reviewed > to-review —
+// Status: the one primary indicator — merged > r+'d > reviewed > commented > to-review —
 // folding mergebot's r+ acknowledgement (mbIsRPlus, common.ts) and the review-
 // status fetch (ReviewsPlugin) into a single pill, in the existing dash-pr-state
 // category palette (blocked/progress/ready/merged) so it matches the rest of the app.
@@ -107,6 +134,7 @@ export class PrCell extends Component {
 export const STATUS_META: Record<StatusKey, { label: string; cls: string }> = {
   merged: { label: "Merged", cls: "merged" },
   rplus: { label: "R+'d", cls: "ready" },
+  commented: { label: "Commented", cls: "progress" },
   reviewed: { label: "Reviewed", cls: "progress" },
   to_review: { label: "To review", cls: "blocked" },
 };
@@ -114,7 +142,7 @@ export const STATUS_META: Record<StatusKey, { label: string; cls: string }> = {
 // "merged" outranks everything else. mbIsRPlus also returns true for a
 // "merged" mbState, so merged must be caught here first or it'd be misfiled
 // as "rplus" instead.
-export type StatusKey = "merged" | "rplus" | "reviewed" | "to_review";
+export type StatusKey = "merged" | "rplus" | "reviewed" | "commented" | "to_review";
 
 export function statusKey(
   row: { state?: string; reviewStatus?: ReviewStatus },
@@ -124,13 +152,14 @@ export function statusKey(
   if (isMerged(row, mbState)) return "merged";
   if (mbIsRPlus(mbState, mbDetail)) return "rplus";
   if (row.reviewStatus === "reviewed") return "reviewed";
+  if (row.reviewStatus === "commented") return "commented";
   return "to_review";
 }
 
 // the worst (least-done) of a set of status keys, in STATUS_META's precedence
 // order — shared by the screen's group rollup and this file's forward-port
 // per-branch rollup.
-const PRECEDENCE: StatusKey[] = ["to_review", "reviewed", "rplus", "merged"];
+const PRECEDENCE: StatusKey[] = ["to_review", "commented", "reviewed", "rplus", "merged"];
 export function worstStatusKey(keys: StatusKey[]): StatusKey {
   let worst: StatusKey = "merged";
   for (const k of keys) {
