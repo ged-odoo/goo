@@ -819,8 +819,8 @@ export class ConfigScreen extends Component {
             <li>Give it to the process that runs goo, then restart goo:
               <ul>
                 <li>bash / zsh: add <code>export GOO_ODOO_API_KEY=the-key</code> to <code>~/.bashrc</code> / <code>~/.zshrc</code></li>
-                <li>fish: run <code>set -Ux GOO_ODOO_API_KEY the-key</code> once (fish remembers it)</li>
-                <li>goo as a systemd user service: <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
+                <li>fish: <code>set -gx GOO_ODOO_API_KEY the-key</code> in a file fish loads that no repo tracks (not <code>set -Ux</code>: it writes the key into <code>fish_variables</code>, which dotfile repos often commit)</li>
+                <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
               </ul>
             </li>
             <li>Another instance (a runbot, for example): also set <code>GOO_ODOO_URL</code> (default https://www.odoo.com) and, on a multi-database server, <code>GOO_ODOO_DB</code>.</li>

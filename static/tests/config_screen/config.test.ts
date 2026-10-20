@@ -66,7 +66,7 @@ describe("Config screen — Odoo task stage", () => {
       (b) => b.querySelector("h2")?.textContent === "Odoo task stage",
     )!;
     expect(block.textContent).toContain("export GOO_ODOO_API_KEY");
-    expect(block.textContent).toContain("set -Ux GOO_ODOO_API_KEY");
+    expect(block.textContent).toContain("set -gx GOO_ODOO_API_KEY");
     expect(block.textContent).toContain("systemctl --user edit goo.service");
     expect(block.querySelector("input")).toBeNull();
 
