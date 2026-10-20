@@ -329,10 +329,18 @@ class GitHubService:
         login = self._me()
         if not login:
             return "to_review"
-        my_reviews = self._my_activity_times(
-            gh_repo, number, login, "pulls", "reviews", "submitted_at"
-        )
-        my_comments = self._my_comment_times(gh_repo, number, login)
+        with ThreadPoolExecutor(max_workers=3) as pool:  # independent calls, one round trip
+            reviews = pool.submit(
+                self._my_activity_times, gh_repo, number, login, "pulls", "reviews", "submitted_at"
+            )
+            issue_comments = pool.submit(
+                self._my_activity_times, gh_repo, number, login, "issues", "comments", "created_at"
+            )
+            inline_comments = pool.submit(
+                self._my_activity_times, gh_repo, number, login, "pulls", "comments", "created_at"
+            )
+            my_reviews = reviews.result()
+            my_comments = issue_comments.result() + inline_comments.result()
         if not my_reviews and not my_comments:
             return "to_review"
         last_request_at = self._last_review_request(gh_repo, number, login)
@@ -341,13 +349,6 @@ class GitHubService:
         if my_comments and max(my_comments) > last_request_at:
             return "commented"
         return "to_review"
-
-    def _my_comment_times(self, gh_repo: str, number: int, login: str) -> list[str]:
-        """The creation times of `login`'s conversation and inline comments on a PR
-        (a plain comment isn't a review, so `reviews` never lists it)."""
-        return self._my_activity_times(
-            gh_repo, number, login, "issues", "comments", "created_at"
-        ) + self._my_activity_times(gh_repo, number, login, "pulls", "comments", "created_at")
 
     def _my_activity_times(
         self, gh_repo: str, number: int, login: str, kind: str, what: str, field: str
@@ -426,7 +427,7 @@ class GitHubService:
     def _fetch_review_requests(self, query: str) -> tuple[list[dict[str, Any]], str | None]:
         self.io.log_request(f"gh api search/issues q={query}")
         jq = (
-            '.items[] | {github: (.repository_url | sub(".*/repos/"; "")), number, title,'
+            '.items[] | {github: (.repository_url | sub(".*/repos/"; "")), number, title, body,'
             " url: .html_url, author: .user.login, draft, labels: [.labels[].name],"
             " updated_at}"
         )

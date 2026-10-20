@@ -1284,6 +1284,7 @@ class GitHubServiceTest(unittest.TestCase):
             (prs[0]["github"], prs[0]["number"], prs[0]["author"]), ("odoo/odoo", 7, "bob")
         )
         self.assertIn("q=is:pr review-requested:@me", io.run_calls[0])
+        self.assertIn("body", io.run_calls[0][-1])  # the jq keeps the description (task refs)
         bad = services.GitHubService(
             FakeIO(run_result=completed(returncode=1, stderr="boom")), TTLCache(ttl=0)
         )
