@@ -264,6 +264,31 @@ class PostRoutesTest(ServerTestCase):
         self.assertEqual(body, {"ok": True, "tasks": {"7": {"name": "t", "stage": "Done"}}})
         self.assertEqual(fake.calls, [("secret", [7])])
 
+    def test_task_detail_follows_the_same_opt_in_and_key_rules(self):
+        class FakeTasks:
+            calls = []
+
+            def detail(self, *args):
+                self.calls.append(args)
+                return {"id": 7, "name": "t"}, None
+
+        fake = FakeTasks()
+        with (
+            mock.patch.object(server, "TASKS", fake),
+            mock.patch.dict(os.environ, {"GOO_ODOO_API_KEY": "secret"}),
+        ):
+            status, body = self.json_request("POST", "/api/tasks/detail", {"id": 7})
+            self.assertEqual((status, body["ok"], fake.calls), (200, False, []))  # setting off
+
+            self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
+            _, body = self.json_request("POST", "/api/tasks/detail", {"id": 7})
+            self.assertEqual(body, {"ok": True, "task": {"id": 7, "name": "t"}})
+            self.assertEqual(fake.calls, [("secret", 7)])
+            for bad in ("abc", [1], True, -3, 1e999):  # never reaches Odoo, never raises
+                status, body = self.json_request("POST", "/api/tasks/detail", {"id": bad})
+                self.assertEqual((status, body["ok"], body["error"]), (200, False, "not a task id"))
+            self.assertEqual(len(fake.calls), 1)
+
     def test_tasks_flag_a_rejected_key(self):
         class Rejecting:
             def read(self, *args):
