@@ -20,7 +20,7 @@ import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
 import type { WorkspaceConfig } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
-import { TaskButton } from "../core/task_button.ts";
+import { TaskButton, stageClass } from "../core/task_button.ts";
 import { TasksPlugin } from "../core/tasks_plugin.ts";
 import type {
   ActionMenuDetail,
@@ -32,7 +32,13 @@ import type {
 import { branchKey } from "../core/models.ts";
 import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
 import type { BranchInfo } from "../core/observed_models.ts";
-import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
+import {
+  repoBranchList,
+  timeAgo,
+  nestByParent,
+  descendantWorkspaces,
+  taskId,
+} from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
   categoryOptions,
@@ -415,6 +421,13 @@ export class WorkspacesScreen extends Component {
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+    // every row shows its task's stage, not just the selected workspace's header
+    useEffect(() => {
+      for (const ws of this.config.config.workspaces || []) {
+        const id = taskId(...this.taskTexts(ws));
+        if (id) this.tasks.want(id);
+      }
+    });
     // close the header overflow menu on any outside click
     const closeMenu = () => {
       if (this.menuOpen()) this.menuOpen.set(false);
@@ -828,7 +841,23 @@ export class WorkspacesScreen extends Component {
             },
       );
     }
+    const odoo = this.odooPill(ws);
+    if (odoo) pills.push(odoo);
     return pills;
+  }
+
+  // the small, non-clickable stage of the workspace's odoo.com task (the header's pill links to it)
+  odooPill(ws: WorkspaceConfig): ListPill | null {
+    const info = this.tasks.tasks()[taskId(...this.taskTexts(ws))];
+    if (!info) return null;
+    const cls = stageClass(info.stage);
+    return {
+      key: "odoo",
+      cls: `${cls === "merged" || cls === "other" ? "none" : cls} odoo`, // .wt-pill has no cancelled / plain colour of its own
+      sym: "",
+      label: `Odoo: ${info.stage}`,
+      title: `Odoo task: ${info.name}\nStage: ${info.stage}`,
+    };
   }
 
   // compact relative age ("16m", "3d") of the last intentional action on the

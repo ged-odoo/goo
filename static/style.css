@@ -5243,6 +5243,14 @@ a.commit-detail-hash svg {
   background: currentColor;
   animation: dash-blink 1.4s ease-in-out infinite;
 }
+.wt-pill.odoo {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  line-height: 17px;
+}
 .wt-pill.none {
   color: var(--l-text-faint);
   background: transparent;

@@ -424,6 +424,35 @@ describe("worktree workspace lifecycle", () => {
     expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [4939265] });
   });
 
+  it("each list row shows its task's stage as a small non-clickable pill with the details on hover", async () => {
+    const withTask = ws({
+      id: "wt1",
+      name: "with-task",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    const plain = ws({ id: "wt2", name: "no-task", location: "worktree", worktree: { dir: "/x" } });
+    await mount([withTask, plain], {
+      active: "wt2", // the task's workspace is not even the selected one
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": {
+          ok: true,
+          tasks: { "4939265": { name: "Fix the thing", stage: "In Progress" } },
+        },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-item .wt-pill.odoo"));
+    const pills = [...app.root.querySelectorAll<HTMLElement>(".wt-item .wt-pill.odoo")];
+    expect(pills).toHaveLength(1); // only the workspace that names a task
+    expect(pills[0].textContent?.trim()).toBe("Odoo: In Progress");
+    expect(pills[0].tagName).toBe("SPAN"); // the row is a button: no link inside it
+    expect(pills[0].classList.contains("progress")).toBe(true);
+    expect(pills[0].title).toBe("Odoo task: Fix the thing\nStage: In Progress");
+    expect(pills[0].closest(".wt-item")?.textContent).toContain("with-task");
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });

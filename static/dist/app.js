@@ -15691,6 +15691,12 @@ var WorkspacesScreen = class extends Component {
   // collapsed category ids
   setup() {
     this.db.load();
+    useEffect(() => {
+      for (const ws of this.config.config.workspaces || []) {
+        const id = taskId(...this.taskTexts(ws));
+        if (id) this.tasks.want(id);
+      }
+    });
     const closeMenu = () => {
       if (this.menuOpen()) this.menuOpen.set(false);
       if (this.orderMenuOpen()) this.orderMenuOpen.set(false);
@@ -16037,7 +16043,24 @@ var WorkspacesScreen = class extends Component {
         }
       );
     }
+    const odoo = this.odooPill(ws);
+    if (odoo) pills.push(odoo);
     return pills;
+  }
+  // the small, non-clickable stage of the workspace's odoo.com task (the header's pill links to it)
+  odooPill(ws) {
+    const info = this.tasks.tasks()[taskId(...this.taskTexts(ws))];
+    if (!info) return null;
+    const cls = stageClass(info.stage);
+    return {
+      key: "odoo",
+      cls: `${cls === "merged" || cls === "other" ? "none" : cls} odoo`,
+      // .wt-pill has no cancelled / plain colour of its own
+      sym: "",
+      label: `Odoo: ${info.stage}`,
+      title: `Odoo task: ${info.name}
+Stage: ${info.stage}`
+    };
   }
   // compact relative age ("16m", "3d") of the last intentional action on the
   // workspace — the same timestamp the "recently used" order sorts on
