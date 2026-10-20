@@ -11,13 +11,15 @@ export function errorMessage(e: unknown): string {
 }
 
 // The odoo.com task a branch / PR refers to: the first `task-123`, `opw-123`,
-// `task-id: 123`, `task_number 123`… found in `texts`, tried in order (branch names,
+// `task-id: 123`, `**Task**: 123`, an odoo.com `/tasks/123` link… found in `texts`, tried in order (branch names,
 // then the PR title, then its body). 5+ digits and no line break after the word, so
 // "task 2024" or "task\n\n1234 items" in prose don't count. "" when none mentions one.
-const TASK_REF = /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[-_:# \t]*(\d{5,})/i;
+const TASK_REF =
+  /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[*]*[-_:# \t]*(\d{5,})|odoo\.com\/odoo\/(?:[\w-]+\/\d+\/)?(?:all-)?tasks\/(\d+)/i;
 export function taskUrl(...texts: (string | undefined)[]): string {
   for (const text of texts) {
-    const id = TASK_REF.exec(text || "")?.[1];
+    const match = TASK_REF.exec(text || "");
+    const id = match?.[1] || match?.[2];
     if (id) return `https://www.odoo.com/odoo/all-tasks/${id}`;
   }
   return "";
