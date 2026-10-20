@@ -20,6 +20,8 @@ import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
 import type { WorkspaceConfig, WorkspaceLink } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
+import { TaskButton } from "../core/task_button.ts";
+import { TasksPlugin } from "../core/tasks_plugin.ts";
 import type {
   ActionMenuDetail,
   CiMenuDetail,
@@ -36,7 +38,6 @@ import {
   timeAgo,
   nestByParent,
   descendantWorkspaces,
-  taskUrl,
 } from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
@@ -145,6 +146,7 @@ interface ListGroup {
 
 export class WorkspacesScreen extends Component {
   static components = {
+    TaskButton,
     LogConsole,
     ClaudeChat,
     CodePane,
@@ -284,7 +286,7 @@ export class WorkspacesScreen extends Component {
                   <button class="pbtn ghost" t-att-disabled="!this.linkUrl(this.sel, link.path)" t-att-title="'open ' + link.path + ' on this workspace\'s server'" t-on-click="() => this.openWorkspaceUrl(this.sel, this.linkUrl(this.sel, link.path))"><t t-out="this.externalIcon"/><t t-out="link.label"/></button>
                 </t>
               </t>
-              <a t-if="this.taskLink(this.sel)" class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.taskLink(this.sel)" title="open the odoo.com task (from the branch / PR)"><t t-out="this.externalIcon"/>Task</a>
+              <TaskButton texts="this.taskTexts(this.sel)"/>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -387,6 +389,7 @@ export class WorkspacesScreen extends Component {
   wt = usePlugin(WorkspacePlugin);
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
@@ -651,7 +654,10 @@ export class WorkspacesScreen extends Component {
     if (this.refreshingStatuses()) return;
     this.refreshingStatuses.set(true);
     try {
-      await this.code.refreshStatuses(this._runbotBranches(false), this._prs(false));
+      await Promise.all([
+        this.code.refreshStatuses(this._runbotBranches(false), this._prs(false)),
+        this.tasks.reload(),
+      ]);
     } finally {
       this.refreshingStatuses.set(false);
     }
@@ -1415,14 +1421,14 @@ export class WorkspacesScreen extends Component {
     return this.isWt(ws) ? this.wt.link(ws, path) : this.mainLink(ws, path);
   }
 
-  // the odoo.com task named by the workspace's branches, else by its PRs' titles / bodies
-  taskLink(ws: WorkspaceConfig): string {
+  // where the workspace may name its odoo.com task: its branches, then its PRs' titles / bodies
+  taskTexts(ws: WorkspaceConfig): (string | undefined)[] {
     const prs = this.prRows(ws).map((r) => r.pr);
-    return taskUrl(
+    return [
       ...(ws.checkouts || []).map((c) => c.branch),
       ...prs.map((pr) => pr.title),
       ...prs.map((pr) => pr.body),
-    );
+    ];
   }
 
   // the main server's link: its container's nginx host in docker mode, else the

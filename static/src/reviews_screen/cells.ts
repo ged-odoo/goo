@@ -12,8 +12,8 @@ import type { ForwardPortPull, ForwardPortRow } from "../core/observed_models.ts
 import { ReviewsPlugin } from "./reviews_plugin.ts";
 import type { RequestedPr, ReviewStatus } from "./reviews_plugin.ts";
 import type { ReviewsScreen } from "./reviews.ts";
-import { ICONS, m, mbIsRPlus } from "../core/common.ts";
-import { taskUrl } from "../core/utils.ts";
+import { mbIsRPlus } from "../core/common.ts";
+import { TaskButton } from "../core/task_button.ts";
 
 // one tracked PR as the Reviews list shows it (ReviewsScreen.allRows): the
 // config.reviews entry enriched with its fetched PR info + review status
@@ -49,20 +49,15 @@ export function isMerged(row: { state?: string }, mbState: string): boolean {
 
 // Requested of you: the PR's title (a link, with a draft badge) / its Track button.
 export class RequestedPrCell extends Component {
+  static components = { TaskButton };
   props = useProps({ pr: t.any() as Type<RequestedPr>, screen: t.any() as Type<ReviewsScreen> });
   static template = xml`
     <span class="rev-pr">
       <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
       <span class="rev-pr-title" t-out="this.props.pr.title"/>
       <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
-      <a t-if="this.taskLink" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink" title="open the odoo.com task"><t t-out="this.externalIcon"/>Task</a>
+      <TaskButton texts="[this.props.pr.title, this.props.pr.body]"/>
     </span>`;
-
-  externalIcon = m(ICONS.external);
-
-  get taskLink(): string {
-    return taskUrl(this.props.pr.title, this.props.pr.body);
-  }
 }
 
 // Requested of you: the same status pill as the tracked list (StatusCell).

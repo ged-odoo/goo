@@ -14,6 +14,7 @@ import {
   descendantWorkspaces,
   nestByParent,
   repoBranchList,
+  taskId,
   taskUrl,
 } from "../../src/core/utils.ts";
 
@@ -320,37 +321,39 @@ describe("merge3", () => {
   });
 });
 
-describe("taskUrl", () => {
-  const url = (id: string) => `https://www.odoo.com/odoo/all-tasks/${id}`;
-
+describe("taskId", () => {
   it("finds task / opw references in the usual spellings", () => {
-    expect(taskUrl("master-opw-4939265-fix-gito")).toBe(url("4939265"));
-    expect(taskUrl("18.0-task-4939265-foo")).toBe(url("4939265"));
-    expect(taskUrl("task_4939265")).toBe(url("4939265"));
-    expect(taskUrl("Task ID: 4939265")).toBe(url("4939265"));
-    expect(taskUrl("closes\n\ntask-id 4939265")).toBe(url("4939265"));
-    expect(taskUrl("Task number #4939265")).toBe(url("4939265"));
-    expect(taskUrl("OPW-4939265")).toBe(url("4939265"));
-    expect(taskUrl("**Task**: 4939265")).toBe(url("4939265"));
-    expect(taskUrl("**Task**: https://www.odoo.com/odoo/project/133/tasks/3969567")).toBe(
-      url("3969567"),
-    );
-    expect(taskUrl("see https://www.odoo.com/odoo/all-tasks/4939265")).toBe(url("4939265"));
-    expect(taskUrl("https://www.odoo.com/odoo/tasks/4939265")).toBe(url("4939265"));
+    expect(taskId("master-opw-4939265-fix-gito")).toBe("4939265");
+    expect(taskId("18.0-task-4939265-foo")).toBe("4939265");
+    expect(taskId("task_4939265")).toBe("4939265");
+    expect(taskId("Task ID: 4939265")).toBe("4939265");
+    expect(taskId("closes\n\ntask-id 4939265")).toBe("4939265");
+    expect(taskId("Task number #4939265")).toBe("4939265");
+    expect(taskId("OPW-4939265")).toBe("4939265");
+    expect(taskId("**Task**: 4939265")).toBe("4939265");
+    expect(taskId("**Task**: https://www.odoo.com/odoo/project/133/tasks/3969567")).toBe("3969567");
+    expect(taskId("see https://www.odoo.com/odoo/all-tasks/4939265")).toBe("4939265");
+    expect(taskId("https://www.odoo.com/odoo/tasks/4939265")).toBe("4939265");
   });
 
   it("tries the texts in order and skips the ones without a reference", () => {
-    expect(taskUrl("18.0-fix-x", undefined, "[FIX] web: x", "task-111111\nopw-222222")).toBe(
-      url("111111"),
+    expect(taskId("18.0-fix-x", undefined, "[FIX] web: x", "task-111111\nopw-222222")).toBe(
+      "111111",
     );
-    expect(taskUrl("master-opw-111111-a", "task-222222")).toBe(url("111111"));
+    expect(taskId("master-opw-111111-a", "task-222222")).toBe("111111");
   });
 
   it("is empty when nothing names a task", () => {
-    expect(taskUrl("18.0-hotkey-sharing-after-dialog-gito", "[FIX] web: x", "")).toBe("");
-    expect(taskUrl("taskbar 12345", "task-12", "mytask-123456")).toBe("");
-    expect(taskUrl("[IMP] web: task 2025 view", "this task 2024 migration")).toBe("");
-    expect(taskUrl("Related task\n\n123456 items")).toBe("");
-    expect(taskUrl()).toBe("");
+    expect(taskId("18.0-hotkey-sharing-after-dialog-gito", "[FIX] web: x", "")).toBe("");
+    expect(taskId("taskbar 12345", "task-12", "mytask-123456")).toBe("");
+    expect(taskId("[IMP] web: task 2025 view", "this task 2024 migration")).toBe("");
+    expect(taskId("Related task\n\n123456 items")).toBe("");
+    expect(taskId()).toBe("");
+  });
+});
+
+describe("taskUrl", () => {
+  it("is the odoo.com page of the task", () => {
+    expect(taskUrl("4939265")).toBe("https://www.odoo.com/odoo/all-tasks/4939265");
   });
 });
