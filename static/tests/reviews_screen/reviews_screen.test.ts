@@ -361,7 +361,11 @@ describe("Reviews screen — task stage", () => {
     await vi.waitFor(() =>
       expect(text(app.root.querySelector(".rl-group-head a.rev-task"))).toBe("Odoo: key expired?↗"),
     );
-    await click(button(app.root, "Refresh")); // asked again: still rejected
+    await app.navigate("todo");
+    await app.navigate("review-queue"); // a rejected key is not asked again on its own
+    await app.settle();
+    expect(app.callsTo("/api/tasks")).toHaveLength(1);
+    await click(button(app.root, "Refresh")); // only an explicit Refresh asks again
     expect(app.callsTo("/api/tasks").length).toBeGreaterThanOrEqual(2);
     const logged = app
       .callsTo("/api/event")

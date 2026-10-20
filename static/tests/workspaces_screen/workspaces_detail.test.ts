@@ -453,6 +453,132 @@ describe("worktree workspace lifecycle", () => {
     expect(pills[0].closest(".wt-item")?.textContent).toContain("with-task");
   });
 
+  describe("Task tab", () => {
+    const TASK = {
+      id: 4939265,
+      name: "Fix the thing",
+      project: "Support",
+      stage: "RD Dev",
+      assignees: ["Ann", "Cy"],
+      tags: ["bug"],
+      customer: "ACME",
+      deadline: "",
+      priority: "Medium",
+      parent: "",
+      created: "2026-10-01 09:00:00",
+      updated: "",
+      created_by: "Ann",
+      description: "<p>Steps to reproduce</p>",
+      messages: [
+        {
+          id: 1,
+          date: "2026-10-02 08:00:00",
+          author: "<b>Ann</b>",
+          kind: "Note",
+          body: "<p>Looking</p>",
+        },
+      ],
+    };
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    const tab = () => byText(app.root, ".wt-tab", "Task");
+    const detailCalls = () => app.callsTo("/api/tasks/detail");
+    const open = async (detail: unknown, config: Partial<typeof DEFAULT_CONFIG> = {}) => {
+      await mount([withTask], {
+        active: "wt1",
+        config: { odoo_tasks: true, ...config },
+        routes: {
+          "/api/tasks": { ok: true, tasks: {} },
+          "/api/tasks/detail": detail as never,
+        },
+      });
+    };
+
+    it("shows the task read-only, and reads it only when the tab is opened", async () => {
+      await open({ ok: true, task: TASK });
+      expect(detailCalls()).toHaveLength(0); // nothing is fetched until the tab is opened
+      tab()!.click();
+      await waitFor(app, () => !!app.root.querySelector(".task-doc"));
+      expect(detailCalls()).toHaveLength(1);
+      expect(detailCalls()[0].body).toEqual({ id: 4939265 });
+
+      const text = app.root.querySelector(".task-pane")!.textContent!;
+      for (const expected of [
+        "Fix the thing",
+        "Odoo: RD Dev",
+        "Support",
+        "Ann, Cy",
+        "ACME",
+        "Medium",
+      ]) {
+        expect(text).toContain(expected);
+      }
+      expect(text).not.toContain("Deadline"); // an empty field is left out
+      expect(app.root.querySelector<HTMLAnchorElement>(".task-head a")?.href).toBe(
+        "https://www.odoo.com/odoo/all-tasks/4939265",
+      );
+      // the description and chatter are in a frame that can run nothing
+      const frame = app.root.querySelector<HTMLIFrameElement>(".task-doc")!;
+      expect(frame.getAttribute("sandbox")).toBe("allow-popups allow-popups-to-escape-sandbox");
+      expect(frame.srcdoc).toContain("<p>Steps to reproduce</p>");
+      expect(frame.srcdoc).toContain("<p>Looking</p>");
+      expect(frame.srcdoc).toContain("&lt;b&gt;Ann&lt;/b&gt;");
+    });
+
+    it("keeps what it read when you leave the tab and come back, and Refresh reads again", async () => {
+      await open({ ok: true, task: TASK });
+      tab()!.click();
+      await waitFor(app, () => !!app.root.querySelector(".task-doc"));
+      mustText(app.root, ".wt-tab", "Details").click();
+      await app.settle();
+      tab()!.click();
+      await app.settle();
+      expect(app.root.querySelector(".task-doc")).not.toBeNull();
+      expect(detailCalls()).toHaveLength(1);
+
+      mustText(app.root, ".task-head button", "Refresh").click();
+      await waitFor(app, () => detailCalls().length === 2);
+    });
+
+    it("explains a failure and lets you retry", async () => {
+      let reply: unknown = { ok: false, error: "HTTP 500" };
+      await open(() => reply);
+      tab()!.click();
+      await waitFor(app, () => !!app.root.querySelector(".task-pane .ws-pane-hint button"));
+      expect(app.root.querySelector(".task-pane")!.textContent).toContain("HTTP 500");
+      await new Promise((r) => setTimeout(r, 200));
+      await app.settle();
+      expect(detailCalls()).toHaveLength(1); // a failure is not retried by itself
+      reply = { ok: true, task: TASK };
+      mustText(app.root, ".task-pane button", "Retry").click();
+      await waitFor(app, () => !!app.root.querySelector(".task-doc"));
+      expect(detailCalls()).toHaveLength(2);
+    });
+
+    it("has no tab when the setting is off or the workspace names no task", async () => {
+      await open({ ok: true, task: TASK }, { odoo_tasks: false });
+      expect(app.root.querySelector(".wt-tab")).not.toBeNull();
+      expect([...app.root.querySelectorAll(".wt-tab")].map((b) => b.textContent)).not.toContain(
+        "Task",
+      );
+      app.destroy();
+
+      await mount([WT], {
+        active: "wt1",
+        config: { odoo_tasks: true },
+        routes: { "/api/tasks": { ok: true, tasks: {} } },
+      });
+      expect([...app.root.querySelectorAll(".wt-tab")].map((b) => b.textContent)).not.toContain(
+        "Task",
+      );
+      expect(detailCalls()).toHaveLength(0);
+    });
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });

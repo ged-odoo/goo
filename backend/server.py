@@ -1776,19 +1776,41 @@ def _api_prs_review_requests(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": error is None, "prs": prs, **({"error": error} if error else {})}
 
 
-@post_route("/api/tasks", "ids:list")
-def _api_tasks(body: dict[str, Any]) -> dict[str, Any]:
-    """The stage of Odoo tasks. Opt-in (the `odoo_tasks` setting); the API key only ever
-    comes from the GOO_ODOO_API_KEY environment variable — never from the config file,
-    which may be committed. An empty `ids` just checks the key."""
+def _odoo_tasks_key() -> tuple[str, str | None]:
+    """(API key, error): the key only ever comes from the GOO_ODOO_API_KEY environment
+    variable — never from the config file, which may be committed — and only when the
+    opt-in `odoo_tasks` setting is on."""
     if not (CONFIG.get().get("config") or {}).get("odoo_tasks"):
-        return {"ok": False, "tasks": {}, "error": "disabled in the settings"}
-    tasks, error = TASKS.read(os.environ.get("GOO_ODOO_API_KEY", ""), body["ids"])
+        return "", "disabled in the settings"
+    return os.environ.get("GOO_ODOO_API_KEY", ""), None
+
+
+def _tasks_reply(error: str | None, **payload: Any) -> dict[str, Any]:
     return {
         "ok": error is None,
-        "tasks": tasks,
+        **payload,
         **({"error": error, "key_rejected": error == services.KEY_REJECTED} if error else {}),
     }
+
+
+@post_route("/api/tasks", "ids:list")
+def _api_tasks(body: dict[str, Any]) -> dict[str, Any]:
+    """The stage of Odoo tasks. An empty `ids` just checks the key."""
+    key, error = _odoo_tasks_key()
+    tasks: dict[str, dict[str, str]] = {}
+    if error is None:
+        tasks, error = TASKS.read(key, body["ids"])
+    return _tasks_reply(error, tasks=tasks)
+
+
+@post_route("/api/tasks/detail", "id")
+def _api_tasks_detail(body: dict[str, Any]) -> dict[str, Any]:
+    """One task in full (fields, description, chatter), for the workspace's Task tab."""
+    key, error = _odoo_tasks_key()
+    task = None
+    if error is None:
+        task, error = TASKS.detail(key, int(body["id"]))
+    return _tasks_reply(error, task=task)
 
 
 @post_route("/api/prs/close", "repo", "number")

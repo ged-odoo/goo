@@ -1155,6 +1155,111 @@ class TaskServiceTest(unittest.TestCase):
         )
 
 
+class TaskDetailTest(unittest.TestCase):
+    TASK = {
+        "id": 7,
+        "name": "Fix it",
+        "project_id": [3, "Support"],
+        "stage_id": [2, "RD Dev"],
+        "user_ids": [11, 12],
+        "tag_ids": [5],
+        "partner_id": [9, "ACME"],
+        "date_deadline": "2026-11-01 10:00:00",
+        "priority": "1",
+        "description": "<p>Steps</p>",
+        "parent_id": False,
+        "create_date": "2026-10-01 09:00:00",
+        "write_date": "2026-10-02 09:00:00",
+        "create_uid": [11, "Ann"],
+    }
+    MESSAGES = [
+        {
+            "id": 2,
+            "date": "2026-10-02 08:00:00",
+            "author_id": [11, "Ann"],
+            "email_from": "ann@x.test",
+            "body": "<p>Second</p>",
+            "subtype_id": [1, "Discussions"],
+        },
+        {"id": 1, "date": "2026-10-01 08:00:00", "author_id": False, "email_from": "bob@x.test"},
+    ]
+
+    def _io(self, **overrides):
+        http = {
+            "/project.task/search_read": ([self.TASK], None),
+            "/mail.message/search_read": (self.MESSAGES, None),
+            "/res.users/read": ([{"id": 11, "name": "Ann"}, {"id": 12, "name": "Cy"}], None),
+            "/project.tags/read": ([{"id": 5, "name": "bug"}], None),
+        }
+        return FakeIO(http={**http, **overrides})
+
+    def test_detail_gathers_the_fields_the_chatter_and_the_names(self):
+        io = self._io()
+        task, error = services.TaskService(io).detail("k", 7)
+        self.assertIsNone(error)
+        assert task is not None
+        self.assertEqual(
+            {k: task[k] for k in ("name", "project", "stage", "assignees", "tags", "customer")},
+            {
+                "name": "Fix it",
+                "project": "Support",
+                "stage": "RD Dev",
+                "assignees": ["Ann", "Cy"],
+                "tags": ["bug"],
+                "customer": "ACME",
+            },
+        )
+        self.assertEqual(
+            (task["priority"], task["parent"], task["created_by"]), ("Medium", "", "Ann")
+        )
+        self.assertEqual(task["description"], "<p>Steps</p>")
+        # the chatter keeps Odoo's order (newest first); a message without an author partner
+        # falls back on its sender, and a missing body is empty
+        self.assertEqual(
+            [(m["author"], m["kind"], m["body"]) for m in task["messages"]],
+            [("Ann", "Discussions", "<p>Second</p>"), ("bob@x.test", "", "")],
+        )
+        # the whole tab is four calls at most, and only for this one task
+        self.assertEqual(len(io.http_calls), 4)
+        self.assertEqual(io.http_calls[0][1]["domain"], [["id", "=", 7]])
+
+    def test_detail_skips_the_name_lookups_when_there_is_nobody_to_name(self):
+        io = self._io(
+            **{"/project.task/search_read": ([{**self.TASK, "user_ids": [], "tag_ids": []}], None)}
+        )
+        task, _ = services.TaskService(io).detail("k", 7)
+        assert task is not None
+        self.assertEqual((task["assignees"], task["tags"]), ([], []))
+        self.assertEqual(len(io.http_calls), 2)  # the task and its chatter only
+
+    def test_detail_survives_a_failed_side_call(self):
+        io = self._io(
+            **{
+                "/mail.message/search_read": (None, "HTTP 403"),
+                "/res.users/read": (None, "HTTP 403"),
+            }
+        )
+        task, error = services.TaskService(io).detail("k", 7)
+        assert task is not None
+        self.assertIsNone(error)
+        self.assertEqual((task["messages"], task["assignees"], task["tags"]), ([], [], ["bug"]))
+
+    def test_detail_errors(self):
+        self.assertEqual(
+            services.TaskService(FakeIO()).detail("", 7), (None, "GOO_ODOO_API_KEY is not set")
+        )
+        self.assertEqual(
+            services.TaskService(self._io(**{"/project.task/search_read": ([], None)})).detail(
+                "k", 7
+            ),
+            (None, "this task does not exist, or the key cannot read it"),
+        )
+        rejected = self._io(**{"/project.task/search_read": (None, "HTTP 401: Invalid apikey")})
+        self.assertEqual(
+            services.TaskService(rejected).detail("k", 7), (None, services.KEY_REJECTED)
+        )
+
+
 class GitHubServiceTest(unittest.TestCase):
     def test_prs_maps_ci_rollup(self):
         payload = (

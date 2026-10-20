@@ -6822,6 +6822,8 @@ var TasksPlugin = class extends Plugin {
   // Odoo refused the key (odoo.com keys expire after 90 days)
   _warned = false;
   // the event log hears about a rejected key once per session
+  details = signal({});
+  // task id -> its Task tab content
   _asked = /* @__PURE__ */ new Set();
   // ids already requested (answered or in flight)
   _queue = [];
@@ -6843,6 +6845,23 @@ var TasksPlugin = class extends Plugin {
   async reload() {
     await this._request([...this._asked]);
   }
+  // the Task tab's content: read once per session (one request for the task and its chatter);
+  // again only on `force` (the tab's Refresh / Retry) — a failure is never retried by itself
+  async loadDetail(id, force = false) {
+    const have = this.details()[id];
+    if (!this.enabled || have?.loading || have && !force) return;
+    const set = (state) => this.details.set({ ...this.details(), [id]: state });
+    set({ ...have, loading: true });
+    try {
+      const res = await postJSON(
+        "/api/tasks/detail",
+        { id: Number(id) }
+      );
+      set(res.ok && res.task ? { task: res.task } : { error: res.error || "failed" });
+    } catch (e) {
+      set({ error: errorMessage(e) });
+    }
+  }
   // whether the backend can see the key, as the reason when it can't ("" when it can)
   async check() {
     await this._request([]);
@@ -6852,7 +6871,9 @@ var TasksPlugin = class extends Plugin {
   async _flush() {
     this._timer = void 0;
     const ids = this._queue.splice(0);
-    if (!await this._request(ids)) ids.forEach((id) => this._asked.delete(id));
+    if (!await this._request(ids) && !this.keyRejected()) {
+      ids.forEach((id) => this._asked.delete(id));
+    }
   }
   // whether Odoo answered; an id it has no row for (unreadable, deleted) still counts as asked
   async _request(ids) {
@@ -13293,6 +13314,97 @@ var TodoScreen = class extends Component {
   }
 };
 
+// static/src/core/task_document.ts
+var TASK_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
+var STYLE = `
+  body { font: 13px/1.5 system-ui, sans-serif; color: #26262c; margin: 0; padding: 4px 2px 16px; }
+  h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #777; margin: 18px 0 8px; }
+  a { color: #6d3fc0; }
+  img { max-width: 100%; height: auto; }
+  pre, code { font-family: ui-monospace, monospace; font-size: 12px; background: #f3f1f6; border-radius: 4px; }
+  pre { padding: 8px; overflow-x: auto; }
+  blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid #ddd; color: #555; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: 2px 6px; }
+  article { border: 1px solid #e6e3ea; border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; }
+  article > header { font-size: 12px; color: #777; margin-bottom: 4px; }
+  article > header b { color: #26262c; }
+  article > header i { margin-left: 6px; padding: 0 6px; border-radius: 4px; background: #f3f1f6; font-style: normal; }
+  .dim { color: #888; }
+`;
+function odooDate(ts) {
+  if (!ts) return "";
+  const date = /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
+  return isNaN(date.getTime()) ? ts : date.toLocaleString();
+}
+function taskDocument(task) {
+  const messages = task.messages.map(
+    (m2) => `<article><header><b>${escapeHtml(m2.author)}</b> \xB7 ${escapeHtml(odooDate(m2.date))}${m2.kind ? `<i>${escapeHtml(m2.kind)}</i>` : ""}</header>${m2.body}</article>`
+  ).join("");
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'"><base href="https://www.odoo.com/" target="_blank"><style>${STYLE}</style><h2>Description</h2>${task.description || '<p class="dim">No description.</p>'}<h2>Chatter</h2>${messages || '<p class="dim">No message yet.</p>'}`;
+}
+
+// static/src/workspaces_screen/task_pane.ts
+var TaskPane = class extends Component {
+  props = useProps({ id: t.string() });
+  tasks = usePlugin(TasksPlugin);
+  sandbox = TASK_FRAME_SANDBOX;
+  static template = xml`
+    <div class="task-pane">
+      <div t-if="this.state.task" class="task-head">
+        <b class="task-title" t-out="this.state.task.name"/>
+        <span t-if="this.state.task.stage" class="dash-pr-state" t-att-class="this.stageCls" t-out="'Odoo: ' + this.state.task.stage"/>
+        <span class="wt-sp"/>
+        <button class="pbtn ghost" t-on-click="() => this.tasks.loadDetail(this.props.id, true)">Refresh</button>
+        <a class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.url">Open on odoo.com ↗</a>
+      </div>
+      <div t-if="this.state.task" class="task-facts">
+        <t t-foreach="this.facts" t-as="fact" t-key="fact[0]">
+          <span class="dim" t-out="fact[0]"/><span t-out="fact[1]"/>
+        </t>
+      </div>
+      <iframe t-if="this.state.task" class="task-doc" t-att-sandbox="this.sandbox" t-att-srcdoc="this.doc"/>
+      <div t-elif="this.state.error" class="ws-pane-hint dim">
+        <span t-out="this.state.error"/>
+        <button class="pbtn" t-on-click="() => this.tasks.loadDetail(this.props.id, true)">Retry</button>
+      </div>
+      <div t-else="" class="ws-pane-hint dim">Loading the task…</div>
+    </div>`;
+  setup() {
+    useEffect(() => {
+      this.tasks.loadDetail(this.props.id);
+    });
+  }
+  get state() {
+    return this.tasks.details()[this.props.id] || {};
+  }
+  get url() {
+    return taskUrl(this.props.id);
+  }
+  get stageCls() {
+    return stageClass(this.state.task?.stage ?? "");
+  }
+  get doc() {
+    return this.state.task ? taskDocument(this.state.task) : "";
+  }
+  // the main fields, the empty ones left out
+  get facts() {
+    const task = this.state.task;
+    if (!task) return [];
+    const facts = [
+      ["Project", task.project],
+      ["Assigned to", task.assignees.join(", ")],
+      ["Customer", task.customer],
+      ["Deadline", odooDate(task.deadline)],
+      ["Priority", task.priority],
+      ["Tags", task.tags.join(", ")],
+      ["Parent task", task.parent],
+      ["Created", [odooDate(task.created), task.created_by].filter(Boolean).join(" \xB7 by ")],
+      ["Updated", odooDate(task.updated)]
+    ];
+    return facts.filter(([, value]) => value);
+  }
+};
+
 // static/src/workspaces_screen/claude_chat.ts
 var ClaudeChat = class extends Component {
   static template = xml`
@@ -15416,6 +15528,7 @@ function savedCollapsedGroups() {
 var WorkspacesScreen = class extends Component {
   static components = {
     TaskButton,
+    TaskPane,
     LogConsole,
     ClaudeChat,
     CodePane,
@@ -15572,6 +15685,7 @@ var WorkspacesScreen = class extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="this.tasks.enabled and this.taskIdOf(this.sel)" class="wt-tab" t-att-class="{on: this.pane() === 'task'}" t-on-click="() => this.pane.set('task')"><t t-out="this.icons.task"/>Task</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
@@ -15616,6 +15730,10 @@ var WorkspacesScreen = class extends Component {
               <div class="wt-pane" t-elif="this.pane() === 'terminal'">
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'task'">
+                <TaskPane t-if="this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">No odoo.com task is named by this workspace's branch or PRs.</div>
               </div>
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">
@@ -15676,7 +15794,8 @@ var WorkspacesScreen = class extends Component {
     assets: m(ICONS.assets),
     claude: m(ICONS.claude),
     terminal: m(ICONS.terminal),
-    info: m(ICONS.info)
+    info: m(ICONS.info),
+    task: m(ICONS.check)
   };
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
   pane = signal("code");
@@ -15693,7 +15812,7 @@ var WorkspacesScreen = class extends Component {
     this.db.load();
     useEffect(() => {
       for (const ws of this.config.config.workspaces || []) {
-        const id = taskId(...this.taskTexts(ws));
+        const id = this.taskIdOf(ws);
         if (id) this.tasks.want(id);
       }
     });
@@ -16049,7 +16168,7 @@ var WorkspacesScreen = class extends Component {
   }
   // the small, non-clickable stage of the workspace's odoo.com task (the header's pill links to it)
   odooPill(ws) {
-    const info = this.tasks.tasks()[taskId(...this.taskTexts(ws))];
+    const info = this.tasks.tasks()[this.taskIdOf(ws)];
     if (!info) return null;
     const cls = stageClass(info.stage);
     return {
@@ -16504,6 +16623,10 @@ Stage: ${info.stage}`
   odooUrl(ws) {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
+  }
+  // the odoo.com task id the workspace names ("" when none)
+  taskIdOf(ws) {
+    return taskId(...this.taskTexts(ws));
   }
   // where the workspace may name its odoo.com task: its branches, then its PRs' titles / bodies
   taskTexts(ws) {

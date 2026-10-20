@@ -7148,3 +7148,37 @@ a.pbtn {
   font-weight: 700;
   color: var(--l-text);
 }
+
+/* the workspace's Task tab: the odoo.com task's fields, then its description and chatter in a sandboxed frame */
+.task-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  padding: 14px 18px;
+}
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.task-title {
+  font-size: 15px;
+}
+.task-facts {
+  flex: none;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 16px;
+  font-size: 12.5px;
+}
+.task-doc {
+  flex: 1;
+  min-height: 200px;
+  width: 100%;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  background: #fff;
+}

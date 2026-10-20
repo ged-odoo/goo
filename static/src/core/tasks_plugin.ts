@@ -15,6 +15,40 @@ export interface TaskInfo {
   stage: string;
 }
 
+// one task in full, for the workspace's Task tab (backend TaskService.detail)
+export interface TaskMessage {
+  id: number;
+  date: string;
+  author: string;
+  kind: string; // the subtype: "Discussions", "Note", …
+  body: string; // HTML from Odoo
+}
+
+export interface TaskDetail {
+  id: number;
+  name: string;
+  project: string;
+  stage: string;
+  assignees: string[];
+  tags: string[];
+  customer: string;
+  deadline: string;
+  priority: string;
+  parent: string;
+  created: string;
+  updated: string;
+  created_by: string;
+  description: string; // HTML from Odoo
+  messages: TaskMessage[]; // newest first
+}
+
+// where the detail of a task stands: loading, loaded or failed
+export interface TaskDetailState {
+  task?: TaskDetail;
+  error?: string;
+  loading?: boolean;
+}
+
 interface TasksReply {
   ok: boolean;
   tasks?: Record<string, TaskInfo>;
@@ -33,6 +67,7 @@ export class TasksPlugin extends Plugin {
   error = signal(""); // why the last request failed ("" when it worked)
   keyRejected = signal(false); // Odoo refused the key (odoo.com keys expire after 90 days)
   _warned = false; // the event log hears about a rejected key once per session
+  details = signal<Record<string, TaskDetailState>>({}); // task id -> its Task tab content
   _asked = new Set<string>(); // ids already requested (answered or in flight)
   _queue: string[] = [];
   _timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,6 +93,24 @@ export class TasksPlugin extends Plugin {
     await this._request([...this._asked]);
   }
 
+  // the Task tab's content: read once per session (one request for the task and its chatter);
+  // again only on `force` (the tab's Refresh / Retry) — a failure is never retried by itself
+  async loadDetail(id: string, force = false): Promise<void> {
+    const have = this.details()[id];
+    if (!this.enabled || have?.loading || (have && !force)) return;
+    const set = (state: TaskDetailState) => this.details.set({ ...this.details(), [id]: state });
+    set({ ...have, loading: true });
+    try {
+      const res = await postJSON<{ ok: boolean; task?: TaskDetail; error?: string }>(
+        "/api/tasks/detail",
+        { id: Number(id) },
+      );
+      set(res.ok && res.task ? { task: res.task } : { error: res.error || "failed" });
+    } catch (e) {
+      set({ error: errorMessage(e) });
+    }
+  }
+
   // whether the backend can see the key, as the reason when it can't ("" when it can)
   async check(): Promise<string> {
     await this._request([]);
@@ -68,7 +121,10 @@ export class TasksPlugin extends Plugin {
   async _flush(): Promise<void> {
     this._timer = undefined;
     const ids = this._queue.splice(0);
-    if (!(await this._request(ids))) ids.forEach((id) => this._asked.delete(id));
+    // (a rejected key is not worth asking again: only a new key, so a restart, changes that)
+    if (!(await this._request(ids)) && !this.keyRejected()) {
+      ids.forEach((id) => this._asked.delete(id));
+    }
   }
 
   // whether Odoo answered; an id it has no row for (unreadable, deleted) still counts as asked

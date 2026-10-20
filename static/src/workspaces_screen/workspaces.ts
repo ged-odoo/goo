@@ -21,6 +21,7 @@ import type { WorkspaceConfig } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
 import { TaskButton, stageClass } from "../core/task_button.ts";
+import { TaskPane } from "./task_pane.ts";
 import { TasksPlugin } from "../core/tasks_plugin.ts";
 import type {
   ActionMenuDetail,
@@ -147,6 +148,7 @@ interface ListGroup {
 export class WorkspacesScreen extends Component {
   static components = {
     TaskButton,
+    TaskPane,
     LogConsole,
     ClaudeChat,
     CodePane,
@@ -304,6 +306,7 @@ export class WorkspacesScreen extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="this.tasks.enabled and this.taskIdOf(this.sel)" class="wt-tab" t-att-class="{on: this.pane() === 'task'}" t-on-click="() => this.pane.set('task')"><t t-out="this.icons.task"/>Task</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
@@ -348,6 +351,10 @@ export class WorkspacesScreen extends Component {
               <div class="wt-pane" t-elif="this.pane() === 'terminal'">
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
+              </div>
+              <div class="wt-pane" t-elif="this.pane() === 'task'">
+                <TaskPane t-if="this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">No odoo.com task is named by this workspace's branch or PRs.</div>
               </div>
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">
@@ -409,6 +416,7 @@ export class WorkspacesScreen extends Component {
     claude: m(ICONS.claude),
     terminal: m(ICONS.terminal),
     info: m(ICONS.info),
+    task: m(ICONS.check),
   };
 
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
@@ -424,7 +432,7 @@ export class WorkspacesScreen extends Component {
     // every row shows its task's stage, not just the selected workspace's header
     useEffect(() => {
       for (const ws of this.config.config.workspaces || []) {
-        const id = taskId(...this.taskTexts(ws));
+        const id = this.taskIdOf(ws);
         if (id) this.tasks.want(id);
       }
     });
@@ -848,7 +856,7 @@ export class WorkspacesScreen extends Component {
 
   // the small, non-clickable stage of the workspace's odoo.com task (the header's pill links to it)
   odooPill(ws: WorkspaceConfig): ListPill | null {
-    const info = this.tasks.tasks()[taskId(...this.taskTexts(ws))];
+    const info = this.tasks.tasks()[this.taskIdOf(ws)];
     if (!info) return null;
     const cls = stageClass(info.stage);
     return {
@@ -1409,6 +1417,11 @@ export class WorkspacesScreen extends Component {
   odooUrl(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
+  }
+
+  // the odoo.com task id the workspace names ("" when none)
+  taskIdOf(ws: WorkspaceConfig): string {
+    return taskId(...this.taskTexts(ws));
   }
 
   // where the workspace may name its odoo.com task: its branches, then its PRs' titles / bodies
