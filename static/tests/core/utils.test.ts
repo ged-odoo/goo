@@ -331,6 +331,12 @@ describe("taskUrl", () => {
     expect(taskUrl("closes\n\ntask-id 4939265")).toBe(url("4939265"));
     expect(taskUrl("Task number #4939265")).toBe(url("4939265"));
     expect(taskUrl("OPW-4939265")).toBe(url("4939265"));
+    expect(taskUrl("**Task**: 4939265")).toBe(url("4939265"));
+    expect(taskUrl("**Task**: https://www.odoo.com/odoo/project/133/tasks/3969567")).toBe(
+      url("3969567"),
+    );
+    expect(taskUrl("see https://www.odoo.com/odoo/all-tasks/4939265")).toBe(url("4939265"));
+    expect(taskUrl("https://www.odoo.com/odoo/tasks/4939265")).toBe(url("4939265"));
   });
 
   it("tries the texts in order and skips the ones without a reference", () => {

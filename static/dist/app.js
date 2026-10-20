@@ -385,10 +385,11 @@ var PRESETS = [
 function errorMessage(e) {
   return e instanceof Error ? e.message : String(e);
 }
-var TASK_REF = /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[-_:# \t]*(\d{5,})/i;
+var TASK_REF = /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[*]*[-_:# \t]*(\d{5,})|odoo\.com\/odoo\/(?:[\w-]+\/\d+\/)?(?:all-)?tasks\/(\d+)/i;
 function taskUrl(...texts) {
   for (const text of texts) {
-    const id = TASK_REF.exec(text || "")?.[1];
+    const match = TASK_REF.exec(text || "");
+    const id = match?.[1] || match?.[2];
     if (id) return `https://www.odoo.com/odoo/all-tasks/${id}`;
   }
   return "";
