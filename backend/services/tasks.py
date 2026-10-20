@@ -16,7 +16,7 @@ class TaskService:
         message if the call failed. No ids is a valid call: it only checks the key."""
         if not (url and api_key):
             return {}, "GOO_ODOO_API_KEY is not set"
-        ids = sorted({i for i in ids if isinstance(i, int) and i > 0})
+        ids = sorted({i for i in ids if type(i) is int and i > 0})
         rows, error = self.io.http_post_json(
             f"{url.rstrip('/')}/json/2/project.task/search_read",
             {"domain": [["id", "in", ids]], "fields": ["name", "stage_id"]},

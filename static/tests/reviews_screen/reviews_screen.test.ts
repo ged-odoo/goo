@@ -320,6 +320,25 @@ describe("Reviews screen — task stage", () => {
     expect(app.root.querySelector("a.rev-task")).not.toBeNull();
   });
 
+  it("asks again after a failed request, once the screen is reopened", async () => {
+    let calls = 0;
+    app = await mount(
+      {
+        "/api/prs/info": { prs },
+        "/api/tasks": (body: unknown) =>
+          ++calls === 1 ? { ok: false, tasks: {}, error: "unreachable" } : tasksRoute(body),
+      },
+      { odoo_tasks: true },
+    );
+    await vi.waitFor(() => expect(calls).toBe(1));
+    await app.settle();
+    expect(stages()).toEqual([]);
+    await app.navigate("todo");
+    await app.navigate("review-queue");
+    await vi.waitFor(() => expect(stages()).toEqual(["In Progress"]));
+    expect(calls).toBe(2);
+  });
+
   it("shows no stage when Odoo does not answer for the task", async () => {
     app = await mount(
       {

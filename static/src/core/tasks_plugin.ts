@@ -49,8 +49,8 @@ export class TasksPlugin extends Plugin {
   }
 
   // re-read every task asked for so far (the screens' Refresh)
-  reload(): Promise<void> {
-    return this._request([...this._asked]);
+  async reload(): Promise<void> {
+    await this._request([...this._asked]);
   }
 
   // whether the backend can see the key, as the reason when it can't ("" when it can)
@@ -59,21 +59,26 @@ export class TasksPlugin extends Plugin {
     return this.error();
   }
 
+  // a failed request forgets its ids, so the next screen that wants them asks again
   async _flush(): Promise<void> {
     this._timer = undefined;
-    await this._request(this._queue.splice(0));
+    const ids = this._queue.splice(0);
+    if (!(await this._request(ids))) ids.forEach((id) => this._asked.delete(id));
   }
 
-  async _request(ids: string[]): Promise<void> {
-    if (!this.enabled) return;
+  // whether Odoo answered; an id it has no row for (unreadable, deleted) still counts as asked
+  async _request(ids: string[]): Promise<boolean> {
+    if (!this.enabled) return false;
     try {
       const res = await postJSON<TasksReply>("/api/tasks", { ids: ids.map(Number) });
       this.error.set(res.ok ? "" : res.error || "failed");
       if (res.tasks && Object.keys(res.tasks).length) {
         this.tasks.set({ ...this.tasks(), ...res.tasks });
       }
+      return res.ok;
     } catch (e) {
       this.error.set(errorMessage(e));
+      return false;
     }
   }
 }

@@ -86,19 +86,28 @@ def http_get(url: str, *, timeout: float = 10) -> tuple[str, str | None]:
         return "", str(e)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib keeps every header (an API key included) when it
+    re-sends the request, even to another host or over plain http."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
 def http_post_json(
     url: str, body: Any, *, headers: dict[str, str] | None = None, timeout: float = 10
 ) -> tuple[Any, str | None]:
     """POST `body` as JSON and return (parsed reply, error). Logs the request and never
     raises — a network/HTTP/JSON failure comes back as (None, "<reason>"), an HTTP error
-    carrying the server's own message when it sent one."""
+    carrying the server's own message when it sent one. A redirect is an error: the
+    request's headers can hold a secret that must stay with the host it was meant for."""
     log_request(f"POST {url}")
     req_headers = {"User-Agent": "goo/1.0", "Content-Type": "application/json", **(headers or {})}
     try:
         req = urllib.request.Request(
             url, data=json.dumps(body).encode(), headers=req_headers, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace")), None
     except urllib.error.HTTPError as e:
         try:

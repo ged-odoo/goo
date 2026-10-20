@@ -61,6 +61,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/echo":
             reply = {"got": json.loads(body), "auth": self.headers.get("Authorization")}
             self._send(200, json.dumps(reply).encode(), [("Content-Type", "application/json")])
+        elif self.path == "/redirect-post":
+            self._send(302, b"", [("Location", "/echo"), ("Content-Length", "0")])
         elif self.path == "/denied":
             reply = json.dumps({"message": "Invalid apikey"}).encode()
             self._send(401, reply, [("Content-Type", "application/json")])
@@ -125,6 +127,15 @@ class HttpTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(reply, {"got": {"ids": [1, 2]}, "auth": "bearer k"})
         self.assertIn(f"POST {self.base}/echo", self.out.getvalue())
+
+    def test_post_json_never_follows_a_redirect_with_its_headers(self):
+        # urllib would re-send the request, Authorization included, to the new location
+        self.assertEqual(
+            effects.http_post_json(
+                f"{self.base}/redirect-post", {}, headers={"Authorization": "bearer k"}
+            ),
+            (None, "HTTP 302"),
+        )
 
     def test_post_json_errors_carry_the_servers_message(self):
         self.assertEqual(
