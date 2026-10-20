@@ -257,6 +257,23 @@ describe("Reviews screen — adding a PR", () => {
   });
 });
 
+describe("Reviews screen — task link", () => {
+  it("links the odoo.com task a PR's branch, title or body names, per task", async () => {
+    const prs = [
+      prWire("odoo/odoo", 1, "18.0-task-x", { body: "Fixes the crash\n\ntask-4939265" }),
+      prWire("odoo/enterprise", 2, "18.0-task-x"),
+      prWire("odoo/odoo", 3, "17.0-opw-1234567-fix-y"),
+      prWire("other/lib", 4, "ext-branch"),
+    ];
+    app = await mount({ "/api/prs/info": { prs } });
+    const link = (branch: string) =>
+      groupHead(branch).querySelector<HTMLAnchorElement>("a.rev-task")?.href;
+    expect(link("18.0-task-x")).toBe("https://www.odoo.com/odoo/all-tasks/4939265");
+    expect(link("17.0-opw-1234567-fix-y")).toBe("https://www.odoo.com/odoo/all-tasks/1234567");
+    expect(link("ext-branch")).toBeUndefined();
+  });
+});
+
 describe("Reviews screen — untracking", () => {
   // every forward port merged too → the 17.0-fix-y task is fully merged
   const ALL_MERGED = mergebotRoute({

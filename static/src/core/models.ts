@@ -25,6 +25,7 @@ export interface PullRequestWire {
   github?: string;
   number: number;
   title?: string;
+  body?: string;
   url?: string;
   state?: string;
   draft?: boolean;
@@ -40,6 +41,7 @@ export interface PullRequest {
   github: string;
   number: number;
   title: string;
+  body: string;
   url: string;
   state: string; // open | closed | merged
   draft: boolean;
@@ -61,6 +63,7 @@ export const PullRequest = {
       github: raw.github || "",
       number: raw.number,
       title: raw.title || "",
+      body: raw.body || "",
       url: raw.url || "",
       state: (raw.state || "").toLowerCase(), // open | closed | merged
       draft: !!raw.draft,
