@@ -44,6 +44,55 @@ async function openConfig(config: Partial<Config> = {}, routes: Record<string, R
 const input = (id: string) => app.root.querySelector<HTMLInputElement>(`#${id}`)!;
 const labels = () =>
   [...app.root.querySelectorAll(".settings-grid label")].map((l) => l.getAttribute("for"));
+describe("Config screen — Odoo task stage", () => {
+  const OFF = { ok: false, tasks: {}, error: "disabled in the settings" };
+
+  it("is off by default; turning it on explains the key and checks that goo can see it", async () => {
+    let reply: Record<string, unknown> = {
+      ok: false,
+      tasks: {},
+      error: "GOO_ODOO_API_KEY is not set",
+    };
+    const be = await openConfig({}, { "/api/tasks": () => reply });
+    expect(app.root.textContent).not.toContain("GOO_ODOO_API_KEY");
+    expect(input("setting-odoo-tasks").checked).toBe(false);
+
+    check(input("setting-odoo-tasks"));
+    await until(app, () => app.root.textContent?.includes("✗ GOO_ODOO_API_KEY is not set"));
+    await until(app, () => be.saves.length);
+    expect(be.last().config).toMatchObject({ odoo_tasks: true });
+    // how to give the key to goo, per shell — and never a place to type the key into
+    const block = [...app.root.querySelectorAll(".config-block")].find(
+      (b) => b.querySelector("h2")?.textContent === "Odoo task stage",
+    )!;
+    expect(block.textContent).toContain("export GOO_ODOO_API_KEY");
+    expect(block.textContent).toContain("set -gx GOO_ODOO_API_KEY");
+    expect(block.textContent).toContain("systemctl --user edit goo.service");
+    expect(block.querySelector("input")).toBeNull();
+
+    reply = { ok: true, tasks: {} };
+    byText(block, "Check").click();
+    await until(app, () => app.root.textContent?.includes("✓ the key works"));
+  });
+
+  it("says when Odoo rejects the key, and how to renew it", async () => {
+    const error =
+      "Odoo rejects the API key (invalid or expired: odoo.com keys last 90 days at most)";
+    await openConfig(
+      { odoo_tasks: true },
+      { "/api/tasks": { ok: false, tasks: {}, error, key_rejected: true } },
+    );
+    await until(app, () => app.root.textContent?.includes(`✗ ${error}`));
+    expect(app.root.textContent).toContain("odoo.com keys last 90 days at most");
+    expect(app.root.textContent).toContain("swap the key");
+  });
+
+  it("asks nothing while the setting is off", async () => {
+    await openConfig({}, { "/api/tasks": OFF });
+    expect(app.callsTo("/api/tasks")).toHaveLength(0);
+  });
+});
+
 describe("Config screen — settings", () => {
   it("saves a trimmed text setting with the current rev, and shows it when reopened", async () => {
     const be = await openConfig();

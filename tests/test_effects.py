@@ -9,6 +9,7 @@ import contextlib
 import gzip
 import http.server
 import io
+import json
 import os
 import socket
 import sys
@@ -54,6 +55,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(1.0)
         else:
             self._send(404, b"nope", [("Content-Length", "4")])
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.path == "/echo":
+            reply = {"got": json.loads(body), "auth": self.headers.get("Authorization")}
+            self._send(200, json.dumps(reply).encode(), [("Content-Type", "application/json")])
+        elif self.path == "/redirect-post":
+            self._send(302, b"", [("Location", "/echo"), ("Content-Length", "0")])
+        elif self.path == "/denied":
+            reply = json.dumps({"message": "Invalid apikey"}).encode()
+            self._send(401, reply, [("Content-Type", "application/json")])
+        else:
+            self._send(500, b"<html>boom</html>")
 
     do_HEAD = do_GET
 
@@ -105,6 +119,32 @@ class HttpTests(unittest.TestCase):
 
     def test_get_follows_redirects(self):
         self.assertEqual(effects.http_get(f"{self.base}/redirect"), ("héllo", None))
+
+    def test_post_json_sends_the_body_and_headers_and_parses_the_reply(self):
+        reply, err = effects.http_post_json(
+            f"{self.base}/echo", {"ids": [1, 2]}, headers={"Authorization": "bearer k"}
+        )
+        self.assertIsNone(err)
+        self.assertEqual(reply, {"got": {"ids": [1, 2]}, "auth": "bearer k"})
+        self.assertIn(f"POST {self.base}/echo", self.out.getvalue())
+
+    def test_post_json_never_follows_a_redirect_with_its_headers(self):
+        # urllib would re-send the request, Authorization included, to the new location
+        self.assertEqual(
+            effects.http_post_json(
+                f"{self.base}/redirect-post", {}, headers={"Authorization": "bearer k"}
+            ),
+            (None, "HTTP 302"),
+        )
+
+    def test_post_json_errors_carry_the_servers_message(self):
+        self.assertEqual(
+            effects.http_post_json(f"{self.base}/denied", {}), (None, "HTTP 401: Invalid apikey")
+        )
+        self.assertEqual(effects.http_post_json(f"{self.base}/boom", {}), (None, "HTTP 500"))
+        reply, err = effects.http_post_json(f"http://127.0.0.1:{_closed_port()}/", {}, timeout=2)
+        self.assertEqual(reply, None)
+        self.assertTrue(err)
 
     def test_head_reports_size(self):
         self.assertEqual(effects.http_head(f"{self.base}/big"), (200, len(BIG), None))

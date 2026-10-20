@@ -2939,6 +2939,20 @@ tr.active td.brg-commit {
 .rev-table th:nth-child(5) {
   width: 70px;
 }
+/* the requested list has its own columns (repo, PR, status, author, updated, Track): the PR
+   title takes what the narrow status / author / updated / button columns leave */
+.rev-requested th:nth-child(3) {
+  width: 110px;
+}
+.rev-requested th:nth-child(4) {
+  width: 130px;
+}
+.rev-requested th:nth-child(5) {
+  width: 80px;
+}
+.rev-requested th:nth-child(6) {
+  width: 76px;
+}
 .rq-bar {
   flex: none;
   display: flex;
@@ -3005,6 +3019,23 @@ tr.active td.brg-commit {
 }
 .rl-table tbody tr.rl-group-head:hover .rev-important {
   opacity: 1;
+}
+/* the Odoo task pill: a link coloured like the status pills (see stageClass) */
+.rev-task {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.rev-task-arrow {
+  font-size: 12px;
+  line-height: 1;
+}
+.rev-task:hover {
+  filter: brightness(0.94);
 }
 .rev-important:hover {
   background: var(--l-panel);
@@ -3675,6 +3706,9 @@ tr.active td.brg-commit {
   border-radius: 12px;
   padding: 16px 20px;
   box-shadow: 0 1px 2px oklch(0.27 0.012 264 / 0.04);
+}
+.config-block .ok {
+  color: var(--l-green);
 }
 .config-block > .dim {
   font-size: 12.5px;
@@ -5208,6 +5242,18 @@ a.commit-detail-hash svg {
   border-radius: 50%;
   background: currentColor;
   animation: dash-blink 1.4s ease-in-out infinite;
+}
+.wt-item-odoo {
+  display: flex;
+  min-width: 0;
+}
+.wt-pill.odoo {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  line-height: 17px;
 }
 .wt-pill.none {
   color: var(--l-text-faint);
@@ -7105,4 +7151,44 @@ a.pbtn {
   border-top: 2px solid var(--l-line);
   font-weight: 700;
   color: var(--l-text);
+}
+
+/* the workspace's Task tab: the odoo.com task's fields, then its description and chatter in a sandboxed frame */
+.task-pane {
+  flex: 1;
+  min-width: 0;
+  max-width: 1180px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+  min-height: 0;
+  padding: 22px 6px 6px;
+}
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+.task-title {
+  font-size: 18px;
+  line-height: 1.3;
+}
+.task-facts {
+  flex: none;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 28px;
+  padding: 2px 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.task-doc {
+  flex: 1;
+  min-height: 240px;
+  width: 100%;
+  border: 1px solid var(--l-line);
+  border-radius: 10px;
+  background: #fff;
 }

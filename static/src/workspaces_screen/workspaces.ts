@@ -20,6 +20,9 @@ import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
 import type { WorkspaceConfig } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
+import { TaskButton, stageClass } from "../core/task_button.ts";
+import { TaskPane } from "./task_pane.ts";
+import { TasksPlugin } from "../core/tasks_plugin.ts";
 import type {
   ActionMenuDetail,
   CiMenuDetail,
@@ -30,7 +33,13 @@ import type {
 import { branchKey } from "../core/models.ts";
 import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
 import type { BranchInfo } from "../core/observed_models.ts";
-import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
+import {
+  repoBranchList,
+  timeAgo,
+  nestByParent,
+  descendantWorkspaces,
+  taskId,
+} from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
   categoryOptions,
@@ -113,7 +122,7 @@ interface MbStatus {
   rows: (MbRow & { cls: MbCategory; url: string })[];
 }
 
-// a trailing list pill (listPills)
+// a list pill (listPills, odooPill)
 interface ListPill {
   key: string;
   cls: string;
@@ -138,6 +147,8 @@ interface ListGroup {
 
 export class WorkspacesScreen extends Component {
   static components = {
+    TaskButton,
+    TaskPane,
     LogConsole,
     ClaudeChat,
     CodePane,
@@ -211,6 +222,8 @@ export class WorkspacesScreen extends Component {
                         <span t-if="pill.sym" class="wt-pill-sym" t-out="pill.sym"/><t t-out="pill.label"/>
                       </span>
                     </span>
+                    <t t-set="odoo" t-value="this.odooPill(row.ws)"/>
+                    <span t-if="odoo" class="wt-item-odoo"><span class="wt-pill" t-att-class="odoo.cls" t-att-title="odoo.title" t-out="odoo.label"/></span>
                   </button>
                 </div>
               </t>
@@ -267,6 +280,7 @@ export class WorkspacesScreen extends Component {
               <a t-if="mb" class="dash-ci dash-mb" t-att-class="mb.cls" target="_blank" t-att-href="mb.url" t-on-mouseenter="(ev) => this.showMbMenu(ev, mb.rows)" t-on-mouseleave="() => this.hideMbMenu()">
                 <span class="dash-ci-dot"/><t t-out="mb.label"/>
               </a>
+              <TaskButton texts="this.taskTexts(this.sel)" ci="true"/>
               <span t-if="this.stateOf(this.sel) !== 'stopped'" class="wt-state" t-att-class="this.dotClass(this.sel)" t-out="this.stateOf(this.sel)"/>
               <button class="pbtn ghost ws-refresh" t-att-disabled="this.code.loading()" t-att-title="this.workspaceRefreshTitle(this.sel)" t-on-click="() => this.refreshWorkspace(this.sel)">
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
@@ -294,6 +308,7 @@ export class WorkspacesScreen extends Component {
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'assets'}" t-on-click="() => this.pane.set('assets')"><t t-out="this.icons.assets"/>Assets</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'claude'}" t-on-click="() => this.pane.set('claude')"><t t-out="this.icons.claude"/>Claude</button>
                 <button t-if="this.config.config.launch_mode !== 'external'" class="wt-tab" t-att-class="{on: this.pane() === 'terminal'}" t-on-click="() => this.openTerminalPane(this.sel)"><t t-out="this.icons.terminal"/>Terminal</button>
+                <button t-if="this.tasks.enabled and this.taskIdOf(this.sel)" class="wt-tab" t-att-class="{on: this.pane() === 'task'}" t-on-click="() => this.pane.set('task')"><t t-out="this.icons.task"/>Task</button>
                 <button class="wt-tab" t-att-class="{on: this.pane() === 'details'}" t-on-click="() => this.pane.set('details')"><t t-out="this.icons.info"/>Details</button>
               </div>
             </div>
@@ -339,6 +354,10 @@ export class WorkspacesScreen extends Component {
                 <TerminalPane t-if="this.termUrl" t-key="this.sel.id" url="this.termUrl"/>
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
+              <div class="wt-pane" t-elif="this.pane() === 'task'">
+                <TaskPane t-if="this.tasks.enabled and this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">No odoo.com task to show: the "show Odoo task stage" setting is off, or nothing in this workspace's branch or PRs names a task.</div>
+              </div>
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">
                   <span class="dim">Location</span>
@@ -376,6 +395,7 @@ export class WorkspacesScreen extends Component {
   wt = usePlugin(WorkspacePlugin);
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
@@ -398,6 +418,7 @@ export class WorkspacesScreen extends Component {
     claude: m(ICONS.claude),
     terminal: m(ICONS.terminal),
     info: m(ICONS.info),
+    task: m(ICONS.check),
   };
 
   // which detail pane is shown: code | log | tests | addons | assets | claude | terminal
@@ -410,6 +431,13 @@ export class WorkspacesScreen extends Component {
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+    // every row shows its task's stage, not just the selected workspace's header
+    useEffect(() => {
+      for (const ws of this.config.config.workspaces || []) {
+        const id = this.taskIdOf(ws);
+        if (id) this.tasks.want(id);
+      }
+    });
     // close the header overflow menu on any outside click
     const closeMenu = () => {
       if (this.menuOpen()) this.menuOpen.set(false);
@@ -615,7 +643,10 @@ export class WorkspacesScreen extends Component {
     if (this.refreshingStatuses()) return;
     this.refreshingStatuses.set(true);
     try {
-      await this.code.refreshStatuses(this._runbotBranches(), this._prs());
+      await Promise.all([
+        this.code.refreshStatuses(this._runbotBranches(), this._prs()),
+        this.tasks.reload(),
+      ]);
     } finally {
       this.refreshingStatuses.set(false);
     }
@@ -821,6 +852,23 @@ export class WorkspacesScreen extends Component {
       );
     }
     return pills;
+  }
+
+  // the small, non-clickable stage of the workspace's odoo.com task, on a line of its own under
+  // the repo chips and CI pills (the header's pill is the link)
+  odooPill(ws: WorkspaceConfig): ListPill | null {
+    const info = this.tasks.tasks()[this.taskIdOf(ws)];
+    if (!info) return null;
+    const cls = stageClass(info.stage);
+    return {
+      key: "odoo",
+      // a stage with no colour of its own (plain, or cancelled: .wt-pill.merged is green) stays
+      // the pill's base grey — not .none, which is bare text
+      cls: `${cls === "merged" || cls === "other" ? "" : cls} odoo`.trim(),
+      sym: "",
+      label: `Odoo: ${info.stage}`,
+      title: `Odoo task: ${info.name}\nStage: ${info.stage}`,
+    };
   }
 
   // compact relative age ("16m", "3d") of the last intentional action on the
@@ -1372,6 +1420,21 @@ export class WorkspacesScreen extends Component {
   odooUrl(ws: WorkspaceConfig): string {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
+  }
+
+  // the odoo.com task id the workspace names ("" when none)
+  taskIdOf(ws: WorkspaceConfig): string {
+    return taskId(...this.taskTexts(ws));
+  }
+
+  // where the workspace may name its odoo.com task: its branches, then its PRs' titles / bodies
+  taskTexts(ws: WorkspaceConfig): (string | undefined)[] {
+    const prs = this.prRows(ws).map((r) => r.pr);
+    return [
+      ...(ws.checkouts || []).map((c) => c.branch),
+      ...prs.map((pr) => pr.title),
+      ...prs.map((pr) => pr.body),
+    ];
   }
 
   testsUrl(ws: WorkspaceConfig): string {

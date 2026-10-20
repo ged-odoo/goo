@@ -7,6 +7,8 @@
 
 import { Component, computed, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { CodePlugin } from "../core/code_plugin.ts";
+import { TaskButton } from "../core/task_button.ts";
+import { TasksPlugin } from "../core/tasks_plugin.ts";
 import { ConfigPlugin } from "../core/config_plugin.ts";
 import { DatabasePlugin } from "../core/database_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
@@ -38,6 +40,7 @@ import type { ForwardPortRow } from "../core/observed_models.ts";
 import {
   ForwardPortsCell,
   RequestedPrCell,
+  RequestedStatusCell,
   TrackCell,
   isMerged,
   PrCell,
@@ -80,7 +83,7 @@ export function parsePrRef(text: string): PrRef | null {
 }
 
 export class ReviewsScreen extends Component {
-  static components = { Panel, RecordList };
+  static components = { Panel, RecordList, TaskButton };
   static template = xml`
     <section>
       <Panel title="'Reviews'">
@@ -100,6 +103,7 @@ export class ReviewsScreen extends Component {
           <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by status">
             <option value="">All</option>
             <option value="to_review">To review</option>
+            <option value="commented">Commented</option>
             <option value="reviewed">Reviewed</option>
             <option value="rplus">R+'d</option>
             <option value="merged">Merged</option>
@@ -122,7 +126,7 @@ export class ReviewsScreen extends Component {
       </div>
       <div class="content br-fill">
         <div t-if="this.showRequested" class="br-card rq-card">
-          <div class="brg-table rev-table">
+          <div class="brg-table rev-table rev-requested">
             <RecordList recordset="this.requestedRs"/>
           </div>
         </div>
@@ -136,6 +140,7 @@ export class ReviewsScreen extends Component {
               <t t-set-slot="group-header" t-slot-scope="scope">
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
+                <TaskButton texts="this.taskTexts(scope.g.rows)"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
@@ -157,6 +162,7 @@ export class ReviewsScreen extends Component {
     </section>`;
 
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   config = usePlugin(ConfigPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
@@ -349,15 +355,25 @@ export class ReviewsScreen extends Component {
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
+      {
+        name: "status",
+        label: "Status",
+        component: RequestedStatusCell,
+        cellProps: this._requestCell,
+      },
       { name: "author", label: "Author", get: (p) => p.author },
       { name: "when", label: "Updated", get: (p) => timeAgo(p.updated_at) },
       { name: "act", label: "", component: TrackCell, cellProps: this._requestCell },
     ],
   );
 
-  async loadRequested(): Promise<void> {
+  // force=true (Refresh) re-asks the status of every requested PR, bypassing the caches
+  async loadRequested(force = false): Promise<void> {
     if (!this.config.config.review_requests) return;
-    return this.reviews.loadRequested(this.requestQuery());
+    await this.reviews.loadRequested(this.requestQuery(), force);
+    const requested = this.reviews.requested();
+    if (force) this.code.refreshStatuses([], requested);
+    else this.code.loadMergebot(requested);
   }
 
   setRequestQuery(text: string): void {
@@ -443,11 +459,12 @@ export class ReviewsScreen extends Component {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
-      this.loadRequested(),
+      this.loadRequested(true),
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),
       this.code.refreshStatuses([], [...tracked, ...fpPairs]),
+      this.tasks.reload(),
     ]);
   }
 
@@ -701,6 +718,16 @@ export class ReviewsScreen extends Component {
     if (this.allRows().some((r) => r.branch === branch)) return;
     const ws = this.reviewWorkspaceFor(branch);
     if (ws) await this.wt.removeSilently(ws);
+  }
+
+  // where a task may name its odoo.com task: its branch, then its PRs' titles / bodies
+  taskTexts(rows: ReviewRow[]): (string | undefined)[] {
+    const prInfo = this.reviews.prInfo();
+    return [
+      ...rows.map((r) => r.branch),
+      ...rows.map((r) => r.title),
+      ...rows.map((r) => prInfo[r.id]?.body),
+    ];
   }
 
   // a task's (group header's) menu: Create workspace always; Open on GitHub /

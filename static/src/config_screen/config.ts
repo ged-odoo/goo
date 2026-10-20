@@ -2,6 +2,7 @@ import {
   Component,
   onMounted,
   onWillUnmount,
+  useEffect,
   usePlugin,
   useProps,
   signal,
@@ -13,6 +14,7 @@ import { ConfigPlugin, newWorkspaceId } from "../core/config_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
 import { EventLogPlugin } from "../core/event_log_plugin.ts";
 import { UpdatePlugin } from "../core/update_plugin.ts";
+import { TasksPlugin } from "../core/tasks_plugin.ts";
 import { ICONS, NAV, m, mergedTabIds } from "../core/common.ts";
 import { startRowDrag, dropIndex } from "../core/drag.ts";
 import type { StopDrag } from "../core/drag.ts";
@@ -797,6 +799,10 @@ export class ConfigScreen extends Component {
             <input id="setting-review-requests" type="checkbox" class="settings-check" title="In the Reviews screen, list the PRs GitHub says are waiting for your review (a search you can edit), each with a Track button."
                    t-att-checked="this.config.config.review_requests"
                    t-on-change="ev => this.config.updateConfig({ review_requests: ev.target.checked })"/>
+            <label for="setting-odoo-tasks" title="Next to each Task button, show the stage of the odoo.com task (read with your API key — see the Odoo task stage section that appears).">show Odoo task stage</label>
+            <input id="setting-odoo-tasks" type="checkbox" class="settings-check" title="Next to each Task button, show the stage of the odoo.com task (read with your API key — see the Odoo task stage section that appears)."
+                   t-att-checked="this.config.config.odoo_tasks"
+                   t-on-change="ev => this.config.updateConfig({ odoo_tasks: ev.target.checked })"/>
             <t t-if="this.config.config.auto_workspace_on_review">
               <label for="setting-auto-claude-review" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting.">auto-run Claude review</label>
               <input id="setting-auto-claude-review" type="checkbox" class="settings-check" title="Also auto-run a Claude review (using the prompt template below) in the freshly-created review workspace. The manual &quot;Review&quot; action in the Reviews screen works regardless of this setting."
@@ -804,6 +810,25 @@ export class ConfigScreen extends Component {
                      t-on-change="ev => this.config.updateConfig({ auto_claude_review: ev.target.checked })"/>
             </t>
           </div>
+        </div>
+        <div t-if="this.config.config.odoo_tasks" class="config-block">
+          <h2 class="subtitle">Odoo task stage</h2>
+          <p class="dim">Shows the stage of each task (New, In Progress, …) next to its Task button, read from odoo.com in a single request. goo never stores the API key: it reads it from the <code>GOO_ODOO_API_KEY</code> environment variable of the goo process, so this config file, which you may commit, never holds it.</p>
+          <ol class="dim">
+            <li>Create a key on odoo.com: your avatar → My Profile → Account Security → New API Key. Copy it, it is shown only once.</li>
+            <li>Give it to the process that runs goo, then restart goo:
+              <ul>
+                <li>bash / zsh: add <code>export GOO_ODOO_API_KEY=the-key</code> to <code>~/.bashrc</code> / <code>~/.zshrc</code></li>
+                <li>fish: <code>set -gx GOO_ODOO_API_KEY the-key</code> in a file fish loads that no repo tracks (not <code>set -Ux</code>: it writes the key into <code>fish_variables</code>, which dotfile repos often commit)</li>
+                <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
+              </ul>
+            </li>
+            <li>odoo.com keys last 90 days at most. When yours expires, the Task buttons show "key expired?", the event log says so once, and Check says Odoo rejects the key. Renew it: create a new key (step 1) and replace the old one the same way as in step 2 (for the service: <code>systemctl --user edit goo.service</code>, swap the key, then <code>systemctl --user restart goo.service</code>).</li>
+          </ol>
+          <p>
+            <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>
+            <button class="pbtn" t-on-click="() => this.checkTaskKey()">Check</button>
+          </p>
         </div>
         <div class="config-block">
           <h2 class="subtitle">Claude review prompt</h2>
@@ -843,7 +868,10 @@ export class ConfigScreen extends Component {
   update = usePlugin(UpdatePlugin);
   dialogs = usePlugin(DialogPlugin);
   eventLog = usePlugin(EventLogPlugin);
+  tasks = usePlugin(TasksPlugin);
   refreshIcon = m(ICONS.refresh);
+  taskKeyStatus = signal(""); // can goo's backend see GOO_ODOO_API_KEY, and does Odoo accept it
+  taskKeyOk = signal(false);
   checking = signal(false);
   upToDate = signal(false); // brief green check by the button when already up to date
   backupMsg = signal("");
@@ -868,8 +896,19 @@ export class ConfigScreen extends Component {
 
   setup(): void {
     onMounted(() => this.checkRustBundler());
+    useEffect(() => {
+      if (this.tasks.enabled) this.checkTaskKey();
+    });
     onMounted(() => fetchReviewPrompt().then((c) => this.reviewPromptText.set(c)));
     onWillUnmount(() => clearTimeout(this._reviewPromptTimer));
+  }
+
+  async checkTaskKey(): Promise<void> {
+    this.taskKeyStatus.set("checking…");
+    this.taskKeyOk.set(false);
+    const error = await this.tasks.check();
+    this.taskKeyOk.set(!error);
+    this.taskKeyStatus.set(error ? `✗ ${error}` : "✓ the key works: task stages are shown");
   }
 
   onReviewPromptInput(value: string): void {

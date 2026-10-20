@@ -68,6 +68,7 @@ from .runbot import (
     RunbotService,
     parse_starred_bundles,
 )
+from .tasks import KEY_REJECTED, TaskService
 
 __all__ = [
     "DUMP_TMP_DIR",
@@ -78,6 +79,8 @@ __all__ = [
     "_ci_state",
     "_ci_rollup",
     "GitHubService",
+    "KEY_REJECTED",
+    "TaskService",
     "RUNBOT_BASE",
     "MERGEBOT_BASE",
     "_BUNDLE_ROW_RE",

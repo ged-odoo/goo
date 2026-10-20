@@ -383,6 +383,227 @@ describe("worktree workspace lifecycle", () => {
     expect(open.mock.calls[1][0]).toContain(encodeURIComponent("/web/tests"));
   });
 
+  it("a Task button links the odoo.com task named by the workspace's branch", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], { active: "" });
+    const link = app.root.querySelector<HTMLAnchorElement>(".wt-detail-name-row a.rev-task")!;
+    expect(link.textContent).toBe("Odoo task↗");
+    expect(link.href).toBe("https://www.odoo.com/odoo/all-tasks/4939265");
+    app.destroy();
+
+    await mount([WT], { active: "" });
+    expect(app.root.querySelector(".wt-detail-name-row a.rev-task")).toBeNull();
+  });
+
+  it("the Task button shows the task's stage when the Odoo integration is on", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], {
+      active: "",
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": { ok: true, tasks: { "4939265": { name: "Fix", stage: "In Progress" } } },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-detail-name-row a.rev-task"));
+    const pill = app.root.querySelector(".wt-detail-name-row a.rev-task")!;
+    expect(pill.textContent).toBe("Odoo: In Progress↗");
+    expect(pill.classList.contains("dash-ci")).toBe(true); // drawn like the runbot / mergebot pills
+    // …and placed with them, before the Refresh button
+    const refresh = mustText(app.root, ".wt-detail-name-row button", "Refresh");
+    expect(pill.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [4939265] });
+  });
+
+  it("each list row shows its task's stage as a small non-clickable pill with the details on hover", async () => {
+    const withTask = ws({
+      id: "wt1",
+      name: "with-task",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    const plain = ws({ id: "wt2", name: "no-task", location: "worktree", worktree: { dir: "/x" } });
+    await mount([withTask, plain], {
+      active: "wt2", // the task's workspace is not even the selected one
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": {
+          ok: true,
+          tasks: { "4939265": { name: "Fix the thing", stage: "In Progress" } },
+        },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-item .wt-pill.odoo"));
+    const pills = [...app.root.querySelectorAll<HTMLElement>(".wt-item .wt-pill.odoo")];
+    expect(pills).toHaveLength(1); // only the workspace that names a task
+    expect(pills[0].textContent?.trim()).toBe("Odoo: In Progress");
+    expect(pills[0].tagName).toBe("SPAN"); // the row is a button: no link inside it
+    expect(pills[0].classList.contains("progress")).toBe(true);
+    expect(pills[0].title).toBe("Odoo task: Fix the thing\nStage: In Progress");
+    expect(pills[0].closest(".wt-item")?.textContent).toContain("with-task");
+    // on a line of its own, so the CI / merge pills keep their room
+    expect(pills[0].closest(".wt-item-bot")).toBeNull();
+    expect(pills[0].parentElement?.classList.contains("wt-item-odoo")).toBe(true);
+  });
+
+  describe("Task tab", () => {
+    const TASK = {
+      id: 4939265,
+      name: "Fix the thing",
+      project: "Support",
+      stage: "RD Dev",
+      assignees: ["Ann", "Cy"],
+      tags: ["bug"],
+      customer: "ACME",
+      deadline: "",
+      priority: "Medium",
+      parent: "",
+      created: "2026-10-01 09:00:00",
+      updated: "",
+      created_by: "Ann",
+      description: "<p>Steps to reproduce</p>",
+      messages_error: "",
+      messages_cut: false,
+      messages: [
+        {
+          id: 1,
+          date: "2026-10-02 08:00:00",
+          author: "<b>Ann</b>",
+          kind: "Note",
+          body: "<p>Looking</p>",
+        },
+      ],
+    };
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    const tab = () => byText(app.root, ".wt-tab", "Task");
+    const detailCalls = () => app.callsTo("/api/tasks/detail");
+    const open = async (detail: unknown, config: Partial<typeof DEFAULT_CONFIG> = {}) => {
+      await mount([withTask], {
+        active: "wt1",
+        config: { odoo_tasks: true, ...config },
+        routes: {
+          "/api/tasks": { ok: true, tasks: {} },
+          "/api/tasks/detail": detail as never,
+        },
+      });
+    };
+
+    it("shows the task read-only, and reads it only when the tab is opened", async () => {
+      await open({ ok: true, task: TASK });
+      expect(detailCalls()).toHaveLength(0); // nothing is fetched until the tab is opened
+      tab()!.click();
+      await waitFor(app, () => !!app.root.querySelector(".task-doc"));
+      expect(detailCalls()).toHaveLength(1);
+      expect(detailCalls()[0].body).toEqual({ id: 4939265 });
+
+      const text = app.root.querySelector(".task-pane")!.textContent!;
+      for (const expected of [
+        "Fix the thing",
+        "Odoo: RD Dev",
+        "Support",
+        "Ann, Cy",
+        "ACME",
+        "Medium",
+      ]) {
+        expect(text).toContain(expected);
+      }
+      expect(text).not.toContain("Deadline"); // an empty field is left out
+      expect(app.root.querySelector<HTMLAnchorElement>(".task-head a")?.href).toBe(
+        "https://www.odoo.com/odoo/all-tasks/4939265",
+      );
+      // the description and chatter are in a frame that can run nothing
+      const frame = app.root.querySelector<HTMLIFrameElement>(".task-doc")!;
+      expect(frame.getAttribute("sandbox")).toBe("allow-popups allow-popups-to-escape-sandbox");
+      expect(frame.srcdoc).toContain("<p>Steps to reproduce</p>");
+      expect(frame.srcdoc).toContain("<p>Looking</p>");
+      expect(frame.srcdoc).toContain("&lt;b&gt;Ann&lt;/b&gt;");
+    });
+
+    it("keeps what it read when you leave the tab and come back, and Refresh reads again", async () => {
+      await open({ ok: true, task: TASK });
+      tab()!.click();
+      await waitFor(app, () => !!app.root.querySelector(".task-doc"));
+      mustText(app.root, ".wt-tab", "Details").click();
+      await app.settle();
+      tab()!.click();
+      await app.settle();
+      expect(app.root.querySelector(".task-doc")).not.toBeNull();
+      expect(detailCalls()).toHaveLength(1);
+
+      mustText(app.root, ".task-head button", "Refresh").click();
+      await waitFor(app, () => detailCalls().length === 2);
+    });
+
+    it("explains a failure and lets you retry", async () => {
+      let reply: unknown = { ok: false, error: "HTTP 500" };
+      await open(() => reply);
+      tab()!.click();
+      await waitFor(app, () => !!app.root.querySelector(".task-pane .ws-pane-hint button"));
+      expect(app.root.querySelector(".task-pane")!.textContent).toContain("HTTP 500");
+      await new Promise((r) => setTimeout(r, 200));
+      await app.settle();
+      expect(detailCalls()).toHaveLength(1); // a failure is not retried by itself
+      reply = { ok: true, task: TASK };
+      mustText(app.root, ".task-pane button", "Retry").click();
+      await waitFor(app, () => !!app.root.querySelector(".task-doc"));
+      expect(detailCalls()).toHaveLength(2);
+    });
+
+    it("has no tab when the setting is off or the workspace names no task", async () => {
+      await open({ ok: true, task: TASK }, { odoo_tasks: false });
+      expect(app.root.querySelector(".wt-tab")).not.toBeNull();
+      expect([...app.root.querySelectorAll(".wt-tab")].map((b) => b.textContent)).not.toContain(
+        "Task",
+      );
+      app.destroy();
+
+      await mount([WT], {
+        active: "wt1",
+        config: { odoo_tasks: true },
+        routes: { "/api/tasks": { ok: true, tasks: {} } },
+      });
+      expect([...app.root.querySelectorAll(".wt-tab")].map((b) => b.textContent)).not.toContain(
+        "Task",
+      );
+      expect(detailCalls()).toHaveLength(0);
+    });
+  });
+
+  it("an uncoloured stage keeps the grey pill, not bare text", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], {
+      active: "wt1",
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": { ok: true, tasks: { "4939265": { name: "Fix", stage: "Bug Fixes" } } },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-item .wt-pill.odoo"));
+    const pill = app.root.querySelector(".wt-item .wt-pill.odoo")!;
+    expect(pill.classList.contains("none")).toBe(false); // .wt-pill.none has no background
+    expect(pill.className.trim().split(/\s+/).sort()).toEqual(["odoo", "wt-pill"]);
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });

@@ -79,6 +79,13 @@ class FakeIO:
                 return resp
         return "", "not stubbed"
 
+    def http_post_json(self, url, body, **kwargs):
+        self.http_calls.append((url, body, kwargs.get("headers")))
+        for needle, resp in self._http.items():
+            if needle in url:
+                return resp
+        return None, "not stubbed"
+
     def http_head(self, url, **kwargs):
         self.http_calls.append(url)
         for needle, resp in self._http_head.items():
@@ -1107,10 +1114,167 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertEqual(rows, [{"suite": "@suite.one", "master": 100, "uploaded": 300}])
 
 
+class TaskServiceTest(unittest.TestCase):
+    def test_read_maps_tasks_to_their_stage_and_asks_once(self):
+        rows = [
+            {"id": 7, "name": "Fix it", "stage_id": [3, "In Progress"]},
+            {"id": 9, "name": "No stage", "stage_id": False},
+        ]
+        io = FakeIO(http={"/json/2/project.task/search_read": (rows, None)})
+        tasks, error = services.TaskService(io).read("k", [9, 7, 7, 0, "x"])
+        self.assertIsNone(error)
+        self.assertEqual(
+            tasks,
+            {
+                "7": {"name": "Fix it", "stage": "In Progress"},
+                "9": {"name": "No stage", "stage": ""},
+            },
+        )
+        ((url, body, headers),) = io.http_calls  # a single call for every task
+        self.assertEqual(url, "https://www.odoo.com/json/2/project.task/search_read")
+        self.assertEqual(body["domain"], [["id", "in", [7, 9]]])
+        self.assertEqual(headers, {"Authorization": "bearer k"})
+
+    def test_read_without_a_key_makes_no_call(self):
+        io = FakeIO()
+        svc = services.TaskService(io)
+        self.assertEqual(svc.read("", [1]), ({}, "GOO_ODOO_API_KEY is not set"))
+        self.assertEqual(io.http_calls, [])
+
+    def test_read_with_no_ids_still_checks_the_key(self):
+        io = FakeIO(http={"/json/2/": (None, "HTTP 401: Invalid apikey")})
+        self.assertEqual(services.TaskService(io).read("bad", []), ({}, services.KEY_REJECTED))
+        self.assertEqual(len(io.http_calls), 1)
+
+    def test_read_reports_a_failed_call(self):
+        io = FakeIO(http={"/json/2/": (None, "HTTP 500")})
+        self.assertEqual(services.TaskService(io).read("k", [1]), ({}, "HTTP 500"))
+        io = FakeIO(http={"/json/2/": ({"not": "a list"}, None)})
+        self.assertEqual(
+            services.TaskService(io).read("k", [1]), ({}, "unexpected reply from Odoo")
+        )
+
+
+class TaskDetailTest(unittest.TestCase):
+    TASK = {
+        "id": 7,
+        "name": "Fix it",
+        "project_id": [3, "Support"],
+        "stage_id": [2, "RD Dev"],
+        "user_ids": [11, 12],
+        "tag_ids": [5],
+        "partner_id": [9, "ACME"],
+        "date_deadline": "2026-11-01 10:00:00",
+        "priority": "1",
+        "description": "<p>Steps</p>",
+        "parent_id": False,
+        "create_date": "2026-10-01 09:00:00",
+        "write_date": "2026-10-02 09:00:00",
+        "create_uid": [11, "Ann"],
+    }
+    MESSAGES = [
+        {
+            "id": 2,
+            "date": "2026-10-02 08:00:00",
+            "author_id": [11, "Ann"],
+            "email_from": "ann@x.test",
+            "body": "<p>Second</p>",
+            "subtype_id": [1, "Discussions"],
+        },
+        {"id": 1, "date": "2026-10-01 08:00:00", "author_id": False, "email_from": "bob@x.test"},
+    ]
+
+    def _io(self, **overrides):
+        http = {
+            "/project.task/search_read": ([self.TASK], None),
+            "/mail.message/search_read": (self.MESSAGES, None),
+            "/res.users/read": ([{"id": 11, "name": "Ann"}, {"id": 12, "name": "Cy"}], None),
+            "/project.tags/read": ([{"id": 5, "name": "bug"}], None),
+        }
+        return FakeIO(http={**http, **overrides})
+
+    def test_detail_gathers_the_fields_the_chatter_and_the_names(self):
+        io = self._io()
+        task, error = services.TaskService(io).detail("k", 7)
+        self.assertIsNone(error)
+        assert task is not None
+        self.assertEqual(
+            {k: task[k] for k in ("name", "project", "stage", "assignees", "tags", "customer")},
+            {
+                "name": "Fix it",
+                "project": "Support",
+                "stage": "RD Dev",
+                "assignees": ["Ann", "Cy"],
+                "tags": ["bug"],
+                "customer": "ACME",
+            },
+        )
+        self.assertEqual(
+            (task["priority"], task["parent"], task["created_by"]), ("Medium", "", "Ann")
+        )
+        self.assertEqual(task["description"], "<p>Steps</p>")
+        # the chatter keeps Odoo's order (newest first); a message without an author partner
+        # falls back on its sender, and a missing body is empty
+        self.assertEqual(
+            [(m["author"], m["kind"], m["body"]) for m in task["messages"]],
+            [("Ann", "Discussions", "<p>Second</p>"), ("bob@x.test", "", "")],
+        )
+        self.assertEqual((task["messages_error"], task["messages_cut"]), ("", False))
+        # the whole tab is four calls at most, and only for this one task
+        self.assertEqual(len(io.http_calls), 4)
+        self.assertEqual(io.http_calls[0][1]["domain"], [["id", "=", 7]])
+
+    def test_detail_skips_the_name_lookups_when_there_is_nobody_to_name(self):
+        io = self._io(
+            **{"/project.task/search_read": ([{**self.TASK, "user_ids": [], "tag_ids": []}], None)}
+        )
+        task, _ = services.TaskService(io).detail("k", 7)
+        assert task is not None
+        self.assertEqual((task["assignees"], task["tags"]), ([], []))
+        self.assertEqual(len(io.http_calls), 2)  # the task and its chatter only
+
+    def test_detail_survives_a_failed_side_call(self):
+        io = self._io(
+            **{
+                "/mail.message/search_read": (None, "HTTP 403"),
+                "/res.users/read": (None, "HTTP 403"),
+            }
+        )
+        task, error = services.TaskService(io).detail("k", 7)
+        assert task is not None
+        self.assertIsNone(error)
+        self.assertEqual((task["messages"], task["assignees"], task["tags"]), ([], [], ["bug"]))
+        self.assertEqual(task["messages_error"], "HTTP 403")  # the tab says it, not "no message"
+
+    def test_detail_says_when_the_chatter_was_cut(self):
+        many = [{"id": i, "date": "2026-10-01 08:00:00", "body": "x"} for i in range(200)]
+        task, _ = services.TaskService(
+            self._io(**{"/mail.message/search_read": (many, None)})
+        ).detail("k", 7)
+        assert task is not None
+        self.assertTrue(task["messages_cut"])
+
+    def test_detail_errors(self):
+        self.assertEqual(
+            services.TaskService(FakeIO()).detail("", 7), (None, "GOO_ODOO_API_KEY is not set")
+        )
+        self.assertEqual(
+            services.TaskService(self._io(**{"/project.task/search_read": ([], None)})).detail(
+                "k", 7
+            ),
+            (None, "this task does not exist, or the key cannot read it"),
+        )
+        rejected = self._io(**{"/project.task/search_read": (None, "HTTP 401: Invalid apikey")})
+        self.assertEqual(
+            services.TaskService(rejected).detail("k", 7), (None, services.KEY_REJECTED)
+        )
+
+
 class GitHubServiceTest(unittest.TestCase):
     def test_prs_maps_ci_rollup(self):
         payload = (
-            '[{"number": 5, "title": "t", "url": "u", "state": "OPEN", "isDraft": false,'
+            '[{"number": 5, "title": "t", "body": "fix\\n\\ntask-123", "url": "u",'
+            ' "state": "OPEN", "isDraft": false,'
             ' "headRefName": "br", "updatedAt": "x", "statusCheckRollup": ['
             '{"context": "ci/runbot", "state": "SUCCESS", "targetUrl": "ru"},'
             '{"context": "ci/style", "state": "FAILURE", "targetUrl": "su"}]}]'
@@ -1129,6 +1293,7 @@ class GitHubServiceTest(unittest.TestCase):
         self.assertEqual(pr["state"], "open")  # OPEN → open
         self.assertFalse(pr["draft"])  # isDraft → draft
         self.assertEqual(pr["updated_at"], "x")  # snake_case on the wire
+        self.assertEqual(pr["body"], "fix\n\ntask-123")  # where the task reference lives
 
     def test_prs_reports_gh_error(self):
         io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))
@@ -1259,7 +1424,7 @@ class GitHubServiceTest(unittest.TestCase):
                     "--repo",
                     "odoo/odoo",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ]
             ],
         )
@@ -1271,7 +1436,7 @@ class GitHubServiceTest(unittest.TestCase):
 
     def test_review_requests_parses_search_lines_and_reports_errors(self):
         line = (
-            '{"github": "odoo/odoo", "number": 7, "title": "t", "url": "u",'
+            '{"github": "odoo/odoo", "number": 7, "title": "t", "body": "task-123456", "url": "u",'
             ' "author": "bob", "draft": false, "labels": ["x"], "updated_at": "z"}\n'
         )
         io = FakeIO(run_result=completed(stdout=line))
@@ -1282,6 +1447,7 @@ class GitHubServiceTest(unittest.TestCase):
             (prs[0]["github"], prs[0]["number"], prs[0]["author"]), ("odoo/odoo", 7, "bob")
         )
         self.assertIn("q=is:pr review-requested:@me", io.run_calls[0])
+        self.assertIn("body", io.run_calls[0][-1])  # the jq keeps the description (task refs)
         bad = services.GitHubService(
             FakeIO(run_result=completed(returncode=1, stderr="boom")), TTLCache(ttl=0)
         )
@@ -1296,10 +1462,7 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(
-                    stdout='{"reviews": [{"author": {"login": "aab"},'
-                    ' "submittedAt": "2026-01-02T00:00:00Z"}]}'
-                ),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-02T00:00:00Z\n"),
                 "timeline": completed(stdout='{"login": "aab", "at": "2026-01-01T00:00:00Z"}\n'),
             },
         )
@@ -1311,10 +1474,7 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(
-                    stdout='{"reviews": [{"author": {"login": "aab"},'
-                    ' "submittedAt": "2026-01-01T00:00:00Z"}]}'
-                ),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-01T00:00:00Z\n"),
                 "timeline": completed(stdout='{"login": "aab", "at": "2026-01-02T00:00:00Z"}\n'),
             }
         )
@@ -1322,11 +1482,103 @@ class GitHubServiceTest(unittest.TestCase):
         statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
         self.assertEqual(statuses, {"odoo/odoo#1": "to_review"})
 
+    def test_review_statuses_commented_when_only_a_comment_since_the_request(self):
+        # a conversation comment isn't a review: it never shows in `reviews`
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout=""),
+                "issues/1/comments": completed(
+                    stdout="bob 2026-01-01T00:00:00Z\naab 2026-01-03T00:00:00Z\n"
+                ),
+                "pulls/1/comments": completed(stdout=""),
+                "timeline": completed(stdout='{"login": "aab", "at": "2026-01-02T00:00:00Z"}\n'),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(statuses, {"odoo/odoo#1": "commented"})
+
+    def test_review_statuses_to_review_when_re_requested_after_the_comment(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout=""),
+                "issues/1/comments": completed(stdout="aab 2026-01-01T00:00:00Z\n"),
+                "pulls/1/comments": completed(stdout=""),
+                "timeline": completed(stdout='{"login": "aab", "at": "2026-01-02T00:00:00Z"}\n'),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(statuses, {"odoo/odoo#1": "to_review"})
+
+    def test_review_statuses_failed_fetch_is_to_review_and_not_cached(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(returncode=1, stderr="timeout"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pair = [{"github": "odoo/odoo", "number": 1}]
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "to_review"})
+        io._runs["pulls/1/reviews"] = completed(stdout="aab 2026-01-02T00:00:00Z\n")
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
+
+    def test_review_statuses_failed_timeline_is_not_cached_as_reviewed(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-01T00:00:00Z\n"),
+                "timeline": completed(returncode=1, stderr="rate limited"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pair = [{"github": "odoo/odoo", "number": 1}]
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "to_review"})
+        io._runs["timeline"] = completed(stdout='{"login": "aab", "at": "2025-12-01T00:00:00Z"}\n')
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
+
+    def test_review_statuses_retries_a_stalled_call_once(self):
+        class StallOnce(FakeIO):
+            stalled = False
+
+            def run(self, cmd, **kwargs):
+                if "pulls/1/reviews" in " ".join(cmd) and not self.stalled:
+                    self.stalled = True
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                return super().run(cmd, **kwargs)
+
+        io = StallOnce(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-02T00:00:00Z\n"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(statuses, {"odoo/odoo#1": "reviewed"})
+        self.assertLessEqual(max(k["timeout"] for k in io.run_kwargs), 15)  # short, not 30s
+
+    def test_review_statuses_retries_the_login_after_a_failed_lookup(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(returncode=1, stderr="timeout"),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-02T00:00:00Z\n"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pair = [{"github": "odoo/odoo", "number": 1}]
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "to_review"})
+        io._runs["gh api user"] = completed(stdout="aab")
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
+
     def test_review_statuses_to_review_when_never_reviewed(self):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(stdout='{"reviews": []}'),
+                "pulls/1/reviews": completed(stdout=""),
             }
         )
         svc = services.GitHubService(io, TTLCache(ttl=600))
@@ -1345,9 +1597,7 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(
-                    stdout='{"reviews": [{"author": {"login": "aab"}, "submittedAt": null}]}'
-                ),
+                "pulls/1/reviews": completed(stdout="aab null\n"),
                 "timeline": completed(stdout='{"login": "aab", "at": "2026-01-01T00:00:00Z"}\n'),
             }
         )
