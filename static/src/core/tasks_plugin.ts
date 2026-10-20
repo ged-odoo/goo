@@ -40,6 +40,8 @@ export interface TaskDetail {
   created_by: string;
   description: string; // HTML from Odoo
   messages: TaskMessage[]; // newest first
+  messages_error: string; // why the chatter could not be read ("" when it could)
+  messages_cut: boolean; // older messages were left out
 }
 
 // where the detail of a task stands: loading, loaded or failed
@@ -57,6 +59,7 @@ interface TasksReply {
 }
 
 const BATCH_DELAY_MS = 30;
+const RETRY_AFTER_MS = 60_000; // a failed task is not asked again before this
 
 export class TasksPlugin extends Plugin {
   static sequence = 2; // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
@@ -68,7 +71,8 @@ export class TasksPlugin extends Plugin {
   keyRejected = signal(false); // Odoo refused the key (odoo.com keys expire after 90 days)
   _warned = false; // the event log hears about a rejected key once per session
   details = signal<Record<string, TaskDetailState>>({}); // task id -> its Task tab content
-  _asked = new Set<string>(); // ids already requested (answered or in flight)
+  _asked = new Set<string>(); // ids already requested (answered, in flight or failed)
+  _failedAt = new Map<string, number>(); // ids whose last request failed -> when
   _queue: string[] = [];
   _timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -80,9 +84,16 @@ export class TasksPlugin extends Plugin {
     return this.config.config.odoo_tasks;
   }
 
-  // ask for a task's stage, once; a no-op when the feature is off
+  // ask for a task's stage, once; a no-op when the feature is off. A task whose request
+  // failed is asked again only after a minute, so an outage is not hammered by every
+  // re-render (a rejected key is never asked again: see _flush)
   want(id: string): void {
-    if (!this.enabled || this._asked.has(id)) return;
+    if (!this.enabled) return;
+    if (this._asked.has(id)) {
+      const failedAt = this._failedAt.get(id);
+      if (failedAt === undefined || Date.now() - failedAt < RETRY_AFTER_MS) return;
+      this._failedAt.delete(id);
+    }
     this._asked.add(id);
     this._queue.push(id);
     this._timer ??= setTimeout(() => this._flush(), BATCH_DELAY_MS);
@@ -117,13 +128,12 @@ export class TasksPlugin extends Plugin {
     return this.error();
   }
 
-  // a failed request forgets its ids, so the next screen that wants them asks again
   async _flush(): Promise<void> {
     this._timer = undefined;
     const ids = this._queue.splice(0);
     // (a rejected key is not worth asking again: only a new key, so a restart, changes that)
     if (!(await this._request(ids)) && !this.keyRejected()) {
-      ids.forEach((id) => this._asked.delete(id));
+      ids.forEach((id) => this._failedAt.set(id, Date.now()));
     }
   }
 

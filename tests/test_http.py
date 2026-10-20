@@ -282,8 +282,12 @@ class PostRoutesTest(ServerTestCase):
 
             self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
             _, body = self.json_request("POST", "/api/tasks/detail", {"id": 7})
-        self.assertEqual(body, {"ok": True, "task": {"id": 7, "name": "t"}})
-        self.assertEqual(fake.calls, [("secret", 7)])
+            self.assertEqual(body, {"ok": True, "task": {"id": 7, "name": "t"}})
+            self.assertEqual(fake.calls, [("secret", 7)])
+            for bad in ("abc", [1], True, -3, 1e999):  # never reaches Odoo, never raises
+                status, body = self.json_request("POST", "/api/tasks/detail", {"id": bad})
+                self.assertEqual((status, body["ok"], body["error"]), (200, False, "not a task id"))
+            self.assertEqual(len(fake.calls), 1)
 
     def test_tasks_flag_a_rejected_key(self):
         class Rejecting:

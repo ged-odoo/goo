@@ -28,6 +28,7 @@ TASK_FIELDS = [
 ]
 # project.task's priority selection; a level it does not know shows as nothing
 PRIORITIES = {"0": "Low", "1": "Medium", "2": "High", "3": "Urgent"}
+MESSAGE_LIMIT = 200
 MESSAGE_FIELDS = ["date", "author_id", "email_from", "body", "message_type", "subtype_id"]
 
 
@@ -89,7 +90,7 @@ class TaskService:
         if not (isinstance(rows, list) and rows and isinstance(rows[0], dict)):
             return None, "this task does not exist, or the key cannot read it"
         task = rows[0]
-        messages, _ = self._call(
+        messages, messages_error = self._call(
             api_key,
             "mail.message",
             "search_read",
@@ -101,7 +102,7 @@ class TaskService:
                 ],
                 "fields": MESSAGE_FIELDS,
                 "order": "date desc, id desc",
-                "limit": 200,
+                "limit": MESSAGE_LIMIT,
             },
         )
         users = self._names(api_key, "res.users", task.get("user_ids"))
@@ -121,6 +122,9 @@ class TaskService:
             "updated": task.get("write_date") or "",
             "created_by": _m2o_name(task.get("create_uid")),
             "description": task.get("description") or "",
+            # the chatter is best effort: say so when it failed or was cut, not just "no message"
+            "messages_error": messages_error or "",
+            "messages_cut": isinstance(messages, list) and len(messages) >= MESSAGE_LIMIT,
             "messages": [
                 {
                     "id": m.get("id"),

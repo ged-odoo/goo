@@ -6809,6 +6809,7 @@ var BranchesScreen = class extends Component {
 
 // static/src/core/tasks_plugin.ts
 var BATCH_DELAY_MS = 30;
+var RETRY_AFTER_MS = 6e4;
 var TasksPlugin = class extends Plugin {
   static sequence = 2;
   // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
@@ -6825,7 +6826,9 @@ var TasksPlugin = class extends Plugin {
   details = signal({});
   // task id -> its Task tab content
   _asked = /* @__PURE__ */ new Set();
-  // ids already requested (answered or in flight)
+  // ids already requested (answered, in flight or failed)
+  _failedAt = /* @__PURE__ */ new Map();
+  // ids whose last request failed -> when
   _queue = [];
   _timer;
   setup() {
@@ -6834,9 +6837,16 @@ var TasksPlugin = class extends Plugin {
   get enabled() {
     return this.config.config.odoo_tasks;
   }
-  // ask for a task's stage, once; a no-op when the feature is off
+  // ask for a task's stage, once; a no-op when the feature is off. A task whose request
+  // failed is asked again only after a minute, so an outage is not hammered by every
+  // re-render (a rejected key is never asked again: see _flush)
   want(id) {
-    if (!this.enabled || this._asked.has(id)) return;
+    if (!this.enabled) return;
+    if (this._asked.has(id)) {
+      const failedAt = this._failedAt.get(id);
+      if (failedAt === void 0 || Date.now() - failedAt < RETRY_AFTER_MS) return;
+      this._failedAt.delete(id);
+    }
     this._asked.add(id);
     this._queue.push(id);
     this._timer ??= setTimeout(() => this._flush(), BATCH_DELAY_MS);
@@ -6867,12 +6877,11 @@ var TasksPlugin = class extends Plugin {
     await this._request([]);
     return this.error();
   }
-  // a failed request forgets its ids, so the next screen that wants them asks again
   async _flush() {
     this._timer = void 0;
     const ids = this._queue.splice(0);
     if (!await this._request(ids) && !this.keyRejected()) {
-      ids.forEach((id) => this._asked.delete(id));
+      ids.forEach((id) => this._failedAt.set(id, Date.now()));
     }
   }
   // whether Odoo answered; an id it has no row for (unreadable, deleted) still counts as asked
@@ -13336,11 +13345,23 @@ function odooDate(ts) {
   const date = /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
   return isNaN(date.getTime()) ? ts : date.toLocaleString();
 }
+var FORBIDDEN = "meta, base, link, script, iframe, frame, object, embed, form";
+function cleanHtml(html) {
+  const body = new DOMParser().parseFromString(html, "text/html").body;
+  body.querySelectorAll(FORBIDDEN).forEach((el) => el.remove());
+  for (const el of body.querySelectorAll("*")) {
+    for (const name of el.getAttributeNames()) {
+      if (name.startsWith("on")) el.removeAttribute(name);
+    }
+  }
+  return body.innerHTML;
+}
 function taskDocument(task) {
   const messages = task.messages.map(
-    (m2) => `<article><header><b>${escapeHtml(m2.author)}</b> \xB7 ${escapeHtml(odooDate(m2.date))}${m2.kind ? `<i>${escapeHtml(m2.kind)}</i>` : ""}</header>${m2.body}</article>`
+    (m2) => `<article><header><b>${escapeHtml(m2.author)}</b> \xB7 ${escapeHtml(odooDate(m2.date))}${m2.kind ? `<i>${escapeHtml(m2.kind)}</i>` : ""}</header>${cleanHtml(m2.body)}</article>`
   ).join("");
-  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'"><base href="https://www.odoo.com/" target="_blank"><style>${STYLE}</style><h2>Description</h2>${task.description || '<p class="dim">No description.</p>'}<h2>Chatter</h2>${messages || '<p class="dim">No message yet.</p>'}`;
+  const note = task.messages_error ? `<p class="dim">The chatter could not be loaded (${escapeHtml(task.messages_error)}).</p>` : task.messages_cut ? '<p class="dim">Older messages are not shown here.</p>' : "";
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https://www.odoo.com data:; style-src 'unsafe-inline'"><base href="https://www.odoo.com/" target="_blank"><style>${STYLE}</style><h2>Description</h2>${cleanHtml(task.description) || '<p class="dim">No description.</p>'}<h2>Chatter</h2>${messages || (task.messages_error ? "" : '<p class="dim">No message yet.</p>')}${note}`;
 }
 
 // static/src/workspaces_screen/task_pane.ts
@@ -15734,8 +15755,8 @@ var WorkspacesScreen = class extends Component {
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'task'">
-                <TaskPane t-if="this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
-                <div t-else="" class="ws-pane-hint dim">No odoo.com task is named by this workspace's branch or PRs.</div>
+                <TaskPane t-if="this.tasks.enabled and this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">No odoo.com task to show: the "show Odoo task stage" setting is off, or nothing in this workspace's branch or PRs names a task.</div>
               </div>
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">

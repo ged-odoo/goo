@@ -355,8 +355,8 @@ export class WorkspacesScreen extends Component {
                 <div t-else="" class="ws-pane-hint dim" t-out="this.termHint"/>
               </div>
               <div class="wt-pane" t-elif="this.pane() === 'task'">
-                <TaskPane t-if="this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
-                <div t-else="" class="ws-pane-hint dim">No odoo.com task is named by this workspace's branch or PRs.</div>
+                <TaskPane t-if="this.tasks.enabled and this.taskIdOf(this.sel)" t-key="this.taskIdOf(this.sel)" id="this.taskIdOf(this.sel)"/>
+                <div t-else="" class="ws-pane-hint dim">No odoo.com task to show: the "show Odoo task stage" setting is off, or nothing in this workspace's branch or PRs names a task.</div>
               </div>
               <div class="wt-pane ws-details-pane" t-elif="this.pane() === 'details'" t-key="this.sel.id">
                 <div class="ws-details-grid">

@@ -1808,8 +1808,11 @@ def _api_tasks_detail(body: dict[str, Any]) -> dict[str, Any]:
     """One task in full (fields, description, chatter), for the workspace's Task tab."""
     key, error = _odoo_tasks_key()
     task = None
+    task_id = body["id"]
+    if error is None and not (type(task_id) is int and task_id > 0):
+        error = "not a task id"
     if error is None:
-        task, error = TASKS.detail(key, int(body["id"]))
+        task, error = TASKS.detail(key, task_id)
     return _tasks_reply(error, task=task)
 
 

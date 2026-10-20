@@ -472,6 +472,8 @@ describe("worktree workspace lifecycle", () => {
       updated: "",
       created_by: "Ann",
       description: "<p>Steps to reproduce</p>",
+      messages_error: "",
+      messages_cut: false,
       messages: [
         {
           id: 1,

@@ -1219,6 +1219,7 @@ class TaskDetailTest(unittest.TestCase):
             [(m["author"], m["kind"], m["body"]) for m in task["messages"]],
             [("Ann", "Discussions", "<p>Second</p>"), ("bob@x.test", "", "")],
         )
+        self.assertEqual((task["messages_error"], task["messages_cut"]), ("", False))
         # the whole tab is four calls at most, and only for this one task
         self.assertEqual(len(io.http_calls), 4)
         self.assertEqual(io.http_calls[0][1]["domain"], [["id", "=", 7]])
@@ -1243,6 +1244,15 @@ class TaskDetailTest(unittest.TestCase):
         assert task is not None
         self.assertIsNone(error)
         self.assertEqual((task["messages"], task["assignees"], task["tags"]), ([], [], ["bug"]))
+        self.assertEqual(task["messages_error"], "HTTP 403")  # the tab says it, not "no message"
+
+    def test_detail_says_when_the_chatter_was_cut(self):
+        many = [{"id": i, "date": "2026-10-01 08:00:00", "body": "x"} for i in range(200)]
+        task, _ = services.TaskService(
+            self._io(**{"/mail.message/search_read": (many, None)})
+        ).detail("k", 7)
+        assert task is not None
+        self.assertTrue(task["messages_cut"])
 
     def test_detail_errors(self):
         self.assertEqual(

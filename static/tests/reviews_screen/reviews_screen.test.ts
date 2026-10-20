@@ -328,23 +328,35 @@ describe("Reviews screen — task stage", () => {
     expect(app.root.querySelector("a.rev-task")).not.toBeNull();
   });
 
-  it("asks again after a failed request, once the screen is reopened", async () => {
-    let calls = 0;
-    app = await mount(
-      {
-        "/api/prs/info": { prs },
-        "/api/tasks": (body: unknown) =>
-          ++calls === 1 ? { ok: false, tasks: {}, error: "unreachable" } : tasksRoute(body),
-      },
-      { odoo_tasks: true },
-    );
-    await vi.waitFor(() => expect(calls).toBe(1));
-    await app.settle();
-    expect(stages()).toEqual([]);
-    await app.navigate("todo");
-    await app.navigate("review-queue");
-    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
-    expect(calls).toBe(2);
+  it("asks again after a failed request, but not before a minute has passed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] }); // only the clock: the app's timers keep running
+    try {
+      let calls = 0;
+      app = await mount(
+        {
+          "/api/prs/info": { prs },
+          "/api/tasks": (body: unknown) =>
+            ++calls === 1 ? { ok: false, tasks: {}, error: "unreachable" } : tasksRoute(body),
+        },
+        { odoo_tasks: true },
+      );
+      await vi.waitFor(() => expect(calls).toBe(1));
+      await app.settle();
+      expect(stages()).toEqual([]);
+
+      await app.navigate("todo");
+      await app.navigate("review-queue"); // right away: an outage is not hammered
+      await app.settle();
+      expect(calls).toBe(1);
+
+      vi.setSystemTime(Date.now() + 61_000);
+      await app.navigate("todo");
+      await app.navigate("review-queue");
+      await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("flags a rejected (expired) key on the Task button and tells the event log once", async () => {
