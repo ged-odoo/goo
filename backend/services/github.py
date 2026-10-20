@@ -419,7 +419,7 @@ class GitHubService:
 
     def review_requests(self, query: str) -> tuple[list[dict[str, Any]], str | None]:
         """The PRs a GitHub issue search returns (e.g. `review-requested:@me`), newest
-        update first, as ({github, number, title, url, author, draft, labels,
+        update first, as ({github, number, title, body, url, author, draft, labels,
         updated_at}, error). Uncached: a review request is waited on, not polled."""
         return self._fetch_review_requests(query)
 

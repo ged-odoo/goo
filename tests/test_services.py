@@ -1273,7 +1273,7 @@ class GitHubServiceTest(unittest.TestCase):
 
     def test_review_requests_parses_search_lines_and_reports_errors(self):
         line = (
-            '{"github": "odoo/odoo", "number": 7, "title": "t", "url": "u",'
+            '{"github": "odoo/odoo", "number": 7, "title": "t", "body": "task-123456", "url": "u",'
             ' "author": "bob", "draft": false, "labels": ["x"], "updated_at": "z"}\n'
         )
         io = FakeIO(run_result=completed(stdout=line))

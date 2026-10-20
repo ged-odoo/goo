@@ -34,6 +34,7 @@ export interface ReviewsConfig {
 export interface RequestedPr extends PrRef {
   id: string; // "github#number", the list row key
   title: string;
+  body: string;
   url: string;
   author: string;
   draft: boolean;
