@@ -1,0 +1,74 @@
+// The description and chatter of an Odoo task, as one HTML document for a sandboxed
+// iframe. Their bodies are HTML written by other people, so they can only be read, never
+// run: the frame has no scripts, no forms and no origin (no `allow-scripts` /
+// `allow-same-origin`, see TASK_FRAME_SANDBOX); the bodies are parsed inertly and stripped
+// of what could redirect the frame (<meta>, <base>, <link>) or load content (<iframe>,
+// <object>…); the document's policy allows no request but images from odoo.com itself —
+// an image on another host would tell its owner when, and from where, the task was read;
+// and links open in a new tab.
+
+import { escapeHtml } from "./utils.ts";
+import type { TaskDetail } from "./tasks_plugin.ts";
+
+export const TASK_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
+
+const STYLE = `
+  body { font: 13.5px/1.65 system-ui, sans-serif; color: #26262c; margin: 0; padding: 12px 26px 28px; overflow-wrap: anywhere; }
+  h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #777; margin: 26px 0 12px; }
+  a { color: #6d3fc0; }
+  img { max-width: 100%; height: auto; }
+  pre, code { font-family: ui-monospace, monospace; font-size: 12px; background: #f3f1f6; border-radius: 4px; }
+  pre { padding: 10px 12px; overflow-x: auto; max-width: 100%; }
+  blockquote { margin: 8px 0; padding-left: 12px; border-left: 3px solid #ddd; color: #555; }
+  table { border-collapse: collapse; max-width: 100%; } td, th { border: 1px solid #ddd; padding: 4px 8px; }
+  article { border: 1px solid #e6e3ea; border-radius: 10px; padding: 12px 16px; margin: 0 0 14px; }
+  article > header { font-size: 12px; color: #777; margin-bottom: 8px; }
+  article > header b { color: #26262c; }
+  article > header i { margin-left: 6px; padding: 0 6px; border-radius: 4px; background: #f3f1f6; font-style: normal; }
+  .dim { color: #888; }
+`;
+
+// Odoo's naive UTC "2026-10-02 08:00:00" in the reader's time zone
+export function odooDate(ts: string): string {
+  if (!ts) return "";
+  const date = new Date(ts.replace(" ", "T") + "Z");
+  return isNaN(date.getTime()) ? ts : date.toLocaleString();
+}
+
+const FORBIDDEN = "meta, base, link, script, iframe, frame, object, embed, form";
+
+// an Odoo HTML body without what could navigate the frame or fetch something: parsed in an
+// inert document (nothing runs or loads there), the offending elements and every on*
+// attribute removed, then serialized back
+export function cleanHtml(html: string): string {
+  const body = new DOMParser().parseFromString(html, "text/html").body;
+  body.querySelectorAll(FORBIDDEN).forEach((el) => el.remove());
+  for (const el of body.querySelectorAll("*")) {
+    for (const name of el.getAttributeNames()) {
+      if (name.startsWith("on")) el.removeAttribute(name);
+    }
+  }
+  return body.innerHTML;
+}
+
+export function taskDocument(task: TaskDetail): string {
+  const messages = task.messages
+    .map(
+      (m) =>
+        `<article><header><b>${escapeHtml(m.author)}</b> · ${escapeHtml(odooDate(m.date))}` +
+        `${m.kind ? `<i>${escapeHtml(m.kind)}</i>` : ""}</header>${cleanHtml(m.body)}</article>`,
+    )
+    .join("");
+  const note = task.messages_error
+    ? `<p class="dim">The chatter could not be loaded (${escapeHtml(task.messages_error)}).</p>`
+    : task.messages_cut
+      ? '<p class="dim">Older messages are not shown here.</p>'
+      : "";
+  return (
+    `<!doctype html><meta charset="utf-8">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https://www.odoo.com data:; style-src 'unsafe-inline'">` +
+    `<base href="https://www.odoo.com/" target="_blank"><style>${STYLE}</style>` +
+    `<h2>Description</h2>${cleanHtml(task.description) || '<p class="dim">No description.</p>'}` +
+    `<h2>Chatter</h2>${messages || (task.messages_error ? "" : '<p class="dim">No message yet.</p>')}${note}`
+  );
+}
