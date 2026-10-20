@@ -383,6 +383,23 @@ describe("worktree workspace lifecycle", () => {
     expect(open.mock.calls[1][0]).toContain(encodeURIComponent("/web/tests"));
   });
 
+  it("a Task button links the odoo.com task named by the workspace's branch", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], { active: "" });
+    const link = app.root.querySelector<HTMLAnchorElement>(".wt-detail-name-row a.pbtn")!;
+    expect(link.textContent).toContain("Task");
+    expect(link.href).toBe("https://www.odoo.com/odoo/all-tasks/4939265");
+    app.destroy();
+
+    await mount([WT], { active: "" });
+    expect(app.root.querySelector(".wt-detail-name-row a.pbtn")).toBeNull();
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });

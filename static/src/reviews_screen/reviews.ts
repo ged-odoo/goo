@@ -17,7 +17,7 @@ import { ClaudePlugin } from "../workspaces_screen/claude_plugin.ts";
 import { ReviewsPlugin } from "./reviews_plugin.ts";
 import { ReviewPanel } from "./review_panel.ts";
 import { appBus, ICONS, m } from "../core/common.ts";
-import { timeAgo, reviewScoreClass } from "../core/utils.ts";
+import { timeAgo, reviewScoreClass, taskUrl } from "../core/utils.ts";
 import { Panel } from "../core/panel.ts";
 import { RecordList, recordset } from "../core/recordset.ts";
 import {
@@ -139,6 +139,7 @@ export class ReviewsScreen extends Component {
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
+                <a t-if="this.taskLink(scope.g.rows)" class="rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink(scope.g.rows)" title="open the odoo.com task" t-on-click.stop="">Task</a>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
@@ -713,6 +714,16 @@ export class ReviewsScreen extends Component {
     if (this.allRows().some((r) => r.branch === branch)) return;
     const ws = this.reviewWorkspaceFor(branch);
     if (ws) await this.wt.removeSilently(ws);
+  }
+
+  // the odoo.com task named by the task's branch, else by its PRs' titles / bodies
+  taskLink(rows: ReviewRow[]): string {
+    const prInfo = this.reviews.prInfo();
+    return taskUrl(
+      ...rows.map((r) => r.branch),
+      ...rows.map((r) => r.title),
+      ...rows.map((r) => prInfo[r.id]?.body),
+    );
   }
 
   // a task's (group header's) menu: Create workspace always; Open on GitHub /

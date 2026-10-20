@@ -385,6 +385,14 @@ var PRESETS = [
 function errorMessage(e) {
   return e instanceof Error ? e.message : String(e);
 }
+var TASK_REF = /(?<![a-z])(?:opw|task)(?:[-_ ]?(?:id|number|nb|no))?[-_:# \t]*(\d{5,})/i;
+function taskUrl(...texts) {
+  for (const text of texts) {
+    const id = TASK_REF.exec(text || "")?.[1];
+    if (id) return `https://www.odoo.com/odoo/all-tasks/${id}`;
+  }
+  return "";
+}
 function timeAgo(ts) {
   const date = ts.includes("T") ? new Date(ts) : /* @__PURE__ */ new Date(ts.replace(" ", "T") + "Z");
   if (isNaN(date.getTime())) return ts;
@@ -2154,6 +2162,7 @@ var PullRequest = {
       github: raw.github || "",
       number: raw.number,
       title: raw.title || "",
+      body: raw.body || "",
       url: raw.url || "",
       state: (raw.state || "").toLowerCase(),
       // open | closed | merged
@@ -11898,6 +11907,7 @@ var ReviewsScreen = class extends Component {
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
+                <a t-if="this.taskLink(scope.g.rows)" class="rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink(scope.g.rows)" title="open the odoo.com task" t-on-click.stop="">Task</a>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
@@ -12398,6 +12408,15 @@ var ReviewsScreen = class extends Component {
     if (this.allRows().some((r) => r.branch === branch)) return;
     const ws = this.reviewWorkspaceFor(branch);
     if (ws) await this.wt.removeSilently(ws);
+  }
+  // the odoo.com task named by the task's branch, else by its PRs' titles / bodies
+  taskLink(rows) {
+    const prInfo = this.reviews.prInfo();
+    return taskUrl(
+      ...rows.map((r) => r.branch),
+      ...rows.map((r) => r.title),
+      ...rows.map((r) => prInfo[r.id]?.body)
+    );
   }
   // a task's (group header's) menu: Create workspace always; Open on GitHub /
   // Open on mergebot only for a single-PR task (ambiguous which PR otherwise —
@@ -15354,6 +15373,7 @@ var WorkspacesScreen = class extends Component {
               <span class="wt-sp"/>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
               <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <a t-if="this.taskLink(this.sel)" class="pbtn ghost" target="_blank" rel="noopener" t-att-href="this.taskLink(this.sel)" title="open the odoo.com task (from the branch / PR)"><t t-out="this.externalIcon"/>Task</a>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -16279,6 +16299,15 @@ var WorkspacesScreen = class extends Component {
   odooUrl(ws) {
     if (this.isWt(ws)) return this.wt.odooUrl(ws);
     return this.mainLink(ws, "/odoo?debug=assets");
+  }
+  // the odoo.com task named by the workspace's branches, else by its PRs' titles / bodies
+  taskLink(ws) {
+    const prs = this.prRows(ws).map((r) => r.pr);
+    return taskUrl(
+      ...(ws.checkouts || []).map((c) => c.branch),
+      ...prs.map((pr) => pr.title),
+      ...prs.map((pr) => pr.body)
+    );
   }
   testsUrl(ws) {
     if (this.isWt(ws)) return this.wt.testsUrl(ws);
