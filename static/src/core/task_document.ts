@@ -10,16 +10,16 @@ import type { TaskDetail } from "./tasks_plugin.ts";
 export const TASK_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
 
 const STYLE = `
-  body { font: 13px/1.5 system-ui, sans-serif; color: #26262c; margin: 0; padding: 4px 2px 16px; }
-  h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #777; margin: 18px 0 8px; }
+  body { font: 13.5px/1.65 system-ui, sans-serif; color: #26262c; margin: 0; padding: 12px 26px 28px; overflow-wrap: anywhere; }
+  h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #777; margin: 26px 0 12px; }
   a { color: #6d3fc0; }
   img { max-width: 100%; height: auto; }
   pre, code { font-family: ui-monospace, monospace; font-size: 12px; background: #f3f1f6; border-radius: 4px; }
-  pre { padding: 8px; overflow-x: auto; }
-  blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid #ddd; color: #555; }
-  table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: 2px 6px; }
-  article { border: 1px solid #e6e3ea; border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; }
-  article > header { font-size: 12px; color: #777; margin-bottom: 4px; }
+  pre { padding: 10px 12px; overflow-x: auto; max-width: 100%; }
+  blockquote { margin: 8px 0; padding-left: 12px; border-left: 3px solid #ddd; color: #555; }
+  table { border-collapse: collapse; max-width: 100%; } td, th { border: 1px solid #ddd; padding: 4px 8px; }
+  article { border: 1px solid #e6e3ea; border-radius: 10px; padding: 12px 16px; margin: 0 0 14px; }
+  article > header { font-size: 12px; color: #777; margin-bottom: 8px; }
   article > header b { color: #26262c; }
   article > header i { margin-left: 6px; padding: 0 6px; border-radius: 4px; background: #f3f1f6; font-style: normal; }
   .dim { color: #888; }
