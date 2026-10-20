@@ -1780,17 +1780,10 @@ def _api_prs_review_requests(body: dict[str, Any]) -> dict[str, Any]:
 def _api_tasks(body: dict[str, Any]) -> dict[str, Any]:
     """The stage of Odoo tasks. Opt-in (the `odoo_tasks` setting); the API key only ever
     comes from the GOO_ODOO_API_KEY environment variable — never from the config file,
-    which may be committed — and GOO_ODOO_URL / GOO_ODOO_DB pick another instance than
-    odoo.com.
-    An empty `ids` just reports whether the key is there."""
+    which may be committed. An empty `ids` just checks the key."""
     if not (CONFIG.get().get("config") or {}).get("odoo_tasks"):
         return {"ok": False, "tasks": {}, "error": "disabled in the settings"}
-    tasks, error = TASKS.read(
-        os.environ.get("GOO_ODOO_URL") or "https://www.odoo.com",
-        os.environ.get("GOO_ODOO_API_KEY", ""),
-        body["ids"],
-        os.environ.get("GOO_ODOO_DB", ""),
-    )
+    tasks, error = TASKS.read(os.environ.get("GOO_ODOO_API_KEY", ""), body["ids"])
     return {"ok": error is None, "tasks": tasks, **({"error": error} if error else {})}
 
 

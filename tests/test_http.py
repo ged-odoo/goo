@@ -254,7 +254,7 @@ class PostRoutesTest(ServerTestCase):
                 return {"7": {"name": "t", "stage": "Done"}}, None
 
         fake = FakeTasks()
-        env = {"GOO_ODOO_API_KEY": "secret", "GOO_ODOO_URL": "https://odoo.test"}
+        env = {"GOO_ODOO_API_KEY": "secret"}
         with mock.patch.object(server, "TASKS", fake), mock.patch.dict(os.environ, env):
             status, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
             self.assertEqual((status, body["ok"], fake.calls), (200, False, []))  # setting off
@@ -262,7 +262,7 @@ class PostRoutesTest(ServerTestCase):
             self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
             _, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
         self.assertEqual(body, {"ok": True, "tasks": {"7": {"name": "t", "stage": "Done"}}})
-        self.assertEqual(fake.calls, [("https://odoo.test", "secret", [7], "")])
+        self.assertEqual(fake.calls, [("secret", [7])])
 
     def test_route_success_and_error_through_a_swapped_singleton(self):
         db = _FakeDatabase({"keep", "gone"})

@@ -823,7 +823,6 @@ export class ConfigScreen extends Component {
                 <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
               </ul>
             </li>
-            <li>Another instance (a runbot, for example): also set <code>GOO_ODOO_URL</code> (default https://www.odoo.com) and, on a multi-database server, <code>GOO_ODOO_DB</code>.</li>
           </ol>
           <p>
             <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>

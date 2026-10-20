@@ -1115,15 +1115,13 @@ class MemoryServiceTest(unittest.TestCase):
 
 
 class TaskServiceTest(unittest.TestCase):
-    URL = "https://odoo.test"
-
     def test_read_maps_tasks_to_their_stage_and_asks_once(self):
         rows = [
             {"id": 7, "name": "Fix it", "stage_id": [3, "In Progress"]},
             {"id": 9, "name": "No stage", "stage_id": False},
         ]
         io = FakeIO(http={"/json/2/project.task/search_read": (rows, None)})
-        tasks, error = services.TaskService(io).read(self.URL + "/", "k", [9, 7, 7, 0, "x"], "db1")
+        tasks, error = services.TaskService(io).read("k", [9, 7, 7, 0, "x"])
         self.assertIsNone(error)
         self.assertEqual(
             tasks,
@@ -1133,31 +1131,27 @@ class TaskServiceTest(unittest.TestCase):
             },
         )
         ((url, body, headers),) = io.http_calls  # a single call for every task
-        self.assertEqual(url, "https://odoo.test/json/2/project.task/search_read")
+        self.assertEqual(url, "https://www.odoo.com/json/2/project.task/search_read")
         self.assertEqual(body["domain"], [["id", "in", [7, 9]]])
-        self.assertEqual(headers, {"Authorization": "bearer k", "X-Odoo-Database": "db1"})
+        self.assertEqual(headers, {"Authorization": "bearer k"})
 
     def test_read_without_a_key_makes_no_call(self):
         io = FakeIO()
         svc = services.TaskService(io)
-        self.assertEqual(svc.read(self.URL, "", [1]), ({}, "GOO_ODOO_API_KEY is not set"))
+        self.assertEqual(svc.read("", [1]), ({}, "GOO_ODOO_API_KEY is not set"))
         self.assertEqual(io.http_calls, [])
 
     def test_read_with_no_ids_still_checks_the_key(self):
         io = FakeIO(http={"/json/2/": (None, "HTTP 401: Invalid apikey")})
-        self.assertEqual(
-            services.TaskService(io).read(self.URL, "bad", []), ({}, "HTTP 401: Invalid apikey")
-        )
+        self.assertEqual(services.TaskService(io).read("bad", []), ({}, "HTTP 401: Invalid apikey"))
         self.assertEqual(len(io.http_calls), 1)
 
     def test_read_reports_a_failed_call(self):
         io = FakeIO(http={"/json/2/": (None, "HTTP 401: Invalid apikey")})
-        self.assertEqual(
-            services.TaskService(io).read(self.URL, "k", [1]), ({}, "HTTP 401: Invalid apikey")
-        )
+        self.assertEqual(services.TaskService(io).read("k", [1]), ({}, "HTTP 401: Invalid apikey"))
         io = FakeIO(http={"/json/2/": ({"not": "a list"}, None)})
         self.assertEqual(
-            services.TaskService(io).read(self.URL, "k", [1]), ({}, "unexpected reply from Odoo")
+            services.TaskService(io).read("k", [1]), ({}, "unexpected reply from Odoo")
         )
 
 
