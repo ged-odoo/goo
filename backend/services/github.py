@@ -69,6 +69,10 @@ def _ci_rollup(rollup: list[dict[str, Any]] | None) -> CiRollup:
     return CiRollup(overall=overall, runbot=runbot, checks=checks)
 
 
+class _FetchFailed(Exception):
+    """A gh call a review status depends on failed."""
+
+
 class GitHubService:
     """The user's PRs and PR actions, via the `gh` CLI."""
 
@@ -282,9 +286,9 @@ class GitHubService:
 
     def review_statuses(self, pairs: list[dict[str, Any]], refresh: bool = False) -> dict[str, str]:
         """For each {github, number}: "reviewed" if the authenticated user has
-        submitted a review on it and isn't currently in the pending
-        review-request list (i.e. hasn't been re-asked since), else
-        "to_review". Who r+'d it doesn't matter here — that's mergebot's own
+        submitted a review on it since they were last (re-)requested, "commented"
+        if they only commented (conversation or inline) since, else "to_review".
+        Who r+'d it doesn't matter here — that's mergebot's own
         state, not this. Cached per (github, number); refresh=True bypasses it.
         Returns {"github#number": status}."""
         uniq = self._uniq_pairs(pairs)
@@ -294,21 +298,27 @@ class GitHubService:
             for gh_repo, number in uniq:
                 self.cache.invalidate(("review", gh_repo, number))
         with ThreadPoolExecutor(max_workers=min(8, len(uniq))) as pool:
-            statuses = pool.map(
-                lambda gn: self.cache.get(
-                    ("review", gn[0], gn[1]), lambda gn=gn: self._fetch_review_status(*gn)
-                ),
-                uniq,
-            )
+            statuses = pool.map(self._review_status, uniq)
         return {
             f"{gh_repo}#{number}": s for (gh_repo, number), s in zip(uniq, statuses, strict=True)
         }
+
+    def _review_status(self, pair: tuple[str, int]) -> str:
+        """Cached `_fetch_review_status`; a failed fetch reads as "to_review" but isn't cached."""
+        gh_repo, number = pair
+        try:
+            return self.cache.get(
+                ("review", gh_repo, number), lambda: self._fetch_review_status(gh_repo, number)
+            )
+        except _FetchFailed:
+            return "to_review"
 
     def _fetch_review_status(self, gh_repo: str, number: int) -> str:
         """ "reviewed" if the authenticated user has submitted a review (any state
         — Odoo reviewers mostly leave plain "Comment" reviews, never GitHub's
         formal Approve/Request-changes) more recently than the last time they
-        were (re-)requested, else "to_review". Comparing timestamps — not
+        were (re-)requested, "commented" if they only left a conversation or
+        inline comment since, else "to_review". Comparing timestamps — not
         GitHub's "current reviewRequests" list — matters here: GitHub only
         drops a user from that list on an Approve/Request-changes review, so
         for a Comment-only review it stays there forever and would otherwise
@@ -316,34 +326,63 @@ class GitHubService:
         login = self._me()
         if not login:
             return "to_review"
-        self.io.log_request(f"gh pr view {number} --repo {gh_repo} --json reviews")
+        my_reviews = self._my_activity_times(
+            gh_repo, number, login, "pulls", "reviews", "submitted_at"
+        )
+        my_comments = self._my_comment_times(gh_repo, number, login)
+        if not my_reviews and not my_comments:
+            return "to_review"
+        last_request_at = self._last_review_request(gh_repo, number, login)
+        if my_reviews and max(my_reviews) > last_request_at:
+            return "reviewed"
+        if my_comments and max(my_comments) > last_request_at:
+            return "commented"
+        return "to_review"
+
+    def _my_comment_times(self, gh_repo: str, number: int, login: str) -> list[str]:
+        """The creation times of `login`'s conversation and inline comments on a PR
+        (a plain comment isn't a review, so `reviews` never lists it)."""
+        return self._my_activity_times(
+            gh_repo, number, login, "issues", "comments", "created_at"
+        ) + self._my_activity_times(gh_repo, number, login, "pulls", "comments", "created_at")
+
+    def _my_activity_times(
+        self, gh_repo: str, number: int, login: str, kind: str, what: str, field: str
+    ) -> list[str]:
+        """The `field` timestamps of `login`'s entries in repos/<gh_repo>/<kind>/<number>/<what>
+        (a REST call: `gh pr view` goes through GraphQL, which can hang for 30s). A pending
+        review has no `submitted_at`, so it never counts. Raises _FetchFailed when gh fails,
+        so the caller doesn't cache a guess."""
+        path = f"repos/{gh_repo}/{kind}/{number}/{what}"
+        self.io.log_request(f"gh api {path} --paginate")
         try:
             r = self.io.run(
-                ["gh", "pr", "view", str(number), "--repo", gh_repo, "--json", "reviews"],
+                [
+                    "gh",
+                    "api",
+                    path,
+                    "--paginate",
+                    "--jq",
+                    f'.[] | "\\(.user.login) \\(.{field})"',
+                ],
                 timeout=30,
             )
-            if r.returncode != 0:
-                return "to_review"
-            data = json.loads(r.stdout)
-        except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
-            return "to_review"
-        my_reviews = [
-            rev.get("submittedAt") or ""
-            for rev in data.get("reviews") or []
-            if (rev.get("author") or {}).get("login") == login
-        ]
-        if not my_reviews:
-            return "to_review"
-        last_review_at = max(my_reviews)
-        last_request_at = self._last_review_request(gh_repo, number, login)
-        return "to_review" if last_request_at > last_review_at else "reviewed"
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            raise _FetchFailed from e
+        if r.returncode != 0:
+            raise _FetchFailed
+        times: list[str] = []
+        for line in r.stdout.splitlines():
+            who, _, at = line.strip().partition(" ")
+            if who == login and at and at != "null":
+                times.append(at)
+        return times
 
     def _last_review_request(self, gh_repo: str, number: int, login: str) -> str:
         """The most recent time `login` was requested to review this PR (ISO
-        timestamp, "" if never/unknown) — from the issue timeline, since a
-        PR's current `reviewRequests` doesn't carry timing and (per above)
-        often doesn't clear at all. Never raises; "" on any failure just means
-        "no re-request found", the safe default (favors "reviewed")."""
+        timestamp, "" if never) — from the issue timeline, since a PR's current
+        `reviewRequests` doesn't carry timing and (per above) often doesn't clear
+        at all. Raises _FetchFailed when gh fails."""
         self.io.log_request(f"gh api repos/{gh_repo}/issues/{number}/timeline --paginate")
         try:
             r = self.io.run(
@@ -358,10 +397,10 @@ class GitHubService:
                 ],
                 timeout=30,
             )
-            if r.returncode != 0:
-                return ""
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return ""
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            raise _FetchFailed from e
+        if r.returncode != 0:
+            raise _FetchFailed
         at_times = []
         for line in r.stdout.splitlines():
             line = line.strip()

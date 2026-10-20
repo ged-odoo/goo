@@ -1296,10 +1296,7 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(
-                    stdout='{"reviews": [{"author": {"login": "aab"},'
-                    ' "submittedAt": "2026-01-02T00:00:00Z"}]}'
-                ),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-02T00:00:00Z\n"),
                 "timeline": completed(stdout='{"login": "aab", "at": "2026-01-01T00:00:00Z"}\n'),
             },
         )
@@ -1311,10 +1308,7 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(
-                    stdout='{"reviews": [{"author": {"login": "aab"},'
-                    ' "submittedAt": "2026-01-01T00:00:00Z"}]}'
-                ),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-01T00:00:00Z\n"),
                 "timeline": completed(stdout='{"login": "aab", "at": "2026-01-02T00:00:00Z"}\n'),
             }
         )
@@ -1322,11 +1316,69 @@ class GitHubServiceTest(unittest.TestCase):
         statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
         self.assertEqual(statuses, {"odoo/odoo#1": "to_review"})
 
+    def test_review_statuses_commented_when_only_a_comment_since_the_request(self):
+        # a conversation comment isn't a review: it never shows in `reviews`
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout=""),
+                "issues/1/comments": completed(
+                    stdout="bob 2026-01-01T00:00:00Z\naab 2026-01-03T00:00:00Z\n"
+                ),
+                "pulls/1/comments": completed(stdout=""),
+                "timeline": completed(stdout='{"login": "aab", "at": "2026-01-02T00:00:00Z"}\n'),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(statuses, {"odoo/odoo#1": "commented"})
+
+    def test_review_statuses_to_review_when_re_requested_after_the_comment(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout=""),
+                "issues/1/comments": completed(stdout="aab 2026-01-01T00:00:00Z\n"),
+                "pulls/1/comments": completed(stdout=""),
+                "timeline": completed(stdout='{"login": "aab", "at": "2026-01-02T00:00:00Z"}\n'),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(statuses, {"odoo/odoo#1": "to_review"})
+
+    def test_review_statuses_failed_fetch_is_to_review_and_not_cached(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(returncode=1, stderr="timeout"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pair = [{"github": "odoo/odoo", "number": 1}]
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "to_review"})
+        io._runs["pulls/1/reviews"] = completed(stdout="aab 2026-01-02T00:00:00Z\n")
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
+
+    def test_review_statuses_failed_timeline_is_not_cached_as_reviewed(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-01T00:00:00Z\n"),
+                "timeline": completed(returncode=1, stderr="rate limited"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pair = [{"github": "odoo/odoo", "number": 1}]
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "to_review"})
+        io._runs["timeline"] = completed(stdout='{"login": "aab", "at": "2025-12-01T00:00:00Z"}\n')
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
+
     def test_review_statuses_to_review_when_never_reviewed(self):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(stdout='{"reviews": []}'),
+                "pulls/1/reviews": completed(stdout=""),
             }
         )
         svc = services.GitHubService(io, TTLCache(ttl=600))
@@ -1345,9 +1397,7 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(
             runs={
                 "gh api user": completed(stdout="aab"),
-                "gh pr view": completed(
-                    stdout='{"reviews": [{"author": {"login": "aab"}, "submittedAt": null}]}'
-                ),
+                "pulls/1/reviews": completed(stdout="aab null\n"),
                 "timeline": completed(stdout='{"login": "aab", "at": "2026-01-01T00:00:00Z"}\n'),
             }
         )
