@@ -574,6 +574,44 @@ describe("requested of you", () => {
     expect(button(app.root.querySelector<HTMLElement>(".rq-card")!, "Track")).toBeDefined();
   });
 
+  it("badges each requested PR with the status the tracked list shows", async () => {
+    app = await mount(
+      {
+        "/api/prs/review-requests": {
+          ok: true,
+          prs: [requested, { ...requested, number: 98, title: "other" }],
+        },
+        "/api/prs/review-status": (body: unknown) => ({
+          statuses: Object.fromEntries(
+            (body as { prs: { github: string; number: number }[] }).prs.map((p) => [
+              `${p.github}#${p.number}`,
+              p.number === 98 ? "commented" : "to_review",
+            ]),
+          ),
+        }),
+      },
+      { review_requests: true },
+    );
+    await app.settle();
+    const badges = [...app.root.querySelectorAll(".rq-card .rl-row .dash-pr-state")].map(text);
+    expect(badges).toEqual(["To review", "Commented"]);
+  });
+
+  it("Refresh re-asks the status of the requested PRs, bypassing the caches", async () => {
+    app = await mountRequested();
+    await click(button(app.root, "Refresh"));
+    const forced = app
+      .callsTo("/api/prs/review-status")
+      .filter((c) => (c.body as { refresh: boolean }).refresh)
+      .flatMap((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
+    expect(forced).toContain(99);
+    const mergebot = app
+      .callsTo("/api/mergebot")
+      .filter((c) => (c.body as { refresh: boolean }).refresh)
+      .flatMap((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
+    expect(mergebot).toContain(99);
+  });
+
   it("shows a failed search instead of an empty list", async () => {
     app = await mount(
       { "/api/prs/review-requests": { ok: false, prs: [], error: "gh: not logged in" } },

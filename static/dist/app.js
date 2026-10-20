@@ -10419,7 +10419,7 @@ var ReviewsPlugin = class extends Plugin {
   prInfo = signal({});
   // "github#number" -> PullRequest dict
   reviewStatus = signal({});
-  // "github#number" -> "reviewed" | "to_review"
+  // "github#number" -> ReviewStatus
   loading = signal(false);
   error = signal("");
   at = signal(0);
@@ -10462,7 +10462,7 @@ var ReviewsPlugin = class extends Plugin {
     }
   }
   // the PRs matching `query` (the review-request search); errors land in requestedError
-  async loadRequested(query) {
+  async loadRequested(query, force = false) {
     const seq = ++this._requestSeq;
     try {
       const res = await postJSON(
@@ -10472,6 +10472,7 @@ var ReviewsPlugin = class extends Plugin {
       if (seq !== this._requestSeq) return;
       this.requested.set((res.prs || []).map((pr) => ({ ...pr, id: `${pr.github}#${pr.number}` })));
       this.requestedError.set(res.ok ? "" : res.error || "search failed");
+      this.loadReviewStatus(this.requested(), force);
     } catch (e) {
       if (seq !== this._requestSeq) return;
       this.requested.set([]);
@@ -10494,7 +10495,9 @@ var ReviewsPlugin = class extends Plugin {
         { prs: todo, refresh: force }
       );
       const statuses = res.statuses || {};
-      if (Object.keys(statuses).length) this.reviewStatus.set({ ...have, ...statuses });
+      if (Object.keys(statuses).length) {
+        this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
+      }
     } catch {
     } finally {
       keys.forEach((k) => this._pending.delete(`rs:${k}`));
@@ -11663,6 +11666,22 @@ var RequestedPrCell = class extends Component {
       <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
     </span>`;
 };
+var RequestedStatusCell = class extends Component {
+  props = useProps({ pr: t.any(), screen: t.any() });
+  code = usePlugin(CodePlugin);
+  reviews = usePlugin(ReviewsPlugin);
+  static template = xml`
+    <span t-if="this.meta" class="dash-pr-state" t-att-class="this.meta.cls" t-out="this.meta.label"/>
+    <span t-else="" class="brg-dash">—</span>`;
+  get meta() {
+    const pr = this.props.pr;
+    const reviewStatus = this.reviews.reviewStatus()[pr.id];
+    if (!reviewStatus) return void 0;
+    const mbState = this.code.mergebot()[pr.id] || "";
+    const mbDetail = this.code.mbDetails()[pr.id] || "";
+    return STATUS_META[statusKey({ reviewStatus }, mbState, mbDetail)];
+  }
+};
 var TrackCell = class extends Component {
   props = useProps({ pr: t.any(), screen: t.any() });
   static template = xml`
@@ -11700,6 +11719,7 @@ var PrCell2 = class extends Component {
 var STATUS_META = {
   merged: { label: "Merged", cls: "merged" },
   rplus: { label: "R+'d", cls: "ready" },
+  commented: { label: "Commented", cls: "progress" },
   reviewed: { label: "Reviewed", cls: "progress" },
   to_review: { label: "To review", cls: "blocked" }
 };
@@ -11707,9 +11727,10 @@ function statusKey(row, mbState, mbDetail) {
   if (isMerged(row, mbState)) return "merged";
   if (mbIsRPlus(mbState, mbDetail)) return "rplus";
   if (row.reviewStatus === "reviewed") return "reviewed";
+  if (row.reviewStatus === "commented") return "commented";
   return "to_review";
 }
-var PRECEDENCE = ["to_review", "reviewed", "rplus", "merged"];
+var PRECEDENCE = ["to_review", "commented", "reviewed", "rplus", "merged"];
 function worstStatusKey(keys) {
   let worst = "merged";
   for (const k of keys) {
@@ -11839,6 +11860,7 @@ var ReviewsScreen = class extends Component {
           <select t-att-value="this.statusFilter()" t-on-change="ev => this.statusFilter.set(ev.target.value)" title="filter by status">
             <option value="">All</option>
             <option value="to_review">To review</option>
+            <option value="commented">Commented</option>
             <option value="reviewed">Reviewed</option>
             <option value="rplus">R+'d</option>
             <option value="merged">Merged</option>
@@ -12059,14 +12081,24 @@ var ReviewsScreen = class extends Component {
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },
+      {
+        name: "status",
+        label: "Status",
+        component: RequestedStatusCell,
+        cellProps: this._requestCell
+      },
       { name: "author", label: "Author", get: (p) => p.author },
       { name: "when", label: "Updated", get: (p) => timeAgo(p.updated_at) },
       { name: "act", label: "", component: TrackCell, cellProps: this._requestCell }
     ]
   );
-  async loadRequested() {
+  // force=true (Refresh) re-asks the status of every requested PR, bypassing the caches
+  async loadRequested(force = false) {
     if (!this.config.config.review_requests) return;
-    return this.reviews.loadRequested(this.requestQuery());
+    await this.reviews.loadRequested(this.requestQuery(), force);
+    const requested = this.reviews.requested();
+    if (force) this.code.refreshStatuses([], requested);
+    else this.code.loadMergebot(requested);
   }
   setRequestQuery(text) {
     const query = text.trim() || DEFAULT_REQUEST_QUERY;
@@ -12140,7 +12172,7 @@ var ReviewsScreen = class extends Component {
     const tracked = this.config.config.reviews || [];
     const fpPairs = this.forwardPortPairs();
     await Promise.all([
-      this.loadRequested(),
+      this.loadRequested(true),
       this.reviews.loadPrInfo(tracked, true),
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),
