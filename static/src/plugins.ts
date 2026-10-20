@@ -18,6 +18,7 @@ import { MemoryPlugin } from "./memory_screen/memory_plugin.ts";
 import { CiPlugin } from "./ci_screen/ci_plugin.ts";
 import { ReviewsPlugin } from "./reviews_screen/reviews_plugin.ts";
 import { ConfigPlugin } from "./core/config_plugin.ts";
+import { TasksPlugin } from "./core/tasks_plugin.ts";
 
 export const PLUGINS = [
   StorePlugin,
@@ -38,4 +39,5 @@ export const PLUGINS = [
   MemoryPlugin,
   CiPlugin,
   ReviewsPlugin,
+  TasksPlugin,
 ];

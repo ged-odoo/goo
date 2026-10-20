@@ -7,6 +7,8 @@
 
 import { Component, computed, usePlugin, signal, useEffect, xml } from "@odoo/owl";
 import { CodePlugin } from "../core/code_plugin.ts";
+import { TaskButton } from "../core/task_button.ts";
+import { TasksPlugin } from "../core/tasks_plugin.ts";
 import { ConfigPlugin } from "../core/config_plugin.ts";
 import { DatabasePlugin } from "../core/database_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
@@ -17,7 +19,7 @@ import { ClaudePlugin } from "../workspaces_screen/claude_plugin.ts";
 import { ReviewsPlugin } from "./reviews_plugin.ts";
 import { ReviewPanel } from "./review_panel.ts";
 import { appBus, ICONS, m } from "../core/common.ts";
-import { timeAgo, reviewScoreClass, taskUrl } from "../core/utils.ts";
+import { timeAgo, reviewScoreClass } from "../core/utils.ts";
 import { Panel } from "../core/panel.ts";
 import { RecordList, recordset } from "../core/recordset.ts";
 import {
@@ -81,7 +83,7 @@ export function parsePrRef(text: string): PrRef | null {
 }
 
 export class ReviewsScreen extends Component {
-  static components = { Panel, RecordList };
+  static components = { Panel, RecordList, TaskButton };
   static template = xml`
     <section>
       <Panel title="'Reviews'">
@@ -139,7 +141,7 @@ export class ReviewsScreen extends Component {
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
-                <a t-if="this.taskLink(scope.g.rows)" class="pbtn ghost rev-task" target="_blank" rel="noopener" t-att-href="this.taskLink(scope.g.rows)" title="open the odoo.com task" t-on-click.stop=""><t t-out="this.externalIcon"/>Task</a>
+                <TaskButton texts="this.taskTexts(scope.g.rows)"/>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
                         t-att-title="this.isImportant(scope.g.rows) ? 'unflag as important' : 'flag as important'"
                         t-on-click.stop="(ev) => this.toggleImportant(scope.g.rows)"><t t-out="this.warningIcon"/></button>
@@ -160,6 +162,7 @@ export class ReviewsScreen extends Component {
     </section>`;
 
   code = usePlugin(CodePlugin);
+  tasks = usePlugin(TasksPlugin);
   config = usePlugin(ConfigPlugin);
   db = usePlugin(DatabasePlugin);
   dialogs = usePlugin(DialogPlugin);
@@ -170,7 +173,6 @@ export class ReviewsScreen extends Component {
   reviews = usePlugin(ReviewsPlugin);
   refreshIcon = m(ICONS.refresh);
   kebabIcon = m(ICONS.kebab);
-  externalIcon = m(ICONS.external);
   warningIcon = m(ICONS.warning);
   claudeIcon = m(ICONS.claude);
   addPrText = signal("");
@@ -462,6 +464,7 @@ export class ReviewsScreen extends Component {
       this.reviews.loadReviewStatus(tracked, true),
       this.reviews.loadReviewStatus(fpPairs, true),
       this.code.refreshStatuses([], [...tracked, ...fpPairs]),
+      this.tasks.reload(),
     ]);
   }
 
@@ -717,14 +720,14 @@ export class ReviewsScreen extends Component {
     if (ws) await this.wt.removeSilently(ws);
   }
 
-  // the odoo.com task named by the task's branch, else by its PRs' titles / bodies
-  taskLink(rows: ReviewRow[]): string {
+  // where a task may name its odoo.com task: its branch, then its PRs' titles / bodies
+  taskTexts(rows: ReviewRow[]): (string | undefined)[] {
     const prInfo = this.reviews.prInfo();
-    return taskUrl(
+    return [
       ...rows.map((r) => r.branch),
       ...rows.map((r) => r.title),
       ...rows.map((r) => prInfo[r.id]?.body),
-    );
+    ];
   }
 
   // a task's (group header's) menu: Create workspace always; Open on GitHub /
