@@ -76,7 +76,7 @@ _HEADS_PER_QUERY = 50
 # what a head-ref lookup reads of each PR: the PullRequest fields, plus the last
 # commit's checks (CheckRun / StatusContext — the keys _ci_rollup reads)
 _PR_FRAGMENT = (
-    "fragment pr on PullRequest { number title url state isDraft headRefName "
+    "fragment pr on PullRequest { number title body url state isDraft headRefName "
     "createdAt updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { "
     "contexts(first: 100) { nodes { ... on CheckRun { name status conclusion detailsUrl } "
     "... on StatusContext { context state targetUrl } } } } } } } }"
@@ -99,6 +99,7 @@ def _head_pr(gh_repo: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             github=gh_repo,
             number=pr["number"],
             title=pr.get("title", ""),
+            body=pr.get("body") or "",
             url=pr.get("url", ""),
             state=(pr.get("state") or "").lower(),
             branch=pr.get("headRefName", ""),
@@ -163,7 +164,7 @@ class GitHubService:
                     "--limit",
                     "200",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ],
                 timeout=30,
             )
@@ -176,6 +177,7 @@ class GitHubService:
                             github=gh_repo,
                             number=pr.get("number"),
                             title=pr.get("title", ""),
+                            body=pr.get("body") or "",
                             url=pr.get("url", ""),
                             state=(pr.get("state") or "").lower(),  # OPEN → open
                             branch=pr.get("headRefName", ""),
@@ -323,7 +325,7 @@ class GitHubService:
                     "--repo",
                     gh_repo,
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ],
                 timeout=30,
             )
@@ -337,6 +339,7 @@ class GitHubService:
                 github=gh_repo,
                 number=pr.get("number"),
                 title=pr.get("title", ""),
+                body=pr.get("body") or "",
                 url=pr.get("url", ""),
                 state=(pr.get("state") or "").lower(),
                 branch=pr.get("headRefName", ""),
