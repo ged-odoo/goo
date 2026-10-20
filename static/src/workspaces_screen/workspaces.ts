@@ -20,7 +20,7 @@ import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
 import type { WorkspaceConfig, WorkspaceLink } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
-import { TaskButton } from "../core/task_button.ts";
+import { TaskButton, stageClass } from "../core/task_button.ts";
 import { TasksPlugin } from "../core/tasks_plugin.ts";
 import type {
   ActionMenuDetail,
@@ -38,6 +38,7 @@ import {
   timeAgo,
   nestByParent,
   descendantWorkspaces,
+  taskId,
 } from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
@@ -121,7 +122,7 @@ interface MbStatus {
   rows: (MbRow & { cls: MbCategory; url: string })[];
 }
 
-// a trailing list pill (listPills)
+// a list pill (listPills, odooPill)
 interface ListPill {
   key: string;
   cls: string;
@@ -220,6 +221,8 @@ export class WorkspacesScreen extends Component {
                         <span t-if="pill.sym" class="wt-pill-sym" t-out="pill.sym"/><t t-out="pill.label"/>
                       </span>
                     </span>
+                    <t t-set="odoo" t-value="this.odooPill(row.ws)"/>
+                    <span t-if="odoo" class="wt-item-odoo"><span class="wt-pill" t-att-class="odoo.cls" t-att-title="odoo.title" t-out="odoo.label"/></span>
                   </button>
                 </div>
               </t>
@@ -425,6 +428,13 @@ export class WorkspacesScreen extends Component {
 
   setup() {
     this.db.load(); // cache-aware; warms the clone-source list for the create dialog
+    // every row shows its task's stage, not just the selected workspace's header
+    useEffect(() => {
+      for (const ws of this.config.config.workspaces || []) {
+        const id = taskId(...this.taskTexts(ws));
+        if (id) this.tasks.want(id);
+      }
+    });
     // close the header overflow menu on any outside click
     const closeMenu = () => {
       if (this.menuOpen()) this.menuOpen.set(false);
@@ -864,6 +874,23 @@ export class WorkspacesScreen extends Component {
       );
     }
     return pills;
+  }
+
+  // the small, non-clickable stage of the workspace's odoo.com task, on a line of its own under
+  // the repo chips and CI pills (the header's pill is the link)
+  odooPill(ws: WorkspaceConfig): ListPill | null {
+    const info = this.tasks.tasks()[taskId(...this.taskTexts(ws))];
+    if (!info) return null;
+    const cls = stageClass(info.stage);
+    return {
+      key: "odoo",
+      // a stage with no colour of its own (plain, or cancelled: .wt-pill.merged is green) stays
+      // the pill's base grey — not .none, which is bare text
+      cls: `${cls === "merged" || cls === "other" ? "" : cls} odoo`.trim(),
+      sym: "",
+      label: `Odoo: ${info.stage}`,
+      title: `Odoo task: ${info.name}\nStage: ${info.stage}`,
+    };
   }
 
   // compact relative age ("16m", "3d") of the last intentional action on the

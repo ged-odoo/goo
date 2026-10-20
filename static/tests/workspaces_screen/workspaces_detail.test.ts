@@ -425,6 +425,58 @@ describe("worktree workspace lifecycle", () => {
     expect(app.callsTo("/api/tasks")[0].body).toEqual({ ids: [4939265] });
   });
 
+  it("each list row shows its task's stage as a small non-clickable pill with the details on hover", async () => {
+    const withTask = ws({
+      id: "wt1",
+      name: "with-task",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    const plain = ws({ id: "wt2", name: "no-task", location: "worktree", worktree: { dir: "/x" } });
+    await mount([withTask, plain], {
+      active: "wt2", // the task's workspace is not even the selected one
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": {
+          ok: true,
+          tasks: { "4939265": { name: "Fix the thing", stage: "In Progress" } },
+        },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-item .wt-pill.odoo"));
+    const pills = [...app.root.querySelectorAll<HTMLElement>(".wt-item .wt-pill.odoo")];
+    expect(pills).toHaveLength(1); // only the workspace that names a task
+    expect(pills[0].textContent?.trim()).toBe("Odoo: In Progress");
+    expect(pills[0].tagName).toBe("SPAN"); // the row is a button: no link inside it
+    expect(pills[0].classList.contains("progress")).toBe(true);
+    expect(pills[0].title).toBe("Odoo task: Fix the thing\nStage: In Progress");
+    expect(pills[0].closest(".wt-item")?.textContent).toContain("with-task");
+    // on a line of its own, so the CI / merge pills keep their room
+    expect(pills[0].closest(".wt-item-bot")).toBeNull();
+    expect(pills[0].parentElement?.classList.contains("wt-item-odoo")).toBe(true);
+  });
+
+  it("an uncoloured stage keeps the grey pill, not bare text", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], {
+      active: "wt1",
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": { ok: true, tasks: { "4939265": { name: "Fix", stage: "Bug Fixes" } } },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-item .wt-pill.odoo"));
+    const pill = app.root.querySelector(".wt-item .wt-pill.odoo")!;
+    expect(pill.classList.contains("none")).toBe(false); // .wt-pill.none has no background
+    expect(pill.className.trim().split(/\s+/).sort()).toEqual(["odoo", "wt-pill"]);
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });
