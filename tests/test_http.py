@@ -245,6 +245,25 @@ class PostRoutesTest(ServerTestCase):
         self.assertEqual((status, body), (200, {"ok": True}))
         self.assertIn("hello log", out.getvalue())
 
+    def test_tasks_are_opt_in_and_the_key_only_comes_from_the_environment(self):
+        class FakeTasks:
+            calls = []
+
+            def read(self, *args):
+                self.calls.append(args)
+                return {"7": {"name": "t", "stage": "Done"}}, None
+
+        fake = FakeTasks()
+        env = {"GOO_ODOO_API_KEY": "secret", "GOO_ODOO_URL": "https://odoo.test"}
+        with mock.patch.object(server, "TASKS", fake), mock.patch.dict(os.environ, env):
+            status, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
+            self.assertEqual((status, body["ok"], fake.calls), (200, False, []))  # setting off
+
+            self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
+            _, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
+        self.assertEqual(body, {"ok": True, "tasks": {"7": {"name": "t", "stage": "Done"}}})
+        self.assertEqual(fake.calls, [("https://odoo.test", "secret", [7], "")])
+
     def test_route_success_and_error_through_a_swapped_singleton(self):
         db = _FakeDatabase({"keep", "gone"})
         with mock.patch.object(server, "DATABASE", db):

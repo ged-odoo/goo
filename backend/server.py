@@ -1011,6 +1011,7 @@ WORKSPACES = WorkspaceManager(BUS)
 # A `refresh` flag on the read endpoints bypasses the cache (the UI's manual Refresh).
 GITHUB = services.GitHubService(effects, TTLCache(600))
 RUNBOT = services.RunbotService(effects, TTLCache(300))
+TASKS = services.TaskService(effects)
 MERGEBOT = services.MergebotService(effects, TTLCache(8 * 3600))  # 8h TTL (states change slowly)
 DATABASE = services.DatabaseService(effects, TTLCache(60))
 # git on the user's repos — uncached (branch reads are volatile + fast); notify
@@ -1773,6 +1774,24 @@ def _api_prs_review_status(body: dict[str, Any]) -> dict[str, Any]:
 def _api_prs_review_requests(body: dict[str, Any]) -> dict[str, Any]:
     prs, error = GITHUB.review_requests(str(body["query"]))
     return {"ok": error is None, "prs": prs, **({"error": error} if error else {})}
+
+
+@post_route("/api/tasks", "ids:list")
+def _api_tasks(body: dict[str, Any]) -> dict[str, Any]:
+    """The stage of Odoo tasks. Opt-in (the `odoo_tasks` setting); the API key only ever
+    comes from the GOO_ODOO_API_KEY environment variable — never from the config file,
+    which may be committed — and GOO_ODOO_URL / GOO_ODOO_DB pick another instance than
+    odoo.com.
+    An empty `ids` just reports whether the key is there."""
+    if not (CONFIG.get().get("config") or {}).get("odoo_tasks"):
+        return {"ok": False, "tasks": {}, "error": "disabled in the settings"}
+    tasks, error = TASKS.read(
+        os.environ.get("GOO_ODOO_URL") or "https://www.odoo.com",
+        os.environ.get("GOO_ODOO_API_KEY", ""),
+        body["ids"],
+        os.environ.get("GOO_ODOO_DB", ""),
+    )
+    return {"ok": error is None, "tasks": tasks, **({"error": error} if error else {})}
 
 
 @post_route("/api/prs/close", "repo", "number")
