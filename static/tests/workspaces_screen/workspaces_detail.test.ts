@@ -582,6 +582,26 @@ describe("worktree workspace lifecycle", () => {
     });
   });
 
+  it("an uncoloured stage keeps the grey pill, not bare text", async () => {
+    const withTask = ws({
+      id: "wt1",
+      location: "worktree",
+      worktree: { dir: "/home/odoo/work-trees/wt1" },
+      checkouts: [{ repo: "community", branch: "master-opw-4939265-fix-gito" }],
+    });
+    await mount([withTask], {
+      active: "wt1",
+      config: { odoo_tasks: true },
+      routes: {
+        "/api/tasks": { ok: true, tasks: { "4939265": { name: "Fix", stage: "Bug Fixes" } } },
+      },
+    });
+    await waitFor(app, () => !!app.root.querySelector(".wt-item .wt-pill.odoo"));
+    const pill = app.root.querySelector(".wt-item .wt-pill.odoo")!;
+    expect(pill.classList.contains("none")).toBe(false); // .wt-pill.none has no background
+    expect(pill.className.trim().split(/\s+/).sort()).toEqual(["odoo", "wt-pill"]);
+  });
+
   it("the main workspace has /odoo and /web/tests too, enabled once its server runs", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha" });

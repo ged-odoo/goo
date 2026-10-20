@@ -862,7 +862,9 @@ export class WorkspacesScreen extends Component {
     const cls = stageClass(info.stage);
     return {
       key: "odoo",
-      cls: `${cls === "merged" || cls === "other" ? "none" : cls} odoo`, // .wt-pill has no cancelled / plain colour of its own
+      // a stage with no colour of its own (plain, or cancelled: .wt-pill.merged is green) stays
+      // the pill's base grey — not .none, which is bare text
+      cls: `${cls === "merged" || cls === "other" ? "" : cls} odoo`.trim(),
       sym: "",
       label: `Odoo: ${info.stage}`,
       title: `Odoo task: ${info.name}\nStage: ${info.stage}`,
