@@ -561,6 +561,7 @@ describe("requested of you", () => {
     github: "odoo/odoo",
     number: 99,
     title: "[FIX] web: something",
+    body: "**Task**: https://www.odoo.com/odoo/project/133/tasks/3969567",
     url: "https://github.com/odoo/odoo/pull/99",
     author: "bob",
     draft: false,
@@ -627,6 +628,23 @@ describe("requested of you", () => {
       .filter((c) => (c.body as { refresh: boolean }).refresh)
       .flatMap((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
     expect(mergebot).toContain(99);
+  });
+
+  it("links the odoo.com task a requested PR names, and only then", async () => {
+    app = await mount(
+      {
+        "/api/prs/review-requests": {
+          ok: true,
+          prs: [requested, { ...requested, number: 98, title: "other", body: "" }],
+        },
+      },
+      { review_requests: true },
+    );
+    const rows = [...app.root.querySelectorAll<HTMLElement>(".rq-card .rl-row")];
+    expect(rows[0].querySelector<HTMLAnchorElement>("a.rev-task")?.href).toBe(
+      "https://www.odoo.com/odoo/all-tasks/3969567",
+    );
+    expect(rows[1].querySelector("a.rev-task")).toBeNull(); // #98 names no task
   });
 
   it("shows a failed search instead of an empty list", async () => {
