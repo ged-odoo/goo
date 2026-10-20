@@ -16226,6 +16226,8 @@ var WorkspacesScreen = class extends Component {
                         <span t-if="pill.sym" class="wt-pill-sym" t-out="pill.sym"/><t t-out="pill.label"/>
                       </span>
                     </span>
+                    <t t-set="odoo" t-value="this.odooPill(row.ws)"/>
+                    <span t-if="odoo" class="wt-item-odoo"><span class="wt-pill" t-att-class="odoo.cls" t-att-title="odoo.title" t-out="odoo.label"/></span>
                   </button>
                 </div>
               </t>
@@ -16433,6 +16435,12 @@ var WorkspacesScreen = class extends Component {
   // collapsed category ids
   setup() {
     this.db.load();
+    useEffect(() => {
+      for (const ws of this.config.config.workspaces || []) {
+        const id = taskId(...this.taskTexts(ws));
+        if (id) this.tasks.want(id);
+      }
+    });
     const closeMenu = () => {
       if (this.menuOpen()) this.menuOpen.set(false);
       if (this.orderMenuOpen()) this.orderMenuOpen.set(false);
@@ -16804,6 +16812,23 @@ var WorkspacesScreen = class extends Component {
       );
     }
     return pills;
+  }
+  // the small, non-clickable stage of the workspace's odoo.com task, on a line of its own under
+  // the repo chips and CI pills (the header's pill is the link)
+  odooPill(ws) {
+    const info = this.tasks.tasks()[taskId(...this.taskTexts(ws))];
+    if (!info) return null;
+    const cls = stageClass(info.stage);
+    return {
+      key: "odoo",
+      // a stage with no colour of its own (plain, or cancelled: .wt-pill.merged is green) stays
+      // the pill's base grey — not .none, which is bare text
+      cls: `${cls === "merged" || cls === "other" ? "" : cls} odoo`.trim(),
+      sym: "",
+      label: `Odoo: ${info.stage}`,
+      title: `Odoo task: ${info.name}
+Stage: ${info.stage}`
+    };
   }
   // compact relative age ("16m", "3d") of the last intentional action on the
   // workspace — the same timestamp the "recently used" order sorts on
