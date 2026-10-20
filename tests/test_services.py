@@ -1110,7 +1110,8 @@ class MemoryServiceTest(unittest.TestCase):
 class GitHubServiceTest(unittest.TestCase):
     def test_prs_maps_ci_rollup(self):
         payload = (
-            '[{"number": 5, "title": "t", "url": "u", "state": "OPEN", "isDraft": false,'
+            '[{"number": 5, "title": "t", "body": "fix\\n\\ntask-123", "url": "u",'
+            ' "state": "OPEN", "isDraft": false,'
             ' "headRefName": "br", "updatedAt": "x", "statusCheckRollup": ['
             '{"context": "ci/runbot", "state": "SUCCESS", "targetUrl": "ru"},'
             '{"context": "ci/style", "state": "FAILURE", "targetUrl": "su"}]}]'
@@ -1129,6 +1130,7 @@ class GitHubServiceTest(unittest.TestCase):
         self.assertEqual(pr["state"], "open")  # OPEN → open
         self.assertFalse(pr["draft"])  # isDraft → draft
         self.assertEqual(pr["updated_at"], "x")  # snake_case on the wire
+        self.assertEqual(pr["body"], "fix\n\ntask-123")  # where the task reference lives
 
     def test_prs_reports_gh_error(self):
         io = FakeIO(run_result=completed(returncode=1, stderr="gh: not logged in"))
@@ -1259,7 +1261,7 @@ class GitHubServiceTest(unittest.TestCase):
                     "--repo",
                     "odoo/odoo",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ]
             ],
         )

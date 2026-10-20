@@ -116,7 +116,7 @@ class GitHubService:
                     "--limit",
                     "200",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ],
                 timeout=30,
             )
@@ -129,6 +129,7 @@ class GitHubService:
                             github=gh_repo,
                             number=pr.get("number"),
                             title=pr.get("title", ""),
+                            body=pr.get("body") or "",
                             url=pr.get("url", ""),
                             state=(pr.get("state") or "").lower(),  # OPEN → open
                             branch=pr.get("headRefName", ""),
@@ -195,7 +196,7 @@ class GitHubService:
                     "--limit",
                     "10",
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ],
                 timeout=30,
             )
@@ -214,6 +215,7 @@ class GitHubService:
                 github=gh_repo,
                 number=pr.get("number"),
                 title=pr.get("title", ""),
+                body=pr.get("body") or "",
                 url=pr.get("url", ""),
                 state=(pr.get("state") or "").lower(),
                 branch=pr.get("headRefName", ""),
@@ -259,7 +261,7 @@ class GitHubService:
                     "--repo",
                     gh_repo,
                     "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
+                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
                 ],
                 timeout=30,
             )
@@ -273,6 +275,7 @@ class GitHubService:
                 github=gh_repo,
                 number=pr.get("number"),
                 title=pr.get("title", ""),
+                body=pr.get("body") or "",
                 url=pr.get("url", ""),
                 state=(pr.get("state") or "").lower(),
                 branch=pr.get("headRefName", ""),
