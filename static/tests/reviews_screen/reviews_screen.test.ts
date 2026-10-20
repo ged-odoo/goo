@@ -615,6 +615,15 @@ describe("requested of you", () => {
     expect(badges).toEqual(["To review", "Commented"]);
   });
 
+  it("asks the status of each requested PR on its own, so a slow one doesn't hold the others", async () => {
+    app = await mountRequested();
+    const asked = app
+      .callsTo("/api/prs/review-status")
+      .map((c) => (c.body as { prs: { number: number }[] }).prs.map((p) => p.number));
+    expect(asked.every((prs) => prs.length === 1)).toBe(true);
+    expect(asked.flat()).toEqual(expect.arrayContaining([98, 99]));
+  });
+
   it("Refresh re-asks the status of the requested PRs, bypassing the caches", async () => {
     app = await mountRequested();
     await click(button(app.root, "Refresh"));

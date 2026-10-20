@@ -300,7 +300,8 @@ class GitHubService:
         if refresh:
             for gh_repo, number in uniq:
                 self.cache.invalidate(("review", gh_repo, number))
-        with ThreadPoolExecutor(max_workers=min(8, len(uniq))) as pool:
+        self._me()  # resolved once here, not by every PR's thread at the same time
+        with ThreadPoolExecutor(max_workers=min(4, len(uniq))) as pool:
             statuses = pool.map(self._review_status, uniq)
         return {
             f"{gh_repo}#{number}": s for (gh_repo, number), s in zip(uniq, statuses, strict=True)
@@ -328,19 +329,13 @@ class GitHubService:
         always look "still requested"."""
         login = self._me()
         if not login:
-            return "to_review"
-        with ThreadPoolExecutor(max_workers=3) as pool:  # independent calls, one round trip
-            reviews = pool.submit(
-                self._my_activity_times, gh_repo, number, login, "pulls", "reviews", "submitted_at"
-            )
-            issue_comments = pool.submit(
-                self._my_activity_times, gh_repo, number, login, "issues", "comments", "created_at"
-            )
-            inline_comments = pool.submit(
-                self._my_activity_times, gh_repo, number, login, "pulls", "comments", "created_at"
-            )
-            my_reviews = reviews.result()
-            my_comments = issue_comments.result() + inline_comments.result()
+            raise _FetchFailed
+        my_reviews = self._my_activity_times(
+            gh_repo, number, login, "pulls", "reviews", "submitted_at"
+        )
+        my_comments = self._my_activity_times(
+            gh_repo, number, login, "issues", "comments", "created_at"
+        ) + self._my_activity_times(gh_repo, number, login, "pulls", "comments", "created_at")
         if not my_reviews and not my_comments:
             return "to_review"
         last_request_at = self._last_review_request(gh_repo, number, login)
@@ -350,6 +345,26 @@ class GitHubService:
             return "commented"
         return "to_review"
 
+    def _rest(self, path: str, jq: str) -> str:
+        """stdout of `gh api <path> --paginate --jq <jq>`. A call normally answers in well under
+        a second but now and then stalls for 20s+, so it gets a short timeout and one retry.
+        Raises _FetchFailed when gh fails."""
+        self.io.log_request(f"gh api {path} --paginate")
+        cmd = ["gh", "api", path, "--paginate", "--jq", jq]
+        for attempt in (1, 2):
+            try:
+                r = self.io.run(cmd, timeout=8)
+            except subprocess.TimeoutExpired as e:
+                if attempt == 2:
+                    raise _FetchFailed from e
+                continue
+            except FileNotFoundError as e:
+                raise _FetchFailed from e
+            if r.returncode != 0:
+                raise _FetchFailed
+            return r.stdout
+        raise _FetchFailed  # unreachable
+
     def _my_activity_times(
         self, gh_repo: str, number: int, login: str, kind: str, what: str, field: str
     ) -> list[str]:
@@ -357,26 +372,11 @@ class GitHubService:
         (a REST call: `gh pr view` goes through GraphQL, which can hang for 30s). A pending
         review has no `submitted_at`, so it never counts. Raises _FetchFailed when gh fails,
         so the caller doesn't cache a guess."""
-        path = f"repos/{gh_repo}/{kind}/{number}/{what}"
-        self.io.log_request(f"gh api {path} --paginate")
-        try:
-            r = self.io.run(
-                [
-                    "gh",
-                    "api",
-                    path,
-                    "--paginate",
-                    "--jq",
-                    f'.[] | "\\(.user.login) \\(.{field})"',
-                ],
-                timeout=30,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            raise _FetchFailed from e
-        if r.returncode != 0:
-            raise _FetchFailed
+        out = self._rest(
+            f"repos/{gh_repo}/{kind}/{number}/{what}", f'.[] | "\\(.user.login) \\(.{field})"'
+        )
         times: list[str] = []
-        for line in r.stdout.splitlines():
+        for line in out.splitlines():
             who, _, at = line.strip().partition(" ")
             if who == login and at and at != "null":
                 times.append(at)
@@ -387,26 +387,13 @@ class GitHubService:
         timestamp, "" if never) — from the issue timeline, since a PR's current
         `reviewRequests` doesn't carry timing and (per above) often doesn't clear
         at all. Raises _FetchFailed when gh fails."""
-        self.io.log_request(f"gh api repos/{gh_repo}/issues/{number}/timeline --paginate")
-        try:
-            r = self.io.run(
-                [
-                    "gh",
-                    "api",
-                    f"repos/{gh_repo}/issues/{number}/timeline",
-                    "--paginate",
-                    "--jq",
-                    '.[] | select(.event=="review_requested") '
-                    '| {login: (.requested_reviewer.login // ""), at: .created_at}',
-                ],
-                timeout=30,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            raise _FetchFailed from e
-        if r.returncode != 0:
-            raise _FetchFailed
+        out = self._rest(
+            f"repos/{gh_repo}/issues/{number}/timeline",
+            '.[] | select(.event=="review_requested") '
+            '| {login: (.requested_reviewer.login // ""), at: .created_at}',
+        )
         at_times = []
-        for line in r.stdout.splitlines():
+        for line in out.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -450,9 +437,11 @@ class GitHubService:
             self.io.log_request("gh api user --jq .login")
             try:
                 r = self.io.run(["gh", "api", "user", "--jq", ".login"], timeout=15)
-                self._login = r.stdout.strip() if r.returncode == 0 else ""
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                self._login = ""
+                return ""  # not cached: the next call asks again
+            if r.returncode != 0:
+                return ""
+            self._login = r.stdout.strip()
         return self._login
 
     @staticmethod

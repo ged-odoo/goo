@@ -10424,6 +10424,7 @@ var ClaudePlugin = class extends Plugin {
 };
 
 // static/src/reviews_screen/reviews_plugin.ts
+var REVIEW_STATUS_PARALLEL = 4;
 var ReviewsPlugin = class extends Plugin {
   static sequence = 4;
   prInfo = signal({});
@@ -10500,15 +10501,25 @@ var ReviewsPlugin = class extends Plugin {
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this._pending.add(`rs:${k}`));
     try {
-      const res = await postJSON(
-        "/api/prs/review-status",
-        { prs: todo, refresh: force }
+      const queue = [...todo];
+      const worker = async () => {
+        for (let pr = queue.shift(); pr; pr = queue.shift()) {
+          try {
+            const res = await postJSON(
+              "/api/prs/review-status",
+              { prs: [pr], refresh: force }
+            );
+            const statuses = res.statuses || {};
+            if (Object.keys(statuses).length) {
+              this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
+            }
+          } catch {
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(REVIEW_STATUS_PARALLEL, todo.length) }, worker)
       );
-      const statuses = res.statuses || {};
-      if (Object.keys(statuses).length) {
-        this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
-      }
-    } catch {
     } finally {
       keys.forEach((k) => this._pending.delete(`rs:${k}`));
     }

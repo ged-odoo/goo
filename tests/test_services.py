@@ -1377,6 +1377,40 @@ class GitHubServiceTest(unittest.TestCase):
         io._runs["timeline"] = completed(stdout='{"login": "aab", "at": "2025-12-01T00:00:00Z"}\n')
         self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
 
+    def test_review_statuses_retries_a_stalled_call_once(self):
+        class StallOnce(FakeIO):
+            stalled = False
+
+            def run(self, cmd, **kwargs):
+                if "pulls/1/reviews" in " ".join(cmd) and not self.stalled:
+                    self.stalled = True
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                return super().run(cmd, **kwargs)
+
+        io = StallOnce(
+            runs={
+                "gh api user": completed(stdout="aab"),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-02T00:00:00Z\n"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        statuses = svc.review_statuses([{"github": "odoo/odoo", "number": 1}])
+        self.assertEqual(statuses, {"odoo/odoo#1": "reviewed"})
+        self.assertLessEqual(max(k["timeout"] for k in io.run_kwargs), 15)  # short, not 30s
+
+    def test_review_statuses_retries_the_login_after_a_failed_lookup(self):
+        io = FakeIO(
+            runs={
+                "gh api user": completed(returncode=1, stderr="timeout"),
+                "pulls/1/reviews": completed(stdout="aab 2026-01-02T00:00:00Z\n"),
+            }
+        )
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pair = [{"github": "odoo/odoo", "number": 1}]
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "to_review"})
+        io._runs["gh api user"] = completed(stdout="aab")
+        self.assertEqual(svc.review_statuses(pair), {"odoo/odoo#1": "reviewed"})
+
     def test_review_statuses_to_review_when_never_reviewed(self):
         io = FakeIO(
             runs={

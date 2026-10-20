@@ -13,6 +13,8 @@ import type { PullRequestWire } from "../core/models.ts";
 import { Plugin, signal } from "@odoo/owl";
 
 // GitHubService.review_statuses: has the authenticated user reviewed it
+const REVIEW_STATUS_PARALLEL = 4; // review-status requests in flight at once
+
 export type ReviewStatus = "reviewed" | "commented" | "to_review";
 
 // a {github, branch} pair for the sibling-PR lookup (GitHubService.prs_for_branches)
@@ -119,17 +121,29 @@ export class ReviewsPlugin extends Plugin {
     const keys = todo.map((p) => `${p.github}#${p.number}`);
     keys.forEach((k) => this._pending.add(`rs:${k}`));
     try {
-      const res = await postJSON<{ statuses?: Record<string, ReviewStatus> }>(
-        "/api/prs/review-status",
-        { prs: todo, refresh: force },
+      // one PR per request, a few at a time: each badge shows as soon as its own answer
+      // lands instead of all waiting for the slowest PR of the batch
+      const queue = [...todo];
+      const worker = async () => {
+        for (let pr = queue.shift(); pr; pr = queue.shift()) {
+          try {
+            const res = await postJSON<{ statuses?: Record<string, ReviewStatus> }>(
+              "/api/prs/review-status",
+              { prs: [pr], refresh: force },
+            );
+            // no write (so no effect re-run) when nothing arrived
+            const statuses = res.statuses || {};
+            if (Object.keys(statuses).length) {
+              this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
+            }
+          } catch {
+            /* leave this PR's status blank on failure */
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(REVIEW_STATUS_PARALLEL, todo.length) }, worker),
       );
-      // same guard as loadPrInfo: no write (so no effect re-run) when nothing arrived
-      const statuses = res.statuses || {};
-      if (Object.keys(statuses).length) {
-        this.reviewStatus.set({ ...this.reviewStatus(), ...statuses });
-      }
-    } catch {
-      /* leave status blank on failure */
     } finally {
       keys.forEach((k) => this._pending.delete(`rs:${k}`));
     }
