@@ -34,11 +34,11 @@ import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../
 import {
   adoptCurrentCheckout,
   categoryOptions,
-  configFromRepos,
   deleteWorkspaceDialog,
   startCreateWorkspace,
-  startNewWorkspaceWizard,
+  startNewWorkspace,
 } from "./dialogs.ts";
+import { configFromRepos } from "./create_dialog.ts";
 import { ClaudeChat } from "./claude_chat.ts";
 import { CodePane } from "./code_pane.ts";
 import { AddonsPane, AssetsPane, TerminalPane, TestsPane } from "./panes.ts";
@@ -1632,7 +1632,7 @@ export class WorkspacesScreen extends Component {
   }
 
   create() {
-    return startNewWorkspaceWizard(this._dialogPlugins());
+    return startNewWorkspace(this._dialogPlugins());
   }
 
   adoptCheckout() {
