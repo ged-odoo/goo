@@ -150,6 +150,21 @@ describe("Topbar — the loaded workspace badge", () => {
     });
   });
 
+  it("the switcher leaves the archived workspaces out, but the loaded one", async () => {
+    await boot({
+      state: { active_workspace: "old-loaded" },
+      config: {
+        workspaces: [
+          ...WORKSPACES,
+          ws({ id: "old", name: "Old", category: "archived" }),
+          ws({ id: "old-loaded", name: "Old loaded", category: "archived" }),
+        ],
+      },
+    });
+    const items = [...app.root.querySelectorAll(".nt-item")].map((b) => b.textContent!.trim());
+    expect(items).toEqual(["Master", "Feature", "Old loaded", "All workspaces →"]);
+  });
+
   it("jumps to the Workspaces screen from the switcher", async () => {
     const es = await boot({
       routes: { "/api/workspaces/status": { ok: true, workspaces: [] } },
