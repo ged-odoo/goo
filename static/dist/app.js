@@ -2219,6 +2219,8 @@ var CodePlugin = class extends Plugin {
   // workspace + repo scope -> its current automatic load. Switching away and back
   // while a request is still running should join it, not start another scan.
   _workspaceLoads = /* @__PURE__ */ new Map();
+  _headPending = /* @__PURE__ */ new Set();
+  // branchKeys a head-ref PR lookup is asking right now
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed(() => this._groups());
   // hydrate the store from the instant-paint cache once, so a reload doesn't flash
@@ -2338,7 +2340,10 @@ var CodePlugin = class extends Plugin {
   // subprocesses. null = every repo (the Branches/PRs tabs, which show all).
   // `statusScope` ({branches: Set, prs: Set}) narrows a forced load's runbot/mergebot
   // re-scrape the same way; null = re-ask everything (the full-list refreshers).
-  async load(force = false, prRepoIds = null, branchRepoIds = null, statusScope = null) {
+  // `headKeys` (branchKey Set) narrows the head-ref PR lookup to those branches — a
+  // screen showing only some branches (the Workspaces screen: its workspaces'
+  // checkouts) needn't ask GitHub about every other local branch; null = every one.
+  async load(force = false, prRepoIds = null, branchRepoIds = null, statusScope = null, headKeys = null) {
     this.loading.set(true);
     this.error.set("");
     if (force) {
@@ -2378,15 +2383,15 @@ var CodePlugin = class extends Plugin {
       const branchRepos = this.store.repoStatusList();
       localStorage.setItem(PRS_CACHE_KEY, JSON.stringify({ at, branchRepos }));
     }
-    this.loadHeadPrs(force, branchRepoIds);
+    this.loadHeadPrs(force, branchRepoIds, headKeys);
   }
   // Look up PRs by head ref for branches an authored `prs()` fetch left without one
   // — forward ports (fw-bot authored) and colleagues' PRs. Only remote, non-base
   // branches with no authored PR are asked, and only once each (null is cached as
   // "looked up, none found") unless force re-asks. `repoIds` (a Set) limits the walk
-  // to those repos; null = all. Never triggered from an effect that reads groups(),
+  // to those repos, `keys` (branchKey Set) to those branches; null = all. Never triggered from an effect that reads groups(),
   // so updating headPrs can't re-drive a load.
-  async loadHeadPrs(force = false, repoIds = null) {
+  async loadHeadPrs(force = false, repoIds = null, keys = null) {
     const prIndex = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -2402,7 +2407,8 @@ var CodePlugin = class extends Plugin {
       for (const b of repo.branches) {
         if (!b.remote || BASE_BRANCH_RE.test(b.name)) continue;
         const key = branchKey(repo.id, b.name);
-        if (prIndex[key] || !force && key in have) continue;
+        if (keys && !keys.has(key)) continue;
+        if (prIndex[key] || !force && (key in have || this._headPending.has(key))) continue;
         const ghKey = `${github}#${b.name}`;
         if (seen.has(ghKey)) continue;
         seen.add(ghKey);
@@ -2410,6 +2416,8 @@ var CodePlugin = class extends Plugin {
       }
     }
     if (!pairs.length) return;
+    const pending = pairs.map((p) => branchKey(p.id, p.branch));
+    pending.forEach((k) => this._headPending.add(k));
     try {
       const data = await postJSON("/api/prs/for-branches", {
         branches: pairs.map((p) => ({ github: p.github, branch: p.branch })),
@@ -2425,6 +2433,8 @@ var CodePlugin = class extends Plugin {
       this.headPrs.set(next);
     } catch (e) {
       this.error.set(e.message);
+    } finally {
+      pending.forEach((k) => this._headPending.delete(k));
     }
   }
   // The last time every piece of a workspace's code view was refreshed. A workspace
@@ -2455,7 +2465,7 @@ var CodePlugin = class extends Plugin {
   // Selection-driven workspace loads are cache-aware for ten minutes. Manual
   // Refresh passes force=true and always bypasses this frontend freshness guard
   // (and the backend's PR cache through load()).
-  loadWorkspace(workspaceId, repoIds, force = false, statusScope = null) {
+  loadWorkspace(workspaceId, repoIds, force = false, statusScope = null, headKeys = null) {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     const refreshedAt = this.workspaceRefreshedAt(ids);
     if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
@@ -2464,8 +2474,8 @@ var CodePlugin = class extends Plugin {
     const key = `${workspaceId}:${JSON.stringify([...ids].sort())}`;
     const pending = this._workspaceLoads.get(key);
     if (pending)
-      return force ? pending.then(() => this.loadWorkspace(workspaceId, ids, true, statusScope)) : pending;
-    const request = this.load(force, ids, ids, statusScope).then(() => true).finally(() => {
+      return force ? pending.then(() => this.loadWorkspace(workspaceId, ids, true, statusScope, headKeys)) : pending;
+    const request = this.load(force, ids, ids, statusScope, headKeys).then(() => true).finally(() => {
       if (this._workspaceLoads.get(key) === request) {
         this._workspaceLoads.delete(key);
       }
@@ -15235,7 +15245,7 @@ var WorkspacesScreen = class extends Component {
           <div class="wt-list-title">
             <h1>Workspaces</h1>
             <span class="wt-sp"/>
-            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
+            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh the runbot / mergebot status of every workspace but the archived ones" t-on-click="() => this.refreshStatuses()">
               <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
               <t t-else="" t-out="this.refreshIcon"/>
             </button>
@@ -15518,7 +15528,7 @@ var WorkspacesScreen = class extends Component {
       if (!ids.size || key === loadedWsKey) return;
       loadedWsKey = key;
       untrack(() => {
-        this.code.loadWorkspace(ws.id, ids);
+        this.code.loadWorkspace(ws.id, ids, false, null, this._headKeys([ws]));
         if (this.wt.isWorktree(ws)) {
           const dir = this.wt.dirPath(ws);
           this.code.loadWorktreeBranches(
@@ -15540,7 +15550,9 @@ var WorkspacesScreen = class extends Component {
       const key = [...ids].sort().join(",");
       if (!ids.size || key === loadedIds) return;
       loadedIds = key;
-      untrack(() => this.code.load(false, ids, ids));
+      untrack(
+        () => this.code.load(false, ids, ids, null, this._headKeys(this._polledWorkspaces(false)))
+      );
     });
     useEffect(() => {
       const branches = this._runbotBranches();
@@ -15548,6 +15560,19 @@ var WorkspacesScreen = class extends Component {
       const prs = this._prs();
       if (prs.length) this.code.loadMergebot(prs);
     });
+  }
+  // the branches whose PR is looked up by head ref (forward ports, colleagues'
+  // PRs) — the given workspaces' checkouts and what their repos have checked out
+  // now — rather than every local branch of their repos (one GitHub ask each)
+  _headKeys(list) {
+    const current = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r.current]));
+    const keys = /* @__PURE__ */ new Set();
+    for (const ws of list)
+      for (const c of ws.checkouts || []) {
+        keys.add(branchKey(c.repo, c.branch));
+        if (current[c.repo]) keys.add(branchKey(c.repo, current[c.repo]));
+      }
+    return keys;
   }
   // every repo referenced by any workspace's checkouts (for the list-wide load)
   _listRepoIds() {
@@ -15562,7 +15587,13 @@ var WorkspacesScreen = class extends Component {
   refreshWorkspace(ws) {
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
     if (!ids.size) return;
-    return this.code.loadWorkspace(ws.id, ids, true, this._workspaceStatusScope(ws));
+    return this.code.loadWorkspace(
+      ws.id,
+      ids,
+      true,
+      this._workspaceStatusScope(ws),
+      this._headKeys([ws])
+    );
   }
   _workspaceStatusScope(ws) {
     const byId = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r]));
@@ -15608,20 +15639,21 @@ var WorkspacesScreen = class extends Component {
     });
   }
   // the workspaces whose runbot / mergebot status is worth scraping: the active
-  // ones, plus the selected one even if it is archived — archived means dormant
-  // (don't poll a graveyard of dead workspaces on every visit), but a workspace
-  // you explicitly opened is not dormant, and its detail header needs the state.
-  _polledWorkspaces() {
-    const selected = this.wt.selectedId();
+  // ones — archived means dormant (don't poll a graveyard of dead workspaces on
+  // every visit). `withSelected` adds the selected one even if it is archived: a
+  // workspace you explicitly opened is not dormant, and its detail header needs
+  // the state.
+  _polledWorkspaces(withSelected) {
+    const selected = withSelected ? this.wt.selectedId() : null;
     return (this.config.config.workspaces || []).filter(
       (ws) => ws.category !== ARCHIVED_CATEGORY || ws.id === selected
     );
   }
   // branches needing the scraped runbot fallback: present, ours, pushed (or a base
   // branch), and not already covered by a PR's GitHub CI rollup
-  _runbotBranches() {
+  _runbotBranches(withSelected = true) {
     const seen = /* @__PURE__ */ new Set();
-    for (const ws of this._polledWorkspaces()) {
+    for (const ws of this._polledWorkspaces(withSelected)) {
       for (const row of this.wsRows(ws)) {
         if (!row.present || this.code.isExternalRepo(row.github)) continue;
         if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
@@ -15633,10 +15665,10 @@ var WorkspacesScreen = class extends Component {
     return [...seen];
   }
   // the unique {github, number} of every PR across the polled workspaces (for mergebot)
-  _prs() {
+  _prs(withSelected = true) {
     const seen = /* @__PURE__ */ new Set();
     const prs = [];
-    for (const ws of this._polledWorkspaces()) {
+    for (const ws of this._polledWorkspaces(withSelected)) {
       for (const row of this.prRows(ws)) {
         if (this.code.isExternalRepo(row.github)) continue;
         const key = `${row.github}#${row.pr.number}`;
@@ -15647,13 +15679,15 @@ var WorkspacesScreen = class extends Component {
     }
     return prs;
   }
-  // the list header's ⟳: force-refresh every workspace's runbot/mergebot status,
-  // spinning until both re-scrapes land (badges stay visible, update in place)
+  // the list header's ⟳: force-refresh the runbot/mergebot status of every
+  // workspace but the archived ones (even a selected archived one — its detail
+  // Refresh is the way to re-scrape it), spinning until both re-scrapes land
+  // (badges stay visible, update in place)
   async refreshStatuses() {
     if (this.refreshingStatuses()) return;
     this.refreshingStatuses.set(true);
     try {
-      await this.code.refreshStatuses(this._runbotBranches(), this._prs());
+      await this.code.refreshStatuses(this._runbotBranches(false), this._prs(false));
     } finally {
       this.refreshingStatuses.set(false);
     }
@@ -16359,7 +16393,10 @@ var WorkspacesScreen = class extends Component {
     if (this.removeBlocked(ws)) return;
     if (this.isWt(ws)) return this.wt.remove(ws);
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-    await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
+    await Promise.all([
+      this.code.load(false, ids, ids, null, this._headKeys([ws])),
+      this.db.load()
+    ]);
     return deleteWorkspaceDialog(ws, {
       config: this.config,
       code: this.code,

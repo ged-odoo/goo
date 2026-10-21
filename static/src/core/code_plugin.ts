@@ -177,6 +177,7 @@ export class CodePlugin extends Plugin {
   // workspace + repo scope -> its current automatic load. Switching away and back
   // while a request is still running should join it, not start another scan.
   _workspaceLoads = new Map<string, Promise<unknown>>();
+  _headPending = new Set<string>(); // branchKeys a head-ref PR lookup is asking right now
   // grouped, sorted view model — recomputed only when its inputs change
   groups = computed((): CodeGroups => this._groups());
 
@@ -324,11 +325,15 @@ export class CodePlugin extends Plugin {
   // subprocesses. null = every repo (the Branches/PRs tabs, which show all).
   // `statusScope` ({branches: Set, prs: Set}) narrows a forced load's runbot/mergebot
   // re-scrape the same way; null = re-ask everything (the full-list refreshers).
+  // `headKeys` (branchKey Set) narrows the head-ref PR lookup to those branches — a
+  // screen showing only some branches (the Workspaces screen: its workspaces'
+  // checkouts) needn't ask GitHub about every other local branch; null = every one.
   async load(
     force = false,
     prRepoIds: Set<string> | null = null,
     branchRepoIds: Set<string> | null = null,
     statusScope: StatusScope | null = null,
+    headKeys: Set<string> | null = null,
   ): Promise<void> {
     this.loading.set(true);
     this.error.set("");
@@ -386,16 +391,20 @@ export class CodePlugin extends Plugin {
     // same repo scope as the branch fetch (each lookup is a `gh` call; a one-workspace
     // load must not re-ask every other repo's branches). Fire and forget — they
     // stream into the view as they resolve.
-    this.loadHeadPrs(force, branchRepoIds);
+    this.loadHeadPrs(force, branchRepoIds, headKeys);
   }
 
   // Look up PRs by head ref for branches an authored `prs()` fetch left without one
   // — forward ports (fw-bot authored) and colleagues' PRs. Only remote, non-base
   // branches with no authored PR are asked, and only once each (null is cached as
   // "looked up, none found") unless force re-asks. `repoIds` (a Set) limits the walk
-  // to those repos; null = all. Never triggered from an effect that reads groups(),
+  // to those repos, `keys` (branchKey Set) to those branches; null = all. Never triggered from an effect that reads groups(),
   // so updating headPrs can't re-drive a load.
-  async loadHeadPrs(force = false, repoIds: Set<string> | null = null): Promise<void> {
+  async loadHeadPrs(
+    force = false,
+    repoIds: Set<string> | null = null,
+    keys: Set<string> | null = null,
+  ): Promise<void> {
     const prIndex: Record<string, PullRequest> = {};
     for (const repo of this.prRepos()) {
       for (const pr of repo.prs) prIndex[branchKey(repo.id, pr.branch)] = pr;
@@ -411,7 +420,9 @@ export class CodePlugin extends Plugin {
       for (const b of repo.branches) {
         if (!b.remote || BASE_BRANCH_RE.test(b.name)) continue;
         const key = branchKey(repo.id, b.name);
-        if (prIndex[key] || (!force && key in have)) continue;
+        if (keys && !keys.has(key)) continue;
+        // a lookup already asking for it answers this one too (two loads racing)
+        if (prIndex[key] || (!force && (key in have || this._headPending.has(key)))) continue;
         const ghKey = `${github}#${b.name}`;
         if (seen.has(ghKey)) continue;
         seen.add(ghKey);
@@ -419,6 +430,8 @@ export class CodePlugin extends Plugin {
       }
     }
     if (!pairs.length) return;
+    const pending = pairs.map((p) => branchKey(p.id, p.branch));
+    pending.forEach((k) => this._headPending.add(k));
     try {
       const data = await postJSON<{ prs?: PullRequestWire[] }>("/api/prs/for-branches", {
         branches: pairs.map((p) => ({ github: p.github, branch: p.branch })),
@@ -435,6 +448,8 @@ export class CodePlugin extends Plugin {
       this.headPrs.set(next);
     } catch (e) {
       this.error.set((e as Error).message);
+    } finally {
+      pending.forEach((k) => this._headPending.delete(k));
     }
   }
 
@@ -474,6 +489,7 @@ export class CodePlugin extends Plugin {
     repoIds: Set<string> | string[] | null | undefined,
     force = false,
     statusScope: StatusScope | null = null,
+    headKeys: Set<string> | null = null,
   ): Promise<boolean> {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     const refreshedAt = this.workspaceRefreshedAt(ids);
@@ -487,9 +503,9 @@ export class CodePlugin extends Plugin {
     // load after it; ordinary selection changes can simply share the pending one.
     if (pending)
       return force
-        ? pending.then(() => this.loadWorkspace(workspaceId, ids, true, statusScope))
+        ? pending.then(() => this.loadWorkspace(workspaceId, ids, true, statusScope, headKeys))
         : pending;
-    const request = this.load(force, ids, ids, statusScope)
+    const request = this.load(force, ids, ids, statusScope, headKeys)
       .then(() => true)
       .finally(() => {
         if (this._workspaceLoads.get(key) === request) {
