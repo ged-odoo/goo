@@ -9,7 +9,7 @@ import {
   xml,
 } from "@odoo/owl";
 import type { ComponentConstructor } from "@odoo/owl";
-import { VERSION } from "./config.ts";
+import { ARCHIVED_CATEGORY, VERSION } from "./config.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import { ConfigPlugin } from "./config_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
@@ -47,13 +47,15 @@ export class Topbar extends Component {
           <span class="nt-caret">▾</span>
         </span>
         <div class="nt-menu">
-          <button t-foreach="this.mainWorkspaces" t-as="ws" t-key="ws.id" class="nt-item"
-                  t-att-class="{active: ws.id === this.activeId}"
-                  t-att-title="ws.id === this.activeId ? 'the loaded workspace' : 'stop the server, check out its branches and make it current'"
-                  t-on-click="() => this.switchTo(ws)">
-            <span class="nt-item-dot" t-att-class="{on: ws.id === this.activeId}"/>
-            <span class="nt-item-name" t-out="ws.name"/>
-          </button>
+          <div class="nt-list">
+            <button t-foreach="this.mainWorkspaces" t-as="ws" t-key="ws.id" class="nt-item"
+                    t-att-class="{active: ws.id === this.activeId}"
+                    t-att-title="ws.id === this.activeId ? 'the loaded workspace' : 'stop the server, check out its branches and make it current'"
+                    t-on-click="() => this.switchTo(ws)">
+              <span class="nt-item-dot" t-att-class="{on: ws.id === this.activeId}"/>
+              <span class="nt-item-name" t-out="ws.name"/>
+            </button>
+          </div>
           <t t-if="this.runningWorktrees.length">
             <div class="nt-sep"/>
             <button t-foreach="this.runningWorktrees" t-as="wt" t-key="wt.id" class="nt-item"
@@ -136,9 +138,13 @@ export class Topbar extends Component {
   }
 
   // the switcher menu: every main-located workspace (they share the main checkout —
-  // exactly the set "activate" can switch between), in the configured order
+  // exactly the set "activate" can switch between), in the configured order — but
+  // the archived ones (dormant: unarchive one to switch to it), unless it's loaded
   get mainWorkspaces() {
-    return (this.config.config.workspaces || []).filter((w) => w.location !== "worktree");
+    return (this.config.config.workspaces || []).filter(
+      (w) =>
+        w.location !== "worktree" && (w.category !== ARCHIVED_CATEGORY || w.id === this.activeId),
+    );
   }
 
   // worktree workspaces whose own server is up — quick jumps to their screen

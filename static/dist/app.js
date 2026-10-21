@@ -10839,7 +10839,7 @@ var BranchCombobox = class extends Component {
 var CreateWorkspaceDialog = class extends Component {
   static components = { BranchCombobox, AddonsCombobox };
   static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+    <div class="dialog-backdrop cwd-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog cwd" t-on-click.stop="() => {}">
         <h2 class="dialog-title">New workspace</h2>
         <div class="dialog-body" data-form-type="other">
@@ -16882,13 +16882,15 @@ var Topbar = class extends Component {
           <span class="nt-caret">▾</span>
         </span>
         <div class="nt-menu">
-          <button t-foreach="this.mainWorkspaces" t-as="ws" t-key="ws.id" class="nt-item"
-                  t-att-class="{active: ws.id === this.activeId}"
-                  t-att-title="ws.id === this.activeId ? 'the loaded workspace' : 'stop the server, check out its branches and make it current'"
-                  t-on-click="() => this.switchTo(ws)">
-            <span class="nt-item-dot" t-att-class="{on: ws.id === this.activeId}"/>
-            <span class="nt-item-name" t-out="ws.name"/>
-          </button>
+          <div class="nt-list">
+            <button t-foreach="this.mainWorkspaces" t-as="ws" t-key="ws.id" class="nt-item"
+                    t-att-class="{active: ws.id === this.activeId}"
+                    t-att-title="ws.id === this.activeId ? 'the loaded workspace' : 'stop the server, check out its branches and make it current'"
+                    t-on-click="() => this.switchTo(ws)">
+              <span class="nt-item-dot" t-att-class="{on: ws.id === this.activeId}"/>
+              <span class="nt-item-name" t-out="ws.name"/>
+            </button>
+          </div>
           <t t-if="this.runningWorktrees.length">
             <div class="nt-sep"/>
             <button t-foreach="this.runningWorktrees" t-as="wt" t-key="wt.id" class="nt-item"
@@ -16962,9 +16964,12 @@ var Topbar = class extends Component {
     return ws ? ws.name : this.activeId || "";
   }
   // the switcher menu: every main-located workspace (they share the main checkout —
-  // exactly the set "activate" can switch between), in the configured order
+  // exactly the set "activate" can switch between), in the configured order — but
+  // the archived ones (dormant: unarchive one to switch to it), unless it's loaded
   get mainWorkspaces() {
-    return (this.config.config.workspaces || []).filter((w) => w.location !== "worktree");
+    return (this.config.config.workspaces || []).filter(
+      (w) => w.location !== "worktree" && (w.category !== ARCHIVED_CATEGORY || w.id === this.activeId)
+    );
   }
   // worktree workspaces whose own server is up — quick jumps to their screen
   get runningWorktrees() {
