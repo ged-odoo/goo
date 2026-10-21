@@ -5861,163 +5861,6 @@ var RecordList = class extends Component {
 };
 
 // static/src/core/dialogs.ts
-var RemoteBranchDialog = class extends Component {
-  static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
-      <div class="dialog rbd" t-on-click.stop="() => {}">
-        <h2 class="dialog-title">Search branches</h2>
-        <div class="dialog-body">
-          <div class="dialog-field">
-            <label>Branch name</label>
-            <input type="text" class="rbd-input" t-ref="this.inputEl"
-                   placeholder="type to search local + remote…"
-                   t-on-input="(ev) => this.onInput(ev.target.value)"
-                   t-on-keydown="(ev) => this.onKey(ev)"/>
-          </div>
-          <div class="rbd-results">
-            <div t-if="this.searching()" class="rbd-status">Searching remote…</div>
-            <div t-elif="this.searched() and !this.rows().length" class="rbd-status">No matching branches found.</div>
-            <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
-                 class="rbd-row" t-att-class="{selected: this.sel() === r.branch}"
-                 t-on-click="() => this.sel.set(r.branch)">
-              <span class="rbd-branch" t-out="r.branch"/>
-              <span class="rbd-repos">
-                <t t-foreach="r.repos" t-as="rr" t-key="rr.id">
-                  <span class="rbd-repo-tag" t-att-class="rr.local ? 'local' : 'remote'" t-out="rr.id"/>
-                </t>
-              </span>
-            </div>
-          </div>
-        </div>
-        <div class="dialog-foot">
-          <button class="pbtn primary" t-att-disabled="!this.sel()" t-on-click="() => this.ok()">Continue</button>
-          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-  props = useProps({
-    done: t.function(),
-    repoIds: t.any().optional()
-    // not validated at runtime
-  });
-  config = usePlugin(ConfigPlugin);
-  code = usePlugin(CodePlugin);
-  searching = signal(false);
-  // the remote (network) half only — local is instant
-  searched = signal(false);
-  rows = signal([]);
-  sel = signal("");
-  inputEl = signal.ref(HTMLElement);
-  _timer;
-  _query = "";
-  setup() {
-    onMounted(() => this.inputEl()?.focus());
-    const onKey = (e) => {
-      if (e.key === "Escape") this.done(null);
-    };
-    document.addEventListener("keydown", onKey);
-    onWillUnmount(() => {
-      document.removeEventListener("keydown", onKey);
-      clearTimeout(this._timer);
-    });
-  }
-  done(result) {
-    this.props.done(result);
-  }
-  get repoIds() {
-    return this.props.repoIds ? new Set(this.props.repoIds) : null;
-  }
-  onInput(val) {
-    this.sel.set("");
-    clearTimeout(this._timer);
-    this._query = val.trim();
-    if (!this._query) {
-      this.searching.set(false);
-      this.searched.set(false);
-      this.rows.set([]);
-      return;
-    }
-    this._searchLocal(this._query);
-    this.searching.set(true);
-    this._timer = setTimeout(() => this._searchRemote(this._query), 300);
-  }
-  // local branches, from the same {branch, rows: [{repo, ...}]} groups the
-  // Branches screen already holds in memory — no network round-trip
-  _searchLocal(query) {
-    const ids = this.repoIds;
-    const byBranch = /* @__PURE__ */ new Map();
-    for (const g of this.code.groups().list) {
-      if (!g.branch.includes(query)) continue;
-      const repos = g.rows.filter((r) => !ids || ids.has(r.repo)).map((r) => ({ id: r.repo, local: true }));
-      if (repos.length) byBranch.set(g.branch, repos);
-    }
-    this.rows.set([...byBranch.entries()].map(([branch, repos]) => ({ branch, repos })));
-    this.searched.set(true);
-  }
-  async _searchRemote(query) {
-    const ids = this.repoIds;
-    const repos = this.config.config.repos.filter((r) => r.github && (!ids || ids.has(r.id))).map((r) => ({
-      id: r.id,
-      github: r.github,
-      path: r.path,
-      push_remote: r.push_remote,
-      pull_remote: r.pull_remote
-    }));
-    try {
-      const res = await fetch("/api/code/remote-branches/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repos, query })
-      });
-      const data = await res.json();
-      if (query !== this._query || !data.ok) return;
-      const byBranch = /* @__PURE__ */ new Map();
-      for (const { repo, branch, remote } of data.results) {
-        if (!byBranch.has(branch)) byBranch.set(branch, /* @__PURE__ */ new Map());
-        byBranch.get(branch).set(repo, remote);
-      }
-      this._mergeRemote(byBranch);
-    } finally {
-      if (query === this._query) this.searching.set(false);
-    }
-  }
-  // merge the remote results into whatever `_searchLocal` already produced,
-  // tagging each repo local/remote so a repo found in both shows once (as local,
-  // no fetch needed); a remote-only repo carries the git remote name to fetch it
-  // from (the upstream `pull_remote`, or a fork's `push_remote` — see
-  // GitHubService.search_branches), so a caller never guesses the wrong one
-  _mergeRemote(remoteByBranch) {
-    const merged = new Map(
-      this.rows().map((r) => [r.branch, new Map(r.repos.map((x) => [x.id, x]))])
-    );
-    for (const [branch, repoRemotes] of remoteByBranch) {
-      if (!merged.has(branch)) merged.set(branch, /* @__PURE__ */ new Map());
-      for (const [repo, remote] of repoRemotes)
-        if (!merged.get(branch).has(repo))
-          merged.get(branch).set(repo, { id: repo, local: false, remote });
-    }
-    this.rows.set(
-      [...merged.entries()].map(([branch, repoMap]) => ({
-        branch,
-        repos: [...repoMap.values()]
-      }))
-    );
-  }
-  onKey(ev) {
-    if (ev.key === "Enter" && this.sel()) this.ok();
-  }
-  ok() {
-    if (!this.sel()) return;
-    const branch = this.sel();
-    const rowRepos = this.rows().find((r) => r.branch === branch)?.repos || [];
-    const repos = rowRepos.map((r) => r.id);
-    const remoteByRepo = Object.fromEntries(
-      rowRepos.filter((r) => !r.local && r.remote).map((r) => [r.id, r.remote])
-      // filtered
-    );
-    this.done({ branch, repos, remoteByRepo });
-  }
-};
 var CommitsDialog = class extends Component {
   static template = xml`
     <div class="term-panel commits-panel" t-ref="this.drag.handle">
@@ -10735,6 +10578,553 @@ var ReviewPanel = class extends Component {
   }
 };
 
+// static/src/workspaces_screen/create_dialog.ts
+var SOURCES = [
+  { kind: "template", label: "Template" },
+  { kind: "version", label: "Odoo version" },
+  { kind: "local", label: "Local branch" },
+  { kind: "remote", label: "Remote branch" },
+  { kind: "bundle", label: "Runbot bundle" },
+  { kind: "pr", label: "Pull request" }
+];
+var configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting = false) => {
+  const existing = preserveExisting ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch])) : {};
+  return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
+};
+var BranchCombobox = class extends Component {
+  static template = xml`
+    <div class="branch-cb">
+      <input type="text" class="branch-cb-input" t-ref="this.inputEl"
+             t-att-placeholder="this.props.mode === 'local' ? 'type to search your local branches…' : 'type to search the branches on GitHub…'"
+             t-att-value="this.query()"
+             t-on-input="(ev) => this.onInput(ev.target.value)"
+             t-on-keydown="(ev) => this.onKey(ev)"
+             t-on-focus="() => this.open.set(true)"
+             t-on-blur="() => this.open.set(false)"/>
+      <div t-if="this.open() and this.query().trim()" class="rbd-results branch-cb-list" t-ref="this.listEl">
+        <div t-if="this.searching()" class="rbd-status">Searching…</div>
+        <div t-elif="!this.rows().length" class="rbd-status">No matching branches found.</div>
+        <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
+             class="rbd-row" t-att-class="{selected: r_index === this.active()}"
+             t-on-mousedown.prevent="() => this.pick(r)">
+          <span class="rbd-branch" t-out="r.branch"/>
+          <span class="rbd-repos">
+            <t t-foreach="r.repos" t-as="rr" t-key="rr.id">
+              <span class="rbd-repo-tag" t-att-class="rr.local ? 'local' : 'remote'" t-out="rr.id"/>
+            </t>
+          </span>
+        </div>
+      </div>
+    </div>`;
+  props = useProps({
+    mode: t.any(),
+    // not validated at runtime
+    onPick: t.function()
+  });
+  config = usePlugin(ConfigPlugin);
+  code = usePlugin(CodePlugin);
+  query = signal("");
+  rows = signal([]);
+  searching = signal(false);
+  open = signal(false);
+  active = signal(0);
+  // the highlighted row
+  inputEl = signal.ref(HTMLElement);
+  listEl = signal.ref(HTMLElement);
+  _timer;
+  setup() {
+    onMounted(() => this.inputEl()?.focus());
+    onWillUnmount(() => clearTimeout(this._timer));
+  }
+  onInput(val) {
+    this.query.set(val);
+    this.open.set(true);
+    this.active.set(0);
+    clearTimeout(this._timer);
+    const query = val.trim();
+    if (!query) {
+      this.rows.set([]);
+      this.searching.set(false);
+    } else if (this.props.mode === "local") {
+      this._searchLocal(query);
+    } else {
+      this.searching.set(true);
+      this._timer = setTimeout(() => this._searchRemote(query), 300);
+    }
+  }
+  // the branches in the same {branch, rows: [{repo, ...}]} groups the Branches
+  // screen already holds in memory
+  _searchLocal(query) {
+    const rows = [];
+    for (const g of this.code.groups().list) {
+      if (!g.branch.includes(query)) continue;
+      const repos = g.rows.map((r) => ({ id: r.repo, local: true }));
+      if (repos.length) rows.push({ branch: g.branch, repos });
+    }
+    this.rows.set(rows);
+  }
+  // each hit carries the git remote to fetch it from (the upstream `pull_remote`,
+  // or a fork's `push_remote` — see GitHubService.search_branches), so the caller
+  // never guesses the wrong one
+  async _searchRemote(query) {
+    const repos = this.config.config.repos.filter((r) => r.github).map((r) => ({
+      id: r.id,
+      github: r.github,
+      path: r.path,
+      push_remote: r.push_remote,
+      pull_remote: r.pull_remote
+    }));
+    try {
+      const res = await fetch("/api/code/remote-branches/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repos, query })
+      });
+      const data = await res.json();
+      if (query !== this.query().trim() || !data.ok) return;
+      const byBranch = /* @__PURE__ */ new Map();
+      for (const { repo, branch, remote } of data.results) {
+        if (!byBranch.has(branch)) byBranch.set(branch, []);
+        byBranch.get(branch).push({ id: repo, local: false, remote });
+      }
+      this.rows.set([...byBranch].map(([branch, repos2]) => ({ branch, repos: repos2 })));
+    } finally {
+      if (query === this.query().trim()) this.searching.set(false);
+    }
+  }
+  onKey(ev) {
+    const n = this.rows().length;
+    if (ev.key === "ArrowDown" && n) {
+      ev.preventDefault();
+      this.open.set(true);
+      this.highlight((this.active() + 1) % n);
+    } else if (ev.key === "ArrowUp" && n) {
+      ev.preventDefault();
+      this.highlight((this.active() - 1 + n) % n);
+    } else if (ev.key === "Enter") {
+      const row = this.open() ? this.rows()[this.active()] : void 0;
+      if (row) this.pick(row);
+    } else if (ev.key === "Escape" && this.open() && this.query().trim()) {
+      ev.stopPropagation();
+      this.open.set(false);
+    }
+  }
+  // highlight row `i`, scrolling the list to keep it visible (the rows are already
+  // rendered — only their highlight changes)
+  highlight(i) {
+    this.active.set(i);
+    this.listEl()?.querySelectorAll(".rbd-row")[i]?.scrollIntoView({ block: "nearest" });
+  }
+  pick(row) {
+    this.query.set(row.branch);
+    this.open.set(false);
+    this.props.onPick({
+      branch: row.branch,
+      repos: row.repos.map((r) => r.id),
+      // a local repo needs no fetch — it's already there
+      remoteByRepo: Object.fromEntries(
+        row.repos.filter((r) => !r.local && r.remote).map((r) => [r.id, r.remote])
+        // filtered
+      )
+    });
+  }
+};
+var CreateWorkspaceDialog = class extends Component {
+  static components = { BranchCombobox };
+  static template = xml`
+    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+      <div class="dialog cwd" t-on-click.stop="() => {}">
+        <h2 class="dialog-title">New workspace</h2>
+        <div class="dialog-body" data-form-type="other">
+          <t t-if="this.props.pickSource">
+            <div class="cwd-sources" role="radiogroup">
+              <label t-foreach="this.sources" t-as="s" t-key="s.kind" class="cwd-source"
+                     t-att-class="{selected: this.source() === s.kind}">
+                <input type="radio" name="cwd-source" t-att-value="s.kind"
+                       t-att-checked="this.source() === s.kind" t-on-change="() => this.pickSource(s.kind)"/>
+                <t t-out="s.label"/>
+              </label>
+            </div>
+            <div class="dialog-field cwd-source-input">
+              <t t-if="this.source() === 'template'">
+                <label>Template</label>
+                <select t-on-change="(ev) => this.pickTemplate(ev.target.value)">
+                  <option value="" t-att-selected="!this.templateId()">— start blank —</option>
+                  <option t-foreach="this.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id"
+                          t-att-selected="this.templateId() === tpl.id" t-out="tpl.name"/>
+                </select>
+              </t>
+              <t t-elif="this.source() === 'version'">
+                <label>Odoo version</label>
+                <select t-if="this.versions().length" t-on-change="(ev) => this.pickVersion(ev.target.value)">
+                  <option t-foreach="this.versions()" t-as="v" t-key="v" t-att-value="v"
+                          t-att-selected="this.version() === v" t-out="v"/>
+                </select>
+                <div t-if="this.versionsError()" class="form-error" t-out="this.versionsError()"/>
+              </t>
+              <t t-elif="this.source() === 'bundle' or this.source() === 'pr'">
+                <label t-out="this.source() === 'bundle' ? 'Bundle URL' : 'Pull request URL'"/>
+                <div class="cwd-url-row">
+                  <input type="text" t-att-value="this.url()"
+                         t-att-placeholder="this.source() === 'bundle' ? 'https://runbot.odoo.com/runbot/bundle/…' : 'https://github.com/odoo/odoo/pull/…'"
+                         t-on-input="(ev) => this.url.set(ev.target.value)"
+                         t-on-keydown="(ev) => ev.key === 'Enter' &amp;&amp; this.loadUrl()"/>
+                  <button class="pbtn" t-att-disabled="!this.url().trim() or this.loading()"
+                          t-on-click="() => this.loadUrl()">Load</button>
+                </div>
+                <div t-if="this.source() === 'bundle'" class="dialog-field-hint">paste the bundle's address from your browser, e.g. …/runbot/bundle/master-fix-x-525170 — goo fetches its branches locally. An address with only the id (…/bundle/525170) can't be read: copy it after runbot has redirected it to the name form.</div>
+                <div t-else="" class="dialog-field-hint">a GitHub (or mergebot) pull request — goo fetches its head branch locally</div>
+              </t>
+              <t t-else="">
+                <label>Branch</label>
+                <BranchCombobox t-key="this.source()" mode="this.source()" onPick="(p) => this.pickBranch(p)"/>
+              </t>
+              <div t-if="this.loading()" class="dialog-field-hint cwd-loading">Loading…</div>
+            </div>
+          </t>
+          <div class="dialog-field">
+            <label>Repositories</label>
+            <div class="cwd-repos">
+              <label t-foreach="this.repoRows" t-as="r" t-key="r.id" class="edit-check cwd-repo">
+                <input type="checkbox" t-att-checked="r.branch !== null" t-on-change="(ev) => this.toggleRepo(r.id, ev.target.checked)"/>
+                <span class="cwd-repo-id" t-out="r.id"/>
+                <t t-if="r.branch">
+                  <span class="cwd-repo-branch" t-out="r.branch"/>
+                  <span class="cwd-repo-action" t-att-class="{attach: r.attach}" t-out="r.attach ? 'attach existing' : 'fork from ' + r.base"/>
+                </t>
+              </label>
+            </div>
+          </div>
+          <div class="cwd-grid">
+            <div class="cwd-col">
+              <div class="dialog-field">
+                <label>Name</label>
+                <input type="text" t-ref="this.nameEl" t-att-value="this.form().name" placeholder="name (e.g. master-mytask)"
+                       t-on-input="(ev) => this.setName(ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
+              </div>
+              <div class="dialog-field">
+                <label>Location</label>
+                <select t-on-change="(ev) => this.set({location: ev.target.value})">
+                  <option value="main" t-att-selected="this.form().location === 'main'">Main checkout (one loaded at a time)</option>
+                  <option value="worktree" t-att-selected="this.form().location === 'worktree'" t-out="this.worktreeLabel"/>
+                </select>
+              </div>
+              <div t-if="this.launchMode === 'local' and this.form().location === 'worktree'" class="dialog-field">
+                <label class="edit-check">
+                  <input type="checkbox" t-att-checked="this.form().createVenv" t-on-change="(ev) => this.set({createVenv: ev.target.checked})"/>
+                  Create a venv from requirements.txt
+                </label>
+              </div>
+            </div>
+            <div class="cwd-col">
+              <div class="dialog-field">
+                <label>Database</label>
+                <input type="text" t-att-value="this.form().db" placeholder="database name"
+                       t-on-input="(ev) => this.set({db: ev.target.value})" t-on-keydown="(ev) => this.onKey(ev)"/>
+              </div>
+              <div class="dialog-field">
+                <div class="dialog-check-select">
+                  <label class="edit-check">
+                    <input type="checkbox" t-att-checked="!!this.form().cloneDb" t-on-change="(ev) => this.set({cloneDb: ev.target.checked ? this.cloneDefault : ''})"/>
+                    Clone db
+                  </label>
+                  <select t-if="this.form().cloneDb" t-on-change="(ev) => this.set({cloneDb: ev.target.value})">
+                    <option t-foreach="this.dbNames" t-as="name" t-key="name" t-att-value="name"
+                            t-att-selected="this.form().cloneDb === name" t-out="name"/>
+                  </select>
+                </div>
+              </div>
+              <div t-if="this.form().dumps.length" class="dialog-field">
+                <div class="dialog-check-select">
+                  <label class="edit-check">
+                    <input type="checkbox" t-att-checked="!!this.form().restoreDump" t-on-change="(ev) => this.set({restoreDump: ev.target.checked ? this.dumpDefault : ''})"/>
+                    Restore runbot database
+                  </label>
+                  <select t-if="this.form().restoreDump" t-on-change="(ev) => this.set({restoreDump: ev.target.value})">
+                    <option t-foreach="this.form().dumps" t-as="d" t-key="d.url" t-att-value="d.url"
+                            t-att-selected="this.form().restoreDump === d.url" t-out="this.dumpLabel(d)"/>
+                  </select>
+                </div>
+                <div t-if="this.form().restoreDump" class="dialog-field-hint">downloaded from runbot and restored after the workspace is created — this can take a while</div>
+              </div>
+              <div t-if="this.launchMode !== 'external'" class="dialog-field">
+                <label class="edit-check">
+                  <input type="checkbox" t-att-checked="this.form().demoData" t-on-change="(ev) => this.set({demoData: ev.target.checked})"/>
+                  Demo data
+                </label>
+              </div>
+              <div t-if="this.launchMode !== 'external'" class="dialog-field">
+                <label>Start args</label>
+                <input type="text" t-att-value="this.form().args" placeholder="-i sale_management"
+                       t-on-input="(ev) => this.set({args: ev.target.value})" t-on-keydown="(ev) => this.onKey(ev)"/>
+              </div>
+              <div t-if="this.props.categories" class="dialog-field">
+                <label>Category</label>
+                <select t-on-change="(ev) => this.set({category: ev.target.value})">
+                  <option value="">— none —</option>
+                  <option t-foreach="this.props.categories" t-as="c" t-key="c.value" t-att-value="c.value"
+                          t-att-selected="this.form().category === c.value" t-out="c.label"/>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <span t-if="this.touched() and this.error" class="form-error" t-out="this.error"/>
+          <button t-if="this.form().location !== 'worktree'" class="pbtn" t-att-disabled="!!this.error or this.loading()" t-on-click="() => this.ok(true)">Create and activate</button>
+          <button class="pbtn primary" t-att-disabled="!!this.error or this.loading()" t-on-click="() => this.ok()">Create</button>
+          <button class="pbtn" t-on-click="() => this.done(null)">Discard</button>
+        </div>
+      </div>
+    </div>`;
+  props = useProps({
+    done: t.function(),
+    initial: t.any(),
+    // not validated at runtime
+    blank: t.any(),
+    // the values with no source: what a URL/branch source starts from
+    pickSource: t.boolean(),
+    loadSource: t.function(),
+    categories: t.any()
+    // null: categories off
+  });
+  config = usePlugin(ConfigPlugin);
+  code = usePlugin(CodePlugin);
+  db = usePlugin(DatabasePlugin);
+  sources = SOURCES;
+  dumpLabel = dumpLabel;
+  form = signal({});
+  // set from props.initial in setup()
+  source = signal("template");
+  templateId = signal("");
+  url = signal("");
+  // the bundle / pull request URL being typed
+  versions = signal([]);
+  // runbot's starred series, newest first (read once)
+  version = signal("");
+  versionsError = signal("");
+  loaded = signal({ kind: "template", key: "" });
+  loading = signal(false);
+  touched = signal(false);
+  // has the user edited the form? (gates the inline error)
+  nameEl = signal.ref(HTMLElement);
+  _seq = 0;
+  // only the latest source load may land its values
+  setup() {
+    this.form.set(this.props.initial);
+    this.templateId.set(this.props.initial.template);
+    const onKey = (e) => {
+      if (e.key === "Escape") this.done(null);
+    };
+    document.addEventListener("keydown", onKey);
+    onWillUnmount(() => document.removeEventListener("keydown", onKey));
+    onMounted(() => {
+      const el = this.nameEl();
+      if (el instanceof HTMLInputElement) {
+        el.focus();
+        el.select();
+      }
+    });
+  }
+  get templates() {
+    return this.config.config.templates || [];
+  }
+  get repoIds() {
+    return (this.config.config.repos || []).map((r) => r.id);
+  }
+  get launchMode() {
+    return this.config.config.launch_mode;
+  }
+  get dbNames() {
+    return this.db.databases().map((d) => d.name);
+  }
+  // "+ port" only promises something goo actually manages — a "local" launch is the
+  // only mode where goo allocates a TCP port itself; "docker" routes by container
+  // name (no port), "external" owns its own port goo has no say in (see
+  // workspace_plugin.ts's port()/_baseUrl)
+  get worktreeLabel() {
+    return this.launchMode === "local" ? "Own worktree + port (runs concurrently)" : "Own worktree (runs concurrently)";
+  }
+  hasLocalBranch(repo, branch) {
+    return this.code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
+  }
+  // one row per configured repo: its branch in the config (null: not ticked; ""
+  // while there's no name yet) and the "will attach / will fork" preview, live off
+  // real local git state — the same ground truth the create step computes its
+  // fork set from. A fork starts from the base branch on the repo's pull remote
+  // ("prod/master"), fetched fresh at creation.
+  get repoRows() {
+    const v = this.form();
+    const remoteByRepo = Object.fromEntries(
+      (this.config.config.repos || []).map((r) => [r.id, r.pull_remote || "origin"])
+    );
+    const branchByRepo = Object.fromEntries(
+      repoBranchList.parse(v.config.trim()).map((c) => [c.repo, c.branch])
+    );
+    return this.repoIds.map((id) => {
+      const branch = v.repos.includes(id) ? branchByRepo[id] ?? "" : null;
+      return {
+        id,
+        branch,
+        attach: !!branch && this.hasLocalBranch(id, branch),
+        base: branch ? `${remoteByRepo[id]}/${baseBranchOf(branch)}` : ""
+      };
+    });
+  }
+  // ticking Clone db seeds the template's database when it exists, else the first one
+  get cloneDefault() {
+    const tpl = this.templates.find((x) => x.id === this.form().template);
+    if (tpl?.db && this.dbNames.includes(tpl.db)) return tpl.db;
+    return this.dbNames[0] || "";
+  }
+  // default to the dump matching the checkout: an enterprise workspace wants the
+  // Enterprise run's db (community modules are in it too), a community-only one
+  // can't even load an enterprise dump. Within a build, "all" over "base" — "base"
+  // is a bare install, which is what an empty local db would give you anyway.
+  get dumpDefault() {
+    const { dumps, repos } = this.form();
+    const wantsEnterprise = repos.includes("enterprise");
+    const best = dumps.find((d) => d.db === "all" && /enterprise/i.test(d.slot) === wantsEnterprise) || dumps.find((d) => d.db === "all");
+    return best?.url || dumps[0]?.url || "";
+  }
+  // the source still waiting for its URL / branch to be loaded
+  get pendingSource() {
+    const loaded = this.loaded();
+    const source = this.source();
+    if (source === "template") return "";
+    if (source === "bundle" || source === "pr") {
+      if (loaded?.kind === source && loaded.key === this.url().trim()) return "";
+      return source === "bundle" ? "load the runbot bundle first" : "load the pull request first";
+    }
+    if (source === "version") return loaded?.kind === source ? "" : "pick an Odoo version first";
+    return loaded?.kind === source ? "" : "pick a branch first";
+  }
+  // the form's validation error ("" when valid) — disables Create, and shows once
+  // the user has edited the form
+  get error() {
+    const pending = this.pendingSource;
+    if (pending) return pending;
+    const v = this.form();
+    const name = v.name.trim();
+    const db = v.db.trim();
+    const dbExists = this.dbNames.includes(db);
+    if (!name) return "a name is required";
+    if ((this.config.config.workspaces || []).some((w) => w.name === name))
+      return `a workspace named "${name}" already exists`;
+    if (!repoBranchList.parse(v.config.trim()).length) return "tick at least one repository";
+    if (v.cloneDb && !db) return "set a database name to clone the selected database into";
+    if (v.location === "worktree" && v.cloneDb && dbExists)
+      return `database "${db}" already exists \u2014 pick a new name to clone into`;
+    if (v.restoreDump && v.cloneDb) return "clone a database or restore the runbot dump \u2014 not both";
+    if (v.restoreDump && !db) return "set a database name to restore the runbot dump into";
+    if (v.restoreDump && dbExists)
+      return `database "${db}" already exists \u2014 pick a new name to restore into`;
+    return "";
+  }
+  set(updates) {
+    this.form.set({ ...this.form(), ...updates });
+    this.touched.set(true);
+  }
+  setName(newName) {
+    const v = this.form();
+    const trimmed = newName.trim();
+    const forkingFresh = v.createBranches;
+    const updates = {
+      name: newName,
+      config: configFromRepos(v.repos, trimmed, v.config, !forkingFresh)
+    };
+    if (forkingFresh && !v.template) updates.demoData = defaultDemoData(trimmed);
+    if (!v.db || v.db === v.name) updates.db = trimmed;
+    else if (v.name) updates.db = v.db.replaceAll(v.name, newName);
+    this.set(updates);
+  }
+  toggleRepo(id, checked) {
+    const v = this.form();
+    const repos = checked ? [...v.repos, id] : v.repos.filter((r) => r !== id);
+    const config = configFromRepos(repos, v.name.trim(), v.config, !v.createBranches);
+    this.set({ repos, config });
+  }
+  // switching source empties the form for a URL / branch source (it fills in once
+  // loaded), and reloads the selected template for "Template"
+  pickSource(kind) {
+    this.source.set(kind);
+    this.url.set("");
+    this._seq++;
+    this.loading.set(false);
+    if (kind === "template") {
+      this.load({ kind: "template", id: this.templateId() });
+      return;
+    }
+    this.loaded.set(null);
+    this.form.set({ ...this.form(), ...this.props.blank, restoreDump: "" });
+    if (kind === "version") this._loadVersions();
+  }
+  // runbot's starred versions (its R&D page), read on first pick; the selected
+  // one (else the newest) loads at once, like a template
+  async _loadVersions() {
+    if (!this.versions().length) {
+      const seq = this._seq;
+      this.loading.set(true);
+      try {
+        const res = await postJSON("/api/runbot/sticky");
+        if (!res.versions?.length) throw new Error("runbot is unreachable");
+        this.versions.set(res.versions);
+      } catch (e) {
+        this.versionsError.set(`could not load runbot's versions: ${errorMessage(e)}`);
+      } finally {
+        if (seq === this._seq) this.loading.set(false);
+      }
+      if (seq !== this._seq) return;
+    }
+    const version = this.version() || this.versions()[0];
+    if (version) this.pickVersion(version);
+  }
+  pickVersion(version) {
+    this.version.set(version);
+    this.load({ kind: "version", version });
+  }
+  pickTemplate(id) {
+    this.templateId.set(id);
+    this.load({ kind: "template", id });
+  }
+  pickBranch(pick) {
+    const kind = this.source();
+    if (kind === "local" || kind === "remote") this.load({ kind, pick });
+  }
+  loadUrl() {
+    const url = this.url().trim();
+    if (!url || this.loading()) return;
+    const kind = this.source();
+    if (kind === "bundle" || kind === "pr") this.load({ kind, url });
+  }
+  async load(req) {
+    const seq = ++this._seq;
+    this.loading.set(true);
+    try {
+      const values = await this.props.loadSource(req);
+      if (seq !== this._seq || !values) return;
+      this.form.set({ ...this.form(), ...values, restoreDump: "" });
+      const key = req.kind === "bundle" || req.kind === "pr" ? req.url : "";
+      this.loaded.set({ kind: req.kind, key });
+    } finally {
+      if (seq === this._seq) this.loading.set(false);
+    }
+  }
+  onKey(ev) {
+    if (ev.key === "Enter") this.ok();
+  }
+  done(result) {
+    this.props.done(result);
+  }
+  // `activate`: "Create and activate" — also load a main-located workspace (a
+  // worktree runs concurrently from its own checkout, no activation step)
+  ok(activate = false) {
+    if (this.loading()) return;
+    if (this.error) return this.touched.set(true);
+    this.done({ ...this.form(), activate: activate && this.form().location !== "worktree" });
+  }
+};
+
 // static/src/workspaces_screen/dialogs.ts
 function isNonFf(e) {
   const data = e instanceof Error && "data" in e ? e.data : void 0;
@@ -10749,10 +11139,6 @@ function categoryOptions(config) {
     opts.push({ value: ARCHIVED_CATEGORY, label: ARCHIVED_CATEGORY });
   return opts;
 }
-var configFromRepos = (repoIds, branch, currentConfig = "", preserveExisting = false) => {
-  const existing = preserveExisting ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch])) : {};
-  return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
-};
 async function _fetchWithOverwritePrompt(dialogs, branch, source, attempt) {
   try {
     await attempt(false);
@@ -10851,103 +11237,8 @@ async function baseVersionDumps(branch) {
     return [];
   }
 }
-var WorkspaceSourceDialog = class extends Component {
-  static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
-      <div class="dialog ws-wiz" t-on-click.stop="() => {}">
-        <h2 class="dialog-title">New workspace</h2>
-        <div class="dialog-body">
-          <label class="ws-wiz-option" t-att-class="{selected: this.source() === 'template'}">
-            <input type="radio" name="ws-source" value="template" t-att-checked="this.source() === 'template'" t-on-change="() => this.source.set('template')"/>
-            <span class="ws-wiz-opt-body">
-              <span class="ws-wiz-opt-title">From a template</span>
-              <span class="ws-wiz-opt-hint dim">fork fresh branches from one of your templates — or start blank</span>
-              <select class="ws-wiz-select" t-att-disabled="this.source() !== 'template'"
-                      t-on-change="(ev) => this.template.set(ev.target.value)">
-                <option t-foreach="this.props.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id" t-att-selected="this.template() === tpl.id" t-out="tpl.name"/>
-                <option value="" t-att-selected="!this.template()">— start blank —</option>
-              </select>
-            </span>
-          </label>
-          <label class="ws-wiz-option" t-att-class="{selected: this.source() === 'bundle'}">
-            <input type="radio" name="ws-source" value="bundle" t-att-checked="this.source() === 'bundle'" t-on-change="() => this.source.set('bundle')"/>
-            <span class="ws-wiz-opt-body">
-              <span class="ws-wiz-opt-title">From a runbot bundle</span>
-              <span class="ws-wiz-opt-hint dim">paste a bundle URL (e.g. a colleague's work) — goo fetches its branches locally</span>
-              <input type="text" class="ws-wiz-url" placeholder="https://runbot.odoo.com/runbot/bundle/…"
-                     title="Paste the bundle's address from your browser, e.g. …/runbot/bundle/master-fix-x-525170. An address with only the id (…/bundle/525170) can't be read: copy it after runbot has redirected it to the name form."
-                     t-att-value="this.url()" t-att-disabled="this.source() !== 'bundle'"
-                     t-on-input="(ev) => this.url.set(ev.target.value)"
-                     t-on-keydown="(ev) => ev.key === 'Enter' &amp;&amp; this.continue_()"/>
-            </span>
-          </label>
-          <div t-if="this.error()" class="form-error" t-out="this.error()"/>
-        </div>
-        <div class="dialog-foot">
-          <button class="pbtn primary" t-att-disabled="!this.canContinue" t-on-click="() => this.continue_()">
-            <t t-if="this.busy()">Reading runbot…</t><t t-else="">Continue</t>
-          </button>
-          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-  props = useProps({
-    done: t.function(),
-    templates: t.any()
-    // config.config.templates — not validated at runtime
-  });
-  source = signal("template");
-  template = signal("");
-  url = signal("");
-  busy = signal(false);
-  error = signal("");
-  setup() {
-    this.template.set(this.props.templates[0]?.id ?? "");
-    const onKey = (e) => {
-      if (e.key === "Escape") this.done(null);
-    };
-    onMounted(() => document.addEventListener("keydown", onKey));
-    onWillUnmount(() => document.removeEventListener("keydown", onKey));
-  }
-  done(result) {
-    this.props.done(result);
-  }
-  get canContinue() {
-    if (this.busy()) return false;
-    return this.source() === "template" || !!this.url().trim();
-  }
-  async continue_() {
-    if (!this.canContinue) return;
-    this.busy.set(true);
-    this.error.set("");
-    try {
-      if (this.source() === "template") {
-        const tpl = this.props.templates.find((t2) => t2.id === this.template());
-        const dumps = await baseVersionDumps(templateBranch(tpl));
-        return this.done({ source: "template", template: this.template(), dumps });
-      }
-      const info = await postJSON("/api/runbot/bundle-info", {
-        url: this.url().trim()
-      });
-      this.done({ source: "bundle", info });
-    } catch (e) {
-      this.error.set(errorMessage(e));
-    } finally {
-      this.busy.set(false);
-    }
-  }
-};
-async function startNewWorkspaceWizard(plugins) {
+async function fetchBundleBranches(plugins, info) {
   const { config, dialogs, code, eventLog } = plugins;
-  const res = await dialogs.openComponent(WorkspaceSourceDialog, {
-    templates: config.config.templates || []
-  });
-  if (!res) return;
-  if (res.source === "template") {
-    const tpl = (config.config.templates || []).find((x) => x.id === res.template);
-    return startCreateWorkspace(plugins, { ...templatePrefill(tpl), dumps: res.dumps || [] });
-  }
-  const info = res.info;
   const matches = [];
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
@@ -10963,7 +11254,7 @@ async function startNewWorkspaceWizard(plugins) {
       okLabel: "OK",
       cancelLabel: null
     });
-    return;
+    return null;
   }
   const results = await Promise.all(
     matches.map(async (m2) => {
@@ -10983,281 +11274,150 @@ async function startNewWorkspaceWizard(plugins) {
       "Fetching bundle branches failed",
       failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n")
     );
-    if (failed.length === results.length) return;
+    if (failed.length === results.length) return null;
   }
   const got = results.filter((r) => r.ok);
   await code.refreshBranches(new Set(got.map((m2) => m2.repo.id)));
-  return startCreateWorkspace(plugins, {
-    name: info.name,
-    config: repoBranchList.format(got.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }))),
-    db: info.name,
-    template: "",
-    createBranches: false,
-    // the dumps the bundle's latest batch left on runbot, already proven to exist
-    // (the backend HEAD-probes them) — what "Restore runbot database" offers
-    dumps: info.dumps || []
-  });
+  return got;
+}
+function startNewWorkspace(plugins) {
+  const tpl = (plugins.config.config.templates || [])[0];
+  return startCreateWorkspace(plugins, templatePrefill(tpl), { pickSource: true });
 }
 async function restoreRunbotDump({ db, dialogs }, url, dbName2) {
   const error = await db.restoreRunbotDump(url, dbName2);
   if (error) dialogs.error("Restoring the runbot database failed", error);
 }
-async function startCreateWorkspace(plugins, prefill = {}) {
+function repoForGithub(repos, slug) {
+  const name = slug.split("/")[1];
+  return repos.find((r) => r.github === slug) || repos.find((r) => (r.github || "").split("/")[1] === name) || null;
+}
+async function fetchPickedBranch(plugins, pick) {
+  const { config, dialogs, code, eventLog } = plugins;
+  const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
+  const results = await Promise.all(
+    pick.repos.map(async (repo) => {
+      const remote = pick.remoteByRepo[repo];
+      if (!remote) return { repo, ok: true };
+      const eid = eventLog.begin(`fetching ${pick.branch} (${repo}) from ${remote}`);
+      const r = await fetchRemoteBranch(dialogs, {
+        path: pathByRepo[repo],
+        branch: pick.branch,
+        pull_remote: remote
+      });
+      eventLog.finish(eid, r.ok ? "done" : "error");
+      return { repo, ...r };
+    })
+  );
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length)
+    dialogs.error(
+      "Fetching branch failed",
+      failed.map((f) => `${f.repo}: ${"error" in f ? f.error : ""}`).join("\n")
+    );
+  const got = results.filter((r) => r.ok).map((r) => r.repo);
+  if (!got.length) return null;
+  const fetched = got.filter((repo) => pick.remoteByRepo[repo]);
+  if (fetched.length) await code.refreshBranches(new Set(fetched));
+  return got;
+}
+var PR_URL_RE = /([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
+async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false } = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
-  await db.load();
   const templates = config.config.templates || [];
-  const tpl = templates.find((t2) => t2.id === prefill.template) || null;
-  const existing = config.config.workspaces || [];
-  const dbNames = new Set(db.databases().map((d) => d.name));
+  const tplOf = (id) => templates.find((t2) => t2.id === id) || null;
+  const [dumps] = await Promise.all([
+    prefill.dumps ?? baseVersionDumps(templateBranch(tplOf(prefill.template || ""))),
+    db.load()
+    // populate the "Clone db" select
+  ]);
   code.loadBranches();
   const hasLocalBranch = (repo, branch) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
-  const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
-  const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
-  const dumpOptions = (prefill.dumps || []).map((d) => ({
-    value: d.url,
-    label: dumpLabel(d)
-  }));
-  const prefillRepoIds = prefill.config ? repoBranchList.parse(prefill.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
-  const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
-  const wantsEnterprise = prefillRepoIds.includes("enterprise");
-  const bestDump = (prefill.dumps || []).find(
-    (d) => d.db === "all" && /enterprise/i.test(d.slot) === wantsEnterprise
-  ) || (prefill.dumps || []).find((d) => d.db === "all");
-  const res = await dialogs.open({
-    title: tpl ? `New workspace \u2014 from template "${tpl.name}"` : "New workspace",
-    okLabel: "Create",
-    validate: (v) => {
-      const name = (v.name || "").trim();
-      if (!name) return "a name is required";
-      if (existing.some((w) => w.name === name))
-        return `a workspace named "${name}" already exists`;
-      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if ((v.cloneDb || "") && !(v.db || "").trim())
-        return "set a database name to clone the selected database into";
-      if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
-        return `database "${(v.db || "").trim()}" already exists \u2014 pick a new name to clone into`;
-      if (v.restoreDump && v.cloneDb)
-        return "clone a database or restore the runbot dump \u2014 not both";
-      if (v.restoreDump && !(v.db || "").trim())
-        return "set a database name to restore the runbot dump into";
-      if (v.restoreDump && dbNames.has((v.db || "").trim()))
-        return `database "${(v.db || "").trim()}" already exists \u2014 pick a new name to restore into`;
-      if (v.createVenv && v.location !== "worktree")
-        return 'a venv needs Location set to "Own worktree + port"';
-      return "";
+  const sourceValues = (p, sourceDumps) => {
+    const repos = p.config ? repoBranchList.parse(p.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
+    return {
+      template: p.template ?? "",
+      name: p.name ?? "",
+      repos,
+      config: p.config ?? (p.name ? configFromRepos(repos, p.name.trim()) : ""),
+      db: p.db ?? p.name ?? "",
+      args: p.args ?? "",
+      category: p.category ?? "",
+      demoData: p.demoData ?? defaultDemoData(p.name || ""),
+      createBranches: p.createBranches ?? true,
+      verifiedRepos: p.createBranches === false ? repos : null,
+      dumps: sourceDumps
+    };
+  };
+  const attachValues = (name, branches, sourceDumps) => sourceValues(
+    { name, db: name, config: repoBranchList.format(branches), createBranches: false },
+    sourceDumps
+  );
+  const loadSource = async (req) => {
+    if (req.kind === "template") {
+      const tpl2 = tplOf(req.id);
+      return sourceValues(templatePrefill(tpl2), await baseVersionDumps(templateBranch(tpl2)));
+    }
+    if (req.kind === "version") {
+      const { version } = req;
+      return sourceValues({ name: version }, await baseVersionDumps(version));
+    }
+    if (req.kind === "bundle") {
+      let info;
+      try {
+        info = await postJSON("/api/runbot/bundle-info", { url: req.url });
+      } catch (e) {
+        dialogs.error("Reading the runbot bundle failed", errorMessage(e));
+        return null;
+      }
+      const got = await fetchBundleBranches(plugins, info);
+      if (!got) return null;
+      const branches2 = got.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }));
+      return attachValues(info.name, branches2, info.dumps || []);
+    }
+    if (req.kind === "pr") {
+      const match = PR_URL_RE.exec(req.url);
+      if (!match) {
+        dialogs.error("Pull request", `not a pull request URL: ${req.url}`);
+        return null;
+      }
+      const github = `${match[1]}/${match[2]}`;
+      const repo = repoForGithub(config.config.repos || [], github);
+      if (!repo || !repo.path) {
+        dialogs.error("Pull request", `${github} isn't one of your configured repos`);
+        return null;
+      }
+      const got = await resolvePrBranches(plugins, [
+        { repo, pull: { github, number: Number(match[3]) } }
+      ]);
+      if (!got) return null;
+      const name = got[0].branch;
+      const branches2 = got.map((g) => ({ repo: g.repo.id, branch: g.branch }));
+      return attachValues(name, branches2, await baseVersionDumps(name));
+    }
+    const { branch } = req.pick;
+    const repos = await fetchPickedBranch(plugins, req.pick);
+    if (!repos) return null;
+    const branches = repos.map((repo) => ({ repo, branch }));
+    return attachValues(branch, branches, await baseVersionDumps(branch));
+  };
+  const initial = sourceValues(prefill, dumps);
+  const res = await dialogs.openComponent(CreateWorkspaceDialog, {
+    initial: {
+      ...initial,
+      location: prefill.location ?? (config.config.default_workspace_location || "main"),
+      cloneDb: "",
+      restoreDump: "",
+      activate: false,
+      createVenv: prefill.createVenv ?? false
     },
-    fields: [
-      {
-        key: "location",
-        type: "select",
-        label: "Location",
-        value: prefill.location ?? (config.config.default_workspace_location || "main"),
-        options: [
-          { value: "main", label: "Main checkout (one loaded at a time)" },
-          {
-            value: "worktree",
-            // "+ port" only promises something goo actually manages — a "local"
-            // launch is the only mode where goo allocates a TCP port itself;
-            // "docker" routes by container name (no port), "external" owns its
-            // own port goo has no say in (see workspace_plugin.ts's port()/_baseUrl)
-            label: config.config.launch_mode === "local" ? "Own worktree + port (runs concurrently)" : "Own worktree (runs concurrently)"
-          }
-        ]
-      },
-      {
-        key: "name",
-        type: "text",
-        label: "Name",
-        value: prefill.name ?? "",
-        placeholder: "name (e.g. master-mytask)",
-        onChange: (newName, currentValues, oldValues) => {
-          const forkingFresh = currentValues.createBranches !== false;
-          const updates = {
-            config: configFromRepos(
-              currentValues.repos || [],
-              newName.trim(),
-              currentValues.config,
-              !forkingFresh
-            )
-          };
-          if (forkingFresh && !tpl) updates.demoData = defaultDemoData(newName.trim());
-          const trimmed = newName.trim();
-          if (!currentValues.db || currentValues.db === oldValues.name) {
-            updates.db = trimmed;
-          } else if (oldValues.name) {
-            updates.db = currentValues.db.replaceAll(oldValues.name, newName);
-          }
-          return updates;
-        }
-      },
-      {
-        key: "repos",
-        type: "repo-checks",
-        label: "Repositories",
-        value: prefillRepoIds,
-        options: repoOptions,
-        onChange: (repoIds, currentValues) => ({
-          config: configFromRepos(
-            repoIds,
-            (currentValues.name || "").trim(),
-            currentValues.config,
-            currentValues.createBranches === false
-          )
-        })
-      },
-      {
-        key: "config",
-        type: "text",
-        label: "Config",
-        value: prefill.config ?? (prefill.name ? configFromRepos(prefillRepoIds, prefill.name.trim()) : ""),
-        placeholder: "community:master,enterprise:master",
-        // per-repo "will attach / will fork" preview, live off real local git
-        // state — the same ground truth forkRepos is computed from below, so
-        // this always matches what Create will actually do
-        hint: (values) => {
-          const checkouts2 = repoBranchList.parse((values.config || "").trim());
-          if (!checkouts2.length) return null;
-          return checkouts2.map(
-            (c) => hasLocalBranch(c.repo, c.branch) ? `${c.repo}: attach existing "${c.branch}"` : `${c.repo}: fork new from ${baseBranchOf(c.branch)}`
-          ).join(" \xB7 ");
-        }
-      },
-      {
-        key: "branchSearch",
-        type: "action",
-        label: "Search local/remote branches\u2026",
-        run: async (values) => {
-          const res2 = await dialogs.openComponent(RemoteBranchDialog, {
-            repoIds: values.repos
-          });
-          if (!res2) return null;
-          const { pathByRepo, pullRemoteByRepo } = code.groups();
-          const toFetch = res2.repos.filter((r) => !hasLocalBranch(r, res2.branch) && pathByRepo[r]);
-          const fetchedNow = [];
-          for (const repoId of toFetch) {
-            const r = await fetchRemoteBranch(dialogs, {
-              path: pathByRepo[repoId],
-              branch: res2.branch,
-              pull_remote: res2.remoteByRepo[repoId] || pullRemoteByRepo[repoId]
-            });
-            if (r.ok) fetchedNow.push(repoId);
-            else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);
-          }
-          if (fetchedNow.length) await code.refreshBranches(new Set(fetchedNow));
-          const repos = [.../* @__PURE__ */ new Set([...values.repos, ...res2.repos])];
-          const currentByRepo = Object.fromEntries(
-            repoBranchList.parse(values.config || "").map((c) => [c.repo, c.branch])
-          );
-          const config2 = repoBranchList.format(
-            repos.map((repo) => ({
-              repo,
-              branch: res2.repos.includes(repo) ? res2.branch : currentByRepo[repo] ?? res2.branch
-            }))
-          );
-          return { name: res2.branch, repos, config: config2 };
-        }
-      },
-      {
-        key: "db",
-        type: "text",
-        label: "Database",
-        value: prefill.db ?? prefill.name ?? "",
-        placeholder: "database name"
-      },
-      // Start args reach odoo-bin's own argument list regardless of how goo
-      // launches it (local subprocess or Docker) — unused only when goo never
-      // launches the server itself (launch_mode "external")
-      ...config.config.launch_mode === "external" ? [] : [
-        {
-          key: "args",
-          type: "text",
-          label: "Start args",
-          value: prefill.args ?? "",
-          placeholder: "-i sale_management"
-        }
-      ],
-      ...config.config.workspace_categories_enabled ? [
-        {
-          key: "category",
-          type: "select",
-          label: "Category",
-          placeholder: "\u2014 none \u2014",
-          options: categoryOptions(config),
-          value: prefill.category ?? ""
-        }
-      ] : [],
-      {
-        key: "cloneDb",
-        type: "check-select",
-        label: "Clone db",
-        options: dbOptions,
-        value: "",
-        default: () => {
-          if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
-          return dbOptions[0]?.value || "";
-        }
-      },
-      // download + restore the bundle's own runbot database instead of starting from
-      // an empty one — the whole point of picking up a colleague's bundle is usually
-      // to reproduce something on their data. Bundle sources only (see dumpOptions).
-      ...dumpOptions.length ? [
-        {
-          key: "restoreDump",
-          type: "check-select",
-          label: "Restore runbot database",
-          options: dumpOptions,
-          value: "",
-          default: () => bestDump?.url || dumpOptions[0].value,
-          hint: (v) => v.restoreDump ? "downloaded from runbot and restored after the workspace is created \u2014 this can take a while" : null
-        }
-      ] : [],
-      // same story as Start args: feeds --without-demo regardless of local vs.
-      // docker launch — unused only under launch_mode "external"
-      ...config.config.launch_mode === "external" ? [] : [
-        {
-          key: "demoData",
-          type: "checkbox",
-          label: "Demo data",
-          value: prefill.demoData ?? defaultDemoData(prefill.name || "")
-        }
-      ],
-      {
-        key: "createBranches",
-        type: "checkbox",
-        label: "Create branches",
-        // true (the default, e.g. from a template): per repo, fork fresh unless
-        // that exact branch already exists locally (then attach it instead —
-        // see the hasLocalBranch-based forkRepos computation below). false
-        // (bundle / remote branch / forward-port prefills): the checkouts are
-        // already-existing local branches from an earlier fetch — attach them
-        // as-is, except any the source didn't actually confirm (see
-        // "Unconfirmed branch" below), which still fork from their base.
-        value: prefill.createBranches ?? true
-      },
-      {
-        key: "activate",
-        type: "checkbox",
-        label: "Activate it (main)",
-        value: true,
-        // only meaningful for a main-located workspace (one loaded at a
-        // time) — a worktree runs concurrently from its own checkout, no
-        // activation step involved
-        visible: (v) => v.location !== "worktree"
-      },
-      // the venv is only ever consulted at launch by goo's own LOCAL subprocess
-      // (workspace_plugin.ts createWorktree) — a Docker container brings its own
-      // Python env, so this is local-mode-only, unlike Start args/Demo data above
-      ...config.config.launch_mode === "local" ? [
-        {
-          key: "createVenv",
-          type: "checkbox",
-          label: "Create venv from requirements.txt (worktree)",
-          value: prefill.createVenv ?? false
-        }
-      ] : []
-    ]
+    blank: sourceValues({}, []),
+    pickSource,
+    loadSource,
+    categories: config.config.workspace_categories_enabled ? categoryOptions(config) : null
   });
   if (!res) return;
+  const tpl = tplOf(res.template);
   const checkouts = repoBranchList.parse(res.config.trim());
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
@@ -11267,7 +11427,8 @@ async function startCreateWorkspace(plugins, prefill = {}) {
   const forkRepos = /* @__PURE__ */ new Set();
   if (res.createBranches) {
     for (const c of checkouts) if (!hasLocalBranch(c.repo, c.branch)) forkRepos.add(c.repo);
-  } else if (verifiedRepos) {
+  } else if (res.verifiedRepos) {
+    const verifiedRepos = new Set(res.verifiedRepos);
     const unverified = checkouts.filter((c) => !verifiedRepos.has(c.repo));
     if (unverified.length) {
       const names = unverified.map((c) => c.repo).join(", ");
@@ -11393,15 +11554,9 @@ async function createSubWorkspaceFromForwardPort(plugins, parentWs, row) {
     wt.select(existing.id);
     return;
   }
-  const repoFor = (slug) => {
-    const exact = (config.config.repos || []).find((r) => r.github === slug);
-    if (exact) return exact;
-    const name2 = slug.split("/")[1];
-    return (config.config.repos || []).find((r) => (r.github || "").split("/")[1] === name2) || null;
-  };
   const targets = [];
   for (const cell of row.cells || []) {
-    const repo = repoFor(cell.repository);
+    const repo = repoForGithub(config.config.repos || [], cell.repository);
     const pull = (cell.pulls || [])[0];
     if (repo && repo.path && pull) targets.push({ repo, pull });
   }
@@ -16514,7 +16669,7 @@ var WorkspacesScreen = class extends Component {
     };
   }
   create() {
-    return startNewWorkspaceWizard(this._dialogPlugins());
+    return startNewWorkspace(this._dialogPlugins());
   }
   adoptCheckout() {
     return adoptCurrentCheckout(this._dialogPlugins());

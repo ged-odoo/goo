@@ -3706,8 +3706,7 @@ tr.active td.brg-commit {
   outline: none;
   border-color: var(--l-accent-line);
 }
-/* launch-mode picker (Config screen, above Odoo settings) — same card-radio
-   look as the new-workspace wizard's source picker (.ws-wiz-option) */
+/* launch-mode picker (Config screen, above Odoo settings) — card radios */
 .launch-mode-picker {
   display: flex;
   gap: 10px;
@@ -4265,91 +4264,10 @@ tr.active td.brg-commit {
   border-radius: 8px;
 }
 
-/* ─── remote branch dialog ─── */
-.dialog.rbd {
-  width: min(520px, 92vw);
-}
-/* new-workspace wizard, step 1: source picker (template / runbot bundle) */
-.dialog.ws-wiz {
-  width: min(520px, 92vw);
-}
-.ws-wiz-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  border: 1px solid var(--l-line);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: 0.12s;
-}
-.ws-wiz-option:hover {
-  background: var(--l-hover);
-}
-.ws-wiz-option.selected {
-  border-color: var(--l-accent-line);
-  background: var(--l-accent-soft);
-}
-.ws-wiz-option input[type="radio"] {
-  margin-top: 3px;
-  accent-color: var(--l-accent);
-}
-.ws-wiz-opt-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ws-wiz-opt-title {
-  font-weight: 600;
-  color: var(--l-text);
-}
-.ws-wiz-opt-hint {
-  font-size: 12px;
-}
-.ws-wiz-select,
-.ws-wiz-url {
-  font-size: 12.5px;
-  color: var(--l-text);
-  background: var(--l-card);
-  border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
-  padding: 7px 10px;
-  width: 100%;
-  box-sizing: border-box;
-}
-.ws-wiz-url {
-  font-family: var(--mono);
-}
-.ws-wiz-select:disabled,
-.ws-wiz-url:disabled {
-  opacity: 0.5;
-}
-.ws-wiz-url:focus,
-.ws-wiz-select:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
-}
 .dialog.commit-msg-dialog {
   width: min(560px, 92vw);
 }
-.rbd-input {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--l-text);
-  background: var(--l-card);
-  border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
-  padding: 8px 11px;
-  width: 100%;
-  box-sizing: border-box;
-}
-.rbd-input:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
-}
+/* ─── branch results list (create-workspace branch combobox, database import) ─── */
 .rbd-results {
   min-height: 60px;
   max-height: 280px;
@@ -4401,6 +4319,122 @@ tr.active td.brg-commit {
 .rbd-repo-tag.local {
   color: var(--l-green);
   background: var(--l-green-bg);
+}
+/* ─── New workspace dialog: source radios on top, the form in two columns ─── */
+.dialog.cwd {
+  width: min(820px, 94vw);
+  max-height: 92vh;
+}
+.dialog.cwd .dialog-body {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.cwd-sources {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto; /* one line: scrolls rather than wraps on a narrow screen */
+}
+.cwd-source {
+  flex: 1 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 7px 10px;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--l-text);
+  cursor: pointer;
+  transition: 0.12s;
+}
+.cwd-source:hover {
+  background: var(--l-hover);
+}
+.cwd-source.selected {
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
+.cwd-source input[type="radio"] {
+  margin: 0;
+  accent-color: var(--l-accent);
+}
+.cwd-source-input {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--l-line);
+}
+.cwd-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cwd-repo {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cwd-repo-id {
+  min-width: 88px;
+}
+.cwd-repo-branch {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text);
+  overflow-wrap: anywhere;
+}
+.cwd-repo-action {
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--l-text-dim);
+}
+.cwd-repo-action.attach {
+  color: var(--l-green);
+}
+.cwd-url-row {
+  display: flex;
+  gap: 8px;
+}
+.cwd-url-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.cwd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 24px;
+  align-items: start;
+}
+.cwd-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .cwd-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
+.branch-cb {
+  position: relative;
+}
+.branch-cb-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.branch-cb-list {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-height: 0;
+  background: var(--l-card);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
 }
 /* a field's live, secondary line under its own input (e.g. the create-workspace
    form's "will attach / will fork" preview) */
