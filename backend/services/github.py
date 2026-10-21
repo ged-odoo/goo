@@ -69,6 +69,48 @@ def _ci_rollup(rollup: list[dict[str, Any]] | None) -> CiRollup:
     return CiRollup(overall=overall, runbot=runbot, checks=checks)
 
 
+# branches asked per GraphQL query — well under GitHub's node limits even with
+# every PR's last-commit checks (10 PRs × 100 checks each)
+_HEADS_PER_QUERY = 50
+
+# what a head-ref lookup reads of each PR: the PullRequest fields, plus the last
+# commit's checks (CheckRun / StatusContext — the keys _ci_rollup reads)
+_PR_FRAGMENT = (
+    "fragment pr on PullRequest { number title url state isDraft headRefName "
+    "createdAt updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { "
+    "contexts(first: 100) { nodes { ... on CheckRun { name status conclusion detailsUrl } "
+    "... on StatusContext { context state targetUrl } } } } } } } }"
+)
+
+
+def _head_pr(gh_repo: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The PullRequest dict of the best of a branch's head-ref PRs (an open one is
+    the live one; otherwise the most recently touched), or None when it has none."""
+    if not rows:
+        return None
+    rows = sorted(
+        rows, key=lambda pr: (pr.get("state") == "OPEN", pr.get("updatedAt", "")), reverse=True
+    )
+    pr = rows[0]
+    commits = (pr.get("commits") or {}).get("nodes") or [{}]
+    rollup = ((commits[-1].get("commit") or {}).get("statusCheckRollup") or {}).get("contexts")
+    return asdict(
+        PullRequest(
+            github=gh_repo,
+            number=pr["number"],
+            title=pr.get("title", ""),
+            url=pr.get("url", ""),
+            state=(pr.get("state") or "").lower(),
+            branch=pr.get("headRefName", ""),
+            relation="head",
+            draft=pr.get("isDraft", False),
+            created_at=pr.get("createdAt", ""),
+            updated_at=pr.get("updatedAt", ""),
+            ci=_ci_rollup(((rollup or {}).get("nodes")) or []),
+        )
+    )
+
+
 class _FetchFailed(Exception):
     """A gh call a review status depends on failed."""
 
@@ -154,7 +196,8 @@ class GitHubService:
         of author, so forward-port / colleagues' PRs resolve too (the authored
         `prs()` fetch misses them). Returns a flat list of PullRequest dicts
         (`relation="head"`), one per branch that has a matching PR. Cached per
-        (github, branch); refresh=True bypasses it."""
+        (github, branch) — "no PR" included; refresh=True bypasses it. The branches
+        the cache doesn't hold are asked together, in batched GraphQL queries."""
         seen, uniq = set(), []
         for p in pairs:
             gh_repo, branch = p.get("github"), p.get("branch")
@@ -162,68 +205,76 @@ class GitHubService:
                 continue
             seen.add((gh_repo, branch))
             uniq.append((gh_repo, branch))
-        if not uniq:
-            return []
-        if refresh:
-            for gh_repo, branch in uniq:
-                self.cache.invalidate(("head", gh_repo, branch))
-        with ThreadPoolExecutor(max_workers=min(8, len(uniq))) as pool:
-            results = pool.map(
-                lambda gb: self.cache.get(
-                    ("head", gb[0], gb[1]), lambda gb=gb: self._fetch_head(*gb)
-                ),
-                uniq,
-            )
-        return [pr for pr in results if pr]
+        found: dict[tuple[str, str], dict[str, Any] | None] = {}
+        missing = []
+        for gh_repo, branch in uniq:
+            key = ("head", gh_repo, branch)
+            if refresh:
+                self.cache.invalidate(key)
+            hit, pr = self.cache.peek(key)
+            if hit:
+                found[(gh_repo, branch)] = pr
+            else:
+                missing.append((gh_repo, branch))
+        for start in range(0, len(missing), _HEADS_PER_QUERY):
+            chunk = missing[start : start + _HEADS_PER_QUERY]
+            fetched = self._fetch_heads(chunk)
+            if fetched is None:
+                continue  # the query failed: leave these uncached, re-askable
+            for gh_repo, branch in chunk:
+                pr = fetched.get((gh_repo, branch))
+                self.cache.put(("head", gh_repo, branch), pr)
+                found[(gh_repo, branch)] = pr
+        return [pr for k in uniq if (pr := found.get(k))]
 
-    def _fetch_head(self, gh_repo: str, branch: str) -> dict[str, Any] | None:
-        """The best PR whose head ref is `branch` (open preferred, else most recently
-        updated), or None. Returns a PullRequest dict, cached by the caller."""
-        self.io.log_request(f"gh pr list --repo {gh_repo} --head {branch}")
+    def _fetch_heads(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any] | None] | None:
+        """The best PR whose head ref is each (github, branch) — open preferred,
+        else the most recently updated — in ONE `gh api graphql` call: an aliased
+        `pullRequests(headRefName:)` per branch, grouped under an aliased
+        `repository` per repo. Repo and branch names travel as variables, never
+        spliced into the query text. {pair: PullRequest dict or None}, or None when
+        the call itself failed."""
+        by_repo: dict[str, list[str]] = {}
+        for gh_repo, branch in pairs:
+            by_repo.setdefault(gh_repo, []).append(branch)
+        decls, fields, args = [], [], []
+        aliases: dict[tuple[str, str], tuple[str, str]] = {}  # pair -> (repo alias, branch alias)
+        b = 0
+        for r, (gh_repo, branches) in enumerate(by_repo.items()):
+            owner, _, name = gh_repo.partition("/")
+            decls += [f"$o{r}: String!", f"$n{r}: String!"]
+            args += ["-f", f"o{r}={owner}", "-f", f"n{r}={name}"]
+            heads = []
+            for branch in branches:
+                decls.append(f"$b{b}: String!")
+                args += ["-f", f"b{b}={branch}"]
+                heads.append(
+                    f"b{b}: pullRequests(headRefName: $b{b}, first: 10, "
+                    "states: [OPEN, CLOSED, MERGED], "
+                    "orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { ...pr } }"
+                )
+                aliases[(gh_repo, branch)] = (f"r{r}", f"b{b}")
+                b += 1
+            fields.append(f"r{r}: repository(owner: $o{r}, name: $n{r}) {{ {' '.join(heads)} }}")
+        query = f"query({', '.join(decls)}) {{ {' '.join(fields)} }} {_PR_FRAGMENT}"
+        self.io.log_request(
+            f"gh api graphql (PRs by head: {len(pairs)} branches in {len(by_repo)} repos)"
+        )
         try:
-            r = self.io.run(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--repo",
-                    gh_repo,
-                    "--head",
-                    branch,
-                    "--state",
-                    "all",
-                    "--limit",
-                    "10",
-                    "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
-                ],
-                timeout=30,
-            )
-            if r.returncode != 0:
-                return None
-            rows = json.loads(r.stdout)
+            r = self.io.run(["gh", "api", "graphql", "-f", f"query={query}", *args], timeout=60)
+            data = json.loads(r.stdout).get("data") if r.stdout else None
         except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
             return None
-        if not rows:
-            return None
-        # an open PR is the live one; otherwise the most recently touched
-        rows.sort(key=lambda pr: (pr.get("state") == "OPEN", pr.get("updatedAt", "")), reverse=True)
-        pr = rows[0]
-        return asdict(
-            PullRequest(
-                github=gh_repo,
-                number=pr.get("number"),
-                title=pr.get("title", ""),
-                url=pr.get("url", ""),
-                state=(pr.get("state") or "").lower(),
-                branch=pr.get("headRefName", ""),
-                relation="head",
-                draft=pr.get("isDraft", False),
-                created_at=pr.get("createdAt", ""),
-                updated_at=pr.get("updatedAt", ""),
-                ci=_ci_rollup(pr.get("statusCheckRollup")),
-            )
-        )
+        if not isinstance(data, dict):
+            return None  # an error reply with no data at all
+        result: dict[tuple[str, str], dict[str, Any] | None] = {}
+        for (gh_repo, branch), (ra, ba) in aliases.items():
+            # a repo GitHub can't resolve comes back null: no PR there
+            rows = ((data.get(ra) or {}).get(ba) or {}).get("nodes") or []
+            result[(gh_repo, branch)] = _head_pr(gh_repo, rows)
+        return result
 
     def pr_infos(self, pairs: list[dict[str, Any]], refresh: bool = False) -> list[dict[str, Any]]:
         """Full PR info (title, url, state, ci, ...) for explicit {github, number}
