@@ -183,7 +183,7 @@ class GooUpdateStatusTest(GitReposMixin, unittest.TestCase):
             pass
         ok, error = update.goo_fast_forward()
         self.assertFalse(ok)
-        self.assertIn("lock", error)  # git's last stderr line
+        self.assertIn("index.lock", error)  # git's fatal line, not the advice after it
         self.assertEqual(self.head(), before)
 
     def test_merge_timing_out_is_reported(self):

@@ -75,6 +75,9 @@ def goo_fast_forward() -> tuple[bool, str | None]:
     if not r:
         return False, "git not available or timed out"
     if r.returncode != 0:
-        msg = (r.stderr.strip() or r.stdout.strip()).split("\n")[-1]
+        # git's own error line — advice text can follow it (e.g. a stale index.lock)
+        lines = (r.stderr.strip() or r.stdout.strip()).split("\n")
+        errors = [ln for ln in lines if ln.startswith(("fatal:", "error:"))]
+        msg = (errors or lines)[-1]
         return False, msg or "git merge --ff-only failed"
     return True, None
