@@ -66,6 +66,7 @@ async function mount(workspaces: WorkspaceConfig[], opts: Opts = {}) {
       "/api/mergebot": { states: {} },
       "/api/status": { id: "main", state: "stopped" },
       "/api/databases": { ok: true, databases: [{ name: "alpha" }, { name: "wt1" }] },
+      "/api/addons": { ok: true, modules: [], db: null },
       "/api/workspace/list": { servers: {} },
       "/api/workspace/logs": { lines: [] },
       ...opts.routes,

@@ -34,6 +34,7 @@ function mount(workspaces: WorkspaceConfig[], opts: MountAppOptions = {}) {
       "/api/runbot": { states: {} },
       "/api/mergebot": { states: {} },
       "/api/databases": { ok: true, databases: [] },
+      "/api/addons": { ok: true, modules: [], db: null },
       ...opts.routes,
     },
   });

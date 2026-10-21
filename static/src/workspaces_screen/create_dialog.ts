@@ -46,7 +46,8 @@ export interface SourceValues {
   repos: string[];
   config: string;
   db: string;
-  args: string;
+  addons: string[]; // the modules to install (-i) when goo creates the database
+  args: string; // the other odoo-bin args for that first start
   category: string;
   demoData: boolean;
   createBranches: boolean; // fork new branches (template / version) vs. attach the source's
@@ -54,9 +55,12 @@ export interface SourceValues {
   dumps: RunbotDump[];
 }
 
-// everything the form submits
+// everything the form submits. `db` is the database the workspace runs on: the new
+// one's name when `newDb`, else the existing one picked (`existingDb`) — see ok()
 export interface CreateForm extends SourceValues {
   location: string;
+  newDb: boolean;
+  existingDb: string;
   cloneDb: string; // "" = don't clone, else the database to clone from
   restoreDump: string; // "" = don't restore, else the dump URL
   activate: boolean; // set by the button that submitted the form
@@ -97,6 +101,149 @@ export const configFromRepos = (
     : ({} as Record<string, string>); // an empty repo -> branch map
   return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
 };
+
+// Split a workspace's start args ("-i sale,crm --dev xml") into the modules they
+// install and the rest — the form edits the two apart (Addons / Start args).
+export function splitStartArgs(args: string): { addons: string[]; extra: string } {
+  const addons: string[] = [];
+  const extra: string[] = [];
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const list =
+      tok === "-i" || tok === "--init"
+        ? tokens[++i]
+        : tok.startsWith("--init=")
+          ? tok.slice("--init=".length)
+          : null;
+    if (list === null) extra.push(tok);
+    else
+      for (const name of (list || "").split(","))
+        if (name && !addons.includes(name)) addons.push(name);
+  }
+  return { addons, extra: extra.join(" ") };
+}
+
+// the start args the form's addons + extra args make — what the workspace stores
+export function startArgs(addons: string[], extra: string): string {
+  return [addons.length ? `-i ${addons.join(",")}` : "", extra.trim()].filter(Boolean).join(" ");
+}
+
+// one module the Addons combobox offers (/api/addons)
+interface AddonOption {
+  name: string;
+  repo: string;
+  summary: string;
+  application: boolean;
+}
+
+// A multi-select combobox of modules: the picked ones as removable chips, then a
+// search box listing the matching modules (apps first). Arrow keys move through
+// the results, Enter or a click adds one — or, with no match, the typed name as
+// is; Backspace in an empty box removes the last chip.
+export class AddonsCombobox extends Component {
+  static template = xml`
+    <div class="branch-cb addons-cb">
+      <div class="addons-cb-box" t-on-click="() => this.inputEl()?.focus()">
+        <span t-foreach="this.props.value" t-as="name" t-key="name" class="addons-cb-chip">
+          <t t-out="name"/>
+          <button type="button" class="addons-cb-remove" t-att-title="'remove ' + name"
+                  t-on-click.stop="() => this.remove(name)">×</button>
+        </span>
+        <input type="text" class="addons-cb-input" t-ref="this.inputEl"
+               t-att-placeholder="this.props.value.length ? '' : 'type to search the modules…'"
+               t-att-value="this.query()"
+               t-on-input="(ev) => this.onInput(ev.target.value)"
+               t-on-keydown="(ev) => this.onKey(ev)"
+               t-on-focus="() => this.open.set(true)"
+               t-on-blur="() => this.open.set(false)"/>
+      </div>
+      <div t-if="this.open() and this.query().trim()" class="rbd-results branch-cb-list" t-ref="this.listEl">
+        <div t-if="!this.rows.length" class="rbd-status">No matching module — Enter adds it as typed.</div>
+        <div t-foreach="this.rows" t-as="m" t-key="m.name"
+             class="rbd-row" t-att-class="{selected: m_index === this.active()}"
+             t-on-mousedown.prevent="() => this.add(m.name)">
+          <span class="rbd-branch" t-out="m.name"/>
+          <span class="rbd-repos">
+            <span t-if="m.application" class="rbd-repo-tag local">app</span>
+            <span class="addons-cb-summary" t-out="m.summary"/>
+          </span>
+        </div>
+      </div>
+    </div>`;
+
+  props = useProps({
+    value: t.any() as Type<string[]>, // the picked module names — not validated at runtime
+    options: t.any() as Type<AddonOption[]>,
+    onChange: t.function<[string[]], void>(),
+  });
+
+  query = signal("");
+  open = signal(false);
+  active = signal(0);
+  inputEl = signal.ref(HTMLElement);
+  listEl = signal.ref(HTMLElement);
+
+  // the modules matching the query, not picked yet — apps first, then by name
+  get rows(): AddonOption[] {
+    const q = this.query().trim().toLowerCase();
+    if (!q) return [];
+    const picked = new Set(this.props.value);
+    return this.props.options
+      .filter(
+        (m) => !picked.has(m.name) && (m.name.includes(q) || m.summary.toLowerCase().includes(q)),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.name.startsWith(q)) - Number(a.name.startsWith(q)) ||
+          Number(b.application) - Number(a.application) ||
+          a.name.localeCompare(b.name),
+      )
+      .slice(0, 50);
+  }
+
+  onInput(val: string): void {
+    this.query.set(val);
+    this.open.set(true);
+    this.active.set(0);
+  }
+
+  // highlight row `i`, scrolling the list to keep it visible
+  highlight(i: number): void {
+    this.active.set(i);
+    this.listEl()?.querySelectorAll(".rbd-row")[i]?.scrollIntoView({ block: "nearest" });
+  }
+
+  onKey(ev: KeyboardEvent): void {
+    const n = this.rows.length;
+    if (ev.key === "ArrowDown" && n) {
+      ev.preventDefault();
+      this.highlight((this.active() + 1) % n);
+    } else if (ev.key === "ArrowUp" && n) {
+      ev.preventDefault();
+      this.highlight((this.active() - 1 + n) % n);
+    } else if (ev.key === "Enter") {
+      ev.stopPropagation(); // picks a module, never submits the form
+      const name = this.rows[this.active()]?.name || this.query().trim();
+      if (name) this.add(name);
+    } else if (ev.key === "Backspace" && !this.query() && this.props.value.length) {
+      this.remove(this.props.value[this.props.value.length - 1]);
+    } else if (ev.key === "Escape" && this.open() && this.query().trim()) {
+      ev.stopPropagation(); // close the list, not the dialog
+      this.open.set(false);
+    }
+  }
+
+  add(name: string): void {
+    if (!this.props.value.includes(name)) this.props.onChange([...this.props.value, name]);
+    this.query.set("");
+    this.active.set(0);
+  }
+
+  remove(name: string): void {
+    this.props.onChange(this.props.value.filter((n) => n !== name));
+  }
+}
 
 // one repo a searched branch was found in: locally (attach as-is) or only on a
 // remote (`remote` = the git remote to fetch it from)
@@ -275,7 +422,7 @@ interface Loaded {
 }
 
 export class CreateWorkspaceDialog extends Component {
-  static components = { BranchCombobox };
+  static components = { BranchCombobox, AddonsCombobox };
   static template = xml`
     <div class="dialog-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog cwd" t-on-click.stop="() => {}">
@@ -347,6 +494,16 @@ export class CreateWorkspaceDialog extends Component {
                 <input type="text" t-ref="this.nameEl" t-att-value="this.form().name" placeholder="name (e.g. master-mytask)"
                        t-on-input="(ev) => this.setName(ev.target.value)" t-on-keydown="(ev) => this.onKey(ev)"/>
               </div>
+              <div t-if="this.props.categories" class="dialog-field">
+                <label>Category</label>
+                <select t-on-change="(ev) => this.set({category: ev.target.value})">
+                  <option value="">— none —</option>
+                  <option t-foreach="this.props.categories" t-as="c" t-key="c.value" t-att-value="c.value"
+                          t-att-selected="this.form().category === c.value" t-out="c.label"/>
+                </select>
+              </div>
+            </div>
+            <div class="cwd-col">
               <div class="dialog-field">
                 <label>Location</label>
                 <select t-on-change="(ev) => this.set({location: ev.target.value})">
@@ -361,63 +518,86 @@ export class CreateWorkspaceDialog extends Component {
                 </label>
               </div>
             </div>
+          </div>
+          <div class="cwd-grid cwd-sections">
             <div class="cwd-col">
-              <div class="dialog-field">
-                <label>Database</label>
-                <input type="text" t-att-value="this.form().db" placeholder="database name"
-                       t-on-input="(ev) => this.set({db: ev.target.value})" t-on-keydown="(ev) => this.onKey(ev)"/>
-              </div>
-              <div class="dialog-field">
-                <div class="dialog-check-select">
-                  <label class="edit-check">
-                    <input type="checkbox" t-att-checked="!!this.form().cloneDb" t-on-change="(ev) => this.set({cloneDb: ev.target.checked ? this.cloneDefault : ''})"/>
-                    Clone db
-                  </label>
-                  <select t-if="this.form().cloneDb" t-on-change="(ev) => this.set({cloneDb: ev.target.value})">
-                    <option t-foreach="this.dbNames" t-as="name" t-key="name" t-att-value="name"
-                            t-att-selected="this.form().cloneDb === name" t-out="name"/>
-                  </select>
+              <t t-if="this.launchMode !== 'external'">
+                <div class="cwd-section-title">First start</div>
+                <div class="dialog-field">
+                  <label>Addons</label>
+                  <AddonsCombobox value="this.form().addons" options="this.addonOptions()" onChange="(names) => this.set({addons: names})"/>
                 </div>
-              </div>
-              <div t-if="this.form().dumps.length" class="dialog-field">
-                <div class="dialog-check-select">
-                  <label class="edit-check">
-                    <input type="checkbox" t-att-checked="!!this.form().restoreDump" t-on-change="(ev) => this.set({restoreDump: ev.target.checked ? this.dumpDefault : ''})"/>
-                    Restore runbot database
-                  </label>
-                  <select t-if="this.form().restoreDump" t-on-change="(ev) => this.set({restoreDump: ev.target.value})">
-                    <option t-foreach="this.form().dumps" t-as="d" t-key="d.url" t-att-value="d.url"
-                            t-att-selected="this.form().restoreDump === d.url" t-out="this.dumpLabel(d)"/>
-                  </select>
+                <div class="dialog-field">
+                  <label>Start args</label>
+                  <input type="text" t-att-value="this.form().args" placeholder="--dev xml"
+                         t-on-input="(ev) => this.set({args: ev.target.value})" t-on-keydown="(ev) => this.onKey(ev)"/>
                 </div>
-                <div t-if="this.form().restoreDump" class="dialog-field-hint">downloaded from runbot and restored after the workspace is created — this can take a while</div>
-              </div>
-              <div t-if="this.launchMode !== 'external'" class="dialog-field">
+                <div class="dialog-field">
+                  <code class="cwd-command" t-out="this.commandArgs"/>
+                  <div t-if="!this.creatingDb" class="dialog-field-hint">an existing database: the addons and start args only apply to one goo creates</div>
+                </div>
+              </t>
+            </div>
+            <div class="cwd-col">
+              <div class="cwd-section-title">Database</div>
+              <div t-if="this.dbNames.length" class="dialog-field">
                 <label class="edit-check">
-                  <input type="checkbox" t-att-checked="this.form().demoData" t-on-change="(ev) => this.set({demoData: ev.target.checked})"/>
-                  Demo data
+                  <input type="checkbox" t-att-checked="this.form().newDb" t-on-change="(ev) => this.set({newDb: ev.target.checked})"/>
+                  Create new database
                 </label>
               </div>
-              <div t-if="this.launchMode !== 'external'" class="dialog-field">
-                <label>Start args</label>
-                <input type="text" t-att-value="this.form().args" placeholder="-i sale_management"
-                       t-on-input="(ev) => this.set({args: ev.target.value})" t-on-keydown="(ev) => this.onKey(ev)"/>
-              </div>
-              <div t-if="this.props.categories" class="dialog-field">
-                <label>Category</label>
-                <select t-on-change="(ev) => this.set({category: ev.target.value})">
-                  <option value="">— none —</option>
-                  <option t-foreach="this.props.categories" t-as="c" t-key="c.value" t-att-value="c.value"
-                          t-att-selected="this.form().category === c.value" t-out="c.label"/>
+              <div t-if="!this.creatingDb" class="dialog-field">
+                <label>Database</label>
+                <select t-on-change="(ev) => this.set({existingDb: ev.target.value})">
+                  <option t-foreach="this.dbNames" t-as="name" t-key="name" t-att-value="name"
+                          t-att-selected="this.form().existingDb === name" t-out="name"/>
                 </select>
               </div>
+              <t t-if="this.creatingDb">
+                <div class="dialog-field">
+                  <label>Database name</label>
+                  <input type="text" t-att-value="this.form().db" placeholder="database name"
+                         t-on-input="(ev) => this.set({db: ev.target.value})" t-on-keydown="(ev) => this.onKey(ev)"/>
+                </div>
+                <div t-if="this.dbNames.length" class="dialog-field">
+                  <div class="dialog-check-select">
+                    <label class="edit-check">
+                      <input type="checkbox" t-att-checked="!!this.form().cloneDb" t-on-change="(ev) => this.set({cloneDb: ev.target.checked ? this.cloneDefault : ''})"/>
+                      Clone database
+                    </label>
+                    <select t-if="this.form().cloneDb" t-on-change="(ev) => this.set({cloneDb: ev.target.value})">
+                      <option t-foreach="this.dbNames" t-as="name" t-key="name" t-att-value="name"
+                              t-att-selected="this.form().cloneDb === name" t-out="name"/>
+                    </select>
+                  </div>
+                </div>
+                <div t-if="this.form().dumps.length" class="dialog-field">
+                  <div class="dialog-check-select">
+                    <label class="edit-check">
+                      <input type="checkbox" t-att-checked="!!this.form().restoreDump" t-on-change="(ev) => this.set({restoreDump: ev.target.checked ? this.dumpDefault : ''})"/>
+                      Restore runbot database
+                    </label>
+                    <select t-if="this.form().restoreDump" t-on-change="(ev) => this.set({restoreDump: ev.target.value})">
+                      <option t-foreach="this.form().dumps" t-as="d" t-key="d.url" t-att-value="d.url"
+                              t-att-selected="this.form().restoreDump === d.url" t-out="this.dumpLabel(d)"/>
+                    </select>
+                  </div>
+                  <div t-if="this.form().restoreDump" class="dialog-field-hint">downloaded from runbot and restored after the workspace is created — this can take a while</div>
+                </div>
+                <div t-if="this.launchMode !== 'external'" class="dialog-field">
+                  <label class="edit-check">
+                    <input type="checkbox" t-att-checked="this.form().demoData" t-on-change="(ev) => this.set({demoData: ev.target.checked})"/>
+                    Demo data
+                  </label>
+                </div>
+              </t>
             </div>
           </div>
         </div>
         <div class="dialog-foot">
           <span t-if="this.touched() and this.error" class="form-error" t-out="this.error"/>
-          <button t-if="this.form().location !== 'worktree'" class="pbtn" t-att-disabled="!!this.error or this.loading()" t-on-click="() => this.ok(true)">Create and activate</button>
-          <button class="pbtn primary" t-att-disabled="!!this.error or this.loading()" t-on-click="() => this.ok()">Create</button>
+          <button t-if="this.canActivate" class="pbtn primary" t-att-disabled="!!this.error or this.loading()" t-on-click="() => this.ok(true)">Create and activate</button>
+          <button class="pbtn" t-att-class="{primary: !this.canActivate}" t-att-disabled="!!this.error or this.loading()" t-on-click="() => this.ok()">Create</button>
           <button class="pbtn" t-on-click="() => this.done(null)">Discard</button>
         </div>
       </div>
@@ -449,11 +629,13 @@ export class CreateWorkspaceDialog extends Component {
   loading = signal(false);
   touched = signal(false); // has the user edited the form? (gates the inline error)
   nameEl = signal.ref(HTMLElement);
+  addonOptions = signal<AddonOption[]>([]); // every module of the configured repos
   _seq = 0; // only the latest source load may land its values
 
   setup(): void {
-    this.form.set(this.props.initial);
+    this.form.set({ ...this.props.initial, existingDb: this.existingDefault });
     this.templateId.set(this.props.initial.template);
+    this._loadAddons();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.done(null);
     };
@@ -466,6 +648,20 @@ export class CreateWorkspaceDialog extends Component {
         el.select();
       }
     });
+  }
+
+  // the modules the Addons combobox offers — every repo's, read once (no database
+  // needed); a failure just leaves the free-typed names
+  async _loadAddons(): Promise<void> {
+    const repos = (this.config.config.repos || [])
+      .filter((r) => r.path)
+      .map((r) => ({ id: r.id, path: r.path }));
+    try {
+      const res = await postJSON<{ modules?: AddonOption[] }>("/api/addons", { repos });
+      this.addonOptions.set(res.modules || []);
+    } catch {
+      /* no list to search: names can still be typed */
+    }
   }
 
   get templates(): TemplateConfig[] {
@@ -527,11 +723,40 @@ export class CreateWorkspaceDialog extends Component {
     });
   }
 
-  // ticking Clone db seeds the template's database when it exists, else the first one
+  // ticking Clone database (or picking an existing one) seeds the template's
+  // database when it exists, else the first one
   get cloneDefault(): string {
     const tpl = this.templates.find((x) => x.id === this.form().template);
     if (tpl?.db && this.dbNames.includes(tpl.db)) return tpl.db;
     return this.dbNames[0] || "";
+  }
+
+  // the existing database preselected: the one named like the workspace's, else
+  // the template's, else the first
+  get existingDefault(): string {
+    const db = (this.form().db ?? this.props.initial.db).trim();
+    return this.dbNames.includes(db) ? db : this.cloneDefault;
+  }
+
+  // whether the workspace gets a new database: "Create new database" — always
+  // when there's no existing one to pick (the checkbox isn't even shown then)
+  get creatingDb(): boolean {
+    return this.form().newDb || !this.dbNames.length;
+  }
+
+  // the odoo-bin parameters the workspace's first start gets (the database, the
+  // addons to install, demo data, the extra args) — what the backend appends
+  get commandArgs(): string {
+    const v = this.form();
+    const db = (this.creatingDb ? v.db : v.existingDb).trim() || "<database>";
+    return [
+      `-d ${db}`,
+      startArgs(v.addons, ""),
+      `--without-demo ${v.demoData ? "false" : "all"}`,
+      v.args.trim(),
+    ]
+      .filter(Boolean)
+      .join(" ");
   }
 
   // default to the dump matching the checkout: an enterprise workspace wants the
@@ -568,20 +793,16 @@ export class CreateWorkspaceDialog extends Component {
     const v = this.form();
     const name = v.name.trim();
     const db = v.db.trim();
-    const dbExists = this.dbNames.includes(db);
     if (!name) return "a name is required";
     if ((this.config.config.workspaces || []).some((w) => w.name === name))
       return `a workspace named "${name}" already exists`;
     if (!repoBranchList.parse(v.config.trim()).length) return "tick at least one repository";
-    if (v.cloneDb && !db) return "set a database name to clone the selected database into";
-    if (v.location === "worktree" && v.cloneDb && dbExists)
-      return `database "${db}" already exists — pick a new name to clone into`;
-    // both would write the same database, and the dump restore needs a fresh one
-    // in every location (it replays a schema, it doesn't seed an empty shell)
+    if (!this.creatingDb) return "";
+    if (!db) return "set the new database's name";
+    if (this.dbNames.includes(db))
+      return `database "${db}" already exists — untick "Create new database" to use it`;
+    // both would write the same database
     if (v.restoreDump && v.cloneDb) return "clone a database or restore the runbot dump — not both";
-    if (v.restoreDump && !db) return "set a database name to restore the runbot dump into";
-    if (v.restoreDump && dbExists)
-      return `database "${db}" already exists — pick a new name to restore into`;
     return "";
   }
 
@@ -694,8 +915,15 @@ export class CreateWorkspaceDialog extends Component {
     }
   }
 
+  // a main-checkout workspace can be activated right away ("Create and activate",
+  // the primary action); a worktree runs concurrently, with nothing to activate
+  get canActivate(): boolean {
+    return this.form().location !== "worktree";
+  }
+
+  // Enter does what the primary button does
   onKey(ev: KeyboardEvent): void {
-    if (ev.key === "Enter") this.ok();
+    if (ev.key === "Enter") this.ok(this.canActivate);
   }
 
   done(result: CreateForm | null): void {
@@ -709,6 +937,13 @@ export class CreateWorkspaceDialog extends Component {
     // Enter can still reach here while invalid (the button is disabled, not the
     // keystroke) — guard, and reveal the message if it was hidden
     if (this.error) return this.touched.set(true);
-    this.done({ ...this.form(), activate: activate && this.form().location !== "worktree" });
+    const v = this.form();
+    this.done({
+      ...v,
+      activate: activate && this.canActivate,
+      // an existing database is used as is: nothing to clone or restore into it
+      newDb: this.creatingDb,
+      ...(this.creatingDb ? {} : { db: v.existingDb, cloneDb: "", restoreDump: "" }),
+    });
   }
 }
