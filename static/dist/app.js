@@ -210,6 +210,12 @@ var DEFAULT_CONFIG = {
   // test-tag presets offered in the Tests tab's selector (editable in the
   // Configuration tab). Each is { tags: "<--test-tags value>" }.
   test_presets: [{ tags: "/web:WebSuite[@web]" }],
+  // the workspace detail header's buttons (editable in the Config tab): a path on
+  // the workspace's own server, through the autologin addon unless that's off
+  workspace_links: [
+    { label: "/odoo", path: "/odoo?debug=assets" },
+    { label: "/web/tests", path: "/web/tests?debug=assets&timeout=500000&manual=true" }
+  ],
   // navbar links (editable in the Config tab). /odoo + /web/tests go through the
   // autologin addon (?to=<url-encoded target>) and only work while the server is up.
   links: [
@@ -659,6 +665,11 @@ async function fetchReviewPrompt() {
 }
 async function saveReviewPrompt(content) {
   return postJSON("/api/review-prompt", { content });
+}
+function autologinLink(base, path, autologin) {
+  if (!base) return "";
+  const target = path.startsWith("/") ? path : `/${path}`;
+  return autologin ? `${base}dev/autologin?to=${encodeURIComponent(target)}` : `${base}${target.slice(1)}`;
 }
 function worktreeSlug(tgt) {
   const s = (tgt.name || tgt.id || "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -3502,6 +3513,7 @@ var SETTINGS_JSON = [
   "start",
   "tabs",
   "links",
+  "workspace_links",
   "test_presets",
   "workspace_categories",
   "reviews",
@@ -3578,6 +3590,7 @@ var Settings = class extends Model {
   start = fields.json();
   tabs = fields.json();
   links = fields.json();
+  workspace_links = fields.json();
   test_presets = fields.json();
   workspace_categories = fields.json();
   // [{ id }] — group order for the Workspaces list
@@ -3888,6 +3901,7 @@ function toModels(orm, config = {}, state = {}) {
   settings.start = config.start ?? {};
   settings.tabs = config.tabs ?? [];
   settings.links = config.links ?? [];
+  settings.workspace_links = config.workspace_links ?? DEFAULT_CONFIG.workspace_links;
   settings.test_presets = config.test_presets ?? [];
   settings.workspace_categories = config.workspace_categories ?? [];
   settings.reviews = config.reviews ?? [];
@@ -3985,6 +3999,7 @@ function toConfig(orm) {
     out.start = s.start() ?? {};
     out.tabs = s.tabs() ?? [];
     out.links = s.links() ?? [];
+    out.workspace_links = s.workspace_links() ?? [];
     out.test_presets = s.test_presets() ?? [];
     out.workspace_categories = s.workspace_categories() ?? [];
     out.reviews = s.reviews() ?? [];
@@ -5143,17 +5158,10 @@ var WorkspacePlugin = class extends Plugin {
   // wraps a target path through goo's autologin route, unless autologin_links
   // is off (then it's just the plain path — for people who'd rather log in
   // themselves, e.g. the autologin addon isn't installed on this server)
-  _link(tgt, path) {
-    const base = this._baseUrl(tgt);
-    if (!base) return "";
-    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
-    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
-  }
-  odooUrl(tgt) {
-    return this._link(tgt, "/odoo?debug=assets");
-  }
-  testsUrl(tgt) {
-    return this._link(tgt, "/web/tests?debug=assets&timeout=500000&manual=true");
+  // `path` (e.g. "/odoo?debug=assets") on the worktree's own server, through the
+  // autologin route unless that's off; "" while it isn't reachable
+  link(tgt, path) {
+    return autologinLink(this._baseUrl(tgt), path, this.config.config.autologin_links !== false);
   }
   // thin wrapper: `return this._error(…)` deliberately returns false (callers
   // use it to bail out of a flow with a failure result)
@@ -7320,8 +7328,8 @@ var ConfigScreen = class extends Component {
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
                    t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
-            <label for="setting-autologin-links" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
-            <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
+            <label for="setting-autologin-links" title="When off, the workspace links (a workspace's header buttons) open the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
+            <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the workspace links (a workspace's header buttons) open the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
                    t-att-checked="this.config.config.autologin_links"
                    t-on-change="ev => this.config.updateConfig({ autologin_links: ev.target.checked })"/>
             <label for="setting-cleanup-enabled" title="Once a day, automatically delete a worktree workspace once every checkout with a PR shows it merged (skipped if anything is dirty or unpushed). Branches are only ever deleted locally, never on the remote.">auto-delete merged workspaces</label>
@@ -7358,6 +7366,7 @@ var ConfigScreen = class extends Component {
         <ListEditor kind="'categories'"/>
         <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
+        <ListEditor kind="'workspaceLinks'"/>
         <div class="config-block">
           <h2 class="subtitle">Backup</h2>
           <p class="dim">goo stores your config on the server (~/.config/goo/config.json). Save a copy to a file, or restore one.</p>
@@ -7767,6 +7776,32 @@ var SPECS = {
         placeholder: "category name (e.g. dev)",
         className: "w-name",
         title: "group label shown in the Workspaces list (when categories are enabled)"
+      }
+    ],
+    validate() {
+      return null;
+    }
+  },
+  workspaceLinks: {
+    key: "workspace_links",
+    title: "Workspace links",
+    itemName: "link",
+    reorderable: true,
+    // drag the handle to reorder the buttons in a workspace's header
+    fields: [
+      {
+        key: "label",
+        name: "label",
+        placeholder: "label (e.g. /odoo)",
+        className: "w-name",
+        title: "the button's text in a workspace's header"
+      },
+      {
+        key: "path",
+        name: "path",
+        placeholder: "path on the workspace's server, e.g. /odoo/action-sale.action_orders",
+        className: "w-flex",
+        title: "opened on the workspace's own server (its port or container), through the autologin route unless that's off"
       }
     ],
     validate() {
@@ -16000,8 +16035,11 @@ var WorkspacesScreen = class extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <t t-if="this.hasUrlButtons(this.sel)">
+                <t t-foreach="this.workspaceLinks" t-as="link" t-key="link_index">
+                  <button class="pbtn ghost" t-att-disabled="!this.linkUrl(this.sel, link.path)" t-att-title="'open ' + link.path + ' on this workspace\'s server'" t-on-click="() => this.openWorkspaceUrl(this.sel, this.linkUrl(this.sel, link.path))"><t t-out="this.externalIcon"/><t t-out="link.label"/></button>
+                </t>
+              </t>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -16948,13 +16986,13 @@ var WorkspacesScreen = class extends Component {
   hasUrlButtons(ws) {
     return this.isWt(ws) || this.config.config.launch_mode !== "external";
   }
-  odooUrl(ws) {
-    if (this.isWt(ws)) return this.wt.odooUrl(ws);
-    return this.mainLink(ws, "/odoo?debug=assets");
+  // the detail header's buttons (configured in the Config tab's "Workspace links")
+  get workspaceLinks() {
+    return (this.config.config.workspace_links || []).filter((l) => l.label && l.path);
   }
-  testsUrl(ws) {
-    if (this.isWt(ws)) return this.wt.testsUrl(ws);
-    return this.mainLink(ws, "/web/tests?debug=assets&timeout=500000&manual=true");
+  // a workspace link's URL on `ws`'s own server; "" while it isn't running
+  linkUrl(ws, path) {
+    return this.isWt(ws) ? this.wt.link(ws, path) : this.mainLink(ws, path);
   }
   // the main server's link: its container's nginx host in docker mode, else the
   // one odoo on localhost:8069; only while it runs
@@ -16962,9 +17000,7 @@ var WorkspacesScreen = class extends Component {
     const server = this.store.serverFor(ws);
     if (server?.state !== "running") return "";
     const base = this.config.config.launch_mode === "docker" ? this.wt.dockerSlugUrl(server.docker_container) : "http://localhost:8069/";
-    if (!base) return "";
-    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
-    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
+    return autologinLink(base, path, this.config.config.autologin_links !== false);
   }
   open(url) {
     if (url) window.open(url, "_blank", "noopener");

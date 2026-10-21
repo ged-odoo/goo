@@ -402,6 +402,33 @@ describe("worktree workspace lifecycle", () => {
     ]);
   });
 
+  it("shows the configured workspace links, in order, on the workspace's server", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await mount([ALPHA], {
+      active: "alpha",
+      config: {
+        workspace_links: [
+          { label: "Sales", path: "odoo/action-sale.action_orders" }, // no leading slash
+          { label: "Hoot", path: "/web/tests?debug=assets" },
+        ],
+        autologin_links: false,
+      },
+    });
+    const labels = [...app.root.querySelectorAll(".wt-detail-name-row button.pbtn.ghost")]
+      .map((b) => b.textContent!.trim())
+      .filter((t) => t !== "Refresh");
+    expect(labels).toEqual(["Sales", "Hoot"]);
+    sse.emit("server", { id: "main", state: "running", workspace: "alpha", port: 8069 });
+    await app.settle();
+    mustText(app.root, ".wt-detail-name-row button", "Sales").click();
+    expect(open.mock.calls[0][0]).toBe("http://localhost:8069/odoo/action-sale.action_orders");
+  });
+
+  it("shows no link buttons when every workspace link was removed", async () => {
+    await mount([ALPHA], { active: "alpha", config: { workspace_links: [] } });
+    expect(() => mustText(app.root, ".wt-detail-name-row button", "/odoo")).toThrow();
+  });
+
   it("in docker mode the main workspace's links go through its container's nginx host", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await mount([ALPHA], { active: "alpha", config: { launch_mode: "docker" } });

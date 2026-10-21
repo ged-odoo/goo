@@ -484,7 +484,7 @@ describe("external servers + autologin URLs", () => {
       running: true,
       url: "http://ext.localhost/",
     });
-    expect(plugin.odooUrl(w1)).toBe(
+    expect(plugin.link(w1, "/odoo?debug=assets")).toBe(
       "http://ext.localhost/dev/autologin?to=%2Fodoo%3Fdebug%3Dassets",
     );
   });
@@ -500,7 +500,7 @@ describe("external servers + autologin URLs", () => {
       checking: false,
       error: "docker not running",
     });
-    expect(plugin.odooUrl({ id: "x" })).toBe("");
+    expect(plugin.link({ id: "x" }, "/odoo")).toBe("");
   });
 
   it("checkDbInUse answers for a bare db name, and never blocks on a failed check", async () => {
@@ -518,13 +518,15 @@ describe("external servers + autologin URLs", () => {
     const w1 = WT("w1");
     const on = build({ workspaces: [w1] });
     on.store.mergeServer({ id: "w1", state: "running", port: 8070 });
-    expect(on.plugin.testsUrl(w1)).toBe(
+    expect(on.plugin.link(w1, "/web/tests?debug=assets&timeout=500000&manual=true")).toBe(
       "http://localhost:8070/dev/autologin?to=" +
         encodeURIComponent("/web/tests?debug=assets&timeout=500000&manual=true"),
     );
     const off = build({ workspaces: [w1], settings: { autologin_links: false } });
     off.store.mergeServer({ id: "w1", state: "running", port: 8070 });
-    expect(off.plugin.odooUrl(w1)).toBe("http://localhost:8070/odoo?debug=assets");
+    expect(off.plugin.link(w1, "/odoo?debug=assets")).toBe(
+      "http://localhost:8070/odoo?debug=assets",
+    );
   });
 
   it("docker mode links through nginx to the live container slot, only while running", () => {
@@ -534,9 +536,11 @@ describe("external servers + autologin URLs", () => {
       settings: { launch_mode: "docker", docker_nginx_port: "8080" },
     });
     store.mergeServer({ id: "w1", state: "stopped", docker_container: "dev1" });
-    expect(plugin.odooUrl(w1)).toBe("");
+    expect(plugin.link(w1, "/odoo?debug=assets")).toBe("");
     store.mergeServer({ id: "w1", state: "running" });
-    expect(plugin.odooUrl(w1)).toMatch(/^http:\/\/dev1\.localhost:8080\/dev\/autologin/);
+    expect(plugin.link(w1, "/odoo?debug=assets")).toMatch(
+      /^http:\/\/dev1\.localhost:8080\/dev\/autologin/,
+    );
     store.mergeServer({ id: "w1", docker_container: "" });
     expect(plugin.dockerUrl(w1)).toBe("");
     const p80 = build({ settings: { launch_mode: "docker", docker_nginx_port: "80" } });

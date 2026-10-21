@@ -397,6 +397,18 @@ export interface WorktreeNamed {
   name?: string;
 }
 
+// `path` (e.g. "/odoo?debug=assets") on the odoo server at `base` (its URL, ending
+// in "/"): through goo's dev-only autologin route (the autologin addon logs in,
+// then redirects to it), or the plain path when `autologin` is off. "" without
+// a base (the server isn't reachable).
+export function autologinLink(base: string, path: string, autologin: boolean): string {
+  if (!base) return "";
+  const target = path.startsWith("/") ? path : `/${path}`;
+  return autologin
+    ? `${base}dev/autologin?to=${encodeURIComponent(target)}`
+    : `${base}${target.slice(1)}`;
+}
+
 export function worktreeSlug(tgt: WorktreeNamed): string {
   const s = (tgt.name || tgt.id || "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return s || tgt.id;
