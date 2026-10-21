@@ -110,7 +110,9 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
     master-detail Workspaces screen, split one file per component: `workspaces.ts`
     (the screen/list), `code_pane.ts` (the Code tab), `history.ts` (`CommitHistory`,
     the reorder/squash/drop commit editor), `claude_chat.ts`, the other tab panes
-    (`panes.ts`) + the shared create/delete dialogs (`dialogs.ts`).
+    (`panes.ts`), the New workspace dialog (`create_dialog.ts` — source picker +
+    two-column form, with its branch combobox) + the shared create/delete flows
+    (`dialogs.ts` — source loading, creation, deletion).
     `branches_screen/` is the merged **Branches & PRs** screen (one RecordList grouped by
     branch name: local branches + their PRs, plus PR-only rows for authored PRs with no
     local branch; the old separate PRs screen and the PR-review feature are retired —

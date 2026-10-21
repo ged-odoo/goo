@@ -151,7 +151,7 @@ class RunbotService:
     # downloads to seed a child build. The listing never links it, but the
     # <build-options-dropdown> element on each build slot carries all three parts as
     # data attributes, so we can address it ourselves. Used by "Restore runbot
-    # database" in the create-workspace wizard — for a pasted bundle (bundle_info)
+    # database" in the create-workspace form — for a pasted bundle (bundle_info)
     # and for a workspace forked off a sticky series (dumps).
 
     _SLOT_NAME_RE = re.compile(r'class="[^"]*slot_name"[^>]*>\s*<span>\s*([^<]*?)\s*</span>')

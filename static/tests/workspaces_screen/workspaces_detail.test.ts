@@ -805,7 +805,12 @@ describe("checkout drift", () => {
       (i) => i.value,
     );
     expect(values).toContain("master-other");
-    expect(values).toContain("community:master-other,enterprise:master");
+    // each repo keeps the branch it's really on
+    const repos = [...dialog()!.querySelectorAll(".cwd-repo")].map(
+      (r) =>
+        `${r.querySelector(".cwd-repo-id")!.textContent}:${r.querySelector(".cwd-repo-branch")!.textContent}`,
+    );
+    expect(repos).toEqual(["community:master-other", "enterprise:master"]);
   });
 });
 

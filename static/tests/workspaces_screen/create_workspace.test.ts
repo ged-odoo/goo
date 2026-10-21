@@ -1,6 +1,7 @@
 // Creating workspaces from the Workspaces screen, mounted in the whole app against a
-// fake backend: the "Add" wizard (template / blank / runbot bundle source → the
-// create form), a forward-port sub workspace, and "Adopt current checkout".
+// fake backend: the "Add" dialog (its source — a template, a runbot bundle, a local or
+// remote branch, a pull request — prefilling the form), a forward-port sub workspace,
+// and "Adopt current checkout".
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mountApp, type MountedApp, type Route } from "../helpers/app.ts";
 import {
@@ -78,15 +79,42 @@ async function click(el: HTMLElement) {
 const failure = (status: number, body: object) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-const wizard = () => document.querySelector<HTMLElement>(".ws-wiz");
-
-async function openWizard() {
+async function openForm() {
   await click(mustText(app.root.querySelector(".wt-list-title")!, "Add"));
-  expect(wizard()).not.toBeNull();
+  expect(dialogTitle()).toBe("New workspace");
 }
 
-async function continueWizard() {
-  await click(mustText(wizard()!, "Continue"));
+// pick one of the dialog's source radios by its label
+async function pickSource(label: string) {
+  const radio = [...mustDialog().querySelectorAll<HTMLLabelElement>(".cwd-source")].find(
+    (l) => l.textContent!.trim() === label,
+  );
+  if (!radio) throw new Error(`no source "${label}"`);
+  setChecked(radio.querySelector("input")!, true);
+  await app.settle();
+}
+
+async function pickTemplate(id: string) {
+  choose(field("Template").querySelector("select")!, id);
+  await app.settle();
+}
+
+// the branch combobox's result rows, as "branch:repo/local|remote,…"
+const branchRows = () =>
+  [...mustDialog().querySelectorAll(".branch-cb .rbd-row")].map(
+    (r) =>
+      `${r.querySelector(".rbd-branch")!.textContent}:` +
+      [...r.querySelectorAll(".rbd-repo-tag")]
+        .map((t) => `${t.textContent}/${t.className.split(" ")[1]}`)
+        .join(","),
+  );
+
+async function pickBranchRow(branchName: string) {
+  const row = [...mustDialog().querySelectorAll<HTMLElement>(".branch-cb .rbd-row")].find(
+    (r) => r.querySelector(".rbd-branch")!.textContent === branchName,
+  )!;
+  row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  await app.settle();
 }
 
 const input = (label: string) => field(label).querySelector<HTMLInputElement>("input")!;
@@ -103,6 +131,28 @@ async function tick(label: string, on: boolean) {
   setChecked(checkbox(label), on);
   await app.settle();
 }
+
+// the ticked repositories, each with the branch it'll check out — "repo:branch,…"
+const tickedRepos = () =>
+  [...field("Repositories").querySelectorAll(".cwd-repo")].filter(
+    (r) => r.querySelector<HTMLInputElement>("input")!.checked,
+  );
+const configText = () =>
+  tickedRepos()
+    .map((r) => {
+      const branchName = r.querySelector(".cwd-repo-branch")?.textContent ?? "";
+      return `${r.querySelector(".cwd-repo-id")!.textContent}:${branchName}`;
+    })
+    .filter((c) => !c.endsWith(":"))
+    .join(",");
+// each ticked repository's attach / fork preview — "repo: action · …"
+const repoPreview = () =>
+  tickedRepos()
+    .map(
+      (r) =>
+        `${r.querySelector(".cwd-repo-id")!.textContent}: ${r.querySelector(".cwd-repo-action")!.textContent}`,
+    )
+    .join(" · ");
 
 // the workspaces in the screen's list
 const listNames = () => [...app.root.querySelectorAll(".wt-item-name")].map((e) => e.textContent);
@@ -124,60 +174,82 @@ async function savedWorkspace(name: string): Promise<WorkspaceConfig> {
 
 const detailName = () => app.root.querySelector(".wt-detail-name")?.textContent;
 
-describe("New workspace wizard — source step", () => {
-  it("cancelling the wizard creates nothing", async () => {
+describe("New workspace — source", () => {
+  it("Escape closes the dialog", async () => {
     await mountScreen();
-    await openWizard();
-    await click(mustText(wizard()!, "Cancel"));
-    expect(wizard()).toBeNull();
-    expect(dialog()).toBeNull();
-    expect(listNames()).toEqual(["existing"]);
-  });
-
-  it("Escape closes the wizard", async () => {
-    await mountScreen();
-    await openWizard();
+    await openForm();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await app.settle();
-    expect(wizard()).toBeNull();
+    expect(dialog()).toBeNull();
   });
 
-  it("a bundle source needs a URL before it can continue", async () => {
+  it("opens on the Template source, blank when there's no template", async () => {
     await mountScreen();
-    await openWizard();
-    const bundleRadio = wizard()!.querySelector<HTMLInputElement>("input[value=bundle]")!;
-    setChecked(bundleRadio, true);
-    await app.settle();
-    expect(mustText(wizard()!, "Continue").disabled).toBe(true);
-    typeInto(wizard()!.querySelector<HTMLInputElement>(".ws-wiz-url")!, "https://runbot/x");
-    await app.settle();
-    expect(mustText(wizard()!, "Continue").disabled).toBe(false);
+    await openForm();
+    const checked = mustDialog().querySelector<HTMLInputElement>(".cwd-source input:checked")!;
+    expect(checked.value).toBe("template");
+    expect(field("Template").querySelector("select")!.value).toBe("");
+    expect(input("Name").value).toBe("");
+    expect(document.activeElement).toBe(input("Name"));
+  });
+
+  it("each source shows its own input", async () => {
+    await mountScreen();
+    await openForm();
+    const labels = [...mustDialog().querySelectorAll(".cwd-source")].map((l) =>
+      l.textContent!.trim(),
+    );
+    expect(labels).toEqual([
+      "Template",
+      "Odoo version",
+      "Local branch",
+      "Remote branch",
+      "Runbot bundle",
+      "Pull request",
+    ]);
+    await pickSource("Runbot bundle");
+    expect(() => field("Template")).toThrow();
+    expect(field("Bundle URL")).toBeTruthy();
+    await pickSource("Local branch");
+    expect(field("Branch").querySelector(".branch-cb-input")).toBeTruthy();
+    await pickSource("Pull request");
+    expect(field("Pull request URL")).toBeTruthy();
+  });
+
+  it("a bundle source refuses Create until its URL is loaded", async () => {
+    await mountScreen();
+    await openForm();
+    await pickSource("Runbot bundle");
+    await type("Bundle URL", "https://runbot/x");
+    await type("Name", "master-x");
+    expect(dialogButton("Create").disabled).toBe(true);
+    expect(mustDialog().querySelector(".form-error")!.textContent).toBe(
+      "load the runbot bundle first",
+    );
   });
 
   it("the bundle URL field explains which address runbot lets goo read", async () => {
     await mountScreen();
-    await openWizard();
-    const input = wizard()!.querySelector<HTMLInputElement>(".ws-wiz-url")!;
-    expect(input.title).toContain("…/bundle/525170");
-    expect(input.title).toContain("redirected it to the name form");
+    await openForm();
+    await pickSource("Runbot bundle");
+    expect(hint("Bundle URL")).toContain("…/bundle/525170");
+    expect(hint("Bundle URL")).toContain("redirected it to the name form");
   });
 });
 
 describe("New workspace — blank form", () => {
   it("names the branches and database after the typed name, then creates and selects it", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard(); // no templates: starts blank
+    await openForm();
     expect(app.callsTo("/api/runbot/dumps")).toEqual([]); // no base version to look up
     expect(dialogTitle()).toBe("New workspace");
     expect(dialogButton("Create").disabled).toBe(true); // a name is required
     await type("Name", "master-newtask");
-    expect(input("Config").value).toBe("community:master-newtask,enterprise:master-newtask");
+    expect(configText()).toBe("community:master-newtask,enterprise:master-newtask");
     expect(input("Database").value).toBe("master-newtask");
-    expect(hint("Config")).toBe(
-      "community: fork new from master · enterprise: fork new from master",
+    expect(repoPreview()).toBe(
+      "community: fork from origin/master · enterprise: fork from origin/master",
     );
-    await tick("Activate it (main)", false);
     await click(dialogButton("Create"));
     expect(dialog()).toBeNull();
     const created = await savedWorkspace("master-newtask");
@@ -214,10 +286,24 @@ describe("New workspace — blank form", () => {
     expect(detailName()).toBe("master-newtask");
   });
 
+  it("names the pull remote a branch forks from", async () => {
+    await mountScreen({
+      config: {
+        repos: DEFAULT_CONFIG.repos.map((r) =>
+          r.id === "enterprise" ? { ...r, pull_remote: "prod" } : r,
+        ),
+      },
+    });
+    await openForm();
+    await type("Name", "master-x");
+    expect(repoPreview()).toBe(
+      "community: fork from origin/master · enterprise: fork from prod/master",
+    );
+  });
+
   it("refuses a name that's already taken", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "existing");
     expect(dialogButton("Create").disabled).toBe(true);
     expect(mustDialog().querySelector(".form-error")!.textContent).toBe(
@@ -227,15 +313,26 @@ describe("New workspace — blank form", () => {
 
   it("unticking a repository drops it from the config", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-x");
     const enterprise = [...field("Repositories").querySelectorAll("label")].find((l) =>
       l.textContent!.includes("enterprise"),
     )!;
     setChecked(enterprise.querySelector("input")!, false);
     await app.settle();
-    expect(input("Config").value).toBe("community:master-x");
+    expect(configText()).toBe("community:master-x");
+  });
+
+  it("needs at least one repository", async () => {
+    await mountScreen();
+    await openForm();
+    await type("Name", "master-x");
+    for (const r of tickedRepos()) setChecked(r.querySelector("input")!, false);
+    await app.settle();
+    expect(configText()).toBe("");
+    expect(mustDialog().querySelector(".form-error")!.textContent).toBe(
+      "tick at least one repository",
+    );
   });
 
   it("leaves an opt-in repository unticked", async () => {
@@ -247,20 +344,18 @@ describe("New workspace — blank form", () => {
         ],
       },
     });
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-x");
     const upgrade = [...field("Repositories").querySelectorAll("label")].find((l) =>
       l.textContent!.includes("upgrade"),
     )!;
     expect(upgrade.querySelector("input")!.checked).toBe(false);
-    expect(input("Config").value).toBe("community:master-x,enterprise:master-x");
+    expect(configText()).toBe("community:master-x,enterprise:master-x");
   });
 
   it("keeps a hand-edited database name when the name changes later", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-a");
     await type("Database", "db-master-a-copy");
     await type("Name", "master-b");
@@ -269,24 +364,24 @@ describe("New workspace — blank form", () => {
 
   it("attaches a branch that already exists locally instead of forking it", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-feat"); // featRepos has master-feat in both repos
-    expect(hint("Config")).toBe(
-      'community: attach existing "master-feat" · enterprise: attach existing "master-feat"',
-    );
-    await tick("Activate it (main)", false);
+    expect(repoPreview()).toBe("community: attach existing · enterprise: attach existing");
     await click(dialogButton("Create"));
     expect(app.callsTo("/api/code/branches/create")).toEqual([]);
     expect(listNames()).toContain("master-feat");
   });
 
-  it("activating the new workspace checks its branches out", async () => {
+  it("Create only adds the workspace; Create and activate also checks its branches out", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard();
-    await type("Name", "master-feat");
+    await openForm();
+    await type("Name", "master-other");
     await click(dialogButton("Create"));
+    expect(listNames()).toContain("master-other");
+    expect(app.callsTo("/api/code/checkout")).toEqual([]);
+    await openForm();
+    await type("Name", "master-feat");
+    await click(dialogButton("Create and activate"));
     const [checkout] = app.callsTo("/api/code/checkout");
     expect(checkout.body).toMatchObject({
       repos: [
@@ -301,10 +396,8 @@ describe("New workspace — blank form", () => {
       databases: ["master-base"],
       routes: { "/api/databases/clone": { ok: true } },
     });
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-newtask");
-    await tick("Activate it (main)", false);
     await tick("Clone db", true);
     expect(field("Clone db").querySelector("select")!.value).toBe("master-base");
     await click(dialogButton("Create"));
@@ -313,26 +406,35 @@ describe("New workspace — blank form", () => {
     ]);
   });
 
-  it("refuses a venv outside a worktree", async () => {
-    await mountScreen();
-    await openWizard();
-    await continueWizard();
-    await type("Name", "master-newtask");
-    await tick("Create venv from requirements.txt (worktree)", true);
-    expect(dialogButton("Create").disabled).toBe(true);
-    expect(mustDialog().querySelector(".form-error")!.textContent).toContain(
-      "a venv needs Location",
-    );
+  it("offers a dedicated venv only for an own worktree, and builds it", async () => {
+    await mountScreen({
+      routes: {
+        "/api/workspace/create": { ok: true, results: [] },
+        "/api/workspace/venv/create": { ok: true },
+      },
+    });
+    await openForm();
+    await type("Name", "master-wt");
+    const venv = "Create a venv from requirements.txt";
+    expect(() => field(venv)).toThrow(); // a main checkout uses the global venv
+    choose(field("Location").querySelector("select")!, "worktree");
+    await app.settle();
+    await tick(venv, true);
+    await click(dialogButton("Create"));
+    const [create] = app.callsTo("/api/workspace/venv/create");
+    const body = create.body as { venvPath: string; requirementsPath: string };
+    expect(body.venvPath).toMatch(/\/\.venv$/);
+    expect(body.requirementsPath).toMatch(/\/community\/requirements\.txt$/);
   });
 
   it("an own-worktree workspace is created by the backend, not activated", async () => {
     await mountScreen({ routes: { "/api/workspace/create": { ok: true, results: [] } } });
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-wt");
     choose(field("Location").querySelector("select")!, "worktree");
     await app.settle();
-    expect(() => field("Activate it (main)")).toThrow(); // hidden for a worktree
+    // a worktree runs concurrently: there's nothing to activate
+    expect(() => dialogButton("Create and activate")).toThrow();
     await click(dialogButton("Create"));
     const [create] = app.callsTo("/api/workspace/create");
     const body = create.body as { repos: Record<string, string>[] };
@@ -348,8 +450,7 @@ describe("New workspace — blank form", () => {
 
   it("discarding the form creates nothing", async () => {
     await mountScreen();
-    await openWizard();
-    await continueWizard();
+    await openForm();
     await type("Name", "master-x");
     await click(dialogButton("Discard"));
     expect(listNames()).toEqual(["existing"]);
@@ -379,16 +480,15 @@ describe("New workspace — from a template", () => {
       databases,
       routes: { "/api/runbot/dumps": { dumps: DUMPS }, ...routes },
     });
-    await openWizard();
-    await continueWizard();
+    await openForm();
   }
 
   it("prefills the form from the template and offers its base version's runbot dumps", async () => {
     await openTemplateForm();
     expect(app.callsTo("/api/runbot/dumps").map((c) => c.body)).toEqual([{ branch: "saas-19.1" }]);
-    expect(dialogTitle()).toBe('New workspace — from template "Sale"');
+    expect(field("Template").querySelector("select")!.value).toBe("t1");
     expect(input("Name").value).toBe("saas-19.1");
-    expect(input("Config").value).toBe("community:saas-19.1");
+    expect(configText()).toBe("community:saas-19.1");
     expect(input("Database").value).toBe("tpl-db");
     expect(input("Start args").value).toBe("-i sale");
     expect(checkbox("Demo data").checked).toBe(false);
@@ -409,8 +509,7 @@ describe("New workspace — from a template", () => {
       config: { templates: [{ ...TEMPLATE, demo_data: true }] },
       routes: { "/api/runbot/dumps": { dumps: DUMPS } },
     });
-    await openWizard();
-    await continueWizard();
+    await openForm();
     expect(checkbox("Demo data").checked).toBe(true);
     await type("Name", "saas-19.1-mytask");
     expect(checkbox("Demo data").checked).toBe(true);
@@ -419,7 +518,6 @@ describe("New workspace — from a template", () => {
   it("forks from the template's branch and restores the dump last", async () => {
     await openTemplateForm({ "/api/databases/restore-dump": { ok: true } });
     await type("Name", "saas-19.1-mytask");
-    await tick("Activate it (main)", false);
     await tick("Restore runbot database", true);
     await click(dialogButton("Create"));
     const [create] = app.callsTo("/api/code/branches/create");
@@ -436,7 +534,6 @@ describe("New workspace — from a template", () => {
       "/api/databases/restore-dump": failure(500, { error: "download failed" }),
     });
     await type("Name", "saas-19.1-mytask");
-    await tick("Activate it (main)", false);
     await tick("Restore runbot database", true);
     await click(dialogButton("Create"));
     expect(dialogTitle()).toBe("Restoring the runbot database failed");
@@ -455,8 +552,37 @@ describe("New workspace — from a template", () => {
 
   it("starts without the dump offer when runbot can't be reached", async () => {
     await openTemplateForm({ "/api/runbot/dumps": failure(502, { error: "runbot down" }) });
-    expect(dialogTitle()).toBe('New workspace — from template "Sale"');
+    expect(input("Name").value).toBe("saas-19.1");
     expect(() => field("Restore runbot database")).toThrow();
+  });
+
+  it("switching to blank clears what the template prefilled", async () => {
+    await openTemplateForm();
+    await pickTemplate("");
+    expect(input("Name").value).toBe("");
+    expect(configText()).toBe("");
+    expect(input("Start args").value).toBe("");
+    expect(() => field("Restore runbot database")).toThrow();
+    await type("Name", "master-x");
+    await click(dialogButton("Create"));
+    // no template: forks from the name's own base
+    const [create] = app.callsTo("/api/code/branches/create");
+    expect(create.body).toMatchObject({
+      branches: [
+        { name: "master-x", start_point: "master", repo: "community" },
+        { name: "master-x", start_point: "master", repo: "enterprise" },
+      ],
+    });
+  });
+
+  it("switching back to the template prefills it again", async () => {
+    await openTemplateForm();
+    await pickTemplate("");
+    await pickTemplate("t1");
+    expect(input("Name").value).toBe("saas-19.1");
+    expect(input("Database").value).toBe("tpl-db");
+    expect(app.callsTo("/api/runbot/dumps")).toHaveLength(2);
+    expect(field("Restore runbot database")).toBeTruthy();
   });
 });
 
@@ -469,15 +595,10 @@ describe("New workspace — from a runbot bundle", () => {
 
   async function fromBundle(routes: Record<string, Route>) {
     await mountScreen({ routes });
-    await openWizard();
-    setChecked(wizard()!.querySelector<HTMLInputElement>("input[value=bundle]")!, true);
-    await app.settle();
-    typeInto(
-      wizard()!.querySelector<HTMLInputElement>(".ws-wiz-url")!,
-      " https://runbot/bundle/1 ",
-    );
-    await app.settle();
-    await continueWizard();
+    await openForm();
+    await pickSource("Runbot bundle");
+    await type("Bundle URL", " https://runbot/bundle/1 ");
+    await click(mustText(field("Bundle URL"), "Load"));
   }
 
   it("fetches the bundle's branches and opens the form attached to them", async () => {
@@ -498,8 +619,45 @@ describe("New workspace — from a runbot bundle", () => {
       },
     ]);
     expect(input("Name").value).toBe("master-colleague");
-    expect(input("Config").value).toBe("community:master-colleague");
-    expect(checkbox("Create branches").checked).toBe(false);
+    expect(configText()).toBe("community:master-colleague");
+    expect(dialogButton("Create").disabled).toBe(false);
+  });
+
+  it("Enter in the URL field loads it", async () => {
+    await mountScreen({
+      routes: { "/api/runbot/bundle-info": BUNDLE, "/api/code/remote-branch/fetch": { ok: true } },
+    });
+    await openForm();
+    await pickSource("Runbot bundle");
+    await type("Bundle URL", "https://runbot/bundle/1");
+    input("Bundle URL").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await app.settle();
+    expect(app.callsTo("/api/runbot/bundle-info")).toHaveLength(1);
+    expect(dialogTitle()).toBe("New workspace"); // loaded, not submitted
+    expect(input("Name").value).toBe("master-colleague");
+  });
+
+  it("an edited URL must be loaded again", async () => {
+    await fromBundle({
+      "/api/runbot/bundle-info": BUNDLE,
+      "/api/code/remote-branch/fetch": { ok: true },
+    });
+    await type("Bundle URL", "https://runbot/bundle/2");
+    expect(dialogButton("Create").disabled).toBe(true);
+  });
+
+  it("offers the bundle's own runbot dumps", async () => {
+    await fromBundle({
+      "/api/runbot/bundle-info": {
+        ...BUNDLE,
+        dumps: [{ slot: "Community Run", db: "all", url: "https://runbot/c-all.zip" }],
+      },
+      "/api/code/remote-branch/fetch": { ok: true },
+    });
+    await tick("Restore runbot database", true);
+    expect(field("Restore runbot database").querySelector("select")!.value).toBe(
+      "https://runbot/c-all.zip",
+    );
   });
 
   it("asks before forking a repo the bundle didn't carry", async () => {
@@ -513,8 +671,7 @@ describe("New workspace — from a runbot bundle", () => {
     setChecked(enterprise.querySelector("input")!, true);
     await app.settle();
     // the fetched branch survives ticking another repo
-    expect(input("Config").value).toBe("community:master-colleague,enterprise:master-colleague");
-    await tick("Activate it (main)", false);
+    expect(configText()).toBe("community:master-colleague,enterprise:master-colleague");
     await click(dialogButton("Create"));
     expect(dialogTitle()).toBe("Unconfirmed branch");
     expect(mustDialog().textContent).toContain("enterprise:master");
@@ -540,9 +697,13 @@ describe("New workspace — from a runbot bundle", () => {
     expect(listNames()).toEqual(["existing"]);
   });
 
-  it("shows a bundle lookup error in the wizard itself", async () => {
+  it("reports a bundle lookup error and keeps the form open", async () => {
     await fromBundle({ "/api/runbot/bundle-info": failure(404, { error: "no such bundle" }) });
-    expect(wizard()!.querySelector(".form-error")!.textContent).toBe("no such bundle");
+    expect(dialogTitle()).toBe("Reading the runbot bundle failed");
+    expect(mustDialog().textContent).toContain("no such bundle");
+    await click(dialogButton("OK"));
+    expect(dialogTitle()).toBe("New workspace");
+    expect(dialogButton("Create").disabled).toBe(true);
   });
 
   it("explains when none of the bundle's repositories are configured", async () => {
@@ -578,7 +739,245 @@ describe("New workspace — from a runbot bundle", () => {
     expect(dialogTitle()).toBe("Fetching bundle branches failed");
     expect(mustDialog().textContent).toContain("community: non-fast-forward");
     await click(dialogButton("OK"));
-    expect(dialog()).toBeNull(); // no create form: nothing was fetched
+    // the form stays open, still waiting for a loaded bundle
+    expect(dialogTitle()).toBe("New workspace");
+    expect(input("Name").value).toBe("");
+    expect(dialogButton("Create").disabled).toBe(true);
+  });
+});
+
+describe("New workspace — from an Odoo version", () => {
+  const DUMPS = [{ slot: "Community Run", db: "all", url: "https://runbot/19-all.zip" }];
+
+  it("lists runbot's versions and prefills the form from the newest", async () => {
+    await mountScreen({
+      routes: {
+        "/api/runbot/sticky": { ok: true, versions: ["master", "19.0"] },
+        "/api/runbot/dumps": (body: unknown) => ({
+          ok: true,
+          dumps: (body as { branch: string }).branch === "19.0" ? DUMPS : [],
+        }),
+      },
+    });
+    await openForm();
+    await pickSource("Odoo version");
+    const select = field("Odoo version").querySelector("select")!;
+    expect([...select.options].map((o) => o.value)).toEqual(["master", "19.0"]);
+    expect(select.value).toBe("master");
+    expect(input("Name").value).toBe("master");
+    expect(configText()).toBe("community:master,enterprise:master");
+    expect(() => field("Restore runbot database")).toThrow(); // master has no dumps here
+    choose(select, "19.0");
+    await app.settle();
+    expect(input("Name").value).toBe("19.0");
+    expect(input("Database").value).toBe("19.0");
+    expect(field("Restore runbot database")).toBeTruthy();
+    // a task branch named off the version forks from it
+    await type("Name", "19.0-mytask");
+    expect(repoPreview()).toBe(
+      "community: fork from origin/19.0 · enterprise: fork from origin/19.0",
+    );
+    expect(dialogButton("Create").disabled).toBe(false);
+    expect(app.callsTo("/api/runbot/sticky")).toHaveLength(1);
+  });
+
+  it("says why when runbot's versions can't be read", async () => {
+    await mountScreen({
+      routes: { "/api/runbot/sticky": failure(502, { error: "runbot down" }) },
+    });
+    await openForm();
+    await pickSource("Odoo version");
+    expect(field("Odoo version").querySelector(".form-error")!.textContent).toContain(
+      "could not load runbot's versions",
+    );
+    expect(dialogButton("Create").disabled).toBe(true);
+  });
+});
+
+describe("New workspace — from a local branch", () => {
+  it("searches the local branches and attaches the picked one", async () => {
+    await mountScreen({ routes: { "/api/runbot/dumps": { dumps: [] } } });
+    await openForm();
+    await pickSource("Local branch");
+    const search = field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!;
+    expect(document.activeElement).toBe(search);
+    typeInto(search, "feat");
+    await app.settle();
+    expect(branchRows()).toEqual(["master-feat:community/local,enterprise/local"]);
+    expect(dialogButton("Create").disabled).toBe(true); // nothing picked yet
+    await pickBranchRow("master-feat");
+    expect(search.value).toBe("master-feat");
+    expect(input("Name").value).toBe("master-feat");
+    expect(configText()).toBe("community:master-feat,enterprise:master-feat");
+    expect(app.callsTo("/api/code/remote-branch/fetch")).toEqual([]); // already local
+    expect(app.callsTo("/api/runbot/dumps").map((c) => c.body)).toEqual([{ branch: "master" }]);
+    await click(dialogButton("Create"));
+    expect(app.callsTo("/api/code/branches/create")).toEqual([]);
+    expect(listNames()).toContain("master-feat");
+  });
+
+  it("arrow keys and Enter pick a result; Escape closes the list, not the dialog", async () => {
+    await mountScreen({
+      repos: featRepos({
+        branches: [branch("master-feat"), branch("master-feat-2")],
+      }),
+      routes: { "/api/runbot/dumps": { dumps: [] } },
+    });
+    await openForm();
+    await pickSource("Local branch");
+    const search = field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!;
+    typeInto(search, "feat");
+    await app.settle();
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await app.settle();
+    expect(dialog()).not.toBeNull();
+    expect(branchRows()).toEqual([]); // list closed
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await app.settle();
+    expect(mustDialog().querySelector(".rbd-row.selected .rbd-branch")!.textContent).toBe(
+      "master-feat-2",
+    );
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await app.settle();
+    expect(input("Name").value).toBe("master-feat-2");
+  });
+
+  it("the arrow keys scroll the highlighted result into view", async () => {
+    // jsdom has no layout, so no scrollIntoView: record which row asks to be shown
+    const shown: string[] = [];
+    Element.prototype.scrollIntoView = function (this: Element) {
+      shown.push(this.querySelector(".rbd-branch")!.textContent!);
+    };
+    try {
+      await mountScreen({
+        repos: featRepos({
+          branches: [branch("master-feat-1"), branch("master-feat-2"), branch("master-feat-3")],
+        }),
+      });
+      await openForm();
+      await pickSource("Local branch");
+      const search = field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!;
+      typeInto(search, "feat");
+      await app.settle();
+      const key = async (k: string) => {
+        search.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+        await app.settle();
+      };
+      await key("ArrowDown");
+      await key("ArrowDown");
+      await key("ArrowDown"); // wraps around to the first
+      await key("ArrowUp"); // and back to the last
+      expect(shown).toEqual(["master-feat-2", "master-feat-3", "master-feat-1", "master-feat-3"]);
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+});
+
+describe("New workspace — from a remote branch", () => {
+  it("searches GitHub and fetches the picked branch before attaching it", async () => {
+    await mountScreen({
+      routes: {
+        "/api/code/remote-branches/search": {
+          ok: true,
+          results: [{ repo: "enterprise", branch: "master-colleague", remote: "dev" }],
+        },
+        "/api/code/remote-branch/fetch": { ok: true },
+        "/api/runbot/dumps": { dumps: [] },
+      },
+    });
+    await openForm();
+    await pickSource("Remote branch");
+    typeInto(field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!, "colleague");
+    await vi.waitFor(async () => {
+      await app.settle();
+      expect(branchRows()).toEqual(["master-colleague:enterprise/remote"]);
+    });
+    expect(app.callsTo("/api/code/remote-branches/search")[0].body).toMatchObject({
+      query: "colleague",
+    });
+    await pickBranchRow("master-colleague");
+    expect(app.callsTo("/api/code/remote-branch/fetch").map((c) => c.body)).toEqual([
+      {
+        path: "/home/odoo/work/enterprise",
+        branch: "master-colleague",
+        pull_remote: "dev",
+        force: false,
+      },
+    ]);
+    expect(input("Name").value).toBe("master-colleague");
+    expect(configText()).toBe("enterprise:master-colleague");
+    expect(dialogButton("Create").disabled).toBe(false);
+  });
+
+  it("reports a failed fetch and loads nothing", async () => {
+    await mountScreen({
+      routes: {
+        "/api/code/remote-branches/search": {
+          ok: true,
+          results: [{ repo: "community", branch: "master-gone", remote: "origin" }],
+        },
+        "/api/code/remote-branch/fetch": failure(500, { error: "no such ref" }),
+      },
+    });
+    await openForm();
+    await pickSource("Remote branch");
+    typeInto(field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!, "gone");
+    await vi.waitFor(async () => {
+      await app.settle();
+      expect(branchRows()).toHaveLength(1);
+    });
+    await pickBranchRow("master-gone");
+    expect(dialogTitle()).toBe("Fetching branch failed");
+    expect(mustDialog().textContent).toContain("community: no such ref");
+    await click(dialogButton("OK"));
+    expect(input("Name").value).toBe("");
+    expect(mustDialog().querySelector(".form-error")).toBeNull(); // untouched yet
+    expect(dialogButton("Create").disabled).toBe(true);
+  });
+});
+
+describe("New workspace — from a pull request", () => {
+  async function fromPr(url: string, routes: Record<string, Route> = {}) {
+    await mountScreen({ routes });
+    await openForm();
+    await pickSource("Pull request");
+    await type("Pull request URL", url);
+    await click(mustText(field("Pull request URL"), "Load"));
+  }
+
+  it("fetches the PR's head and attaches it", async () => {
+    await fromPr("https://github.com/odoo/enterprise/pull/42/files", {
+      "/api/prs/head": { branch: "master-fix-pr" },
+      "/api/code/remote-branch/fetch-pr": { ok: true },
+      "/api/runbot/dumps": { dumps: [] },
+    });
+    expect(app.callsTo("/api/prs/head").map((c) => c.body)).toEqual([
+      { repo: "odoo/enterprise", number: 42 },
+    ]);
+    expect(app.callsTo("/api/code/remote-branch/fetch-pr").map((c) => c.body)).toEqual([
+      {
+        path: "/home/odoo/work/enterprise",
+        github: "odoo/enterprise",
+        number: 42,
+        branch: "master-fix-pr",
+        force: false,
+      },
+    ]);
+    expect(input("Name").value).toBe("master-fix-pr");
+    expect(configText()).toBe("enterprise:master-fix-pr");
+    expect(dialogButton("Create").disabled).toBe(false);
+  });
+
+  it("refuses a URL that isn't a pull request", async () => {
+    await fromPr("https://github.com/odoo/odoo");
+    expect(dialogTitle()).toBe("Pull request");
+    expect(mustDialog().textContent).toContain("not a pull request URL");
+  });
+
+  it("refuses a pull request in a repository goo doesn't know", async () => {
+    await fromPr("https://github.com/acme/thing/pull/1");
+    expect(mustDialog().textContent).toContain("acme/thing isn't one of your configured repos");
   });
 });
 
@@ -623,10 +1022,9 @@ describe("Sub workspace from a forward port", () => {
       },
     ]);
     expect(input("Name").value).toBe(FW_BRANCH);
-    expect(input("Config").value).toBe(`community:${FW_BRANCH}`);
+    expect(configText()).toBe(`community:${FW_BRANCH}`);
     // the child lands in its parent's category
     expect(field("Category").querySelector("select")!.value).toBe("dev");
-    await tick("Activate it (main)", false);
     await click(dialogButton("Create"));
     const child = await savedWorkspace(FW_BRANCH);
     expect(child).toMatchObject({ parent: "w1", category: "dev" });
