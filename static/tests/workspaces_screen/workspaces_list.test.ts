@@ -496,6 +496,44 @@ describe("Workspaces detail header — CI / mergebot badges", () => {
     ]);
   });
 
+  it("asks again about a branch a failed head-ref lookup couldn't answer", async () => {
+    const BETA = ws({
+      id: "beta",
+      name: "beta",
+      checkouts: [{ repo: "community", branch: "master-beta" }],
+    });
+    app = await mount([ALPHA, BETA], {
+      routes: {
+        "/api/code/branches": branchesRoute([
+          repo("community", "master", [
+            "master",
+            { ...branchOf("master-alpha"), remote: true },
+            { ...branchOf("master-beta"), remote: true },
+          ]),
+          repo("enterprise", "master", ["master"]),
+        ]),
+        // GitHub can't be reached: every branch comes back unresolved
+        "/api/prs/for-branches": (body: unknown) => ({
+          ok: true,
+          prs: [],
+          unresolved: (body as { branches: unknown[] }).branches,
+        }),
+      },
+    });
+    const askedAlpha = () =>
+      app
+        .callsTo("/api/prs/for-branches")
+        .filter((c) => JSON.stringify(c.body).includes("master-alpha")).length;
+    const before = askedAlpha();
+    expect(before).toBeGreaterThan(0);
+    // re-opening the workspace asks again: unknown isn't "no PR"
+    mustText(app.root, ".wt-item-name", "beta").click();
+    await app.settle();
+    mustText(app.root, ".wt-item-name", "alpha").click();
+    await app.settle();
+    expect(askedAlpha()).toBeGreaterThan(before);
+  });
+
   it("the list's refresh button leaves the archived workspaces out, even a selected one", async () => {
     const OLD = ws({
       id: "old",

@@ -2437,8 +2437,10 @@ var CodePlugin = class extends Plugin {
       const byGhBranch = {};
       for (const raw of data.prs || [])
         byGhBranch[`${raw.github}#${raw.branch}`] = PullRequest.from(raw);
+      const unresolved = new Set((data.unresolved || []).map((u) => `${u.github}#${u.branch}`));
       const next = { ...this.headPrs() };
       for (const p of pairs) {
+        if (unresolved.has(`${p.github}#${p.branch}`)) continue;
         next[branchKey(p.id, p.branch)] = byGhBranch[`${p.github}#${p.branch}`] || null;
       }
       this.headPrs.set(next);
@@ -2480,6 +2482,7 @@ var CodePlugin = class extends Plugin {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     const refreshedAt = this.workspaceRefreshedAt(ids);
     if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
+      if (headKeys) this.loadHeadPrs(false, ids, headKeys);
       return Promise.resolve(false);
     }
     const key = `${workspaceId}:${JSON.stringify([...ids].sort())}`;
@@ -10761,6 +10764,7 @@ var BranchCombobox = class extends Component {
              t-on-blur="() => this.open.set(false)"/>
       <div t-if="this.open() and this.query().trim()" class="rbd-results branch-cb-list" t-ref="this.listEl">
         <div t-if="this.searching()" class="rbd-status">Searching…</div>
+        <div t-elif="this.searchError()" class="rbd-status" t-out="this.searchError()"/>
         <div t-elif="!this.rows().length" class="rbd-status">No matching branches found.</div>
         <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
              class="rbd-row" t-att-class="{selected: r_index === this.active()}"
@@ -10784,6 +10788,8 @@ var BranchCombobox = class extends Component {
   query = signal("");
   rows = signal([]);
   searching = signal(false);
+  searchError = signal("");
+  // why the last remote search failed
   open = signal(false);
   active = signal(0);
   // the highlighted row
@@ -10833,19 +10839,23 @@ var BranchCombobox = class extends Component {
       pull_remote: r.pull_remote
     }));
     try {
-      const res = await fetch("/api/code/remote-branches/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repos, query })
+      const data = await postJSON("/api/code/remote-branches/search", {
+        repos,
+        query
       });
-      const data = await res.json();
-      if (query !== this.query().trim() || !data.ok) return;
+      if (query !== this.query().trim()) return;
+      if (!data.ok) throw new Error("the search failed");
       const byBranch = /* @__PURE__ */ new Map();
       for (const { repo, branch, remote } of data.results) {
         if (!byBranch.has(branch)) byBranch.set(branch, []);
         byBranch.get(branch).push({ id: repo, local: false, remote });
       }
       this.rows.set([...byBranch].map(([branch, repos2]) => ({ branch, repos: repos2 })));
+      this.searchError.set("");
+    } catch (e) {
+      if (query !== this.query().trim()) return;
+      this.rows.set([]);
+      this.searchError.set(`couldn't search GitHub: ${errorMessage(e)}`);
     } finally {
       if (query === this.query().trim()) this.searching.set(false);
     }
@@ -11076,8 +11086,11 @@ var CreateWorkspaceDialog = class extends Component {
     // the values with no source: what a URL/branch source starts from
     pickSource: t.boolean(),
     loadSource: t.function(),
-    categories: t.any()
+    categories: t.any(),
     // null: categories off
+    // the initial values' runbot dumps when they're still being looked up: the
+    // dialog opens at once, without waiting for runbot
+    initialDumps: t.any().optional()
   });
   config = usePlugin(ConfigPlugin);
   code = usePlugin(CodePlugin);
@@ -11104,9 +11117,14 @@ var CreateWorkspaceDialog = class extends Component {
   _seq = 0;
   // only the latest source load may land its values
   setup() {
-    this.form.set({ ...this.props.initial, existingDb: this.existingDefault });
-    this.templateId.set(this.props.initial.template);
+    const initial = this.props.initial;
+    this.form.set({ ...initial, existingDb: this.existingDefault(initial) });
+    this.templateId.set(initial.template);
     this._loadAddons();
+    const seq = this._seq;
+    this.props.initialDumps?.then((dumps) => {
+      if (seq === this._seq && dumps.length) this.form.set({ ...this.form(), dumps });
+    });
     const onKey = (e) => {
       if (e.key === "Escape") this.done(null);
     };
@@ -11175,18 +11193,22 @@ var CreateWorkspaceDialog = class extends Component {
       };
     });
   }
-  // ticking Clone database (or picking an existing one) seeds the template's
-  // database when it exists, else the first one
+  // ticking Clone database seeds the template's database when it exists, else
+  // the first one
   get cloneDefault() {
-    const tpl = this.templates.find((x) => x.id === this.form().template);
+    return this.templateDbOr(this.form().template);
+  }
+  templateDbOr(templateId) {
+    const tpl = this.templates.find((x) => x.id === templateId);
     if (tpl?.db && this.dbNames.includes(tpl.db)) return tpl.db;
     return this.dbNames[0] || "";
   }
-  // the existing database preselected: the one named like the workspace's, else
-  // the template's, else the first
-  get existingDefault() {
-    const db = (this.form().db ?? this.props.initial.db).trim();
-    return this.dbNames.includes(db) ? db : this.cloneDefault;
+  // the existing database preselected for values `v` (the initial ones, or what a
+  // source just prefilled): the one named like their database, else the
+  // template's, else the first
+  existingDefault(v) {
+    const db = v.db.trim();
+    return this.dbNames.includes(db) ? db : this.templateDbOr(v.template);
   }
   // whether the workspace gets a new database: "Create new database" — always
   // when there's no existing one to pick (the checkbox isn't even shown then)
@@ -11294,6 +11316,7 @@ var CreateWorkspaceDialog = class extends Component {
         const res = await postJSON("/api/runbot/sticky");
         if (!res.versions?.length) throw new Error("runbot is unreachable");
         this.versions.set(res.versions);
+        this.versionsError.set("");
       } catch (e) {
         this.versionsError.set(`could not load runbot's versions: ${errorMessage(e)}`);
       } finally {
@@ -11328,7 +11351,8 @@ var CreateWorkspaceDialog = class extends Component {
     try {
       const values = await this.props.loadSource(req);
       if (seq !== this._seq || !values) return;
-      this.form.set({ ...this.form(), ...values, restoreDump: "" });
+      const next = { ...this.form(), ...values, restoreDump: "" };
+      this.form.set({ ...next, existingDb: this.existingDefault(next) });
       const key = req.kind === "bundle" || req.kind === "pr" ? req.url : "";
       this.loaded.set({ kind: req.kind, key });
     } finally {
@@ -11533,9 +11557,11 @@ function repoForGithub(repos, slug) {
 async function fetchPickedBranch(plugins, pick) {
   const { config, dialogs, code, eventLog } = plugins;
   const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
+  const isLocal = (repo) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === pick.branch) ?? false;
+  const remoteOf = (repo) => isLocal(repo) ? "" : pick.remoteByRepo[repo];
   const results = await Promise.all(
     pick.repos.map(async (repo) => {
-      const remote = pick.remoteByRepo[repo];
+      const remote = remoteOf(repo);
       if (!remote) return { repo, ok: true };
       const eid = eventLog.begin(`fetching ${pick.branch} (${repo}) from ${remote}`);
       const r = await fetchRemoteBranch(dialogs, {
@@ -11555,7 +11581,7 @@ async function fetchPickedBranch(plugins, pick) {
     );
   const got = results.filter((r) => r.ok).map((r) => r.repo);
   if (!got.length) return null;
-  const fetched = got.filter((repo) => pick.remoteByRepo[repo]);
+  const fetched = got.filter((repo) => remoteOf(repo));
   if (fetched.length) await code.refreshBranches(new Set(fetched));
   return got;
 }
@@ -11564,11 +11590,8 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   const templates = config.config.templates || [];
   const tplOf = (id) => templates.find((t2) => t2.id === id) || null;
-  const [dumps] = await Promise.all([
-    prefill.dumps ?? baseVersionDumps(templateBranch(tplOf(prefill.template || ""))),
-    db.load()
-    // populate the "Clone db" select
-  ]);
+  await db.load();
+  const initialDumps = prefill.dumps ? null : baseVersionDumps(templateBranch(tplOf(prefill.template || "")));
   code.loadBranches();
   const hasLocalBranch = (repo, branch) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
   const sourceValues = (p, sourceDumps) => {
@@ -11641,7 +11664,7 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
     const branches = repos.map((repo) => ({ repo, branch }));
     return attachValues(branch, branches, await baseVersionDumps(branch));
   };
-  const initial = sourceValues(prefill, dumps);
+  const initial = sourceValues(prefill, prefill.dumps || []);
   const res = await dialogs.openComponent(CreateWorkspaceDialog, {
     initial: {
       ...initial,
@@ -11657,7 +11680,8 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
     blank: sourceValues({}, []),
     pickSource,
     loadSource,
-    categories: config.config.workspace_categories_enabled ? categoryOptions(config) : null
+    categories: config.config.workspace_categories_enabled ? categoryOptions(config) : null,
+    ...initialDumps ? { initialDumps } : {}
   });
   if (!res) return;
   const tpl = tplOf(res.template);
