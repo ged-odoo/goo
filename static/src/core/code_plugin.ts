@@ -433,15 +433,21 @@ export class CodePlugin extends Plugin {
     const pending = pairs.map((p) => branchKey(p.id, p.branch));
     pending.forEach((k) => this._headPending.add(k));
     try {
-      const data = await postJSON<{ prs?: PullRequestWire[] }>("/api/prs/for-branches", {
+      const data = await postJSON<{
+        prs?: PullRequestWire[];
+        unresolved?: { github: string; branch: string }[];
+      }>("/api/prs/for-branches", {
         branches: pairs.map((p) => ({ github: p.github, branch: p.branch })),
         refresh: force,
       });
       const byGhBranch: Record<string, PullRequest> = {};
       for (const raw of data.prs || [])
         byGhBranch[`${raw.github}#${raw.branch}`] = PullRequest.from(raw);
+      // a failed lookup's branches stay unknown — re-askable, not "no PR"
+      const unresolved = new Set((data.unresolved || []).map((u) => `${u.github}#${u.branch}`));
       const next = { ...this.headPrs() };
       for (const p of pairs) {
+        if (unresolved.has(`${p.github}#${p.branch}`)) continue;
         // null marks "looked up, none found" so the dedup guard won't re-ask
         next[branchKey(p.id, p.branch)] = byGhBranch[`${p.github}#${p.branch}`] || null;
       }
@@ -494,6 +500,10 @@ export class CodePlugin extends Plugin {
     const ids = repoIds instanceof Set ? repoIds : new Set(repoIds || []);
     const refreshedAt = this.workspaceRefreshedAt(ids);
     if (!force && refreshedAt && Date.now() - refreshedAt < WORKSPACE_REFRESH_TTL) {
+      // the repos are fresh, but this workspace's own branches may never have been
+      // looked up by head ref (e.g. one created since the list load) — the lookup
+      // itself skips what it already holds
+      if (headKeys) this.loadHeadPrs(false, ids, headKeys);
       return Promise.resolve(false);
     }
     const key = `${workspaceId}:${JSON.stringify([...ids].sort())}`;

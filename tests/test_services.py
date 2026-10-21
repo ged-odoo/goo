@@ -1266,7 +1266,10 @@ class GitHubServiceTest(unittest.TestCase):
         io = FakeIO(run_result=completed(stdout="not json", returncode=1))
         svc = services.GitHubService(io, TTLCache(ttl=600))
         pairs = [{"github": "odoo/odoo", "branch": "br"}]
-        self.assertEqual(svc.prs_for_branches(pairs), [])
+        unresolved = []
+        self.assertEqual(svc.prs_for_branches(pairs, unresolved=unresolved), [])
+        # reported as unknown, so the caller doesn't take it for "no PR"
+        self.assertEqual(unresolved, [{"github": "odoo/odoo", "branch": "br"}])
         svc.prs_for_branches(pairs)  # the failure wasn't cached as "no PR"
         self.assertEqual(len(io.run_calls), 2)
 

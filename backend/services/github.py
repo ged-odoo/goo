@@ -190,14 +190,19 @@ class GitHubService:
         return entry
 
     def prs_for_branches(
-        self, pairs: list[dict[str, Any]], refresh: bool = False
+        self,
+        pairs: list[dict[str, Any]],
+        refresh: bool = False,
+        unresolved: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """For each {github, branch}: the PR whose head is that branch, regardless
         of author, so forward-port / colleagues' PRs resolve too (the authored
         `prs()` fetch misses them). Returns a flat list of PullRequest dicts
         (`relation="head"`), one per branch that has a matching PR. Cached per
         (github, branch) — "no PR" included; refresh=True bypasses it. The branches
-        the cache doesn't hold are asked together, in batched GraphQL queries."""
+        the cache doesn't hold are asked together, in batched GraphQL queries.
+        `unresolved`, when given, collects the {github, branch} a failed query
+        couldn't answer — unknown, not "no PR"."""
         seen, uniq = set(), []
         for p in pairs:
             gh_repo, branch = p.get("github"), p.get("branch")
@@ -220,7 +225,10 @@ class GitHubService:
             chunk = missing[start : start + _HEADS_PER_QUERY]
             fetched = self._fetch_heads(chunk)
             if fetched is None:
-                continue  # the query failed: leave these uncached, re-askable
+                # the query failed: leave these uncached, re-askable
+                if unresolved is not None:
+                    unresolved += [{"github": g, "branch": b} for g, b in chunk]
+                continue
             for gh_repo, branch in chunk:
                 pr = fetched.get((gh_repo, branch))
                 self.cache.put(("head", gh_repo, branch), pr)

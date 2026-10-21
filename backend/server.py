@@ -1761,8 +1761,12 @@ def _api_prs(body: dict[str, Any]) -> dict[str, Any]:
 
 @post_route("/api/prs/for-branches", "branches:list")
 def _api_prs_for_branches(body: dict[str, Any]) -> dict[str, Any]:
-    prs = GITHUB.prs_for_branches(body["branches"], refresh=bool(body.get("refresh")))
-    return {"ok": True, "prs": prs}
+    unresolved: list[dict[str, str]] = []
+    prs = GITHUB.prs_for_branches(
+        body["branches"], refresh=bool(body.get("refresh")), unresolved=unresolved
+    )
+    # the branches a failed lookup couldn't answer: unknown, not "no PR"
+    return {"ok": True, "prs": prs, "unresolved": unresolved}
 
 
 @post_route("/api/prs/info", "prs:list")
