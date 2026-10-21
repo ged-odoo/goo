@@ -4,6 +4,7 @@ exercised against a FakeIO, so there's no real subprocess, network, or sleep.
 Run from the repo root: `python3 -m unittest discover`
 """
 
+import json
 import os
 import pathlib
 import re
@@ -1138,43 +1139,136 @@ class GitHubServiceTest(unittest.TestCase):
 
     def test_prs_for_branches_resolves_by_head_ref(self):
         # two PRs share the head ref: a closed old one and an open live one — the
-        # open PR wins, and it comes back as a head-relation PullRequest
-        payload = (
-            '[{"number": 10, "title": "old", "url": "u10", "state": "CLOSED", "isDraft": false,'
-            ' "headRefName": "br-fw", "createdAt": "a", "updatedAt": "2026-01-01T00:00:00Z"},'
-            '{"number": 20, "title": "fw port", "url": "u20", "state": "OPEN", "isDraft": false,'
-            ' "headRefName": "br-fw", "createdAt": "b", "updatedAt": "2026-02-01T00:00:00Z"}]'
+        # open PR wins, and it comes back as a head-relation PullRequest with its CI
+        payload = json.dumps(
+            {
+                "data": {
+                    "r0": {
+                        "b0": {
+                            "nodes": [
+                                {
+                                    "number": 10,
+                                    "title": "old",
+                                    "url": "u10",
+                                    "state": "CLOSED",
+                                    "isDraft": False,
+                                    "headRefName": "br-fw",
+                                    "createdAt": "a",
+                                    "updatedAt": "2026-03-01T00:00:00Z",
+                                },
+                                {
+                                    "number": 20,
+                                    "title": "fw port",
+                                    "url": "u20",
+                                    "state": "OPEN",
+                                    "isDraft": False,
+                                    "headRefName": "br-fw",
+                                    "createdAt": "b",
+                                    "updatedAt": "2026-02-01T00:00:00Z",
+                                    "commits": {
+                                        "nodes": [
+                                            {
+                                                "commit": {
+                                                    "statusCheckRollup": {
+                                                        "contexts": {
+                                                            "nodes": [
+                                                                {
+                                                                    "context": "ci/runbot",
+                                                                    "state": "SUCCESS",
+                                                                    "targetUrl": "https://rb/1",
+                                                                },
+                                                                {
+                                                                    "name": "lint",
+                                                                    "status": "COMPLETED",
+                                                                    "conclusion": "FAILURE",
+                                                                    "detailsUrl": "https://gh/2",
+                                                                },
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    },
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
         )
         io = FakeIO(run_result=completed(stdout=payload))
         svc = services.GitHubService(io, TTLCache(ttl=0))
         prs = svc.prs_for_branches([{"github": "odoo/odoo", "branch": "br-fw"}])
         self.assertEqual(len(prs), 1)
-        self.assertEqual(prs[0]["number"], 20)  # open PR preferred over closed
-        self.assertEqual(prs[0]["relation"], "head")
-        self.assertEqual(prs[0]["branch"], "br-fw")
-        self.assertEqual(prs[0]["state"], "open")
-        # queried by head ref, not by author
-        joined = " ".join(str(c) for c in io.run_calls[0])
-        self.assertIn("--head", joined)
-        self.assertIn("br-fw", joined)
-        self.assertNotIn("@me", joined)
+        pr = prs[0]
+        self.assertEqual(pr["number"], 20)  # open PR preferred over a newer closed one
+        self.assertEqual(pr["relation"], "head")
+        self.assertEqual(pr["branch"], "br-fw")
+        self.assertEqual(pr["state"], "open")
+        self.assertEqual((pr["ci"]["overall"], pr["ci"]["runbot"]), ("failure", "success"))
 
-    def test_prs_for_branches_omits_branches_without_a_pr(self):
-        io = FakeIO(run_result=completed(stdout="[]"))
+    def test_prs_for_branches_asks_every_repo_and_branch_in_one_call(self):
+        payload = json.dumps(
+            {
+                "data": {
+                    "r0": {
+                        "b0": {"nodes": [{"number": 1, "state": "OPEN", "headRefName": "a"}]},
+                        "b1": {"nodes": []},
+                    },
+                    "r1": None,  # a repo GitHub can't resolve: no PR there
+                }
+            }
+        )
+        io = FakeIO(run_result=completed(stdout=payload))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        prs = svc.prs_for_branches(
+            [
+                {"github": "odoo/odoo", "branch": "a"},
+                {"github": "odoo/odoo", "branch": "b"},
+                {"github": "odoo/gone", "branch": "c"},
+            ]
+        )
+        self.assertEqual([(p["github"], p["number"]) for p in prs], [("odoo/odoo", 1)])
+        self.assertEqual(len(io.run_calls), 1)
+        cmd = io.run_calls[0]
+        self.assertEqual(cmd[:3], ["gh", "api", "graphql"])
+        # names travel as variables, never inside the query text
+        self.assertIn("b0=a", cmd)
+        self.assertIn("n1=gone", cmd)
+        query = next(c for c in cmd if c.startswith("query="))
+        self.assertNotIn('"a"', query)
+        # every answer is cached, "no PR" included — the next ask makes no call
+        svc.prs_for_branches([{"github": "odoo/odoo", "branch": "b"}])
+        self.assertEqual(len(io.run_calls), 1)
+
+    def test_prs_for_branches_splits_a_long_list_into_batches(self):
+        io = FakeIO(run_result=completed(stdout='{"data": {}}'))
         svc = services.GitHubService(io, TTLCache(ttl=0))
-        prs = svc.prs_for_branches([{"github": "odoo/odoo", "branch": "no-pr"}])
-        self.assertEqual(prs, [])
+        pairs = [{"github": "odoo/odoo", "branch": f"br-{i}"} for i in range(120)]
+        self.assertEqual(svc.prs_for_branches(pairs), [])
+        self.assertEqual(len(io.run_calls), 3)  # 50 + 50 + 20
 
     def test_prs_for_branches_dedups_and_caches(self):
-        io = FakeIO(run_result=completed(stdout="[]"))
+        io = FakeIO(run_result=completed(stdout='{"data": {"r0": {"b0": {"nodes": []}}}}'))
         svc = services.GitHubService(io, TTLCache(ttl=600))
         pairs = [
             {"github": "odoo/odoo", "branch": "br"},
-            {"github": "odoo/odoo", "branch": "br"},  # duplicate — one gh call
+            {"github": "odoo/odoo", "branch": "br"},  # duplicate — asked once
         ]
         svc.prs_for_branches(pairs)
         svc.prs_for_branches(pairs)  # served from cache — still one gh call
         self.assertEqual(len(io.run_calls), 1)
+        svc.prs_for_branches(pairs, refresh=True)  # refresh bypasses it
+        self.assertEqual(len(io.run_calls), 2)
+
+    def test_prs_for_branches_keeps_a_failed_query_re_askable(self):
+        io = FakeIO(run_result=completed(stdout="not json", returncode=1))
+        svc = services.GitHubService(io, TTLCache(ttl=600))
+        pairs = [{"github": "odoo/odoo", "branch": "br"}]
+        self.assertEqual(svc.prs_for_branches(pairs), [])
+        svc.prs_for_branches(pairs)  # the failure wasn't cached as "no PR"
+        self.assertEqual(len(io.run_calls), 2)
 
     def test_close_pr_invalidates_cache(self):
         cache = TTLCache(ttl=600)
@@ -1616,6 +1710,16 @@ class TTLCacheTest(unittest.TestCase):
         self.assertEqual(cache.get("k", compute), 2)  # recomputed
         cache.invalidate("k")
         self.assertEqual(cache.get("k", compute), 3)  # invalidated → recomputed
+
+    def test_peek_and_put(self):
+        now = [1000.0]
+        cache = TTLCache(ttl=10, clock=lambda: now[0])
+        self.assertEqual(cache.peek("k"), (False, None))  # never stored
+        cache.put("k", None)  # a stored None is still a hit ("looked up, none found")
+        self.assertEqual(cache.peek("k"), (True, None))
+        self.assertIsNone(cache.get("k", lambda: "recomputed"))
+        now[0] += 11
+        self.assertEqual(cache.peek("k"), (False, None))  # past the TTL
 
 
 class DatabaseServiceTest(unittest.TestCase):
@@ -6125,18 +6229,18 @@ class GitHubServiceExceptionTest(unittest.TestCase):
         entry = svc._fetch_one({"id": "community", "github": "odoo/odoo"})
         self.assertEqual(entry["error"], "unexpected gh output")
 
-    def test_fetch_head_returns_none_on_exception(self):
+    def test_fetch_heads_returns_none_on_exception(self):
         class RaisingIO(FakeIO):
             def run(self, cmd, **kwargs):
                 raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
         svc = services.GitHubService(RaisingIO(), TTLCache(ttl=0))
-        self.assertIsNone(svc._fetch_head("odoo/odoo", "master-feat-x"))
+        self.assertIsNone(svc._fetch_heads([("odoo/odoo", "master-feat-x")]))
 
-    def test_fetch_head_returns_none_on_bad_json(self):
-        io = FakeIO(run_result=completed(stdout="not json"))
+    def test_fetch_heads_returns_none_on_an_error_reply(self):
+        io = FakeIO(run_result=completed(stdout='{"errors": [{"message": "rate limited"}]}'))
         svc = services.GitHubService(io, TTLCache(ttl=0))
-        self.assertIsNone(svc._fetch_head("odoo/odoo", "master-feat-x"))
+        self.assertIsNone(svc._fetch_heads([("odoo/odoo", "master-feat-x")]))
 
     def test_fetch_info_returns_none_on_exception(self):
         class RaisingIO(FakeIO):

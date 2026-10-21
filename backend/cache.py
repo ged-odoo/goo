@@ -41,6 +41,18 @@ class TTLCache:
                 self._entries[key] = (self._clock(), value)
             return value
 
+    def peek(self, key: Hashable) -> tuple[bool, Any]:
+        """(True, value) when `key` holds a fresh value, else (False, None) — for a
+        caller that fetches its misses in one batch and `put`s them back."""
+        with self._lock:
+            entry = self._entries.get(key)
+            return (True, entry[1]) if self._fresh(entry) else (False, None)
+
+    def put(self, key: Hashable, value: Any) -> None:
+        """Store `value` for `key`, fresh from now."""
+        with self._lock:
+            self._entries[key] = (self._clock(), value)
+
     def invalidate(self, key: Hashable | None = None) -> None:
         """Drop a single key, or the whole cache when key is None."""
         with self._lock:
