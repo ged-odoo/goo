@@ -280,6 +280,7 @@ export class BranchCombobox extends Component {
              t-on-blur="() => this.open.set(false)"/>
       <div t-if="this.open() and this.query().trim()" class="rbd-results branch-cb-list" t-ref="this.listEl">
         <div t-if="this.searching()" class="rbd-status">Searching…</div>
+        <div t-elif="this.searchError()" class="rbd-status" t-out="this.searchError()"/>
         <div t-elif="!this.rows().length" class="rbd-status">No matching branches found.</div>
         <div t-foreach="this.rows()" t-as="r" t-key="r.branch"
              class="rbd-row" t-att-class="{selected: r_index === this.active()}"
@@ -304,6 +305,7 @@ export class BranchCombobox extends Component {
   query = signal("");
   rows = signal<BranchHit[]>([]);
   searching = signal(false);
+  searchError = signal(""); // why the last remote search failed
   open = signal(false);
   active = signal(0); // the highlighted row
   inputEl = signal.ref(HTMLElement);
@@ -358,19 +360,23 @@ export class BranchCombobox extends Component {
         pull_remote: r.pull_remote,
       }));
     try {
-      const res = await fetch("/api/code/remote-branches/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repos, query }),
+      const data = await postJSON<RemoteBranchSearch>("/api/code/remote-branches/search", {
+        repos,
+        query,
       });
-      const data: RemoteBranchSearch = await res.json();
-      if (query !== this.query().trim() || !data.ok) return; // input moved on — drop it
+      if (query !== this.query().trim()) return; // input moved on — drop it
+      if (!data.ok) throw new Error("the search failed");
       const byBranch = new Map<string, BranchHitRepo[]>();
       for (const { repo, branch, remote } of data.results) {
         if (!byBranch.has(branch)) byBranch.set(branch, []);
         byBranch.get(branch)!.push({ id: repo, local: false, remote }); // set just above
       }
       this.rows.set([...byBranch].map(([branch, repos]) => ({ branch, repos })));
+      this.searchError.set("");
+    } catch (e) {
+      if (query !== this.query().trim()) return;
+      this.rows.set([]);
+      this.searchError.set(`couldn't search GitHub: ${errorMessage(e)}`);
     } finally {
       if (query === this.query().trim()) this.searching.set(false);
     }
@@ -610,6 +616,9 @@ export class CreateWorkspaceDialog extends Component {
     pickSource: t.boolean(),
     loadSource: t.function<[SourceRequest], Promise<SourceValues | null>>(),
     categories: t.any() as Type<{ value: string; label: string }[] | null>, // null: categories off
+    // the initial values' runbot dumps when they're still being looked up: the
+    // dialog opens at once, without waiting for runbot
+    initialDumps: (t.any() as Type<Promise<RunbotDump[]>>).optional(),
   });
 
   config = usePlugin(ConfigPlugin);
@@ -633,9 +642,16 @@ export class CreateWorkspaceDialog extends Component {
   _seq = 0; // only the latest source load may land its values
 
   setup(): void {
-    this.form.set({ ...this.props.initial, existingDb: this.existingDefault });
-    this.templateId.set(this.props.initial.template);
+    const initial = this.props.initial;
+    this.form.set({ ...initial, existingDb: this.existingDefault(initial) });
+    this.templateId.set(initial.template);
     this._loadAddons();
+    // the initial source's runbot dumps, still on their way: they land unless
+    // another source was picked meanwhile (its own load brings its own)
+    const seq = this._seq;
+    this.props.initialDumps?.then((dumps) => {
+      if (seq === this._seq && dumps.length) this.form.set({ ...this.form(), dumps });
+    });
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.done(null);
     };
@@ -723,19 +739,24 @@ export class CreateWorkspaceDialog extends Component {
     });
   }
 
-  // ticking Clone database (or picking an existing one) seeds the template's
-  // database when it exists, else the first one
+  // ticking Clone database seeds the template's database when it exists, else
+  // the first one
   get cloneDefault(): string {
-    const tpl = this.templates.find((x) => x.id === this.form().template);
+    return this.templateDbOr(this.form().template);
+  }
+
+  templateDbOr(templateId: string): string {
+    const tpl = this.templates.find((x) => x.id === templateId);
     if (tpl?.db && this.dbNames.includes(tpl.db)) return tpl.db;
     return this.dbNames[0] || "";
   }
 
-  // the existing database preselected: the one named like the workspace's, else
-  // the template's, else the first
-  get existingDefault(): string {
-    const db = (this.form().db ?? this.props.initial.db).trim();
-    return this.dbNames.includes(db) ? db : this.cloneDefault;
+  // the existing database preselected for values `v` (the initial ones, or what a
+  // source just prefilled): the one named like their database, else the
+  // template's, else the first
+  existingDefault(v: Pick<CreateForm, "db" | "template">): string {
+    const db = v.db.trim();
+    return this.dbNames.includes(db) ? db : this.templateDbOr(v.template);
   }
 
   // whether the workspace gets a new database: "Create new database" — always
@@ -868,6 +889,7 @@ export class CreateWorkspaceDialog extends Component {
         const res = await postJSON<{ versions?: string[] }>("/api/runbot/sticky");
         if (!res.versions?.length) throw new Error("runbot is unreachable");
         this.versions.set(res.versions);
+        this.versionsError.set("");
       } catch (e) {
         this.versionsError.set(`could not load runbot's versions: ${errorMessage(e)}`);
       } finally {
@@ -907,7 +929,8 @@ export class CreateWorkspaceDialog extends Component {
     try {
       const values = await this.props.loadSource(req);
       if (seq !== this._seq || !values) return;
-      this.form.set({ ...this.form(), ...values, restoreDump: "" });
+      const next = { ...this.form(), ...values, restoreDump: "" };
+      this.form.set({ ...next, existingDb: this.existingDefault(next) });
       const key = req.kind === "bundle" || req.kind === "pr" ? req.url : "";
       this.loaded.set({ kind: req.kind, key });
     } finally {

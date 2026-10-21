@@ -384,17 +384,25 @@ function repoForGithub(repos: RepoConfig[], slug: string): RepoConfig | null {
 }
 
 // Fetch a picked branch into every repo that only has it on a remote, then refresh
-// those repos' branches. Returns the repos that now have it locally, or null when
-// none do (failures already reported).
+// those repos' branches. A repo that already has the branch locally is attached
+// as is — never re-fetched, which could overwrite (or refuse) its unpushed
+// commits. Returns the repos that now have it locally, or null when none do
+// (failures already reported).
 async function fetchPickedBranch(
   plugins: Pick<WorkspacePlugins, "config" | "dialogs" | "code" | "eventLog">,
   pick: BranchPick,
 ): Promise<string[] | null> {
   const { config, dialogs, code, eventLog } = plugins;
   const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
+  const isLocal = (repo: string) =>
+    code
+      .branchRepos()
+      .find((r) => r.id === repo)
+      ?.branches.some((b) => b.name === pick.branch) ?? false;
+  const remoteOf = (repo: string) => (isLocal(repo) ? "" : pick.remoteByRepo[repo]);
   const results = await Promise.all(
     pick.repos.map(async (repo) => {
-      const remote = pick.remoteByRepo[repo];
+      const remote = remoteOf(repo);
       if (!remote) return { repo, ok: true }; // already local
       const eid = eventLog.begin(`fetching ${pick.branch} (${repo}) from ${remote}`);
       const r = await fetchRemoteBranch(dialogs, {
@@ -414,7 +422,7 @@ async function fetchPickedBranch(
     );
   const got = results.filter((r) => r.ok).map((r) => r.repo);
   if (!got.length) return null;
-  const fetched = got.filter((repo) => pick.remoteByRepo[repo]);
+  const fetched = got.filter((repo) => remoteOf(repo));
   if (fetched.length) await code.refreshBranches(new Set(fetched));
   return got;
 }
@@ -438,12 +446,13 @@ export async function startCreateWorkspace(
   const { config, dialogs, db, code, eventLog, wt } = plugins;
   const templates = config.config.templates || [];
   const tplOf = (id: string): TemplateConfig | null => templates.find((t) => t.id === id) || null;
+  await db.load(); // the existing databases (to pick, or clone)
   // a template forks off a base version, so what the form can offer to restore is
-  // that version's own runbot database (a bundle source brings its own dumps)
-  const [dumps] = await Promise.all([
-    prefill.dumps ?? baseVersionDumps(templateBranch(tplOf(prefill.template || ""))),
-    db.load(), // populate the "Clone db" select
-  ]);
+  // that version's own runbot database — looked up while the dialog is already
+  // open (a bundle source brings its own dumps)
+  const initialDumps = prefill.dumps
+    ? null
+    : baseVersionDumps(templateBranch(tplOf(prefill.template || "")));
   // best-effort refresh so a branch created/fetched moments ago (e.g. in another
   // tab) isn't reported stale by the form's attach/fork preview or the fork set below
   code.loadBranches();
@@ -545,7 +554,7 @@ export async function startCreateWorkspace(
     return attachValues(branch, branches, await baseVersionDumps(branch));
   };
 
-  const initial = sourceValues(prefill, dumps);
+  const initial = sourceValues(prefill, prefill.dumps || []);
   const res = await dialogs.openComponent<CreateForm | null>(CreateWorkspaceDialog, {
     initial: {
       ...initial,
@@ -561,6 +570,7 @@ export async function startCreateWorkspace(
     pickSource,
     loadSource,
     categories: config.config.workspace_categories_enabled ? categoryOptions(config) : null,
+    ...(initialDumps ? { initialDumps } : {}),
   });
   if (!res) return;
   const tpl = tplOf(res.template);

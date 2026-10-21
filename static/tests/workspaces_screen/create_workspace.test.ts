@@ -478,6 +478,21 @@ describe("New workspace — blank form", () => {
     expect(column()).toEqual(["Create new database", "Database"]);
   });
 
+  it("preselects the existing database named after what the source prefilled", async () => {
+    await mountScreen({
+      databases: ["aaa", "19.0"],
+      routes: {
+        "/api/runbot/sticky": { ok: true, versions: ["19.0"] },
+        "/api/runbot/dumps": { dumps: [] },
+      },
+    });
+    await openForm();
+    await tick("Create new database", false);
+    expect(field("Database").querySelector("select")!.value).toBe("aaa"); // blank: the first
+    await pickSource("Odoo version"); // prefills 19.0 — which exists
+    expect(field("Database").querySelector("select")!.value).toBe("19.0");
+  });
+
   it("refuses a new database named like an existing one", async () => {
     await mountScreen({ databases: ["master-x"] });
     await openForm();
@@ -670,6 +685,33 @@ describe("New workspace — from a template", () => {
       "Community Run — all",
     ]);
     expect(hint("Restore runbot database")).toContain("downloaded from runbot");
+  });
+
+  it("opens at once, the runbot dumps landing when runbot answers", async () => {
+    // a reply runbot holds back until release()
+    let release = () => {};
+    const slow = () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            release = () => {
+              c.enqueue(new TextEncoder().encode(JSON.stringify({ dumps: DUMPS })));
+              c.close();
+            };
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    await mountScreen({ config: { templates: [TEMPLATE] }, routes: { "/api/runbot/dumps": slow } });
+    await openForm();
+    expect(input("Name").value).toBe("saas-19.1"); // the form is there already
+    expect(dialogButton("Create and activate").disabled).toBe(false);
+    expect(() => field("Restore runbot database")).toThrow();
+    release();
+    await vi.waitFor(async () => {
+      await app.settle();
+      expect(field("Restore runbot database")).toBeTruthy();
+    });
   });
 
   it("keeps the template's demo-data setting while the name is typed", async () => {
@@ -1076,6 +1118,48 @@ describe("New workspace — from a remote branch", () => {
     expect(input("Name").value).toBe("master-colleague");
     expect(configText()).toBe("enterprise:master-colleague");
     expect(dialogButton("Create").disabled).toBe(false);
+  });
+
+  it("attaches a branch already local in a repo as is, never re-fetching it", async () => {
+    await mountScreen({
+      routes: {
+        "/api/code/remote-branches/search": {
+          ok: true,
+          // master-feat is local in both repos (featRepos) — also on GitHub
+          results: [
+            { repo: "community", branch: "master-feat", remote: "origin" },
+            { repo: "enterprise", branch: "master-feat", remote: "dev" },
+          ],
+        },
+        "/api/runbot/dumps": { dumps: [] },
+      },
+    });
+    await openForm();
+    await pickSource("Remote branch");
+    typeInto(field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!, "feat");
+    await vi.waitFor(async () => {
+      await app.settle();
+      expect(branchRows()).toHaveLength(1);
+    });
+    await pickBranchRow("master-feat");
+    // a fetch could overwrite (or refuse) the local branch's unpushed commits
+    expect(app.callsTo("/api/code/remote-branch/fetch")).toEqual([]);
+    expect(configText()).toBe("community:master-feat,enterprise:master-feat");
+  });
+
+  it("says why when the GitHub search fails", async () => {
+    await mountScreen({
+      routes: { "/api/code/remote-branches/search": failure(502, { error: "gh down" }) },
+    });
+    await openForm();
+    await pickSource("Remote branch");
+    typeInto(field("Branch").querySelector<HTMLInputElement>(".branch-cb-input")!, "x");
+    await vi.waitFor(async () => {
+      await app.settle();
+      expect(field("Branch").querySelector(".rbd-status")!.textContent).toBe(
+        "couldn't search GitHub: gh down",
+      );
+    });
   });
 
   it("reports a failed fetch and loads nothing", async () => {
