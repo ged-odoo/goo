@@ -35,7 +35,12 @@ import type { ServerPlugin } from "../core/server_plugin.ts";
 import type { PullRequest } from "../core/models.ts";
 import type { WorkspaceLike, WorkspacePlugin } from "../core/workspace_plugin.ts";
 import type { ClaudePlugin } from "./claude_plugin.ts";
-import { CreateWorkspaceDialog, configFromRepos } from "./create_dialog.ts";
+import {
+  CreateWorkspaceDialog,
+  configFromRepos,
+  splitStartArgs,
+  startArgs,
+} from "./create_dialog.ts";
 import type { BranchPick, CreateForm, SourceRequest, SourceValues } from "./create_dialog.ts";
 
 import type { PluginInstance } from "@odoo/owl";
@@ -464,7 +469,9 @@ export async function startCreateWorkspace(
       repos,
       config: p.config ?? (p.name ? configFromRepos(repos, p.name.trim()) : ""),
       db: p.db ?? p.name ?? "",
-      args: p.args ?? "",
+      // the form edits the modules a start installs apart from the other args
+      addons: splitStartArgs(p.args ?? "").addons,
+      args: splitStartArgs(p.args ?? "").extra,
       category: p.category ?? "",
       demoData: p.demoData ?? defaultDemoData(p.name || ""),
       createBranches: p.createBranches ?? true,
@@ -543,6 +550,8 @@ export async function startCreateWorkspace(
     initial: {
       ...initial,
       location: prefill.location ?? (config.config.default_workspace_location || "main"),
+      newDb: true,
+      existingDb: "", // the dialog preselects one
       cloneDb: "",
       restoreDump: "",
       activate: false,
@@ -607,7 +616,7 @@ export async function startCreateWorkspace(
       checkouts,
       startPointByRepo,
       baseId: tpl?.id || "",
-      on_create_args: (res.args || "").trim(),
+      on_create_args: startArgs(res.addons, res.args),
       demo_data: !!res.demoData,
       favorite: false,
       category: res.category || "",
@@ -634,7 +643,7 @@ export async function startCreateWorkspace(
     category: res.category || "",
     parent: prefill.parent || "",
     db: (res.db || "").trim(),
-    on_create_args: (res.args || "").trim(),
+    on_create_args: startArgs(res.addons, res.args),
     demo_data: !!res.demoData,
     location: "main",
     worktree: null,

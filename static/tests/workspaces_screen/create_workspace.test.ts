@@ -41,6 +41,18 @@ interface Setup {
   databases?: string[];
 }
 
+// the modules the Addons combobox offers
+const MODULES = [
+  { name: "sale", repo: "community", summary: "Sales quotations", application: false },
+  {
+    name: "sale_management",
+    repo: "community",
+    summary: "From quotations to invoices",
+    application: true,
+  },
+  { name: "crm", repo: "community", summary: "Track leads", application: true },
+];
+
 async function mountScreen(s: Setup = {}) {
   const git = gitBackend(s.repos ?? featRepos());
   app = await mountApp({
@@ -65,6 +77,7 @@ async function mountScreen(s: Setup = {}) {
         })),
       }),
       "/api/code/checkout": { results: [] },
+      "/api/addons": { ok: true, modules: MODULES, db: null },
       ...s.routes,
     },
   });
@@ -153,6 +166,12 @@ const repoPreview = () =>
         `${r.querySelector(".cwd-repo-id")!.textContent}: ${r.querySelector(".cwd-repo-action")!.textContent}`,
     )
     .join(" · ");
+
+// the modules picked in the Addons combobox
+const addonChips = () =>
+  [...field("Addons").querySelectorAll(".addons-cb-chip")].map((c) =>
+    c.firstChild!.textContent!.trim(),
+  );
 
 // the workspaces in the screen's list
 const listNames = () => [...app.root.querySelectorAll(".wt-item-name")].map((e) => e.textContent);
@@ -246,7 +265,7 @@ describe("New workspace — blank form", () => {
     expect(dialogButton("Create").disabled).toBe(true); // a name is required
     await type("Name", "master-newtask");
     expect(configText()).toBe("community:master-newtask,enterprise:master-newtask");
-    expect(input("Database").value).toBe("master-newtask");
+    expect(input("Database name").value).toBe("master-newtask");
     expect(repoPreview()).toBe(
       "community: fork from origin/master · enterprise: fork from origin/master",
     );
@@ -357,9 +376,9 @@ describe("New workspace — blank form", () => {
     await mountScreen();
     await openForm();
     await type("Name", "master-a");
-    await type("Database", "db-master-a-copy");
+    await type("Database name", "db-master-a-copy");
     await type("Name", "master-b");
-    expect(input("Database").value).toBe("db-master-b-copy");
+    expect(input("Database name").value).toBe("db-master-b-copy");
   });
 
   it("attaches a branch that already exists locally instead of forking it", async () => {
@@ -370,6 +389,22 @@ describe("New workspace — blank form", () => {
     await click(dialogButton("Create"));
     expect(app.callsTo("/api/code/branches/create")).toEqual([]);
     expect(listNames()).toContain("master-feat");
+  });
+
+  it("makes Create and activate the primary action, Enter included — Create for a worktree", async () => {
+    await mountScreen({ routes: { "/api/workspace/create": { ok: true, results: [] } } });
+    await openForm();
+    const primary = () => mustDialog().querySelector(".dialog-foot .pbtn.primary")!.textContent;
+    expect(primary()).toBe("Create and activate");
+    choose(field("Location").querySelector("select")!, "worktree");
+    await app.settle();
+    expect(primary()).toBe("Create");
+    choose(field("Location").querySelector("select")!, "main");
+    await app.settle();
+    await type("Name", "master-feat");
+    input("Name").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await app.settle();
+    expect(app.callsTo("/api/code/checkout")).toHaveLength(1); // created and activated
   });
 
   it("Create only adds the workspace; Create and activate also checks its branches out", async () => {
@@ -398,12 +433,143 @@ describe("New workspace — blank form", () => {
     });
     await openForm();
     await type("Name", "master-newtask");
-    await tick("Clone db", true);
-    expect(field("Clone db").querySelector("select")!.value).toBe("master-base");
+    await tick("Clone database", true);
+    expect(field("Clone database").querySelector("select")!.value).toBe("master-base");
     await click(dialogButton("Create"));
     expect(app.callsTo("/api/databases/clone").map((c) => c.body)).toEqual([
       expect.objectContaining({ source: "master-base", dest: "master-newtask" }),
     ]);
+  });
+
+  it("runs on an existing database when Create new database is unticked", async () => {
+    await mountScreen({ databases: ["master-base", "master-other"] });
+    await openForm();
+    await type("Name", "master-x");
+    expect(() => field("Database")).toThrow(); // a new database by default
+    await tick("Create new database", false);
+    expect(() => field("Database name")).toThrow();
+    expect(() => field("Clone database")).toThrow();
+    expect(() => field("Demo data")).toThrow();
+    const select = field("Database").querySelector("select")!;
+    expect([...select.options].map((o) => o.value)).toEqual(["master-base", "master-other"]);
+    choose(select, "master-other");
+    await app.settle();
+    expect(mustDialog().querySelector(".cwd-command")!.textContent).toContain("-d master-other");
+    // goo won't create this database, so it never gets the first-start parameters
+    expect(mustDialog().textContent).toContain(
+      "the addons and start args only apply to one goo creates",
+    );
+    await click(dialogButton("Create"));
+    expect((await savedWorkspace("master-x")).db).toBe("master-other");
+    expect(app.callsTo("/api/databases/clone")).toEqual([]);
+  });
+
+  it("keeps Create new database at the top of its column, ticked or not", async () => {
+    await mountScreen({ databases: ["master-base"] });
+    await openForm();
+    // the database column's fields, by their label
+    const column = () =>
+      [
+        ...checkbox("Create new database").closest(".cwd-col")!.querySelectorAll(".dialog-field"),
+      ].map((f) => f.querySelector("label")!.textContent!.trim());
+    expect(column()[0]).toBe("Create new database");
+    expect(column()[1]).toBe("Database name");
+    await tick("Create new database", false);
+    expect(column()).toEqual(["Create new database", "Database"]);
+  });
+
+  it("refuses a new database named like an existing one", async () => {
+    await mountScreen({ databases: ["master-x"] });
+    await openForm();
+    await type("Name", "master-x");
+    expect(dialogButton("Create").disabled).toBe(true);
+    expect(mustDialog().querySelector(".form-error")!.textContent).toBe(
+      'database "master-x" already exists — untick "Create new database" to use it',
+    );
+    await tick("Create new database", false);
+    expect(field("Database").querySelector("select")!.value).toBe("master-x");
+    expect(dialogButton("Create").disabled).toBe(false);
+  });
+
+  it("always creates a new database when there is none to pick", async () => {
+    await mountScreen();
+    await openForm();
+    await type("Name", "master-x");
+    expect(() => field("Create new database")).toThrow(); // nothing to choose
+    expect(() => field("Clone database")).toThrow(); // nor to clone
+    expect(input("Database name").value).toBe("master-x");
+    await click(dialogButton("Create"));
+    expect((await savedWorkspace("master-x")).db).toBe("master-x");
+  });
+
+  it("titles the database options apart from the location", async () => {
+    await mountScreen({ databases: ["master-base"] });
+    await openForm();
+    const col = checkbox("Create new database").closest(".cwd-col")!;
+    expect(col.querySelector(".cwd-section-title")!.textContent).toBe("Database");
+    expect(col.closest(".cwd-grid")!.contains(field("Location"))).toBe(false);
+  });
+
+  it("picks the addons to install, and shows the whole first-start command", async () => {
+    await mountScreen();
+    await openForm();
+    await type("Name", "master-x");
+    const search = field("Addons").querySelector<HTMLInputElement>("input")!;
+    const key = async (k: string) => {
+      search.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      await app.settle();
+    };
+    typeInto(search, "sal");
+    await app.settle();
+    const rows = () =>
+      [...field("Addons").querySelectorAll(".rbd-row .rbd-branch")].map((r) => r.textContent);
+    expect(rows()).toEqual(["sale_management", "sale"]); // an app first
+    await key("Enter");
+    expect(addonChips()).toEqual(["sale_management"]);
+    expect(dialog()).not.toBeNull(); // Enter picked a module, it didn't submit
+    typeInto(search, "leads"); // the summary matches too
+    await app.settle();
+    expect(rows()).toEqual(["crm"]);
+    await key("Enter");
+    typeInto(search, "my_module"); // not in the list: added as typed
+    await app.settle();
+    await key("Enter");
+    expect(addonChips()).toEqual(["sale_management", "crm", "my_module"]);
+    await key("Backspace"); // an empty box: drops the last one
+    expect(addonChips()).toEqual(["sale_management", "crm"]);
+    await type("Start args", "--dev xml");
+    await tick("Demo data", false);
+    expect(mustDialog().querySelector(".cwd-command")!.textContent).toBe(
+      "-d master-x -i sale_management,crm --without-demo all --dev xml",
+    );
+    await click(dialogButton("Create"));
+    expect((await savedWorkspace("master-x")).on_create_args).toBe(
+      "-i sale_management,crm --dev xml",
+    );
+  });
+
+  it("a chip's × removes that addon", async () => {
+    await mountScreen({
+      config: {
+        templates: [
+          {
+            id: "t1",
+            name: "Sale",
+            db: "",
+            on_create_args: "-i sale,crm",
+            demo_data: true,
+            category: "",
+            checkouts: [{ repo: "community", branch: "master" }],
+          },
+        ],
+      },
+      routes: { "/api/runbot/dumps": { dumps: [] } },
+    });
+    await openForm();
+    expect(addonChips()).toEqual(["sale", "crm"]);
+    field("Addons").querySelector<HTMLButtonElement>(".addons-cb-remove")!.click();
+    await app.settle();
+    expect(addonChips()).toEqual(["crm"]);
   });
 
   it("offers a dedicated venv only for an own worktree, and builds it", async () => {
@@ -489,8 +655,10 @@ describe("New workspace — from a template", () => {
     expect(field("Template").querySelector("select")!.value).toBe("t1");
     expect(input("Name").value).toBe("saas-19.1");
     expect(configText()).toBe("community:saas-19.1");
-    expect(input("Database").value).toBe("tpl-db");
-    expect(input("Start args").value).toBe("-i sale");
+    expect(input("Database name").value).toBe("tpl-db");
+    // the template's "-i sale" becomes an addon; nothing else is left for Start args
+    expect(addonChips()).toEqual(["sale"]);
+    expect(input("Start args").value).toBe("");
     expect(checkbox("Demo data").checked).toBe(false);
     await tick("Restore runbot database", true);
     const select = field("Restore runbot database").querySelector("select")!;
@@ -544,7 +712,7 @@ describe("New workspace — from a template", () => {
   it("refuses to clone and restore into the same database", async () => {
     await openTemplateForm({}, ["tpl-db-src"]);
     await tick("Restore runbot database", true);
-    await tick("Clone db", true);
+    await tick("Clone database", true);
     expect(mustDialog().querySelector(".form-error")!.textContent).toBe(
       "clone a database or restore the runbot dump — not both",
     );
@@ -580,7 +748,7 @@ describe("New workspace — from a template", () => {
     await pickTemplate("");
     await pickTemplate("t1");
     expect(input("Name").value).toBe("saas-19.1");
-    expect(input("Database").value).toBe("tpl-db");
+    expect(input("Database name").value).toBe("tpl-db");
     expect(app.callsTo("/api/runbot/dumps")).toHaveLength(2);
     expect(field("Restore runbot database")).toBeTruthy();
   });
@@ -770,7 +938,7 @@ describe("New workspace — from an Odoo version", () => {
     choose(select, "19.0");
     await app.settle();
     expect(input("Name").value).toBe("19.0");
-    expect(input("Database").value).toBe("19.0");
+    expect(input("Database name").value).toBe("19.0");
     expect(field("Restore runbot database")).toBeTruthy();
     // a task branch named off the version forks from it
     await type("Name", "19.0-mytask");

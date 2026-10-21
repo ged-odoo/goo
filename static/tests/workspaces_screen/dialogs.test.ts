@@ -4,6 +4,7 @@ import {
   templatePrefill,
   findSubWorkspace,
 } from "../../src/workspaces_screen/dialogs.ts";
+import { splitStartArgs, startArgs } from "../../src/workspaces_screen/create_dialog.ts";
 import { ARCHIVED_CATEGORY } from "../../src/core/config.ts";
 
 describe("categoryOptions", () => {
@@ -140,5 +141,25 @@ describe("findSubWorkspace", () => {
       },
     };
     expect(findSubWorkspace(config, parentWs, row)).toBeNull();
+  });
+});
+
+describe("splitStartArgs / startArgs", () => {
+  it("splits the modules a start installs from the other args, in every -i spelling", () => {
+    expect(splitStartArgs("-i sale,crm --dev xml")).toEqual({
+      addons: ["sale", "crm"],
+      extra: "--dev xml",
+    });
+    expect(splitStartArgs("--init=sale --log-level debug --init crm,sale")).toEqual({
+      addons: ["sale", "crm"],
+      extra: "--log-level debug",
+    });
+    expect(splitStartArgs("  ")).toEqual({ addons: [], extra: "" });
+  });
+
+  it("joins them back", () => {
+    expect(startArgs(["sale", "crm"], " --dev xml ")).toBe("-i sale,crm --dev xml");
+    expect(startArgs([], "--dev xml")).toBe("--dev xml");
+    expect(startArgs(["sale"], "")).toBe("-i sale");
   });
 });
