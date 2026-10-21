@@ -58,6 +58,7 @@ import type {
   TabConfig,
   TemplateConfig,
   TemplateInput,
+  WorkspaceLink,
   WorkspaceConfig,
   WorkspaceInput,
   WorktreeInfo,
@@ -135,6 +136,7 @@ const SETTINGS_JSON = [
   "start",
   "tabs",
   "links",
+  "workspace_links",
   "test_presets",
   "workspace_categories",
   "reviews",
@@ -215,6 +217,7 @@ export class Settings extends Model {
   start: Signal<StartConfig> = fields.json();
   tabs: Signal<TabConfig[]> = fields.json();
   links: Signal<NavLink[]> = fields.json();
+  workspace_links: Signal<WorkspaceLink[]> = fields.json();
   test_presets: Signal<{ tags: string }[]> = fields.json();
   workspace_categories: Signal<{ id: string }[]> = fields.json(); // [{ id }] — group order for the Workspaces list
   reviews: Signal<ReviewEntry[]> = fields.json(); // [{ id, github, number, important? }] — the Reviews screen's tracked PRs
@@ -592,6 +595,8 @@ export function toModels(orm: ORM, config: ConfigInput = {}, state: StateInput =
   settings.start = config.start ?? {};
   settings.tabs = config.tabs ?? [];
   settings.links = config.links ?? [];
+  // a config saved before these were configurable gets the built-in ones
+  settings.workspace_links = config.workspace_links ?? DEFAULT_CONFIG.workspace_links;
   settings.test_presets = config.test_presets ?? [];
   settings.workspace_categories = config.workspace_categories ?? [];
   settings.reviews = config.reviews ?? [];
@@ -730,6 +735,7 @@ export function toConfig(orm: ORM): ConfigBlob {
     out.start = s.start() ?? {};
     out.tabs = s.tabs() ?? [];
     out.links = s.links() ?? [];
+    out.workspace_links = s.workspace_links() ?? [];
     out.test_presets = s.test_presets() ?? [];
     out.workspace_categories = s.workspace_categories() ?? [];
     out.reviews = s.reviews() ?? [];

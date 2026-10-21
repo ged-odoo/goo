@@ -259,6 +259,30 @@ describe("Categories and test presets editors", () => {
     expect((await saved()).workspace_categories).toEqual([{ id: "base" }]);
   });
 
+  it("edits the workspace links: the built-in two, then one added", async () => {
+    await openConfig();
+    const b = block("Workspace links");
+    const rows = () =>
+      [...b.querySelectorAll(".edit-row")].map((r) =>
+        [...r.querySelectorAll<HTMLInputElement>("input")].map((i) => i.value),
+      );
+    expect(rows()).toEqual([
+      ["/odoo", "/odoo?debug=assets"],
+      ["/web/tests", "/web/tests?debug=assets&timeout=500000&manual=true"],
+    ]);
+    byText(b, "Add link").click();
+    await app.settle();
+    const inputs = b.querySelectorAll<HTMLInputElement>(".edit-row:last-child input");
+    inputs[0].value = "Sales";
+    inputs[0].dispatchEvent(new Event("input"));
+    type(inputs[1], "/odoo/sales");
+    expect((await saved()).workspace_links).toEqual([
+      { label: "/odoo", path: "/odoo?debug=assets" },
+      { label: "/web/tests", path: "/web/tests?debug=assets&timeout=500000&manual=true" },
+      { label: "Sales", path: "/odoo/sales" },
+    ]);
+  });
+
   it("adds a test preset, skipping a blank row", async () => {
     await openConfig();
     const b = block("Test presets");
