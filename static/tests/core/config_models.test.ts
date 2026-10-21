@@ -71,6 +71,15 @@ describe("toModels / toConfig round trip", () => {
     expect(toConfig(orm).launch_mode).toBe("external");
   });
 
+  it("workspace links default to /odoo + /web/tests for a config saved before them", () => {
+    const orm = new ORM();
+    toModels(orm, baseConfig());
+    expect(toConfig(orm).workspace_links?.map((l) => l.label)).toEqual(["/odoo", "/web/tests"]);
+    const emptied = new ORM();
+    toModels(emptied, baseConfig({ workspace_links: [] })); // removed on purpose: stays so
+    expect(toConfig(emptied).workspace_links).toEqual([]);
+  });
+
   it("toState round-trips the app-state blob", () => {
     const orm = new ORM();
     toModels(orm, baseConfig(), { active_workspace: "w1", test_history: ["/web:WebSuite"] });

@@ -17,7 +17,7 @@ import { ServerPlugin } from "../core/server_plugin.ts";
 import { StorePlugin } from "../core/store_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
-import type { WorkspaceConfig } from "../core/config.ts";
+import type { WorkspaceConfig, WorkspaceLink } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
 import type {
@@ -30,7 +30,13 @@ import type {
 import { branchKey } from "../core/models.ts";
 import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
 import type { BranchInfo } from "../core/observed_models.ts";
-import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
+import {
+  autologinLink,
+  repoBranchList,
+  timeAgo,
+  nestByParent,
+  descendantWorkspaces,
+} from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
   categoryOptions,
@@ -272,8 +278,11 @@ export class WorkspacesScreen extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <t t-if="this.hasUrlButtons(this.sel)">
+                <t t-foreach="this.workspaceLinks" t-as="link" t-key="link_index">
+                  <button class="pbtn ghost" t-att-disabled="!this.linkUrl(this.sel, link.path)" t-att-title="'open ' + link.path + ' on this workspace\'s server'" t-on-click="() => this.openWorkspaceUrl(this.sel, this.linkUrl(this.sel, link.path))"><t t-out="this.externalIcon"/><t t-out="link.label"/></button>
+                </t>
+              </t>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -1394,14 +1403,14 @@ export class WorkspacesScreen extends Component {
     return this.isWt(ws) || this.config.config.launch_mode !== "external";
   }
 
-  odooUrl(ws: WorkspaceConfig): string {
-    if (this.isWt(ws)) return this.wt.odooUrl(ws);
-    return this.mainLink(ws, "/odoo?debug=assets");
+  // the detail header's buttons (configured in the Config tab's "Workspace links")
+  get workspaceLinks(): WorkspaceLink[] {
+    return (this.config.config.workspace_links || []).filter((l) => l.label && l.path);
   }
 
-  testsUrl(ws: WorkspaceConfig): string {
-    if (this.isWt(ws)) return this.wt.testsUrl(ws);
-    return this.mainLink(ws, "/web/tests?debug=assets&timeout=500000&manual=true");
+  // a workspace link's URL on `ws`'s own server; "" while it isn't running
+  linkUrl(ws: WorkspaceConfig, path: string): string {
+    return this.isWt(ws) ? this.wt.link(ws, path) : this.mainLink(ws, path);
   }
 
   // the main server's link: its container's nginx host in docker mode, else the
@@ -1413,9 +1422,7 @@ export class WorkspacesScreen extends Component {
       this.config.config.launch_mode === "docker"
         ? this.wt.dockerSlugUrl(server.docker_container)
         : "http://localhost:8069/";
-    if (!base) return "";
-    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
-    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
+    return autologinLink(base, path, this.config.config.autologin_links !== false);
   }
 
   open(url: string): void {

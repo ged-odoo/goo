@@ -17,7 +17,13 @@ import { CodePlugin } from "./code_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
 import { DialogPlugin } from "./dialog_plugin.ts";
 import { LogBuffer } from "./log_buffer.ts";
-import { errorMessage, postJSON, worktreeDirFor, descendantWorkspaces } from "./utils.ts";
+import {
+  autologinLink,
+  errorMessage,
+  postJSON,
+  worktreeDirFor,
+  descendantWorkspaces,
+} from "./utils.ts";
 
 import { Plugin, usePlugin, signal, markRaw } from "@odoo/owl";
 import { baseBranchOf } from "./config.ts";
@@ -757,19 +763,10 @@ export class WorkspacePlugin extends Plugin {
   // wraps a target path through goo's autologin route, unless autologin_links
   // is off (then it's just the plain path — for people who'd rather log in
   // themselves, e.g. the autologin addon isn't installed on this server)
-  _link(tgt: WorkspaceLike, path: string): string {
-    const base = this._baseUrl(tgt);
-    if (!base) return "";
-    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
-    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
-  }
-
-  odooUrl(tgt: WorkspaceLike): string {
-    return this._link(tgt, "/odoo?debug=assets");
-  }
-
-  testsUrl(tgt: WorkspaceLike): string {
-    return this._link(tgt, "/web/tests?debug=assets&timeout=500000&manual=true");
+  // `path` (e.g. "/odoo?debug=assets") on the worktree's own server, through the
+  // autologin route unless that's off; "" while it isn't reachable
+  link(tgt: WorkspaceLike, path: string): string {
+    return autologinLink(this._baseUrl(tgt), path, this.config.config.autologin_links !== false);
   }
 
   // thin wrapper: `return this._error(…)` deliberately returns false (callers
