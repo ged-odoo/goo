@@ -424,7 +424,7 @@ interface Loaded {
 export class CreateWorkspaceDialog extends Component {
   static components = { BranchCombobox, AddonsCombobox };
   static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
+    <div class="dialog-backdrop cwd-backdrop" t-on-click="() => this.done(null)">
       <div class="dialog cwd" t-on-click.stop="() => {}">
         <h2 class="dialog-title">New workspace</h2>
         <div class="dialog-body" data-form-type="other">

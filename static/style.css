@@ -313,6 +313,18 @@ a {
 .nav-target:hover .nt-menu {
   display: flex;
 }
+/* the main workspaces scroll on their own, so a long list never runs off the
+   screen while the running worktrees and "All workspaces →" stay in view (the
+   menu itself can't scroll: that would clip its hover bridge above) */
+.nt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--chrome-line) transparent;
+}
 .nt-item {
   display: flex;
   align-items: center;
@@ -4369,13 +4381,20 @@ tr.active td.brg-commit {
   background: var(--l-green-bg);
 }
 /* ─── New workspace dialog: source radios on top, the form in two columns ─── */
+/* a form taller than the window scrolls with its backdrop, never inside the
+   dialog: a scrolling dialog body would clip the comboboxes' result lists (they
+   overlap the fields — and the footer — below them) */
+.dialog-backdrop.cwd-backdrop {
+  overflow-y: auto;
+  /* top-aligned + auto margins: centered while it fits, its top still
+     reachable when it doesn't (a centered overflow would cut it off) */
+  align-items: flex-start;
+  padding: 4vh 0;
+  box-sizing: border-box;
+}
 .dialog.cwd {
   width: min(820px, 94vw);
-  max-height: 92vh;
-}
-.dialog.cwd .dialog-body {
-  overflow-y: auto;
-  padding-right: 4px;
+  margin: auto 0;
 }
 .cwd-sources {
   display: flex;
@@ -4528,8 +4547,22 @@ tr.active td.brg-commit {
   padding: 3px 2px;
   background: none;
 }
+/* a row is the module name, then its app tag + summary — the summary is what
+   gives way (an ellipsis) when the row is too narrow, never the list's width */
+.branch-cb-list {
+  overflow-x: hidden;
+}
+.addons-cb .rbd-branch {
+  flex: none;
+}
+.addons-cb .rbd-repos {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.addons-cb .rbd-repo-tag {
+  flex: none;
+}
 .addons-cb-summary {
-  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
