@@ -3405,82 +3405,109 @@ class GitServiceTest(unittest.TestCase):
         )
 
 
+def refs_reply(**by_alias):
+    """A `gh api graphql` branch-search reply: {alias: [(branch, committed date)] or
+    None (a repo GitHub can't resolve)}."""
+    data = {
+        alias: None
+        if refs is None
+        else {
+            "refs": {
+                "nodes": [{"name": name, "target": {"committedDate": date}} for name, date in refs]
+            }
+        }
+        for alias, refs in by_alias.items()
+    }
+    return completed(stdout=json.dumps({"data": data}))
+
+
 class GitHubSearchBranchesTest(unittest.TestCase):
-    def test_search_branches(self):
-        io = FakeIO(
-            runs={"matching-refs": completed(stdout="refs/heads/master-x\nrefs/heads/master-y\n")}
-        )
-        svc = services.GitHubService(io, TTLCache(ttl=0))
-        found = svc.search_branches([{"id": "community", "github": "odoo/odoo"}], "master-")
-        self.assertEqual(sorted(f["branch"] for f in found), ["master-x", "master-y"])
-        self.assertTrue(all(f["repo"] == "community" for f in found))
-        # no pull_remote given — falls back to "origin"
-        self.assertTrue(all(f["remote"] == "origin" for f in found))
+    REPO = {
+        "id": "community",
+        "github": "odoo/odoo",
+        "path": "/r",
+        "pull_remote": "origin",
+        "push_remote": "dev",
+    }
 
-    def test_search_branches_also_searches_push_remote_fork(self):
-        # a branch pushed only to a personal/team fork (here "odoo-dev", resolved
-        # from the push remote's actual URL) never reaches the upstream repo
+    def _svc(self, reply):
         io = FakeIO(
             runs={
                 "remote get-url dev": completed(stdout="git@github.com:odoo-dev/odoo.git\n"),
-                "repos/odoo/odoo/git/matching-refs": completed(stdout=""),
-                "repos/odoo-dev/odoo/git/matching-refs": completed(
-                    stdout="refs/heads/master-mine\n"
-                ),
+                "api graphql": reply,
             }
         )
-        svc = services.GitHubService(io, TTLCache(ttl=0))
-        found = svc.search_branches(
-            [{"id": "community", "github": "odoo/odoo", "path": "/r", "push_remote": "dev"}],
-            "master-",
-        )
-        self.assertEqual([f["branch"] for f in found], ["master-mine"])
-        self.assertEqual(found[0]["repo"], "community")
-        # found only on the fork — must be fetched from "dev", not upstream
-        self.assertEqual(found[0]["remote"], "dev")
+        return io, services.GitHubService(io, TTLCache(ttl=600))
 
-    def test_search_branches_prefers_upstream_remote_over_fork(self):
-        io = FakeIO(
-            runs={
-                "remote get-url dev": completed(stdout="git@github.com:odoo-dev/odoo.git\n"),
-                "repos/odoo/odoo/git/matching-refs": completed(stdout="refs/heads/master-shared\n"),
-                "repos/odoo-dev/odoo/git/matching-refs": completed(
-                    stdout="refs/heads/master-shared\n"
-                ),
-            }
-        )
-        svc = services.GitHubService(io, TTLCache(ttl=0))
-        found = svc.search_branches(
-            [{"id": "community", "github": "odoo/odoo", "path": "/r", "push_remote": "dev"}],
-            "master-",
-        )
-        self.assertEqual(len(found), 1)
-        self.assertEqual(found[0]["remote"], "origin")
+    def test_asks_github_for_the_upstream_and_the_fork_in_one_call(self):
+        io, svc = self._svc(refs_reply(s0=[], s1=[]))
+        svc.search_branches([self.REPO], "Owl3 mcm")
+        graphql = [c for c in io.run_calls if "graphql" in c]
+        self.assertEqual(len(graphql), 1)
+        cmd = graphql[0]
+        # GitHub matches the longest word, lowercased; names travel as variables
+        self.assertIn("q=owl3", cmd)
+        self.assertIn("o1=odoo-dev", cmd)
+        query = next(c for c in cmd if c.startswith("query="))
+        self.assertNotIn("odoo-dev", query)
+        self.assertNotIn("owl3", query)
 
-    def test_fork_slug_exception_does_not_lose_upstream_matches(self):
-        # regression test: fork_slug's own `git remote get-url` call used to be
-        # unguarded, unlike its sibling matching_refs — an exception there (e.g.
-        # git missing, or a hung process) silently dropped this repo's ALREADY
-        # FOUND upstream matches too, since the results.append happens after
-        # fork_slug returns. It must now degrade gracefully like matching_refs.
-        class RaisingOnRemoteGetUrlIO(FakeIO):
-            def run(self, cmd, **kwargs):
-                if cmd[:3] == ["git", "remote", "get-url"] or (
-                    len(cmd) > 3 and cmd[1] == "-C" and cmd[3:5] == ["remote", "get-url"]
-                ):
-                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-                return super().run(cmd, **kwargs)
+    def test_keeps_the_branches_holding_every_word_newest_first(self):
+        _, svc = self._svc(
+            refs_reply(
+                s0=[("master-owl3-old-mcm", "2025-01-01T00:00:00Z")],
+                s1=[
+                    ("master-owl3-new-mcm", "2026-06-01T00:00:00Z"),
+                    ("master-owl3-other-abc", "2026-07-01T00:00:00Z"),  # no "mcm"
+                ],
+            )
+        )
+        found, error = svc.search_branches([self.REPO], "owl3 mcm")
+        self.assertIsNone(error)
+        self.assertEqual(
+            [(f["branch"], f["remote"]) for f in found],
+            [("master-owl3-new-mcm", "dev"), ("master-owl3-old-mcm", "origin")],
+        )
 
-        io = RaisingOnRemoteGetUrlIO(
-            runs={"repos/odoo/odoo/git/matching-refs": completed(stdout="refs/heads/master-x\n")}
+    def test_upstream_wins_and_the_limit_counts_branch_names(self):
+        _, svc = self._svc(
+            refs_reply(
+                s0=[("master-shared", "2026-01-02T00:00:00Z")],
+                s1=[
+                    ("master-shared", "2026-01-02T00:00:00Z"),
+                    ("master-mine", "2026-01-01T00:00:00Z"),
+                ],
+            )
         )
-        svc = services.GitHubService(io, TTLCache(ttl=0))
-        found = svc.search_branches(
-            [{"id": "community", "github": "odoo/odoo", "path": "/r", "push_remote": "dev"}],
-            "master-",
+        found, _ = svc.search_branches([self.REPO], "master")
+        self.assertEqual(
+            [(f["branch"], f["remote"]) for f in found][0], ("master-shared", "origin")
         )
+        self.assertEqual(len(found), 2)  # master-shared once, from upstream
+        found, _ = svc.search_branches([self.REPO], "master", limit=1)
+        self.assertEqual([f["branch"] for f in found], ["master-shared"])
+
+    def test_a_fork_github_cannot_resolve_finds_nothing_there(self):
+        _, svc = self._svc(refs_reply(s0=[("master-x", "2026-01-01T00:00:00Z")], s1=None))
+        found, error = svc.search_branches([self.REPO], "x")
+        self.assertIsNone(error)
         self.assertEqual([f["branch"] for f in found], ["master-x"])
-        self.assertEqual(found[0]["remote"], "origin")
+
+    def test_finds_the_fork_of_a_repo_configured_with_a_home_relative_path(self):
+        io, svc = self._svc(refs_reply(s0=[], s1=[("master-mine", "2026-01-01T00:00:00Z")]))
+        found, _ = svc.search_branches([{**self.REPO, "path": "~/work/odoo"}], "mine")
+        self.assertEqual([(f["branch"], f["remote"]) for f in found], [("master-mine", "dev")])
+        get_url = next(c for c in io.run_calls if "get-url" in c)
+        self.assertEqual(get_url[2], os.path.expanduser("~/work/odoo"))  # git -C never expands ~
+
+    def test_reports_a_failed_search(self):
+        _, svc = self._svc(completed(returncode=1, stderr="HTTP 502: bad gateway"))
+        self.assertEqual(svc.search_branches([self.REPO], "x"), ([], "HTTP 502: bad gateway"))
+
+    def test_asks_nothing_for_an_empty_query(self):
+        io, svc = self._svc(refs_reply())
+        self.assertEqual(svc.search_branches([self.REPO], "  "), ([], None))
+        self.assertEqual(io.run_calls, [])
 
 
 class AddonsServiceTest(unittest.TestCase):
@@ -5560,17 +5587,26 @@ class ApiCodeRemoteBranchesSearchTest(unittest.TestCase):
     def tearDown(self):
         self.server.GITHUB = self.orig_github
 
-    def test_repos_defaults_to_empty_list_when_absent(self):
+    def test_repos_and_limit_default_when_absent(self):
         class FakeGithub:
-            def search_branches(self, repos, query):
-                self.seen = (repos, query)
-                return []
+            def search_branches(self, repos, query, limit):
+                self.seen = (repos, query, limit)
+                return [], ("gh down" if query == "fail" else None)
 
         fake = FakeGithub()
         self.server.GITHUB = fake
         result = self.server._api_code_remote_branches_search({"query": "master-x"})
         self.assertEqual(result, {"ok": True, "results": []})
-        self.assertEqual(fake.seen, ([], "master-x"))
+        self.assertEqual(fake.seen, ([], "master-x", 20))
+        self.server._api_code_remote_branches_search({"query": "x", "limit": 5})
+        self.assertEqual(fake.seen[2], 5)
+        self.server._api_code_remote_branches_search({"query": "x", "limit": "lots"})
+        self.assertEqual(fake.seen[2], 20)  # not a positive int: the default
+        # a failed search isn't an empty one
+        self.assertEqual(
+            self.server._api_code_remote_branches_search({"query": "fail"}),
+            {"ok": False, "results": [], "error": "gh down"},
+        )
 
     def test_non_list_repos_is_rejected(self):
         status, payload = self.server._api_code_remote_branches_search(
