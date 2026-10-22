@@ -1,7 +1,7 @@
 // The commit-history editor (Code tab → a checkout's "See commits"), mounted in the
 // whole app: browsing commits + diffs, and rewriting the branch's own commits
 // (squash / reorder / drop / reword) as one rebase plan, plus conflict recovery.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mountApp, type MountedApp, type Route } from "../helpers/app.ts";
 import type { Commit } from "../../src/core/code_plugin.ts";
 import {
@@ -17,7 +17,10 @@ import {
 } from "../helpers/code_fixtures.ts";
 
 let app: MountedApp;
-afterEach(() => app?.destroy());
+afterEach(() => {
+  app?.destroy();
+  vi.unstubAllGlobals();
+});
 
 const commit = (sha: string, subject: string, over: Partial<Commit> = {}): Commit => ({
   sha,
@@ -46,7 +49,23 @@ const DIFF = [
   "-old",
   "+new",
   "+more",
+  "--- a dashed line",
   " same",
+  "diff --git a/g.py b/g.py",
+  "new file mode 100644",
+  "index 0..3",
+  "--- /dev/null",
+  "+++ b/g.py",
+  "@@ -0,0 +1 @@",
+  "+added",
+  "diff --git a/old/h.py b/new/h.py",
+  "similarity index 100%",
+  "rename from old/h.py",
+  "rename to new/h.py",
+  "diff --git a/run.sh b/run.sh",
+  "old mode 100644",
+  "new mode 100755",
+  "", // git's output ends with a newline
 ].join("\n");
 
 const failure = (status: number, body: object) =>
@@ -116,30 +135,277 @@ describe("Commit history — browsing", () => {
     expect(history().querySelector(".ws-history-head")!.textContent).toContain("master-feat");
     expect(rowTitles()).toEqual(["third", "second", "first", "base commit"]);
     expect(row("third").classList.contains("selected")).toBe(true);
-    // the diff, minus git's header lines, each line classed by kind
-    const lines = [...history().querySelectorAll(".ws-history-diff-line")];
-    expect(lines.map((l) => l.textContent)).toEqual([
-      "--- a/f.py",
-      "+++ b/f.py",
-      "@@ -1,2 +1,2 @@",
-      "-old",
-      "+new",
-      "+more",
-      " same",
+    // the diff, one block per file headed by its path (old → new for a rename),
+    // minus git's path-only header lines, each line classed by kind
+    const files = [...history().querySelectorAll(".ws-history-diff-file")];
+    expect(files.map((f) => f.querySelector(".ws-history-diff-file-path")!.textContent)).toEqual([
+      "f.py",
+      "g.py",
+      "old/h.py → new/h.py",
+      "run.sh",
     ]);
+    const code = (f: Element) =>
+      [...f.querySelectorAll(".ws-history-diff-code")].map((c) => c.textContent);
+    expect(files.map(code)).toEqual([
+      // f.py ends on its closing row (the expander down to the end of the file);
+      // the new g.py is whole, it has none
+      ["@@ -1,2 +1,2 @@", "old", "new", "more", "-- a dashed line", "same", ""],
+      ["new file mode 100644", "@@ -0,0 +1 @@", "added"],
+      ["similarity index 100%"],
+      ["old mode 100644", "new mode 100755"],
+    ]);
+    // the margin: old + new line numbers (counted from the hunk header) and the sign,
+    // none of it selectable, so a copied selection holds only the code
+    const lines = [...files[0].querySelectorAll(".ws-history-diff-line")].slice(0, -1);
+    const margin = (l: Element) =>
+      [...l.querySelectorAll(".ws-history-diff-num, .ws-history-diff-sign")].map(
+        (c) => c.textContent,
+      );
+    expect(lines.map(margin)).toEqual([
+      ["", "", ""],
+      ["1", "", "-"],
+      ["", "1", "+"],
+      ["", "2", "+"],
+      ["2", "", "-"],
+      ["3", "3", ""],
+    ]);
+    expect(margin(files[1].querySelectorAll(".ws-history-diff-line")[2])).toEqual(["", "1", "+"]);
     expect(lines.map((l) => l.className.replace("ws-history-diff-line", "").trim())).toEqual([
-      "meta",
-      "meta",
       "hunk",
       "del",
       "add",
       "add",
+      "del",
       "",
     ]);
-    expect(history().querySelector(".ws-history-diffstats")!.textContent).toBe("+2-1");
+    expect(history().querySelector(".ws-history-diffstats")!.textContent).toBe("+3-2");
     // the branch's own commits are editable
     expect(titleInput()!.value).toBe("third");
     expect(history().querySelector(".ws-history-hash")!.textContent).toBe("sha-community");
+  });
+
+  it("each file header counts its own changes and copies its path", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    await mountHistory();
+    const files = () => [...history().querySelectorAll(".ws-history-diff-file")];
+    expect(files().map((f) => f.querySelector(".ws-history-diffstats")!.textContent)).toEqual([
+      "+2-2",
+      "+1-0",
+      "+0-0",
+      "+0-0",
+    ]);
+    const copy = (i: number) => files()[i].querySelector<HTMLButtonElement>(".ws-sec-copy")!;
+    await click(copy(2));
+    // a rename copies its new path
+    expect(writeText).toHaveBeenCalledWith("new/h.py");
+    expect(copy(2).textContent).toBe("copied");
+    expect(copy(0).textContent).toBe("");
+    await click(copy(0));
+    expect(writeText).toHaveBeenLastCalledWith("f.py");
+    expect(copy(0).textContent).toBe("copied");
+    expect(copy(2).textContent).toBe("");
+  });
+
+  it("reveals the unchanged lines around the hunks, 15 at a time", async () => {
+    const diff = [
+      "diff --git a/big.py b/big.py",
+      "--- a/big.py",
+      "+++ b/big.py",
+      "@@ -1,2 +1,2 @@",
+      "-a",
+      "+l1",
+      " l2",
+      "@@ -38,2 +38,3 @@ def tail():",
+      " l38",
+      "+new",
+      " l39",
+    ].join("\n");
+    // the file as of the commit: l1..l38, new, then l39..l44 (lines 40..45)
+    const fileLines = Array.from({ length: 45 }, (_, i) =>
+      i < 38 ? `l${i + 1}` : i === 38 ? "new" : `l${i}`,
+    );
+    await mountHistory({
+      "/api/code/commit/diff": { ok: true, diff },
+      "/api/code/commit/file": { ok: true, content: fileLines.join("\n") + "\n" },
+    });
+    const lines = () => [...history().querySelectorAll(".ws-history-diff-line")];
+    const code = () => lines().map((l) => l.querySelector(".ws-history-diff-code")!.textContent);
+    const nums = (text: string) => {
+      const line = lines().find(
+        (l) => l.querySelector(".ws-history-diff-code")!.textContent === text,
+      )!;
+      return [...line.querySelectorAll(".ws-history-diff-num")].map((n) => n.textContent).join("/");
+    };
+    const buttons = (row: Element) =>
+      [...row.querySelectorAll<HTMLElement>(".ws-history-diff-expand")].map((b) =>
+        b.className.split(" ").pop(),
+      );
+    const header = () => lines().find((l) => l.textContent!.includes("@@ -38"))!;
+    const button = (row: Element, dir: string) =>
+      row.querySelector<HTMLElement>(`.ws-history-diff-expand.${dir}`)!;
+    const closing = () => lines()[lines().length - 1];
+    // the first hunk starts at line 1: nothing to reveal; the second can go both ways,
+    // the file's closing row only down
+    expect(buttons(lines()[0])).toEqual([]);
+    expect(buttons(header())).toEqual(["down", "up"]);
+    expect(buttons(closing())).toEqual(["down"]);
+
+    await click(button(header(), "up"));
+    expect(app.callsTo("/api/code/commit/file").map((c) => c.body)).toEqual([
+      { path: "/home/odoo/work/community", sha: "sha-community", file: "big.py" },
+    ]);
+    // up: lines 23..37 slide in between the header and its hunk
+    const range = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, i) => `l${from + i}`);
+    expect(code().slice(4, 21)).toEqual(["@@ -38,2 +38,3 @@ def tail():", ...range(23, 37), "l38"]);
+    expect(nums("l23")).toBe("23/23");
+    // down: lines 3..17 follow the first hunk, above the header
+    await click(button(header(), "down"));
+    expect(code().slice(3, 20)).toEqual(["l2", ...range(3, 17), "@@ -38,2 +38,3 @@ def tail():"]);
+    // the remaining 18..22 close the gap: the header goes
+    await click(button(header(), "up"));
+    expect(code().slice(0, 42)).toEqual([
+      "@@ -1,2 +1,2 @@",
+      "a",
+      "l1",
+      ...range(2, 38),
+      "new",
+      "l39",
+    ]);
+
+    // after the last hunk: down to the end of the file, old numbers one behind
+    await click(button(closing(), "down"));
+    expect(code().slice(42)).toEqual(range(40, 44));
+    expect(nums("l40")).toBe("40/41");
+    expect(lines().some((l) => l.querySelector(".ws-history-diff-expand"))).toBe(false);
+    expect(app.callsTo("/api/code/commit/file")).toHaveLength(1);
+  });
+
+  it("filters the files by path; Collapse all only touches the shown ones", async () => {
+    await mountHistory();
+    const paths = () =>
+      [...history().querySelectorAll(".ws-history-diff-file-path")].map((p) => p.textContent);
+    const filter = async (text: string) => {
+      const input = history().querySelector<HTMLInputElement>(".ws-history-diff-tools input")!;
+      input.value = text;
+      input.dispatchEvent(new Event("input"));
+      await app.settle();
+    };
+    expect(
+      history().querySelector(".ws-history-diff-tools input")!.getAttribute("placeholder"),
+    ).toBe("Filter files…");
+    // case-insensitive, either side of a rename
+    await filter("OLD/");
+    expect(paths()).toEqual(["old/h.py → new/h.py"]);
+    await filter(".py");
+    expect(paths()).toEqual(["f.py", "g.py", "old/h.py → new/h.py"]);
+    const tool = (label: string) =>
+      [...history().querySelectorAll<HTMLButtonElement>(".ws-history-diff-tools button")].find(
+        (b) => b.textContent === label,
+      )!;
+    await click(tool("Collapse all"));
+    expect(tool("Collapse all").disabled).toBe(true);
+    await filter("zzz");
+    expect(paths()).toEqual([]);
+    expect(history().querySelector(".ws-history-diff-state")!.textContent).toBe(
+      "No file matches this filter.",
+    );
+    // clearing it: run.sh was outside the filter, so it is still open
+    await click(history().querySelector<HTMLElement>(".ws-history-diff-tools .search-clear")!);
+    expect(paths()).toEqual(["f.py", "g.py", "old/h.py → new/h.py", "run.sh"]);
+    const open = [...history().querySelectorAll(".ws-history-diff-file")].map(
+      (f) => !!f.querySelector(".ws-history-diff-line"),
+    );
+    expect(open).toEqual([false, false, false, true]);
+  });
+
+  it("unescapes git's C-quoted paths", async () => {
+    const diff = [
+      'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"',
+      '--- "a/caf\\303\\251.py"',
+      '+++ "b/caf\\303\\251.py"',
+      "@@ -1 +1 @@",
+      "-x",
+      "+y",
+      'diff --git "a/we\\"ird\\tname.bin" "b/we\\"ird\\tname.bin"',
+      "Binary files differ",
+      "",
+    ].join("\n");
+    await mountHistory({ "/api/code/commit/diff": { ok: true, diff } });
+    const paths = [...history().querySelectorAll(".ws-history-diff-file-path")].map(
+      (p) => p.textContent,
+    );
+    expect(paths).toEqual(["café.py", 'we"ird\tname.bin']);
+  });
+
+  it("a file the commit empties has nothing after its hunk to reveal", async () => {
+    const diff = [
+      "diff --git a/e.py b/e.py",
+      "--- a/e.py",
+      "+++ b/e.py",
+      "@@ -1,2 +0,0 @@",
+      "-a",
+      "-b",
+      "",
+    ].join("\n");
+    await mountHistory({
+      "/api/code/commit/diff": { ok: true, diff },
+      "/api/code/commit/file": { ok: true, content: "" },
+    });
+    const code = () =>
+      [...history().querySelectorAll(".ws-history-diff-code")].map((c) => c.textContent);
+    await click(history().querySelector<HTMLElement>(".ws-history-diff-expand.down")!);
+    expect(code()).toEqual(["@@ -1,2 +0,0 @@", "a", "b"]);
+    expect(history().querySelector(".ws-history-diff-expand")).toBeNull();
+  });
+
+  it("a file that can't be read for the expansion opens an error dialog", async () => {
+    const diff = [
+      "diff --git a/f.py b/f.py",
+      "--- a/f.py",
+      "+++ b/f.py",
+      "@@ -5 +5 @@",
+      "-x",
+      "+y",
+      "",
+    ].join("\n");
+    await mountHistory({
+      "/api/code/commit/diff": { ok: true, diff },
+      "/api/code/commit/file": () =>
+        failure(400, { ok: false, error: "fatal: path 'f.py' does not exist in 'sha-community'" }),
+    });
+    const up = () => history().querySelector<HTMLButtonElement>(".ws-history-diff-expand.up")!;
+    await click(up());
+    expect(dialogTitle()).toBe("Could not load the file");
+    expect(mustDialog().textContent).toContain("does not exist");
+    // nothing revealed, and the button can be tried again
+    expect(up().disabled).toBe(false);
+    expect(history().querySelectorAll(".ws-history-diff-line")).toHaveLength(4);
+  });
+
+  it("collapses a file block, and all of them at once", async () => {
+    await mountHistory();
+    const files = () => [...history().querySelectorAll(".ws-history-diff-file")];
+    const shown = () => files().map((f) => f.querySelectorAll(".ws-history-diff-line").length > 0);
+    const tool = (label: string) =>
+      [...history().querySelectorAll<HTMLButtonElement>(".ws-history-diff-tools button")].find(
+        (b) => b.textContent === label,
+      )!;
+    expect(shown()).toEqual([true, true, true, true]);
+    expect(tool("Expand all").disabled).toBe(true);
+    // the header toggles its own block only, and stays visible
+    await click(files()[1].querySelector<HTMLElement>(".ws-history-diff-file-toggle")!);
+    expect(shown()).toEqual([true, false, true, true]);
+    expect(files()[1].querySelector(".ws-history-diff-file-path")!.textContent).toBe("g.py");
+    await click(tool("Collapse all"));
+    expect(shown()).toEqual([false, false, false, false]);
+    expect(tool("Collapse all").disabled).toBe(true);
+    await click(tool("Expand all"));
+    expect(shown()).toEqual([true, true, true, true]);
+    await click(files()[0].querySelector<HTMLElement>(".ws-history-diff-file-toggle")!);
+    await click(files()[0].querySelector<HTMLElement>(".ws-history-diff-file-toggle")!);
+    expect(shown()).toEqual([true, true, true, true]);
   });
 
   it("selecting another commit loads its diff; an inherited commit is read-only", async () => {

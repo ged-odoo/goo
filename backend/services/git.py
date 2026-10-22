@@ -1275,12 +1275,18 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
         return commits, None
 
     def commit_diff(self, path: str, sha: str) -> tuple[str | None, str | None]:
-        """Return the patch introduced by one commit as (diff, error)."""
+        """Return the patch introduced by one commit as (diff, error): a merge's is
+        against its first parent (a plain per-file diff, not git's combined one),
+        and paths are left unescaped (only `"`, `\\` and control characters stay
+        C-quoted)."""
         if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
             return None, "invalid commit hash"
         r, error = self._git(
             path,
+            "-c",
+            "core.quotePath=false",
             "show",
+            "--diff-merges=first-parent",
             "--format=",
             "--no-ext-diff",
             "--no-color",
@@ -1289,6 +1295,14 @@ Not listed above? Browse: {doc_browse("reference/backend/testing")}
             "--",
             err="git show failed",
         )
+        return (None, error) if error or r is None else (r.stdout, None)
+
+    def commit_file(self, path: str, sha: str, file: str) -> tuple[str | None, str | None]:
+        """Return one file's content as of a commit (the diff view's context
+        expansion) as (content, error); <file> is relative to the repo root."""
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
+            return None, "invalid commit hash"
+        r, error = self._git(path, "show", f"{sha}:{file}", err="git show failed")
         return (None, error) if error or r is None else (r.stdout, None)
 
     def fetch_remote_branch(

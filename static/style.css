@@ -1888,61 +1888,109 @@ a.dash-ci:hover {
 .git-state.missing {
   color: var(--l-red);
 }
-/* panel form controls (target select, filter, tags) */
+/* the light area's toolbar fields — text inputs, selects and search boxes in the
+   panels, the workspace list head, the workspace tabs (Tests / Addons / Assets) and
+   the commit diff's tools: one look, as tall as the .pbtn buttons beside them */
+.panel input[type="text"],
+.wt-list-head input[type="text"],
+.ws-run-pane input[type="text"],
+.ws-history-diff-tools input[type="text"],
 .panel select,
-.panel-actions select {
-  background: var(--l-card);
+.panel-actions select,
+.ws-run-pane select {
+  height: 34px;
+  min-width: 0;
+  padding: 0 11px;
   border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
-  padding: 7px 9px;
+  border-radius: 7px;
+  background: var(--l-card);
+  color: var(--l-text);
+  font: inherit;
+  font-size: 12.5px;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+.panel select,
+.panel-actions select,
+.ws-run-pane select {
+  appearance: none;
+  padding-right: 28px;
+  background: var(--l-card)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23878a99' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")
+    no-repeat right 9px center / 12px;
   cursor: pointer;
+}
+:is(.panel, .wt-list-head, .ws-run-pane, .ws-history-diff-tools) input[type="text"]:hover,
+:is(.panel, .panel-actions, .ws-run-pane) select:hover {
+  border-color: oklch(0.84 0.006 264);
+}
+:is(.panel, .wt-list-head, .ws-run-pane, .ws-history-diff-tools) input::placeholder {
+  color: var(--l-text-faint);
+}
+:is(.panel, .wt-list-head, .ws-run-pane, .ws-history-diff-tools) input[type="text"]:focus,
+:is(.panel, .panel-actions, .ws-run-pane) select:focus {
+  outline: none;
+  border-color: var(--l-accent-line);
+  box-shadow: 0 0 0 3px var(--l-accent-soft);
 }
 .preset-select {
   max-width: 120px;
 }
-/* test tags read better in monospace in the dropdown list */
-.preset-select option {
+/* test tags read better in monospace, in the field and the dropdown list */
+.preset-select option,
+.test-form input[type="text"] {
   font-family: var(--mono);
 }
-.panel input[type="text"] {
-  padding: 7px 12px;
-  border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
-  background: var(--l-card);
-  color: var(--l-text);
-  font-size: 12.5px;
-  min-width: 0;
+.ws-run-pane input[type="checkbox"] {
+  accent-color: var(--l-accent);
 }
-.panel input::placeholder {
-  color: var(--l-text-faint);
-}
-.panel select:focus,
-.panel input:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
-}
-/* search input with a clear (✕) button */
+/* search input with a leading magnifier and a clear (✕) button */
 .search-box {
   position: relative;
   display: inline-flex;
   align-items: center;
 }
-.search-box input {
-  padding-right: 24px;
+.search-box input[type="text"] {
+  padding-left: 30px;
+  padding-right: 28px;
+}
+.search-icon {
+  position: absolute;
+  left: 10px;
+  display: flex;
+  color: var(--l-text-faint);
+  pointer-events: none;
+}
+.search-icon svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  fill: none;
+}
+.search-box:focus-within .search-icon {
+  color: var(--l-accent);
 }
 .search-clear {
   position: absolute;
   right: 6px;
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 11px;
   line-height: 1;
   color: var(--l-text-faint);
   cursor: pointer;
 }
 .search-clear:hover {
   color: var(--l-text);
+  background: var(--l-panel);
 }
 
 /* ───────────────── COMMAND BAR (light, wrapping) ───────────────── */
@@ -4961,20 +5009,6 @@ a.commit-detail-hash svg {
 }
 .wt-list-head input[type="text"] {
   width: 100%;
-  min-width: 0;
-  padding: 6px 12px;
-  color: var(--l-text);
-  background: var(--l-card);
-  border: 1px solid var(--l-line);
-  border-radius: 8px;
-  font-size: 12.5px;
-}
-.wt-list-head input::placeholder {
-  color: var(--l-text-faint);
-}
-.wt-list-head input:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
 }
 .wt-order-wrap {
   position: relative;
@@ -6039,10 +6073,12 @@ a.commit-detail-hash svg {
   field-sizing: content;
   resize: vertical;
 }
+/* the patch: one bordered block per file, spaced apart */
 .ws-history-diff {
-  margin-top: 22px;
-  border: 1px solid var(--l-line);
-  background: #fff;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   color: #1f2328;
   font-family:
     "Monaspace Neon", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
@@ -6050,10 +6086,155 @@ a.commit-detail-hash svg {
   font-size: 11px;
   line-height: 1.6;
 }
-.ws-history-diff-line {
-  min-width: max-content;
-  padding: 0 10px;
+.ws-history-diff-file {
+  border: 1px solid var(--l-line);
+  background: #fff;
+}
+.ws-history-diff-tools {
+  margin-top: 22px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ws-history-diff-tools .search-box {
+  flex: 0 1 280px;
+  min-width: 0;
+  margin-right: auto;
+}
+.ws-history-diff-tools .search-box input {
+  width: 100%;
+}
+.ws-history-diff-tools .pbtn {
+  padding: 4px 9px;
+}
+/* sticks flush to the top of the detail column while its file scrolls by (the
+   sticky offset counts from inside .ws-history-detail's padding, hence minus its
+   20px top padding); the top shadow traces the block border */
+.ws-history-diff-file-head {
+  position: sticky;
+  top: -20px;
+  z-index: 1;
+  box-shadow: 0 -1px 0 var(--l-line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #f6f8fa;
+  font-weight: 600;
+}
+.ws-history-diff-file-head.open {
+  border-bottom: 1px solid var(--l-line);
+}
+.ws-history-diff-file-toggle {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ws-history-diff-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: pre;
+}
+/* a diff line: an unselectable margin (old + new line numbers, +/- sign) then the
+   code, so selecting the patch copies only the code */
+/* the file's lines scroll sideways inside the block (the sticky header stays
+   outside the scroller); the lines all take the longest one's width, so every
+   line's background reaches the end */
+.ws-history-diff-body {
+  overflow-x: auto;
+}
+.ws-history-diff-lines {
+  width: max-content;
+  min-width: 100%;
+}
+.ws-history-diff-line {
+  min-height: 1.6em;
+  padding-right: 10px;
+  background: #fff;
+  white-space: pre;
+}
+/* the margin stays pinned at the left while the code scrolls under it, on the
+   line's own background */
+.ws-history-diff-margin {
+  position: sticky;
+  left: 0;
+  display: inline-block;
+  background: inherit;
+  vertical-align: top;
+  user-select: none;
+}
+.ws-history-diff-num,
+.ws-history-diff-sign {
+  display: inline-block;
+  box-sizing: content-box;
+  color: #59636e;
+  vertical-align: top;
+}
+.ws-history-diff-num {
+  width: calc(var(--diff-digits) * 1ch);
+  padding: 0 8px;
+  text-align: right;
+}
+.ws-history-diff-num + .ws-history-diff-num {
+  border-right: 1px solid var(--l-line);
+}
+.ws-history-diff-sign {
+  width: 1ch;
+  padding: 0 6px;
+  text-align: center;
+}
+/* a hunk header's (or a file's closing row's) "show more lines" buttons — down
+   (below the previous hunk) and/or up (above this one) — filling both number columns */
+.ws-history-diff-expanders {
+  display: inline-flex;
+  box-sizing: content-box;
+  width: calc(var(--diff-digits) * 2ch + 32px);
+  height: 1.6em;
+  border-right: 1px solid var(--l-line);
+  vertical-align: top;
+}
+.ws-history-diff-expand {
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: #b6e3ff;
+  color: #0550ae;
+  cursor: pointer;
+}
+.ws-history-diff-expand + .ws-history-diff-expand {
+  border-left: 1px solid #fff;
+}
+.ws-history-diff-expand:hover:not(:disabled) {
+  background: #54aeff;
+  color: #fff;
+}
+.ws-history-diff-expand:disabled {
+  cursor: progress;
+}
+.ws-history-diff-expand svg {
+  width: 12px;
+  height: 12px;
+  vertical-align: middle;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+.ws-history-diff-expand.up svg {
+  transform: rotate(180deg);
+}
+.ws-history-diff-line.add .ws-history-diff-num {
+  background: #ccffd8;
+}
+.ws-history-diff-line.del .ws-history-diff-num {
+  background: #ffd7d5;
 }
 .ws-history-diff-line.add {
   color: #1f2328;

@@ -2609,7 +2609,7 @@ class GitServiceTest(unittest.TestCase):
 
     def test_commit_diff_returns_commit_patch(self):
         sha = "a" * 40
-        io = FakeIO(runs={"git -C /r show": completed(stdout="diff --git a/a b/a\n")})
+        io = FakeIO(runs={"show --diff-merges": completed(stdout="diff --git a/a b/a\n")})
         diff, err = services.GitService(io).commit_diff("/r", sha)
         self.assertIsNone(err)
         self.assertEqual(diff, "diff --git a/a b/a\n")
