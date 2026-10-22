@@ -21,7 +21,7 @@ import type { Type } from "@odoo/owl";
 import { CodePlugin } from "../core/code_plugin.ts";
 import type { Commit, RebasePlanStep, RewriteHistoryError } from "../core/code_plugin.ts";
 import { DialogPlugin } from "../core/dialog_plugin.ts";
-import { ICONS, m } from "../core/common.ts";
+import { ICONS, SearchBox, m } from "../core/common.ts";
 import { TerminalDialog } from "../core/terminal.ts";
 import { startRowDrag, dropIndex } from "../core/drag.ts";
 import { errorMessage, timeAgo } from "../core/utils.ts";
@@ -33,7 +33,42 @@ interface MessageEdit {
   body: string;
 }
 
+// one rendered diff line: its old/new line numbers and +/- sign (shown in the
+// unselectable margin; "" where they don't apply) and the code without the sign
+interface DiffLine {
+  id: number | string;
+  text: string;
+  cls: string;
+  oldNum: number | "";
+  newNum: number | "";
+  sign: string;
+  // a hunk header's unchanged new-side lines hidden above it (start..end, inclusive;
+  // old = new + delta): revealed downward from the previous hunk and upward from
+  // this one. The file's closing row carries the gap after its last hunk, whose end
+  // (the file's last line) is only known once the content is loaded (end: 0).
+  gap?: { start: number; end: number; delta: number; trailing?: boolean };
+  // set on a row that still hides lines: its key in historyExpanded, and the
+  // directions it can reveal
+  expand?: { key: string; up: boolean; down: boolean };
+}
+
+// lines revealed per click on an expand button
+const EXPAND_STEP = 15;
+
+interface DiffFile {
+  id: number;
+  path: string;
+  lines: DiffLine[];
+  // width of the line-number columns, in digits
+  digits: number;
+  // the path the copy button copies (the new one for a rename)
+  copyPath: string;
+  added: number;
+  deleted: number;
+}
+
 export class CommitHistory extends Component {
+  static components = { SearchBox };
   static template = xml`
     <div class="ws-history">
       <div class="ws-history-head">
@@ -108,10 +143,62 @@ export class CommitHistory extends Component {
             <div t-if="this.historyDiffLoading()" class="ws-history-diff-state dim"><span class="ws-refresh-spin"/>Loading diff…</div>
             <div t-elif="this.historyDiffError()" class="ws-history-diff-state form-error" t-out="this.historyDiffError()"/>
             <div t-elif="!this.historyDiff()" class="ws-history-diff-state dim">This commit has no file changes.</div>
-            <div t-else="" class="ws-history-diff">
-              <div t-foreach="this.historyDiffLines" t-as="line" t-key="line.id"
-                   class="ws-history-diff-line" t-att-class="line.cls" t-out="line.text || ' '"/>
-            </div>
+            <t t-else="">
+              <div class="ws-history-diff-tools">
+                <SearchBox value="this.historyFileFilter" placeholder="'Filter files…'"/>
+                <button class="pbtn ghost" t-att-disabled="!this.historyShownFiles.some((file) => this.historyCollapsedFiles().has(file.id))"
+                        t-on-click="() => this.collapseAllDiffFiles(false)">Expand all</button>
+                <button class="pbtn ghost" t-att-disabled="this.historyShownFiles.every((file) => this.historyCollapsedFiles().has(file.id))"
+                        t-on-click="() => this.collapseAllDiffFiles(true)">Collapse all</button>
+              </div>
+              <div t-if="!this.historyShownFiles.length" class="ws-history-diff-state dim">No file matches this filter.</div>
+              <div class="ws-history-diff">
+                <div t-foreach="this.historyShownFiles" t-as="file" t-key="file.id" class="ws-history-diff-file">
+                  <div class="ws-history-diff-file-head" t-att-class="{open: !this.historyCollapsedFiles().has(file.id)}">
+                    <button class="ws-history-diff-file-toggle" t-att-aria-expanded="!this.historyCollapsedFiles().has(file.id)"
+                            t-on-click="() => this.toggleDiffFile(file.id)">
+                      <span class="rl-caret" t-att-class="{collapsed: this.historyCollapsedFiles().has(file.id)}"/>
+                      <span class="ws-history-diff-file-path" t-out="file.path"/>
+                    </button>
+                    <button class="ws-sec-copy" t-att-title="'copy ' + file.copyPath"
+                            t-on-click="() => this.copyDiffPath(file)">
+                      <t t-if="this.historyCopiedFile() === file.id">copied</t><t t-out="this.copyIcon"/>
+                    </button>
+                    <span class="ws-history-diffstats">
+                      <span class="add" t-out="'+' + file.added"/>
+                      <span class="del" t-out="'-' + file.deleted"/>
+                    </span>
+                  </div>
+                  <div t-if="!this.historyCollapsedFiles().has(file.id)" class="ws-history-diff-body">
+                    <div class="ws-history-diff-lines" t-att-style="'--diff-digits: ' + file.digits">
+                      <div t-foreach="file.lines" t-as="line" t-key="line.id"
+                           class="ws-history-diff-line" t-att-class="line.cls">
+                        <span class="ws-history-diff-margin">
+                          <span t-if="line.expand" class="ws-history-diff-expanders">
+                            <button t-if="line.expand.down" class="ws-history-diff-expand down"
+                                    t-att-disabled="this.historyFileLoading().has(this.historySelected() + ':' + file.copyPath)"
+                                    title="Show more lines below" t-on-click="() => this.expandDiffHunk(file, line.expand.key, 'down')">
+                              <t t-out="this.expandIcon"/>
+                            </button>
+                            <button t-if="line.expand.up" class="ws-history-diff-expand up"
+                                    t-att-disabled="this.historyFileLoading().has(this.historySelected() + ':' + file.copyPath)"
+                                    title="Show more lines above" t-on-click="() => this.expandDiffHunk(file, line.expand.key, 'up')">
+                              <t t-out="this.expandIcon"/>
+                            </button>
+                          </span>
+                          <t t-else="">
+                            <span class="ws-history-diff-num" t-out="line.oldNum"/>
+                            <span class="ws-history-diff-num" t-out="line.newNum"/>
+                          </t>
+                          <span class="ws-history-diff-sign" t-out="line.sign"/>
+                        </span>
+                        <span class="ws-history-diff-code" t-out="line.text"/>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </t>
           </t>
           <div t-else="" class="ws-history-state dim">Select a commit to see its details.</div>
         </section>
@@ -148,10 +235,25 @@ export class CommitHistory extends Component {
   code = usePlugin(CodePlugin);
   dialogs = usePlugin(DialogPlugin);
   kebabIcon = m(ICONS.kebab);
+  copyIcon = m(ICONS.copy);
+  expandIcon = m(ICONS.chevron);
   historySelected = signal("");
   historyDiff = signal("");
   historyDiffLoading = signal(false);
   historyDiffError = signal("");
+  // the diff's file filter (a case-insensitive part of the path), kept across commits
+  historyFileFilter = signal("");
+  // ids (historyDiffFiles' `id`) of the collapsed file blocks of the shown diff
+  historyCollapsedFiles = signal(new Set<number>());
+  // the shown commit's context expansion: lines revealed per hunk header (keyed
+  // `<file id>:<line id>`), the new-side file contents they come from (by path),
+  // and the `<sha>:<path>` contents being fetched
+  historyExpanded = signal<Record<string, { up: number; down: number }>>({});
+  historyFileContents = signal<Record<string, string[]>>({});
+  historyFileLoading = signal(new Set<string>());
+  // id of the file whose path was just copied (its copy button reads "copied")
+  historyCopiedFile = signal<number | null>(null);
+  _copiedTimer = 0;
   // the reorder/squash plan, kept purely client-side until "Apply": historyPlanIds
   // is the desired order of "ahead" shas in DISPLAY order (newest-first, same as
   // props.commits); historySquashSet marks a sha as folding into whichever entry
@@ -173,6 +275,7 @@ export class CommitHistory extends Component {
   historyConflict = signal("");
   historyListEl = signal.ref(HTMLElement);
   _diffSequence = 0;
+  _diffFilesCache: { inputs: unknown[]; files: DiffFile[] } | null = null;
   _historyActionActive = false;
 
   setup() {
@@ -193,6 +296,7 @@ export class CommitHistory extends Component {
     onMounted(() => document.addEventListener("keydown", onKeydown));
     onWillUnmount(() => {
       this._diffSequence++;
+      clearTimeout(this._copiedTimer);
       document.removeEventListener("click", closeMenu);
       document.removeEventListener("keydown", onKeydown);
     });
@@ -206,8 +310,12 @@ export class CommitHistory extends Component {
     if (!commit || (commit.sha === this.historySelected() && this.historyDiff())) return;
     this.historySelected.set(commit.sha);
     this.historyDiff.set("");
+    this.historyCollapsedFiles.set(new Set());
+    this.historyExpanded.set({});
+    this.historyFileContents.set({});
     this.historyDiffError.set("");
     this.historyDiffLoading.set(true);
+    this.historyCopiedFile.set(null);
     const sequence = ++this._diffSequence;
     try {
       const diff = await this.code.commitDiff(this.props.row.path, commit.sha);
@@ -320,18 +428,256 @@ export class CommitHistory extends Component {
     return Number.isNaN(value.getTime()) ? date : value.toLocaleString();
   }
 
-  get historyDiffLines(): { id: number; text: string; cls: string }[] {
-    return this.historyDiff()
+  // the diff split into one block per file (at each `diff --git` header), each
+  // headed by its path — `old → new` for a rename/copy. The header lines that only
+  // carry a path (`diff --git`, `index`, `---`/`+++`, `rename/copy from/to`) are
+  // dropped; the rest of the file header (mode, similarity) is shown as meta. Hunk
+  // lines are numbered from their `@@ -old +new @@` header.
+  get historyDiffFiles(): DiffFile[] {
+    // parsed once per diff / loaded content / expansion state, however many times
+    // the template reads it
+    const inputs = [this.historyDiff(), this.historyFileContents(), this.historyExpanded()];
+    const cached = this._diffFilesCache;
+    if (cached && cached.inputs.every((input, i) => input === inputs[i])) return cached.files;
+    const files = this.parseDiffFiles();
+    this._diffFilesCache = { inputs, files };
+    return files;
+  }
+
+  parseDiffFiles(): DiffFile[] {
+    const files: (Pick<DiffFile, "id" | "lines"> & {
+      from: string;
+      to: string;
+      inHunk: boolean;
+      oldNum: number;
+      newNum: number;
+    })[] = [];
+    // git C-quotes a path holding `"`, `\` or a control character: "a\"b\tc\303\251"
+    const unquote = (path: string) => {
+      const quoted = /^"(.*)"$/.exec(path.replace(/\t$/, ""));
+      if (!quoted) return path.replace(/\t$/, "");
+      const bytes: number[] = [];
+      const encoder = new TextEncoder();
+      const escapes: Record<string, string> = { n: "\n", t: "\t", '"': '"', "\\": "\\" };
+      const chars = Array.from(quoted[1]);
+      for (let i = 0; i < chars.length; i++) {
+        const octal =
+          chars[i] === "\\" ? /^[0-7]{3}/.exec(chars.slice(i + 1, i + 4).join("")) : null;
+        if (octal) {
+          bytes.push(parseInt(octal[0], 8));
+          i += 3;
+        } else if (chars[i] === "\\" && i + 1 < chars.length) {
+          i++;
+          bytes.push(...encoder.encode(escapes[chars[i]] ?? chars[i]));
+        } else {
+          bytes.push(...encoder.encode(chars[i]));
+        }
+      }
+      return new TextDecoder().decode(new Uint8Array(bytes));
+    };
+    const side = (path: string) =>
+      path === "/dev/null" ? "" : unquote(path).replace(/^[ab]\//, "");
+    this.historyDiff()
       .split("\n")
-      .filter((text) => !text.startsWith("diff --git ") && !text.startsWith("index "))
-      .map((text, id) => {
-        let cls = "";
-        if (text.startsWith("+") && !text.startsWith("+++")) cls = "add";
-        else if (text.startsWith("-") && !text.startsWith("---")) cls = "del";
-        else if (text.startsWith("@@")) cls = "hunk";
-        else if (/^(--- |\+\+\+ )/.test(text)) cls = "meta";
-        return { id, text, cls };
+      .forEach((text, id) => {
+        if (!text) return; // the patch's trailing newline
+        if (text.startsWith("diff --git ") || !files.length) {
+          // fallback for a header-only file (mode change, binary): `a/P b/P`, or
+          // both quoted
+          const both = text.startsWith("diff --git ") ? text.slice("diff --git ".length) : "";
+          const quoted = /^("a\/.*") ("b\/.*")$/.exec(both);
+          const half = (both.length - 1) / 2;
+          const same = quoted
+            ? side(quoted[1]) === side(quoted[2])
+              ? side(quoted[1])
+              : ""
+            : both.slice(2, half) === both.slice(half + 3)
+              ? both.slice(2, half)
+              : "";
+          files.push({
+            id,
+            lines: [],
+            from: same,
+            to: same,
+            inHunk: false,
+            oldNum: 1,
+            newNum: 1,
+          });
+          if (text.startsWith("diff --git ")) return;
+        }
+        const file = files[files.length - 1];
+        const line: DiffLine = { id, text, cls: "meta", oldNum: "", newNum: "", sign: "" };
+        const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
+        if (hunk) {
+          // an empty side (`+N,0`) sits AFTER line N: its next line is N + 1
+          const oldStart = Number(hunk[1]) + (hunk[2] === "0" ? 1 : 0);
+          const newStart = Number(hunk[3]) + (hunk[4] === "0" ? 1 : 0);
+          line.gap = { start: file.newNum, end: newStart - 1, delta: oldStart - newStart };
+          file.inHunk = true;
+          file.oldNum = oldStart;
+          file.newNum = newStart;
+          line.cls = "hunk";
+        } else if (!file.inHunk) {
+          const match = /^(--- |\+\+\+ |rename from |rename to |copy from |copy to )(.*)$/.exec(
+            text,
+          );
+          if (match) {
+            const [, kind, path] = match;
+            const value = kind.startsWith("---") || kind.endsWith("from ") ? "from" : "to";
+            file[value] = kind.startsWith("-") || kind.startsWith("+") ? side(path) : unquote(path);
+            return;
+          }
+          if (text.startsWith("index ")) return;
+        } else if (/^[-+ ]/.test(text)) {
+          // a hunk body line: the sign moves to the margin, beside the line numbers
+          line.sign = text[0].trim();
+          line.text = text.slice(1);
+          line.cls = { "+": "add", "-": "del", " ": "" }[text[0]] ?? "";
+          if (text[0] !== "+") line.oldNum = file.oldNum++;
+          if (text[0] !== "-") line.newNum = file.newNum++;
+        }
+        file.lines.push(line);
       });
+    return files
+      .filter((file) => file.lines.length || file.from || file.to)
+      .map(({ id, from, to, lines, oldNum, newNum }) => ({
+        id,
+        path: from && to && from !== to ? `${from} → ${to}` : to || from,
+        lines: this.expandDiffLines(id, to, [
+          ...lines,
+          // after the last hunk (not for a new file, which the diff shows whole)
+          ...(from && to && lines.some((line) => line.gap)
+            ? [
+                {
+                  id: "end",
+                  text: "",
+                  cls: "hunk",
+                  oldNum: "",
+                  newNum: "",
+                  sign: "",
+                  gap: { start: newNum, end: 0, delta: oldNum - newNum, trailing: true },
+                } as DiffLine,
+              ]
+            : []),
+        ]),
+        // the largest line number shown: the hunks' last, or the end of the file
+        // once its content is loaded (old side shifted by the last delta)
+        digits: String(
+          Math.max(
+            oldNum,
+            newNum,
+            (this.historyFileContents()[to]?.length ?? 0) + Math.max(oldNum - newNum, 0),
+          ),
+        ).length,
+        copyPath: to || from,
+        added: lines.filter((line) => line.cls === "add").length,
+        deleted: lines.filter((line) => line.cls === "del").length,
+      }));
+  }
+
+  // a file's lines with each gap's revealed context spliced in around its hunk
+  // header (from the new-side file content, once loaded): the lines revealed
+  // downward above the header, those revealed upward below it. A row whose gap is
+  // fully revealed is dropped, the lines around it being contiguous again.
+  expandDiffLines(fileId: number, to: string, lines: DiffLine[]): DiffLine[] {
+    const content = to ? this.historyFileContents()[to] : undefined;
+    const expanded = this.historyExpanded();
+    const contextLines = (
+      key: string,
+      gap: NonNullable<DiffLine["gap"]>,
+      from: number,
+      to: number,
+    ) =>
+      Array.from({ length: Math.max(to - from + 1, 0) }, (_, i): DiffLine => ({
+        id: `${key}:${from + i}`,
+        text: content?.[from + i - 1] ?? "",
+        cls: "",
+        oldNum: from + i + gap.delta,
+        newNum: from + i,
+        sign: "",
+      }));
+    return lines.flatMap((line) => {
+      const gap = line.gap;
+      if (!gap || !to) return [line];
+      const key = `${fileId}:${line.id}`;
+      const end = gap.trailing ? (content ? content.length : Infinity) : gap.end;
+      const size = Math.max(end - gap.start + 1, 0);
+      if (!size) return gap.trailing ? [] : [line];
+      const { up = 0, down = 0 } = content ? expanded[key] || {} : {};
+      const shownDown = Math.min(down, size);
+      const shownUp = gap.trailing ? 0 : Math.min(up, size - shownDown);
+      const above = contextLines(key, gap, gap.start, gap.start + shownDown - 1);
+      const below = shownUp ? contextLines(key, gap, end - shownUp + 1, end) : [];
+      if (shownDown + shownUp >= size) return [...above, ...below];
+      // the first hunk's gap starts at line 1, with no hunk above to expand down from
+      const expand = { key, up: !gap.trailing, down: gap.trailing || gap.start > 1 };
+      return [...above, { ...line, expand }, ...below];
+    });
+  }
+
+  // reveal EXPAND_STEP more lines of a gap, loading the file's content as of the
+  // commit first
+  async expandDiffHunk(file: DiffFile, key: string, direction: "up" | "down"): Promise<void> {
+    const path = file.copyPath;
+    const sha = this.historySelected();
+    const loadKey = `${sha}:${path}`;
+    if (!this.historyFileContents()[path]) {
+      if (this.historyFileLoading().has(loadKey)) return;
+      this.historyFileLoading.set(new Set([...this.historyFileLoading(), loadKey]));
+      try {
+        const content = await this.code.commitFile(this.props.row.path, sha, path);
+        if (sha !== this.historySelected()) return;
+        this.historyFileContents.set({
+          ...this.historyFileContents(),
+          // without the empty "line" after the file's final newline
+          [path]: content ? content.replace(/\n$/, "").split("\n") : [],
+        });
+      } catch (e) {
+        if (sha === this.historySelected())
+          this.dialogs.error("Could not load the file", errorMessage(e));
+        return;
+      } finally {
+        const loading = new Set(this.historyFileLoading());
+        loading.delete(loadKey);
+        this.historyFileLoading.set(loading);
+      }
+    }
+    const expanded = this.historyExpanded();
+    const shown = expanded[key] || { up: 0, down: 0 };
+    this.historyExpanded.set({
+      ...expanded,
+      [key]: { ...shown, [direction]: shown[direction] + EXPAND_STEP },
+    });
+  }
+
+  toggleDiffFile(id: number): void {
+    const collapsed = new Set(this.historyCollapsedFiles());
+    if (!collapsed.delete(id)) collapsed.add(id);
+    this.historyCollapsedFiles.set(collapsed);
+  }
+
+  copyDiffPath(file: DiffFile): void {
+    navigator.clipboard?.writeText(file.copyPath);
+    this.historyCopiedFile.set(file.id);
+    clearTimeout(this._copiedTimer);
+    this._copiedTimer = window.setTimeout(() => this.historyCopiedFile.set(null), 1400);
+  }
+
+  // the files matching the filter (both sides of a rename are searched)
+  get historyShownFiles(): DiffFile[] {
+    const filter = this.historyFileFilter().trim().toLowerCase();
+    const files = this.historyDiffFiles;
+    return filter ? files.filter((file) => file.path.toLowerCase().includes(filter)) : files;
+  }
+
+  // collapse or expand the files the filter shows; the hidden ones keep their state
+  collapseAllDiffFiles(collapse: boolean): void {
+    const collapsed = new Set(this.historyCollapsedFiles());
+    for (const file of this.historyShownFiles) {
+      if (collapse) collapsed.add(file.id);
+      else collapsed.delete(file.id);
+    }
+    this.historyCollapsedFiles.set(collapsed);
   }
 
   // ── reorder / squash ─────────────────────────────────────────────────────────
@@ -536,9 +882,9 @@ export class CommitHistory extends Component {
   get historyDiffStats(): { added: number; deleted: number } {
     let added = 0;
     let deleted = 0;
-    for (const line of this.historyDiff().split("\n")) {
-      if (line.startsWith("+") && !line.startsWith("+++")) added++;
-      else if (line.startsWith("-") && !line.startsWith("---")) deleted++;
+    for (const line of this.historyDiffFiles.flatMap((file) => file.lines)) {
+      if (line.cls === "add") added++;
+      else if (line.cls === "del") deleted++;
     }
     return { added, deleted };
   }

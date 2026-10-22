@@ -1744,6 +1744,13 @@ def _api_code_commit_diff(body: dict[str, Any]) -> RouteResult:
     return (200 if ok else 400), {"ok": ok, "diff": diff or "", "error": error}
 
 
+@post_route("/api/code/commit/file", "path", "sha", "file")
+def _api_code_commit_file(body: dict[str, Any]) -> RouteResult:
+    content, error = GIT.commit_file(body["path"], body["sha"], body["file"])
+    ok = error is None
+    return (200 if ok else 400), {"ok": ok, "content": content or "", "error": error}
+
+
 # ── GitHub / runbot / mergebot / nightly ─────────────────────────────────────
 
 
