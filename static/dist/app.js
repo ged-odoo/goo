@@ -10752,6 +10752,7 @@ var AddonsCombobox = class extends Component {
     this.props.onChange(this.props.value.filter((n) => n !== name));
   }
 };
+var REMOTE_LIMIT = 20;
 var BranchCombobox = class extends Component {
   static template = xml`
     <div class="branch-cb">
@@ -10827,30 +10828,37 @@ var BranchCombobox = class extends Component {
     }
     this.rows.set(rows);
   }
-  // each hit carries the git remote to fetch it from (the upstream `pull_remote`,
-  // or a fork's `push_remote` — see GitHubService.search_branches), so the caller
-  // never guesses the wrong one
-  async _searchRemote(query) {
-    const repos = this.config.config.repos.filter((r) => r.github).map((r) => ({
+  // the repos whose GitHub branches the search covers: each one's upstream, and
+  // the fork its push remote points at (read from its checkout)
+  _remoteRepos() {
+    return this.config.config.repos.filter((r) => r.github).map((r) => ({
       id: r.id,
       github: r.github,
       path: r.path,
-      push_remote: r.push_remote,
-      pull_remote: r.pull_remote
+      pull_remote: r.pull_remote,
+      push_remote: r.push_remote
     }));
+  }
+  // GitHub's own search of the branch names (every word of the query in the
+  // name), the REMOTE_LIMIT most recently committed first; each hit carries the
+  // git remote to fetch it from (the upstream `pull_remote`, or a fork's
+  // `push_remote` — see GitHubService.search_branches), so the caller never
+  // guesses the wrong one
+  async _searchRemote(query) {
     try {
       const data = await postJSON("/api/code/remote-branches/search", {
-        repos,
-        query
+        repos: this._remoteRepos(),
+        query,
+        limit: REMOTE_LIMIT
       });
       if (query !== this.query().trim()) return;
-      if (!data.ok) throw new Error("the search failed");
+      if (!data.ok) throw new Error(data.error || "the search failed");
       const byBranch = /* @__PURE__ */ new Map();
       for (const { repo, branch, remote } of data.results) {
         if (!byBranch.has(branch)) byBranch.set(branch, []);
         byBranch.get(branch).push({ id: repo, local: false, remote });
       }
-      this.rows.set([...byBranch].map(([branch, repos2]) => ({ branch, repos: repos2 })));
+      this.rows.set([...byBranch].map(([branch, repos]) => ({ branch, repos })));
       this.searchError.set("");
     } catch (e) {
       if (query !== this.query().trim()) return;
@@ -10958,7 +10966,7 @@ var CreateWorkspaceDialog = class extends Component {
                 <span class="cwd-repo-id" t-out="r.id"/>
                 <t t-if="r.branch">
                   <span class="cwd-repo-branch" t-out="r.branch"/>
-                  <span class="cwd-repo-action" t-att-class="{attach: r.attach}" t-out="r.attach ? 'attach existing' : 'fork from ' + r.base"/>
+                  <span class="cwd-repo-action" t-att-class="{attach: r.action === 'attach existing', fetch: r.action.startsWith('fetch ')}" t-out="r.action"/>
                 </t>
               </label>
             </div>
@@ -11171,10 +11179,11 @@ var CreateWorkspaceDialog = class extends Component {
     return this.code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
   }
   // one row per configured repo: its branch in the config (null: not ticked; ""
-  // while there's no name yet) and the "will attach / will fork" preview, live off
-  // real local git state — the same ground truth the create step computes its
-  // fork set from. A fork starts from the base branch on the repo's pull remote
-  // ("prod/master"), fetched fresh at creation.
+  // while there's no name yet) and what Create will do with it, live off real
+  // local git state — the same ground truth the create step works from: fetch it
+  // (a remote / bundle / pull request source's branch, not local yet), attach the
+  // local branch of that name, or fork a new one from the base branch on the
+  // repo's pull remote ("prod/master"), fetched fresh at creation
   get repoRows() {
     const v = this.form();
     const remoteByRepo = Object.fromEntries(
@@ -11185,12 +11194,13 @@ var CreateWorkspaceDialog = class extends Component {
     );
     return this.repoIds.map((id) => {
       const branch = v.repos.includes(id) ? branchByRepo[id] ?? "" : null;
-      return {
-        id,
-        branch,
-        attach: !!branch && this.hasLocalBranch(id, branch),
-        base: branch ? `${remoteByRepo[id]}/${baseBranchOf(branch)}` : ""
-      };
+      const fetch2 = branch ? v.fetches[id] : void 0;
+      let action = "";
+      if (fetch2 && fetch2.branch === branch)
+        action = "remote" in fetch2 ? `fetch from ${fetch2.remote}` : `fetch PR ${fetch2.github}#${fetch2.number}`;
+      else if (branch && this.hasLocalBranch(id, branch)) action = "attach existing";
+      else if (branch) action = `fork from ${remoteByRepo[id]}/${baseBranchOf(branch)}`;
+      return { id, branch, action };
     });
   }
   // ticking Clone database seeds the template's database when it exists, else
@@ -11499,8 +11509,7 @@ async function baseVersionDumps(branch) {
     return [];
   }
 }
-async function fetchBundleBranches(plugins, info) {
-  const { config, dialogs, code, eventLog } = plugins;
+function bundleMatches({ config, dialogs }, info) {
   const matches = [];
   for (const { github, branch } of info.branches || []) {
     const repoName = github.split("/")[1];
@@ -11518,29 +11527,35 @@ async function fetchBundleBranches(plugins, info) {
     });
     return null;
   }
+  return matches;
+}
+async function fetchPlanned(plugins, planned) {
+  const { config, dialogs, code, eventLog } = plugins;
+  const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
   const results = await Promise.all(
-    matches.map(async (m2) => {
-      const eid = eventLog.begin(`fetching ${m2.branch} (${m2.repo.id}) from ${m2.remote}`);
-      const r = await fetchRemoteBranch(dialogs, {
-        path: m2.repo.path,
-        branch: m2.branch,
-        pull_remote: m2.remote
-      });
+    planned.map(async ({ repo, fetch: fetch2 }) => {
+      const from = "remote" in fetch2 ? fetch2.remote : `PR #${fetch2.number}`;
+      const eid = eventLog.begin(`fetching ${fetch2.branch} (${repo}) from ${from}`);
+      const path = pathByRepo[repo];
+      const r = "remote" in fetch2 ? await fetchRemoteBranch(dialogs, {
+        path,
+        branch: fetch2.branch,
+        pull_remote: fetch2.remote
+      }) : await fetchPrHead(dialogs, { path, ...fetch2 });
       eventLog.finish(eid, r.ok ? "done" : "error");
-      return { ...m2, ...r };
+      return { repo, ...r };
     })
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
     dialogs.error(
-      "Fetching bundle branches failed",
-      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n")
+      "Fetching branches failed \u2014 nothing was created",
+      failed.map((f) => `${f.repo}: ${f.error}`).join("\n")
     );
-    if (failed.length === results.length) return null;
+    return false;
   }
-  const got = results.filter((r) => r.ok);
-  await code.refreshBranches(new Set(got.map((m2) => m2.repo.id)));
-  return got;
+  await code.refreshBranches(new Set(planned.map((p) => p.repo)));
+  return true;
 }
 function startNewWorkspace(plugins) {
   const tpl = (plugins.config.config.templates || [])[0];
@@ -11554,37 +11569,6 @@ function repoForGithub(repos, slug) {
   const name = slug.split("/")[1];
   return repos.find((r) => r.github === slug) || repos.find((r) => (r.github || "").split("/")[1] === name) || null;
 }
-async function fetchPickedBranch(plugins, pick) {
-  const { config, dialogs, code, eventLog } = plugins;
-  const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
-  const isLocal = (repo) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === pick.branch) ?? false;
-  const remoteOf = (repo) => isLocal(repo) ? "" : pick.remoteByRepo[repo];
-  const results = await Promise.all(
-    pick.repos.map(async (repo) => {
-      const remote = remoteOf(repo);
-      if (!remote) return { repo, ok: true };
-      const eid = eventLog.begin(`fetching ${pick.branch} (${repo}) from ${remote}`);
-      const r = await fetchRemoteBranch(dialogs, {
-        path: pathByRepo[repo],
-        branch: pick.branch,
-        pull_remote: remote
-      });
-      eventLog.finish(eid, r.ok ? "done" : "error");
-      return { repo, ...r };
-    })
-  );
-  const failed = results.filter((r) => !r.ok);
-  if (failed.length)
-    dialogs.error(
-      "Fetching branch failed",
-      failed.map((f) => `${f.repo}: ${"error" in f ? f.error : ""}`).join("\n")
-    );
-  const got = results.filter((r) => r.ok).map((r) => r.repo);
-  if (!got.length) return null;
-  const fetched = got.filter((repo) => remoteOf(repo));
-  if (fetched.length) await code.refreshBranches(new Set(fetched));
-  return got;
-}
 var PR_URL_RE = /([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
 async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false } = {}) {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
@@ -11594,7 +11578,7 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
   const initialDumps = prefill.dumps ? null : baseVersionDumps(templateBranch(tplOf(prefill.template || "")));
   code.loadBranches();
   const hasLocalBranch = (repo, branch) => code.branchRepos().find((r) => r.id === repo)?.branches.some((b) => b.name === branch) ?? false;
-  const sourceValues = (p, sourceDumps) => {
+  const sourceValues = (p, sourceDumps, fetches = {}) => {
     const repos = p.config ? repoBranchList.parse(p.config).map((c) => c.repo) : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
     return {
       template: p.template ?? "",
@@ -11609,12 +11593,16 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
       demoData: p.demoData ?? defaultDemoData(p.name || ""),
       createBranches: p.createBranches ?? true,
       verifiedRepos: p.createBranches === false ? repos : null,
-      dumps: sourceDumps
+      dumps: sourceDumps,
+      fetches
     };
   };
-  const attachValues = (name, branches, sourceDumps) => sourceValues(
+  const attachValues = (name, branches, sourceDumps, fetches = {}) => sourceValues(
     { name, db: name, config: repoBranchList.format(branches), createBranches: false },
-    sourceDumps
+    sourceDumps,
+    Object.fromEntries(
+      Object.entries(fetches).filter(([repo, f]) => !hasLocalBranch(repo, f.branch))
+    )
   );
   const loadSource = async (req) => {
     if (req.kind === "template") {
@@ -11633,10 +11621,13 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
         dialogs.error("Reading the runbot bundle failed", errorMessage(e));
         return null;
       }
-      const got = await fetchBundleBranches(plugins, info);
-      if (!got) return null;
-      const branches2 = got.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }));
-      return attachValues(info.name, branches2, info.dumps || []);
+      const matches = bundleMatches(plugins, info);
+      if (!matches) return null;
+      const branches2 = matches.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }));
+      const fetches2 = Object.fromEntries(
+        matches.map((m2) => [m2.repo.id, { branch: m2.branch, remote: m2.remote }])
+      );
+      return attachValues(info.name, branches2, info.dumps || [], fetches2);
     }
     if (req.kind === "pr") {
       const match = PR_URL_RE.exec(req.url);
@@ -11650,19 +11641,26 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
         dialogs.error("Pull request", `${github} isn't one of your configured repos`);
         return null;
       }
-      const got = await resolvePrBranches(plugins, [
-        { repo, pull: { github, number: Number(match[3]) } }
-      ]);
-      if (!got) return null;
-      const name = got[0].branch;
-      const branches2 = got.map((g) => ({ repo: g.repo.id, branch: g.branch }));
-      return attachValues(name, branches2, await baseVersionDumps(name));
+      const number = Number(match[3]);
+      let name;
+      try {
+        const head = await postJSON("/api/prs/head", { repo: github, number });
+        if (!head.branch) throw new Error("could not resolve the PR's head branch");
+        name = head.branch;
+      } catch (e) {
+        dialogs.error("Pull request", errorMessage(e));
+        return null;
+      }
+      return attachValues(name, [{ repo: repo.id, branch: name }], await baseVersionDumps(name), {
+        [repo.id]: { branch: name, github, number }
+      });
     }
-    const { branch } = req.pick;
-    const repos = await fetchPickedBranch(plugins, req.pick);
-    if (!repos) return null;
+    const { branch, repos, remoteByRepo } = req.pick;
     const branches = repos.map((repo) => ({ repo, branch }));
-    return attachValues(branch, branches, await baseVersionDumps(branch));
+    const fetches = Object.fromEntries(
+      Object.entries(remoteByRepo).map(([repo, remote]) => [repo, { branch, remote }])
+    );
+    return attachValues(branch, branches, await baseVersionDumps(branch), fetches);
   };
   const initial = sourceValues(prefill, prefill.dumps || []);
   const res = await dialogs.openComponent(CreateWorkspaceDialog, {
@@ -11686,6 +11684,10 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
   if (!res) return;
   const tpl = tplOf(res.template);
   const checkouts = repoBranchList.parse(res.config.trim());
+  const planned = checkouts.map((c) => ({ repo: c.repo, fetch: res.fetches[c.repo] })).filter(
+    (p) => !!p.fetch && checkouts.some((c) => c.repo === p.repo && c.branch === p.fetch.branch)
+  );
+  if (planned.length && !await fetchPlanned(plugins, planned)) return;
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch])
   );
