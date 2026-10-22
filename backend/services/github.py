@@ -1,8 +1,8 @@
 """GitHub PRs + CI rollups, fetched via the `gh` CLI."""
 
 import json
+import os
 import subprocess
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any
@@ -109,6 +109,11 @@ def _head_pr(gh_repo: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             ci=_ci_rollup(((rollup or {}).get("nodes")) or []),
         )
     )
+
+
+# the newest branches per repo GitHub returns for a search's longest word — the
+# other words then narrow them down
+_REFS_PER_REPO = 100
 
 
 class _FetchFailed(Exception):
@@ -592,73 +597,91 @@ class GitHubService:
             return "", str(e)
         return data.get("headRefName", ""), None
 
-    def search_branches(self, repos: list[dict[str, Any]], query: str) -> list[dict[str, str]]:
-        """Search GitHub for branches whose name starts with `query`, across each
-        repo's upstream (`github`) slug and its push remote's fork slug — a branch
-        pushed only to a personal/team fork never reaches upstream, so both are
-        searched (one `gh api` call per slug, in parallel across repos). Each
-        result also carries the git remote name to fetch it from (`pull_remote`
-        for an upstream match, else the fork's `push_remote`) — a caller that
-        blindly fetches from `pull_remote` gets "couldn't find remote ref" for a
-        fork-only branch. Returns a list of {repo: id, branch: name, remote: name}."""
-        results = []
-        lock = threading.Lock()
+    def search_branches(
+        self, repos: list[dict[str, Any]], query: str, limit: int = 20
+    ) -> tuple[list[dict[str, str]], str | None]:
+        """Search the branches of each repo's upstream (`github`) and of its push
+        remote's fork (a branch pushed only to the shared dev fork never reaches
+        upstream), in ONE `gh api graphql` call: GitHub filters the names itself
+        (`refs(query:)` — a case-insensitive substring), so no branch list is ever
+        downloaded. The query's longest word is the one GitHub matches; its newest
+        matches per repo are then narrowed to those holding every other word too.
+        The `limit` most recently committed branch names are kept, newest first.
+        Each result carries the git remote to fetch it from (`pull_remote` when
+        upstream has it, else the fork's `push_remote`). Returns
+        ([{repo: id, branch: name, remote: name}], error or None)."""
+        terms = query.lower().split()
+        if not terms:
+            return [], None
+        sources = []  # (repo id, github slug, remote) — upstream first: it wins
+        for r in repos:
+            upstream = r.get("github") or ""
+            if upstream:
+                sources.append((r["id"], upstream, r.get("pull_remote") or "origin"))
+            fork = self._fork_slug(r)
+            if fork and fork != upstream:
+                sources.append((r["id"], fork, r.get("push_remote") or "dev"))
+        if not sources:
+            return [], None
+        longest = max(terms, key=len)
+        decls, fields, args = ["$q: String!"], [], ["-f", f"q={longest}"]
+        for i, (_repo, slug, _remote) in enumerate(sources):
+            owner, _, name = slug.partition("/")
+            decls += [f"$o{i}: String!", f"$n{i}: String!"]
+            args += ["-f", f"o{i}={owner}", "-f", f"n{i}={name}"]
+            fields.append(
+                f"s{i}: repository(owner: $o{i}, name: $n{i}) {{ refs(refPrefix: "
+                f'"refs/heads/", query: $q, first: {_REFS_PER_REPO}, orderBy: '
+                "{field: TAG_COMMIT_DATE, direction: DESC}) { nodes { name "
+                "target { ... on Commit { committedDate } } } } }"
+            )
+        gql = f"query({', '.join(decls)}) {{ {' '.join(fields)} }}"
+        self.io.log_request(
+            f"gh api graphql (branches matching {longest!r} in {len(sources)} repos)"
+        )
+        try:
+            res = self.io.run(["gh", "api", "graphql", "-f", f"query={gql}", *args], timeout=30)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return [], f"GitHub's branch search failed: {e}"
+        try:
+            data = json.loads(res.stdout).get("data") if res.stdout else None
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
+            return [], res.stderr.strip() or "GitHub's branch search failed"
+        remote_of: dict[tuple[str, str], str] = {}  # (repo, branch) -> remote to fetch from
+        newest: dict[str, str] = {}  # branch -> its latest commit date, across repos
+        for i, (repo, _slug, remote) in enumerate(sources):
+            # a repo GitHub can't resolve (a fork that doesn't exist) comes back null
+            nodes = (((data.get(f"s{i}") or {}).get("refs") or {}).get("nodes")) or []
+            for node in nodes:
+                branch = node.get("name") or ""
+                if not branch or not all(t in branch.lower() for t in terms):
+                    continue
+                remote_of.setdefault((repo, branch), remote)
+                date = (node.get("target") or {}).get("committedDate") or ""
+                newest[branch] = max(newest.get(branch, ""), date)
+        best = sorted(newest, key=lambda b: (newest[b], b), reverse=True)[: max(1, limit)]
+        rank = {b: i for i, b in enumerate(best)}
+        hits = sorted(
+            ((repo, b, remote) for (repo, b), remote in remote_of.items() if b in rank),
+            key=lambda h: rank[h[1]],
+        )
+        return [{"repo": repo, "branch": b, "remote": remote} for repo, b, remote in hits], None
 
-        def matching_refs(slug: str) -> list[str]:
-            try:
-                res = self.io.run(
-                    [
-                        "gh",
-                        "api",
-                        f"repos/{slug}/git/matching-refs/heads/{query}",
-                        "--jq",
-                        ".[].ref",
-                    ],
-                    timeout=15,
-                )
-                if res.returncode != 0:
-                    return []
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                return []
-            found = []
-            for line in res.stdout.splitlines():
-                branch = line.strip()
-                if branch.startswith("refs/heads/"):
-                    branch = branch[len("refs/heads/") :]
-                if branch:
-                    found.append(branch)
-            return found
-
-        def fork_slug(r: dict[str, Any]) -> str | None:
-            path, push_remote = r.get("path"), r.get("push_remote")
-            if not path or not push_remote:
-                return None
-            try:
-                pu = self.io.run(
-                    ["git", "-C", path, "remote", "get-url", push_remote], timeout=10, quiet=True
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                return None
-            return parse_github_slug(pu.stdout.strip()) if pu.returncode == 0 else None
-
-        def search_one(r: dict[str, Any]) -> None:
-            found = {}  # branch -> remote name; an upstream match wins over a fork one
-            github = r.get("github", "")
-            if github:
-                for branch in matching_refs(github):
-                    found[branch] = r.get("pull_remote") or "origin"
-            fork = fork_slug(r)
-            if fork and fork != github:
-                push_remote = r.get("push_remote") or "dev"
-                for branch in matching_refs(fork):
-                    found.setdefault(branch, push_remote)
-            with lock:
-                for branch, remote in found.items():
-                    results.append({"repo": r["id"], "branch": branch, "remote": remote})
-
-        threads = [threading.Thread(target=search_one, args=(r,), daemon=True) for r in repos]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=20)
-        return results
+    def _fork_slug(self, r: dict[str, Any]) -> str | None:
+        """The GitHub slug the repo's push remote points at (its dev fork), read from
+        the checkout's own remote URL; None without one. A configured path may be
+        written "~/…": git -C doesn't expand it."""
+        path, push_remote = r.get("path"), r.get("push_remote")
+        if not path or not push_remote:
+            return None
+        try:
+            pu = self.io.run(
+                ["git", "-C", os.path.expanduser(path), "remote", "get-url", push_remote],
+                timeout=10,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        return parse_github_slug(pu.stdout.strip()) if pu.returncode == 0 else None

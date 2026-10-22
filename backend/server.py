@@ -1629,7 +1629,12 @@ def _api_code_remote_branches_search(body: dict[str, Any]) -> RouteResult:
     repos = body.get("repos", [])
     if not isinstance(repos, list):
         return 400, {"ok": False, "error": "missing query or repos"}
-    return {"ok": True, "results": GITHUB.search_branches(repos, body["query"])}
+    limit = body.get("limit")
+    results, error = GITHUB.search_branches(
+        repos, str(body["query"]), limit=limit if isinstance(limit, int) and limit > 0 else 20
+    )
+    # a failed search is told apart from one that found nothing
+    return {"ok": error is None, "results": results, **({"error": error} if error else {})}
 
 
 @post_route("/api/code/remote-branch/fetch", "path", "branch")
