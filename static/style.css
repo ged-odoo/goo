@@ -4459,6 +4459,9 @@ tr.active td.brg-commit {
 .cwd-repo-action.attach {
   color: var(--l-green);
 }
+.cwd-repo-action.fetch {
+  color: var(--l-accent);
+}
 .cwd-url-row {
   display: flex;
   gap: 8px;

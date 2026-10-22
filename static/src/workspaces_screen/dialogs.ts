@@ -41,7 +41,7 @@ import {
   splitStartArgs,
   startArgs,
 } from "./create_dialog.ts";
-import type { BranchPick, CreateForm, SourceRequest, SourceValues } from "./create_dialog.ts";
+import type { BranchFetch, CreateForm, SourceRequest, SourceValues } from "./create_dialog.ts";
 
 import type { PluginInstance } from "@odoo/owl";
 
@@ -283,15 +283,13 @@ async function baseVersionDumps(branch: string): Promise<RunbotDump[]> {
   }
 }
 
-// Fetch a runbot bundle's branches into the local repos — from the remote that
-// carries them (the canonical repo, or the shared dev fork for colleagues' work) —
-// so the create form attaches them as they are. Returns the fetched
-// {repo, branch} entries, or null when nothing could be fetched (already reported).
-async function fetchBundleBranches(
-  plugins: Pick<WorkspacePlugins, "config" | "dialogs" | "code" | "eventLog">,
+// The configured repos a runbot bundle's branches belong to, each with the remote
+// that carries its branch (the canonical repo's pull remote, or the shared dev
+// fork's push remote for colleagues' work); null (already explained) when none.
+function bundleMatches(
+  { config, dialogs }: Pick<WorkspacePlugins, "config" | "dialogs">,
   info: BundleInfo,
-): Promise<{ repo: RepoConfig; branch: string }[] | null> {
-  const { config, dialogs, code, eventLog } = plugins;
+): { repo: RepoConfig; branch: string; remote: string }[] | null {
   // map the bundle's github repos onto the configured ones by repo name —
   // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo. Skips
   // "owl": it never carries per-feature branches, so there's nothing on the
@@ -322,32 +320,46 @@ async function fetchBundleBranches(
     });
     return null;
   }
-  // fetch every branch concurrently, each as a timed event-log row
+  return matches;
+}
+
+// Fetch the branches a remote / bundle / pull request source planned — at Create,
+// before anything else, each as a timed event-log row (a diverged local copy asks
+// before being overwritten) — then refresh those repos' branches. False when one
+// failed (reported): the caller creates nothing.
+async function fetchPlanned(
+  plugins: Pick<WorkspacePlugins, "config" | "dialogs" | "code" | "eventLog">,
+  planned: { repo: string; fetch: BranchFetch }[],
+): Promise<boolean> {
+  const { config, dialogs, code, eventLog } = plugins;
+  const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
   const results = await Promise.all(
-    matches.map(async (m) => {
-      const eid = eventLog.begin(`fetching ${m.branch} (${m.repo.id}) from ${m.remote}`);
-      const r = await fetchRemoteBranch(dialogs, {
-        path: m.repo.path,
-        branch: m.branch,
-        pull_remote: m.remote,
-      });
+    planned.map(async ({ repo, fetch }) => {
+      const from = "remote" in fetch ? fetch.remote : `PR #${fetch.number}`;
+      const eid = eventLog.begin(`fetching ${fetch.branch} (${repo}) from ${from}`);
+      const path = pathByRepo[repo];
+      const r =
+        "remote" in fetch
+          ? await fetchRemoteBranch(dialogs, {
+              path,
+              branch: fetch.branch,
+              pull_remote: fetch.remote,
+            })
+          : await fetchPrHead(dialogs, { path, ...fetch });
       eventLog.finish(eid, r.ok ? "done" : "error");
-      return { ...m, ...r };
+      return { repo, ...r };
     }),
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
     dialogs.error(
-      "Fetching bundle branches failed",
-      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+      "Fetching branches failed — nothing was created",
+      failed.map((f) => `${f.repo}: ${f.error}`).join("\n"),
     );
-    if (failed.length === results.length) return null;
+    return false;
   }
-  const got = results.filter((r) => r.ok);
-  // the fetched branches must show up in the form's world (branch pickers, the
-  // created workspace's presence checks) — refresh just those repos
-  await code.refreshBranches(new Set(got.map((m) => m.repo.id)));
-  return got;
+  await code.refreshBranches(new Set(planned.map((p) => p.repo)));
+  return true;
 }
 
 // "New workspace": the create form with its Source select, opened on the first
@@ -381,50 +393,6 @@ function repoForGithub(repos: RepoConfig[], slug: string): RepoConfig | null {
     repos.find((r) => (r.github || "").split("/")[1] === name) ||
     null
   );
-}
-
-// Fetch a picked branch into every repo that only has it on a remote, then refresh
-// those repos' branches. A repo that already has the branch locally is attached
-// as is — never re-fetched, which could overwrite (or refuse) its unpushed
-// commits. Returns the repos that now have it locally, or null when none do
-// (failures already reported).
-async function fetchPickedBranch(
-  plugins: Pick<WorkspacePlugins, "config" | "dialogs" | "code" | "eventLog">,
-  pick: BranchPick,
-): Promise<string[] | null> {
-  const { config, dialogs, code, eventLog } = plugins;
-  const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
-  const isLocal = (repo: string) =>
-    code
-      .branchRepos()
-      .find((r) => r.id === repo)
-      ?.branches.some((b) => b.name === pick.branch) ?? false;
-  const remoteOf = (repo: string) => (isLocal(repo) ? "" : pick.remoteByRepo[repo]);
-  const results = await Promise.all(
-    pick.repos.map(async (repo) => {
-      const remote = remoteOf(repo);
-      if (!remote) return { repo, ok: true }; // already local
-      const eid = eventLog.begin(`fetching ${pick.branch} (${repo}) from ${remote}`);
-      const r = await fetchRemoteBranch(dialogs, {
-        path: pathByRepo[repo],
-        branch: pick.branch,
-        pull_remote: remote,
-      });
-      eventLog.finish(eid, r.ok ? "done" : "error");
-      return { repo, ...r };
-    }),
-  );
-  const failed = results.filter((r) => !r.ok);
-  if (failed.length)
-    dialogs.error(
-      "Fetching branch failed",
-      failed.map((f) => `${f.repo}: ${"error" in f ? f.error : ""}`).join("\n"),
-    );
-  const got = results.filter((r) => r.ok).map((r) => r.repo);
-  if (!got.length) return null;
-  const fetched = got.filter((repo) => remoteOf(repo));
-  if (fetched.length) await code.refreshBranches(new Set(fetched));
-  return got;
 }
 
 // a pull request URL (GitHub's or mergebot's: …/<owner>/<repo>/pull/<number>)
@@ -468,7 +436,11 @@ export async function startCreateWorkspace(
   // branch usually spans all of them; external repos, e.g. odoo/owl, are outside
   // the CI ecosystem and rarely need a matching branch). A source attaching
   // existing branches (createBranches: false) verifies exactly the repos it fetched.
-  const sourceValues = (p: CreatePrefill, sourceDumps: RunbotDump[]): SourceValues => {
+  const sourceValues = (
+    p: CreatePrefill,
+    sourceDumps: RunbotDump[],
+    fetches: Record<string, BranchFetch> = {},
+  ): SourceValues => {
     const repos = p.config
       ? repoBranchList.parse(p.config).map((c) => c.repo)
       : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
@@ -486,17 +458,24 @@ export async function startCreateWorkspace(
       createBranches: p.createBranches ?? true,
       verifiedRepos: p.createBranches === false ? repos : null,
       dumps: sourceDumps,
+      fetches,
     };
   };
-  // the values of a source attaching existing branches, named after `name`
+  // the values of a source attaching existing branches, named after `name`. A
+  // branch with a planned fetch that's already local is attached as is: re-fetching
+  // could overwrite (or refuse) its unpushed commits.
   const attachValues = (
     name: string,
     branches: CheckoutConfig[],
     sourceDumps: RunbotDump[],
+    fetches: Record<string, BranchFetch> = {},
   ): SourceValues =>
     sourceValues(
       { name, db: name, config: repoBranchList.format(branches), createBranches: false },
       sourceDumps,
+      Object.fromEntries(
+        Object.entries(fetches).filter(([repo, f]) => !hasLocalBranch(repo, f.branch)),
+      ),
     );
 
   // load what a source picked in the dialog prefills (null: nothing loaded — any
@@ -519,12 +498,15 @@ export async function startCreateWorkspace(
         dialogs.error("Reading the runbot bundle failed", errorMessage(e));
         return null;
       }
-      const got = await fetchBundleBranches(plugins, info);
-      if (!got) return null;
+      const matches = bundleMatches(plugins, info);
+      if (!matches) return null;
       // the dumps the bundle's latest batch left on runbot, already proven to
       // exist (the backend HEAD-probes them)
-      const branches = got.map((m) => ({ repo: m.repo.id, branch: m.branch }));
-      return attachValues(info.name, branches, info.dumps || []);
+      const branches = matches.map((m) => ({ repo: m.repo.id, branch: m.branch }));
+      const fetches = Object.fromEntries(
+        matches.map((m) => [m.repo.id, { branch: m.branch, remote: m.remote }]),
+      );
+      return attachValues(info.name, branches, info.dumps || [], fetches);
     }
     if (req.kind === "pr") {
       const match = PR_URL_RE.exec(req.url);
@@ -538,20 +520,29 @@ export async function startCreateWorkspace(
         dialogs.error("Pull request", `${github} isn't one of your configured repos`);
         return null;
       }
-      const got = await resolvePrBranches(plugins, [
-        { repo, pull: { github, number: Number(match[3]) } },
-      ]);
-      if (!got) return null;
-      const name = got[0].branch;
-      const branches = got.map((g) => ({ repo: g.repo.id, branch: g.branch }));
-      return attachValues(name, branches, await baseVersionDumps(name));
+      // the PR's head branch: read-only — it's fetched at Create
+      const number = Number(match[3]);
+      let name: string;
+      try {
+        const head = await postJSON<{ branch?: string }>("/api/prs/head", { repo: github, number });
+        if (!head.branch) throw new Error("could not resolve the PR's head branch");
+        name = head.branch;
+      } catch (e) {
+        dialogs.error("Pull request", errorMessage(e));
+        return null;
+      }
+      return attachValues(name, [{ repo: repo.id, branch: name }], await baseVersionDumps(name), {
+        [repo.id]: { branch: name, github, number },
+      });
     }
-    // a local or remote branch: attach it in every repo it was found in
-    const { branch } = req.pick;
-    const repos = await fetchPickedBranch(plugins, req.pick);
-    if (!repos) return null;
+    // a local or remote branch, in every repo it was found in — a remote one is
+    // fetched at Create
+    const { branch, repos, remoteByRepo } = req.pick;
     const branches = repos.map((repo) => ({ repo, branch }));
-    return attachValues(branch, branches, await baseVersionDumps(branch));
+    const fetches = Object.fromEntries(
+      Object.entries(remoteByRepo).map(([repo, remote]) => [repo, { branch, remote }]),
+    );
+    return attachValues(branch, branches, await baseVersionDumps(branch), fetches);
   };
 
   const initial = sourceValues(prefill, prefill.dumps || []);
@@ -575,6 +566,15 @@ export async function startCreateWorkspace(
   if (!res) return;
   const tpl = tplOf(res.template);
   const checkouts = repoBranchList.parse(res.config.trim());
+  // the source's branches that aren't local yet: fetched now, before anything is
+  // created — a failure creates nothing
+  const planned = checkouts
+    .map((c) => ({ repo: c.repo, fetch: res.fetches[c.repo] }))
+    .filter(
+      (p): p is { repo: string; fetch: BranchFetch } =>
+        !!p.fetch && checkouts.some((c) => c.repo === p.repo && c.branch === p.fetch.branch),
+    );
+  if (planned.length && !(await fetchPlanned(plugins, planned))) return;
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
   );
