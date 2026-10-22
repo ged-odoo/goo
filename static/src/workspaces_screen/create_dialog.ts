@@ -36,6 +36,12 @@ const SOURCES: { kind: SourceKind; label: string }[] = [
   { kind: "pr", label: "Pull request" },
 ];
 
+// how a repo's branch reaches its local checkout — fetched at Create, never while
+// the dialog is open (a discarded dialog leaves no trace): from a git remote, or
+// a pull request's head straight from its GitHub repo
+export type BranchFetch =
+  { branch: string; remote: string } | { branch: string; github: string; number: number };
+
 // the values a source decides — what picking (or loading) one replaces.
 // `verifiedRepos`: a source attaching existing branches (createBranches: false)
 // only fetched a branch for those repos — anything ticked beyond has no confirmed
@@ -53,6 +59,7 @@ export interface SourceValues {
   createBranches: boolean; // fork new branches (template / version) vs. attach the source's
   verifiedRepos: string[] | null;
   dumps: RunbotDump[];
+  fetches: Record<string, BranchFetch>; // repo id -> the fetch its branch needs at Create
 }
 
 // everything the form submits. `db` is the database the workspace runs on: the new
@@ -258,9 +265,13 @@ interface BranchHit {
   repos: BranchHitRepo[];
 }
 
+// how many branches a remote search lists, newest first
+const REMOTE_LIMIT = 20;
+
 // /api/code/remote-branches/search's response
 interface RemoteBranchSearch {
   ok: boolean;
+  error?: string;
   results: { repo: string; branch: string; remote: string }[];
 }
 
@@ -346,26 +357,40 @@ export class BranchCombobox extends Component {
     this.rows.set(rows);
   }
 
-  // each hit carries the git remote to fetch it from (the upstream `pull_remote`,
-  // or a fork's `push_remote` — see GitHubService.search_branches), so the caller
-  // never guesses the wrong one
-  async _searchRemote(query: string): Promise<void> {
-    const repos = this.config.config.repos
+  // the repos whose GitHub branches the search covers: each one's upstream, and
+  // the fork its push remote points at (read from its checkout)
+  _remoteRepos(): {
+    id: string;
+    github: string;
+    path: string;
+    pull_remote: string;
+    push_remote: string;
+  }[] {
+    return this.config.config.repos
       .filter((r) => r.github)
       .map((r) => ({
         id: r.id,
         github: r.github,
         path: r.path,
-        push_remote: r.push_remote,
         pull_remote: r.pull_remote,
+        push_remote: r.push_remote,
       }));
+  }
+
+  // GitHub's own search of the branch names (every word of the query in the
+  // name), the REMOTE_LIMIT most recently committed first; each hit carries the
+  // git remote to fetch it from (the upstream `pull_remote`, or a fork's
+  // `push_remote` — see GitHubService.search_branches), so the caller never
+  // guesses the wrong one
+  async _searchRemote(query: string): Promise<void> {
     try {
       const data = await postJSON<RemoteBranchSearch>("/api/code/remote-branches/search", {
-        repos,
+        repos: this._remoteRepos(),
         query,
+        limit: REMOTE_LIMIT,
       });
       if (query !== this.query().trim()) return; // input moved on — drop it
-      if (!data.ok) throw new Error("the search failed");
+      if (!data.ok) throw new Error(data.error || "the search failed");
       const byBranch = new Map<string, BranchHitRepo[]>();
       for (const { repo, branch, remote } of data.results) {
         if (!byBranch.has(branch)) byBranch.set(branch, []);
@@ -488,7 +513,7 @@ export class CreateWorkspaceDialog extends Component {
                 <span class="cwd-repo-id" t-out="r.id"/>
                 <t t-if="r.branch">
                   <span class="cwd-repo-branch" t-out="r.branch"/>
-                  <span class="cwd-repo-action" t-att-class="{attach: r.attach}" t-out="r.attach ? 'attach existing' : 'fork from ' + r.base"/>
+                  <span class="cwd-repo-action" t-att-class="{attach: r.action === 'attach existing', fetch: r.action.startsWith('fetch ')}" t-out="r.action"/>
                 </t>
               </label>
             </div>
@@ -716,11 +741,12 @@ export class CreateWorkspaceDialog extends Component {
   }
 
   // one row per configured repo: its branch in the config (null: not ticked; ""
-  // while there's no name yet) and the "will attach / will fork" preview, live off
-  // real local git state — the same ground truth the create step computes its
-  // fork set from. A fork starts from the base branch on the repo's pull remote
-  // ("prod/master"), fetched fresh at creation.
-  get repoRows(): { id: string; branch: string | null; attach: boolean; base: string }[] {
+  // while there's no name yet) and what Create will do with it, live off real
+  // local git state — the same ground truth the create step works from: fetch it
+  // (a remote / bundle / pull request source's branch, not local yet), attach the
+  // local branch of that name, or fork a new one from the base branch on the
+  // repo's pull remote ("prod/master"), fetched fresh at creation
+  get repoRows(): { id: string; branch: string | null; action: string }[] {
     const v = this.form();
     const remoteByRepo = Object.fromEntries(
       (this.config.config.repos || []).map((r) => [r.id, r.pull_remote || "origin"]),
@@ -730,12 +756,16 @@ export class CreateWorkspaceDialog extends Component {
     );
     return this.repoIds.map((id) => {
       const branch = v.repos.includes(id) ? (branchByRepo[id] ?? "") : null;
-      return {
-        id,
-        branch,
-        attach: !!branch && this.hasLocalBranch(id, branch),
-        base: branch ? `${remoteByRepo[id]}/${baseBranchOf(branch)}` : "",
-      };
+      const fetch = branch ? v.fetches[id] : undefined;
+      let action = "";
+      if (fetch && fetch.branch === branch)
+        action =
+          "remote" in fetch
+            ? `fetch from ${fetch.remote}`
+            : `fetch PR ${fetch.github}#${fetch.number}`;
+      else if (branch && this.hasLocalBranch(id, branch)) action = "attach existing";
+      else if (branch) action = `fork from ${remoteByRepo[id]}/${baseBranchOf(branch)}`;
+      return { id, branch, action };
     });
   }
 

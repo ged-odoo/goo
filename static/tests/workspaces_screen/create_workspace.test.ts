@@ -811,7 +811,7 @@ describe("New workspace — from a runbot bundle", () => {
     await click(mustText(field("Bundle URL"), "Load"));
   }
 
-  it("fetches the bundle's branches and opens the form attached to them", async () => {
+  it("plans the bundle's branches, and fetches them only on Create", async () => {
     await fromBundle({
       "/api/runbot/bundle-info": BUNDLE,
       "/api/code/remote-branch/fetch": { ok: true },
@@ -819,7 +819,12 @@ describe("New workspace — from a runbot bundle", () => {
     expect(app.callsTo("/api/runbot/bundle-info").map((c) => c.body)).toEqual([
       { url: "https://runbot/bundle/1" },
     ]);
-    // a fork's branch comes from the push remote
+    expect(input("Name").value).toBe("master-colleague");
+    expect(configText()).toBe("community:master-colleague");
+    // nothing is fetched while the dialog is open: a discarded one leaves no trace
+    expect(app.callsTo("/api/code/remote-branch/fetch")).toEqual([]);
+    expect(repoPreview()).toBe("community: fetch from dev"); // a fork's branch: the push remote
+    await click(dialogButton("Create"));
     expect(app.callsTo("/api/code/remote-branch/fetch").map((c) => c.body)).toEqual([
       {
         path: "/home/odoo/work/community",
@@ -828,9 +833,16 @@ describe("New workspace — from a runbot bundle", () => {
         force: false,
       },
     ]);
-    expect(input("Name").value).toBe("master-colleague");
-    expect(configText()).toBe("community:master-colleague");
-    expect(dialogButton("Create").disabled).toBe(false);
+    expect((await savedWorkspace("master-colleague")).checkouts).toEqual([
+      { repo: "community", branch: "master-colleague" },
+    ]);
+  });
+
+  it("discarding after loading a bundle fetches nothing", async () => {
+    await fromBundle({ "/api/runbot/bundle-info": BUNDLE });
+    await click(dialogButton("Discard"));
+    expect(app.callsTo("/api/code/remote-branch/fetch")).toEqual([]);
+    expect(listNames()).toEqual(["existing"]);
   });
 
   it("Enter in the URL field loads it", async () => {
@@ -932,27 +944,27 @@ describe("New workspace — from a runbot bundle", () => {
           ? { ok: true }
           : failure(409, { error: "non-fast-forward", non_ff: true }),
     });
+    await click(dialogButton("Create"));
     expect(dialogTitle()).toBe("Branch has diverged");
     await click(dialogButton("Overwrite"));
     expect(
       app.callsTo("/api/code/remote-branch/fetch").map((c) => (c.body as { force: boolean }).force),
     ).toEqual([false, true]);
-    expect(input("Name").value).toBe("master-colleague");
+    expect(listNames()).toContain("master-colleague");
   });
 
-  it("skipping the overwrite abandons the bundle with an error", async () => {
+  it("skipping the overwrite creates nothing, and says so", async () => {
     await fromBundle({
       "/api/runbot/bundle-info": BUNDLE,
       "/api/code/remote-branch/fetch": failure(409, { error: "non-fast-forward", non_ff: true }),
     });
+    await click(dialogButton("Create"));
     await click(dialogButton("Skip"));
-    expect(dialogTitle()).toBe("Fetching bundle branches failed");
+    expect(dialogTitle()).toBe("Fetching branches failed — nothing was created");
     expect(mustDialog().textContent).toContain("community: non-fast-forward");
     await click(dialogButton("OK"));
-    // the form stays open, still waiting for a loaded bundle
-    expect(dialogTitle()).toBe("New workspace");
-    expect(input("Name").value).toBe("");
-    expect(dialogButton("Create").disabled).toBe(true);
+    expect(dialog()).toBeNull();
+    expect(listNames()).toEqual(["existing"]);
   });
 });
 
@@ -1085,7 +1097,7 @@ describe("New workspace — from a local branch", () => {
 });
 
 describe("New workspace — from a remote branch", () => {
-  it("searches GitHub and fetches the picked branch before attaching it", async () => {
+  it("searches GitHub, and fetches the picked branch only on Create", async () => {
     await mountScreen({
       routes: {
         "/api/code/remote-branches/search": {
@@ -1103,10 +1115,15 @@ describe("New workspace — from a remote branch", () => {
       await app.settle();
       expect(branchRows()).toEqual(["master-colleague:enterprise/remote"]);
     });
-    expect(app.callsTo("/api/code/remote-branches/search")[0].body).toMatchObject({
-      query: "colleague",
-    });
+    expect(app.callsTo("/api/code/remote-branches/search").map((c) => c.body)).toEqual([
+      expect.objectContaining({ query: "colleague", limit: 20 }),
+    ]);
     await pickBranchRow("master-colleague");
+    expect(input("Name").value).toBe("master-colleague");
+    expect(configText()).toBe("enterprise:master-colleague");
+    expect(repoPreview()).toBe("enterprise: fetch from dev");
+    expect(app.callsTo("/api/code/remote-branch/fetch")).toEqual([]); // not yet
+    await click(dialogButton("Create"));
     expect(app.callsTo("/api/code/remote-branch/fetch").map((c) => c.body)).toEqual([
       {
         path: "/home/odoo/work/enterprise",
@@ -1115,9 +1132,7 @@ describe("New workspace — from a remote branch", () => {
         force: false,
       },
     ]);
-    expect(input("Name").value).toBe("master-colleague");
-    expect(configText()).toBe("enterprise:master-colleague");
-    expect(dialogButton("Create").disabled).toBe(false);
+    expect(listNames()).toContain("master-colleague");
   });
 
   it("attaches a branch already local in a repo as is, never re-fetching it", async () => {
@@ -1149,7 +1164,10 @@ describe("New workspace — from a remote branch", () => {
 
   it("says why when the GitHub search fails", async () => {
     await mountScreen({
-      routes: { "/api/code/remote-branches/search": failure(502, { error: "gh down" }) },
+      // GitHub's search failing is reported in a 200 reply
+      routes: {
+        "/api/code/remote-branches/search": { ok: false, results: [], error: "gh down" },
+      },
     });
     await openForm();
     await pickSource("Remote branch");
@@ -1162,7 +1180,7 @@ describe("New workspace — from a remote branch", () => {
     });
   });
 
-  it("reports a failed fetch and loads nothing", async () => {
+  it("a failed fetch on Create creates nothing", async () => {
     await mountScreen({
       routes: {
         "/api/code/remote-branches/search": {
@@ -1170,6 +1188,7 @@ describe("New workspace — from a remote branch", () => {
           results: [{ repo: "community", branch: "master-gone", remote: "origin" }],
         },
         "/api/code/remote-branch/fetch": failure(500, { error: "no such ref" }),
+        "/api/runbot/dumps": { dumps: [] },
       },
     });
     await openForm();
@@ -1180,12 +1199,11 @@ describe("New workspace — from a remote branch", () => {
       expect(branchRows()).toHaveLength(1);
     });
     await pickBranchRow("master-gone");
-    expect(dialogTitle()).toBe("Fetching branch failed");
+    await click(dialogButton("Create"));
+    expect(dialogTitle()).toBe("Fetching branches failed — nothing was created");
     expect(mustDialog().textContent).toContain("community: no such ref");
     await click(dialogButton("OK"));
-    expect(input("Name").value).toBe("");
-    expect(mustDialog().querySelector(".form-error")).toBeNull(); // untouched yet
-    expect(dialogButton("Create").disabled).toBe(true);
+    expect(listNames()).toEqual(["existing"]);
   });
 });
 
@@ -1198,7 +1216,7 @@ describe("New workspace — from a pull request", () => {
     await click(mustText(field("Pull request URL"), "Load"));
   }
 
-  it("fetches the PR's head and attaches it", async () => {
+  it("resolves the PR's head, and fetches it only on Create", async () => {
     await fromPr("https://github.com/odoo/enterprise/pull/42/files", {
       "/api/prs/head": { branch: "master-fix-pr" },
       "/api/code/remote-branch/fetch-pr": { ok: true },
@@ -1207,6 +1225,11 @@ describe("New workspace — from a pull request", () => {
     expect(app.callsTo("/api/prs/head").map((c) => c.body)).toEqual([
       { repo: "odoo/enterprise", number: 42 },
     ]);
+    expect(input("Name").value).toBe("master-fix-pr");
+    expect(configText()).toBe("enterprise:master-fix-pr");
+    expect(repoPreview()).toBe("enterprise: fetch PR odoo/enterprise#42");
+    expect(app.callsTo("/api/code/remote-branch/fetch-pr")).toEqual([]); // not yet
+    await click(dialogButton("Create"));
     expect(app.callsTo("/api/code/remote-branch/fetch-pr").map((c) => c.body)).toEqual([
       {
         path: "/home/odoo/work/enterprise",
@@ -1216,9 +1239,7 @@ describe("New workspace — from a pull request", () => {
         force: false,
       },
     ]);
-    expect(input("Name").value).toBe("master-fix-pr");
-    expect(configText()).toBe("enterprise:master-fix-pr");
-    expect(dialogButton("Create").disabled).toBe(false);
+    expect(listNames()).toContain("master-fix-pr");
   });
 
   it("refuses a URL that isn't a pull request", async () => {
