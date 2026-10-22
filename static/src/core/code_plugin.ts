@@ -777,6 +777,17 @@ export class CodePlugin extends Plugin {
     return res.commits;
   }
 
+  // one file's content as of a commit (<file> relative to the repo root)
+  async commitFile(path: string, sha: string, file: string): Promise<string> {
+    const res = await postJSON<ItemResult & { content?: string }>("/api/code/commit/file", {
+      path,
+      sha,
+      file,
+    });
+    if (!res.ok) throw new Error(res.error || "git show failed");
+    return res.content || "";
+  }
+
   async commitDiff(path: string, sha: string): Promise<string> {
     const res = await postJSON<ItemResult & { diff?: string }>("/api/code/commit/diff", {
       path,
