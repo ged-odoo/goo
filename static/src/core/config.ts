@@ -83,6 +83,13 @@ export interface DockerImage {
   is_default?: boolean;
 }
 
+// a button in a workspace's detail header: `path` on that workspace's own server
+// (its port / container), opened through the autologin route unless that's off
+export interface WorkspaceLink {
+  label: string;
+  path: string;
+}
+
 // a navbar link, or a dropdown of them
 export interface NavLink {
   label: string;
@@ -157,6 +164,7 @@ export interface Config {
   start: StartConfig;
   test_presets: { tags: string }[];
   links: NavLink[];
+  workspace_links: WorkspaceLink[];
   tabs?: TabConfig[];
 }
 
@@ -361,6 +369,12 @@ export const DEFAULT_CONFIG: Config = {
   // test-tag presets offered in the Tests tab's selector (editable in the
   // Configuration tab). Each is { tags: "<--test-tags value>" }.
   test_presets: [{ tags: "/web:WebSuite[@web]" }],
+  // the workspace detail header's buttons (editable in the Config tab): a path on
+  // the workspace's own server, through the autologin addon unless that's off
+  workspace_links: [
+    { label: "/odoo", path: "/odoo?debug=assets" },
+    { label: "/web/tests", path: "/web/tests?debug=assets&timeout=500000&manual=true" },
+  ],
   // navbar links (editable in the Config tab). /odoo + /web/tests go through the
   // autologin addon (?to=<url-encoded target>) and only work while the server is up.
   links: [

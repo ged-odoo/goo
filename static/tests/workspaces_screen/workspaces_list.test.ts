@@ -34,6 +34,7 @@ function mount(workspaces: WorkspaceConfig[], opts: MountAppOptions = {}) {
       "/api/runbot": { states: {} },
       "/api/mergebot": { states: {} },
       "/api/databases": { ok: true, databases: [] },
+      "/api/addons": { ok: true, modules: [], db: null },
       ...opts.routes,
     },
   });
@@ -463,5 +464,122 @@ describe("Workspaces detail header — CI / mergebot badges", () => {
       refresh: true,
     });
     expect(app.root.querySelector<HTMLButtonElement>(".wt-new")!.disabled).toBe(false);
+  });
+
+  it("looks up PRs by head ref only for the workspaces' branches", async () => {
+    const OLD = ws({
+      id: "old",
+      name: "old",
+      category: "archived",
+      checkouts: [{ repo: "community", branch: "master-old" }],
+    });
+    app = await mount([ALPHA, OLD], {
+      routes: {
+        "/api/code/branches": branchesRoute([
+          repo("community", "master", [
+            "master",
+            { ...branchOf("master-alpha"), remote: true },
+            { ...branchOf("master-old"), remote: true }, // an archived workspace's
+            { ...branchOf("master-stray"), remote: true }, // in no workspace
+          ]),
+          repo("enterprise", "master", ["master", { ...branchOf("master-alpha"), remote: true }]),
+        ]),
+        "/api/prs/for-branches": { prs: [] },
+      },
+    });
+    const asked = app
+      .callsTo("/api/prs/for-branches")
+      .flatMap((c) => (c.body as { branches: { github: string; branch: string }[] }).branches);
+    expect(asked).toEqual([
+      { github: "odoo/odoo", branch: "master-alpha" },
+      { github: "odoo/enterprise", branch: "master-alpha" },
+    ]);
+  });
+
+  it("asks again about a branch a failed head-ref lookup couldn't answer", async () => {
+    const BETA = ws({
+      id: "beta",
+      name: "beta",
+      checkouts: [{ repo: "community", branch: "master-beta" }],
+    });
+    app = await mount([ALPHA, BETA], {
+      routes: {
+        "/api/code/branches": branchesRoute([
+          repo("community", "master", [
+            "master",
+            { ...branchOf("master-alpha"), remote: true },
+            { ...branchOf("master-beta"), remote: true },
+          ]),
+          repo("enterprise", "master", ["master"]),
+        ]),
+        // GitHub can't be reached: every branch comes back unresolved
+        "/api/prs/for-branches": (body: unknown) => ({
+          ok: true,
+          prs: [],
+          unresolved: (body as { branches: unknown[] }).branches,
+        }),
+      },
+    });
+    const askedAlpha = () =>
+      app
+        .callsTo("/api/prs/for-branches")
+        .filter((c) => JSON.stringify(c.body).includes("master-alpha")).length;
+    const before = askedAlpha();
+    expect(before).toBeGreaterThan(0);
+    // re-opening the workspace asks again: unknown isn't "no PR"
+    mustText(app.root, ".wt-item-name", "beta").click();
+    await app.settle();
+    mustText(app.root, ".wt-item-name", "alpha").click();
+    await app.settle();
+    expect(askedAlpha()).toBeGreaterThan(before);
+  });
+
+  it("the list's refresh button leaves the archived workspaces out, even a selected one", async () => {
+    const OLD = ws({
+      id: "old",
+      name: "old",
+      category: "archived",
+      checkouts: [{ repo: "community", branch: "master-old" }],
+    });
+    app = await mount([ALPHA, OLD], {
+      routes: {
+        "/api/code/branches": branchesRoute([
+          repo("community", "master", [
+            "master",
+            { ...branchOf("master-alpha"), synced: true, remote: true },
+            { ...branchOf("master-old"), synced: true, remote: true },
+          ]),
+          repo("enterprise", "master", ["master"]),
+        ]),
+        "/api/prs": {
+          repos: [
+            {
+              id: "community",
+              github: "odoo/odoo",
+              prs: [
+                { number: 21, branch: "master-alpha", state: "open" },
+                { number: 22, branch: "master-old", state: "open" },
+              ],
+            },
+          ],
+        },
+        "/api/mergebot": mergebotRoute({}),
+        "/api/runbot": runbotRoute({}),
+      },
+    });
+    mustText(app.root, ".wt-item-name", "old").click();
+    await app.settle();
+    expect(detailName()).toBe("old");
+
+    app.root.querySelector<HTMLButtonElement>(".wt-new")!.click();
+    await app.settle();
+    expect(app.callsTo("/api/runbot").at(-1)?.body).toEqual({
+      branches: ["master-alpha"],
+      refresh: true,
+    });
+    expect(app.callsTo("/api/mergebot").at(-1)?.body).toEqual({
+      prs: [{ github: "odoo/odoo", number: 21 }],
+      refresh: true,
+    });
   });
 });

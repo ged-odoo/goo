@@ -1267,7 +1267,7 @@ def _api_workspace_create(body: dict[str, Any]) -> dict[str, Any]:
     # but ONLY when the user actually ticked them in the create dialog's
     # Repositories checkboxes (i.e. the frontend sent an entry for them at all):
     # - documentation sometimes DOES carry a real, bundle/PR-linked branch (someone
-    #   documented the feature) — dialogs.js's startNewWorkspaceWizard matches it
+    #   documented the feature) — dialogs.ts's fetchBundleBranches matches it
     #   like any other configured repo, so an already-fetched "attach existing
     #   branch" entry for it may arrive here. Try that first; if it doesn't
     #   actually exist there, fork fresh from the matching Odoo series instead
@@ -1629,7 +1629,12 @@ def _api_code_remote_branches_search(body: dict[str, Any]) -> RouteResult:
     repos = body.get("repos", [])
     if not isinstance(repos, list):
         return 400, {"ok": False, "error": "missing query or repos"}
-    return {"ok": True, "results": GITHUB.search_branches(repos, body["query"])}
+    limit = body.get("limit")
+    results, error = GITHUB.search_branches(
+        repos, str(body["query"]), limit=limit if isinstance(limit, int) and limit > 0 else 20
+    )
+    # a failed search is told apart from one that found nothing
+    return {"ok": error is None, "results": results, **({"error": error} if error else {})}
 
 
 @post_route("/api/code/remote-branch/fetch", "path", "branch")
@@ -1754,8 +1759,12 @@ def _api_prs(body: dict[str, Any]) -> dict[str, Any]:
 
 @post_route("/api/prs/for-branches", "branches:list")
 def _api_prs_for_branches(body: dict[str, Any]) -> dict[str, Any]:
-    prs = GITHUB.prs_for_branches(body["branches"], refresh=bool(body.get("refresh")))
-    return {"ok": True, "prs": prs}
+    unresolved: list[dict[str, str]] = []
+    prs = GITHUB.prs_for_branches(
+        body["branches"], refresh=bool(body.get("refresh")), unresolved=unresolved
+    )
+    # the branches a failed lookup couldn't answer: unknown, not "no PR"
+    return {"ok": True, "prs": prs, "unresolved": unresolved}
 
 
 @post_route("/api/prs/info", "prs:list")
@@ -1840,7 +1849,7 @@ def _api_runbot(body: dict[str, Any]) -> dict[str, Any]:
 @post_route("/api/runbot/bundle-info", "url")
 def _api_runbot_bundle_info(body: dict[str, Any]) -> RouteResult:
     # resolve a pasted bundle URL to its branch name + repos + PRs (the
-    # "workspace from a runbot bundle" wizard step)
+    # create form's "Load bundle")
     info, error = RUNBOT.bundle_info(body["url"])
     if error:
         return 400, {"ok": False, "error": error}
@@ -1979,7 +1988,7 @@ def _api_databases_clone(body: dict[str, Any]) -> RouteResult:
 @post_route("/api/databases/restore-dump", "name:str", "url:str")
 def _api_databases_restore_dump(body: dict[str, Any]) -> RouteResult:
     # download a runbot build's database dump and restore it locally under `name`
-    # (the create-from-bundle wizard's "Restore runbot database" and the Databases
+    # (the create-workspace form's "Restore runbot database" and the Databases
     # screen's "Import database"). Long — tens to
     # hundreds of megabytes, then a psql replay — but the server is threaded, so it
     # only ties up this request; progress is narrated to the goo log.

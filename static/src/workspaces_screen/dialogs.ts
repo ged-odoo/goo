@@ -1,5 +1,5 @@
-// The shared workspace dialogs and actions: the unified create form (template
-// picker + location), create-from-remote-branch, adopt-current-checkout, and
+// The shared workspace dialogs and actions: the unified create form (source —
+// template / blank / runbot bundle — + location), create-from-remote-branch, adopt-current-checkout, and
 // delete-with-cleanup. Used by the Workspaces screen. Every write goes to the
 // canonical `workspaces` key (full records spread — the legacy `targets` view
 // drops the stable ports).
@@ -11,8 +11,6 @@ import {
   defaultDemoData,
 } from "../core/config.ts";
 import { newWorkspaceId } from "../core/config_plugin.ts";
-import { RemoteBranchDialog } from "../core/dialogs.ts";
-import type { RemoteBranchPick } from "../core/dialogs.ts";
 import {
   errorMessage,
   postJSON,
@@ -29,7 +27,6 @@ import type {
 } from "../core/config.ts";
 import type { ConfigPlugin } from "../core/config_plugin.ts";
 import type { CodePlugin } from "../core/code_plugin.ts";
-import { dumpLabel } from "../core/database_plugin.ts";
 import type { DatabasePlugin, RunbotDump } from "../core/database_plugin.ts";
 import type { DialogField, DialogPlugin } from "../core/dialog_plugin.ts";
 import type { EventLogPlugin } from "../core/event_log_plugin.ts";
@@ -38,9 +35,15 @@ import type { ServerPlugin } from "../core/server_plugin.ts";
 import type { PullRequest } from "../core/models.ts";
 import type { WorkspaceLike, WorkspacePlugin } from "../core/workspace_plugin.ts";
 import type { ClaudePlugin } from "./claude_plugin.ts";
+import {
+  CreateWorkspaceDialog,
+  configFromRepos,
+  splitStartArgs,
+  startArgs,
+} from "./create_dialog.ts";
+import type { BranchFetch, CreateForm, SourceRequest, SourceValues } from "./create_dialog.ts";
 
-import { Component, onMounted, onWillUnmount, signal, t, useProps, xml } from "@odoo/owl";
-import type { PluginInstance, Type } from "@odoo/owl";
+import type { PluginInstance } from "@odoo/owl";
 
 // the plugin bundle the create/delete flows drive (a screen's _dialogPlugins());
 // each flow takes the Pick of it that it actually uses
@@ -90,12 +93,6 @@ interface BundleInfo {
   dumps?: RunbotDump[];
 }
 
-// the source step's result (WorkspaceSourceDialog), null when cancelled
-export type WorkspaceSource =
-  | { source: "template"; template: string; dumps: RunbotDump[] }
-  | { source: "bundle"; info: BundleInfo }
-  | null;
-
 // _fetchWithOverwritePrompt's outcome
 interface FetchOutcome {
   ok: boolean;
@@ -123,26 +120,6 @@ export function categoryOptions(config: {
     opts.push({ value: ARCHIVED_CATEGORY, label: ARCHIVED_CATEGORY });
   return opts;
 }
-
-// the Config string for a set of ticked repo ids. Forking fresh branches (the
-// common "new task" case): every repo gets the same new branch name, so a
-// full stomp from `branch` is correct even for repos already in `currentConfig`.
-// Attaching existing branches (bundle / remote-branch / forward-port sources,
-// `preserveExisting`): a repo's real, already-fetched branch must survive
-// toggling an unrelated repo's checkbox or editing the name — only a repo with
-// no config entry yet (the user manually ticking one beyond what was fetched)
-// gets `branch` stamped as a best-effort guess.
-export const configFromRepos = (
-  repoIds: string[],
-  branch: string,
-  currentConfig = "",
-  preserveExisting = false,
-): string => {
-  const existing = preserveExisting
-    ? Object.fromEntries(repoBranchList.parse(currentConfig).map((c) => [c.repo, c.branch]))
-    : ({} as Record<string, string>); // an empty repo -> branch map
-  return repoBranchList.format(repoIds.map((repo) => ({ repo, branch: existing[repo] ?? branch })));
-};
 
 // Shared "try, then on a non-fast-forward rejection offer to overwrite" dance —
 // the local branch already exists here and has diverged from the remote (it was
@@ -259,15 +236,11 @@ export async function syncReviewWorktree(
   if (failed.length) dialogs.error("Syncing PR update failed", failed.join("\n"));
 }
 
-// The values a template prefills into the create form (also the payload its
-// select's onChange used to produce, before the source moved to the wizard's
-// first step): named after its enterprise/community branch, its checkouts as
-// the config, plus db / args / demo data.
-// the branch a template names itself after — its enterprise checkout's, else its
-// community one's. Also what its base version (and so its runbot bundle) derives from.
 // the template fields the prefill reads (a full TemplateConfig, or a partial one)
 type TemplateLike = Pick<TemplateConfig, "id" | "checkouts"> & Partial<TemplateConfig>;
 
+// the branch a template names itself after — its enterprise checkout's, else its
+// community one's. Also what its base version (and so its runbot bundle) derives from.
 export function templateBranch(tpl: Pick<TemplateConfig, "checkouts"> | null | undefined): string {
   if (!tpl) return "";
   return (
@@ -277,6 +250,8 @@ export function templateBranch(tpl: Pick<TemplateConfig, "checkouts"> | null | u
   );
 }
 
+// The values a template prefills into the create form: named after its
+// enterprise/community branch, its checkouts as the config, plus db / args / demo data.
 export function templatePrefill(tpl: TemplateLike | null | undefined): CreatePrefill {
   if (!tpl) return {};
   const branch = templateBranch(tpl);
@@ -308,123 +283,13 @@ async function baseVersionDumps(branch: string): Promise<RunbotDump[]> {
   }
 }
 
-// The wizard's FIRST step: pick the workspace's source — a template (or blank),
-// or a runbot bundle URL (a colleague's branches + PRs). The bundle lookup runs
-// here so its errors show in place; resolves to
-// { source: "template", template } | { source: "bundle", info } | null.
-export class WorkspaceSourceDialog extends Component {
-  static template = xml`
-    <div class="dialog-backdrop" t-on-click="() => this.done(null)">
-      <div class="dialog ws-wiz" t-on-click.stop="() => {}">
-        <h2 class="dialog-title">New workspace</h2>
-        <div class="dialog-body">
-          <label class="ws-wiz-option" t-att-class="{selected: this.source() === 'template'}">
-            <input type="radio" name="ws-source" value="template" t-att-checked="this.source() === 'template'" t-on-change="() => this.source.set('template')"/>
-            <span class="ws-wiz-opt-body">
-              <span class="ws-wiz-opt-title">From a template</span>
-              <span class="ws-wiz-opt-hint dim">fork fresh branches from one of your templates — or start blank</span>
-              <select class="ws-wiz-select" t-att-disabled="this.source() !== 'template'"
-                      t-on-change="(ev) => this.template.set(ev.target.value)">
-                <option t-foreach="this.props.templates" t-as="tpl" t-key="tpl.id" t-att-value="tpl.id" t-att-selected="this.template() === tpl.id" t-out="tpl.name"/>
-                <option value="" t-att-selected="!this.template()">— start blank —</option>
-              </select>
-            </span>
-          </label>
-          <label class="ws-wiz-option" t-att-class="{selected: this.source() === 'bundle'}">
-            <input type="radio" name="ws-source" value="bundle" t-att-checked="this.source() === 'bundle'" t-on-change="() => this.source.set('bundle')"/>
-            <span class="ws-wiz-opt-body">
-              <span class="ws-wiz-opt-title">From a runbot bundle</span>
-              <span class="ws-wiz-opt-hint dim">paste a bundle URL (e.g. a colleague's work) — goo fetches its branches locally</span>
-              <input type="text" class="ws-wiz-url" placeholder="https://runbot.odoo.com/runbot/bundle/…"
-                     title="Paste the bundle's address from your browser, e.g. …/runbot/bundle/master-fix-x-525170. An address with only the id (…/bundle/525170) can't be read: copy it after runbot has redirected it to the name form."
-                     t-att-value="this.url()" t-att-disabled="this.source() !== 'bundle'"
-                     t-on-input="(ev) => this.url.set(ev.target.value)"
-                     t-on-keydown="(ev) => ev.key === 'Enter' &amp;&amp; this.continue_()"/>
-            </span>
-          </label>
-          <div t-if="this.error()" class="form-error" t-out="this.error()"/>
-        </div>
-        <div class="dialog-foot">
-          <button class="pbtn primary" t-att-disabled="!this.canContinue" t-on-click="() => this.continue_()">
-            <t t-if="this.busy()">Reading runbot…</t><t t-else="">Continue</t>
-          </button>
-          <button class="pbtn" t-on-click="() => this.done(null)">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-
-  props = useProps({
-    done: t.function<[WorkspaceSource], void>(),
-    templates: t.any() as Type<TemplateConfig[]>, // config.config.templates — not validated at runtime
-  });
-
-  source = signal("template");
-  template = signal("");
-  url = signal("");
-  busy = signal(false);
-  error = signal("");
-
-  setup(): void {
-    this.template.set(this.props.templates[0]?.id ?? "");
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") this.done(null);
-    };
-    onMounted(() => document.addEventListener("keydown", onKey));
-    onWillUnmount(() => document.removeEventListener("keydown", onKey));
-  }
-
-  done(result: WorkspaceSource): void {
-    this.props.done(result);
-  }
-
-  get canContinue(): boolean {
-    if (this.busy()) return false;
-    return this.source() === "template" || !!this.url().trim();
-  }
-
-  async continue_(): Promise<void> {
-    if (!this.canContinue) return;
-    this.busy.set(true);
-    this.error.set("");
-    try {
-      // a template forks off a base version, so what the form can offer to restore
-      // is that version's own runbot database — looked up here, under this dialog's
-      // busy state, rather than after it closes and leaves the user staring at
-      // nothing. Best-effort (see baseVersionDumps): no bundle, no offer.
-      if (this.source() === "template") {
-        const tpl = this.props.templates.find((t2) => t2.id === this.template());
-        const dumps = await baseVersionDumps(templateBranch(tpl));
-        return this.done({ source: "template", template: this.template(), dumps });
-      }
-      const info = await postJSON<BundleInfo>("/api/runbot/bundle-info", {
-        url: this.url().trim(),
-      });
-      this.done({ source: "bundle", info });
-    } catch (e) {
-      this.error.set(errorMessage(e));
-    } finally {
-      this.busy.set(false);
-    }
-  }
-}
-
-// The wizard: step 1 picks the source, step 2 is the create form prefilled from
-// it. A bundle source first fetches the bundle's branches into the local repos
-// (from the remote that carries them — the canonical repo, or the shared dev
-// fork for colleagues' work), so the form opens with everything in place and
-// "Create branches" off.
-export async function startNewWorkspaceWizard(plugins: WorkspacePlugins): Promise<void> {
-  const { config, dialogs, code, eventLog } = plugins;
-  const res = await dialogs.openComponent<WorkspaceSource>(WorkspaceSourceDialog, {
-    templates: config.config.templates || [],
-  });
-  if (!res) return;
-  if (res.source === "template") {
-    const tpl = (config.config.templates || []).find((x) => x.id === res.template);
-    // res.dumps: the base version's runbot databases, resolved in step 1
-    return startCreateWorkspace(plugins, { ...templatePrefill(tpl), dumps: res.dumps || [] });
-  }
-  const info = res.info;
+// The configured repos a runbot bundle's branches belong to, each with the remote
+// that carries its branch (the canonical repo's pull remote, or the shared dev
+// fork's push remote for colleagues' work); null (already explained) when none.
+function bundleMatches(
+  { config, dialogs }: Pick<WorkspacePlugins, "config" | "dialogs">,
+  info: BundleInfo,
+): { repo: RepoConfig; branch: string; remote: string }[] | null {
   // map the bundle's github repos onto the configured ones by repo name —
   // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo. Skips
   // "owl": it never carries per-feature branches, so there's nothing on the
@@ -453,43 +318,55 @@ export async function startNewWorkspaceWizard(plugins: WorkspacePlugins): Promis
       okLabel: "OK",
       cancelLabel: null,
     });
-    return;
+    return null;
   }
-  // fetch every branch concurrently, each as a timed event-log row
+  return matches;
+}
+
+// Fetch the branches a remote / bundle / pull request source planned — at Create,
+// before anything else, each as a timed event-log row (a diverged local copy asks
+// before being overwritten) — then refresh those repos' branches. False when one
+// failed (reported): the caller creates nothing.
+async function fetchPlanned(
+  plugins: Pick<WorkspacePlugins, "config" | "dialogs" | "code" | "eventLog">,
+  planned: { repo: string; fetch: BranchFetch }[],
+): Promise<boolean> {
+  const { config, dialogs, code, eventLog } = plugins;
+  const pathByRepo = Object.fromEntries(config.config.repos.map((r) => [r.id, r.path]));
   const results = await Promise.all(
-    matches.map(async (m) => {
-      const eid = eventLog.begin(`fetching ${m.branch} (${m.repo.id}) from ${m.remote}`);
-      const r = await fetchRemoteBranch(dialogs, {
-        path: m.repo.path,
-        branch: m.branch,
-        pull_remote: m.remote,
-      });
+    planned.map(async ({ repo, fetch }) => {
+      const from = "remote" in fetch ? fetch.remote : `PR #${fetch.number}`;
+      const eid = eventLog.begin(`fetching ${fetch.branch} (${repo}) from ${from}`);
+      const path = pathByRepo[repo];
+      const r =
+        "remote" in fetch
+          ? await fetchRemoteBranch(dialogs, {
+              path,
+              branch: fetch.branch,
+              pull_remote: fetch.remote,
+            })
+          : await fetchPrHead(dialogs, { path, ...fetch });
       eventLog.finish(eid, r.ok ? "done" : "error");
-      return { ...m, ...r };
+      return { repo, ...r };
     }),
   );
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
     dialogs.error(
-      "Fetching bundle branches failed",
-      failed.map((f) => `${f.repo.id}: ${f.error}`).join("\n"),
+      "Fetching branches failed — nothing was created",
+      failed.map((f) => `${f.repo}: ${f.error}`).join("\n"),
     );
-    if (failed.length === results.length) return;
+    return false;
   }
-  const got = results.filter((r) => r.ok);
-  // the fetched branches must show up in the form's world (branch pickers, the
-  // created workspace's presence checks) — refresh just those repos
-  await code.refreshBranches(new Set(got.map((m) => m.repo.id)));
-  return startCreateWorkspace(plugins, {
-    name: info.name,
-    config: repoBranchList.format(got.map((m) => ({ repo: m.repo.id, branch: m.branch }))),
-    db: info.name,
-    template: "",
-    createBranches: false,
-    // the dumps the bundle's latest batch left on runbot, already proven to exist
-    // (the backend HEAD-probes them) — what "Restore runbot database" offers
-    dumps: info.dumps || [],
-  });
+  await code.refreshBranches(new Set(planned.map((p) => p.repo)));
+  return true;
+}
+
+// "New workspace": the create form with its Source select, opened on the first
+// template (or blank, with none).
+export function startNewWorkspace(plugins: WorkspacePlugins): Promise<void> {
+  const tpl = (plugins.config.config.templates || [])[0];
+  return startCreateWorkspace(plugins, templatePrefill(tpl), { pickSource: true });
 }
 
 // Download + restore a runbot dump into the workspace's own database, as its last
@@ -507,345 +384,197 @@ async function restoreRunbotDump(
   if (error) dialogs.error("Restoring the runbot database failed", error);
 }
 
-// Create a workspace through the unified form — the wizard's SECOND step (the
-// source — template or runbot bundle — was chosen in step one and arrives here
-// as `prefill`; the form itself no longer has a template field).
-// plugins: { config, dialogs, db, code, eventLog, wt }. `prefill`: { name,
-// config, db, args, demoData, template, category, createBranches, parent }.
-// `parent` isn't a form field — it's implicit from how the create flow was
-// invoked (e.g. a forward-port row's "sub workspace" button) and is passed
+// the configured repo a GitHub slug ("odoo/odoo", "odoo-dev/enterprise") means —
+// the exact repo, else one with the same repo name (a fork)
+function repoForGithub(repos: RepoConfig[], slug: string): RepoConfig | null {
+  const name = slug.split("/")[1];
+  return (
+    repos.find((r) => r.github === slug) ||
+    repos.find((r) => (r.github || "").split("/")[1] === name) ||
+    null
+  );
+}
+
+// a pull request URL (GitHub's or mergebot's: …/<owner>/<repo>/pull/<number>)
+const PR_URL_RE = /([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
+
+// Create a workspace through the New workspace dialog. `prefill`: { name, config,
+// db, args, demoData, template, category, createBranches, parent, dumps } — what
+// the caller's source (a template, a forward port's PRs, …) gives. `pickSource`
+// shows the source picker on top ("New workspace"): a template, an Odoo version, a
+// local or remote branch, a runbot bundle, or a pull request — picking one
+// re-prefills the form from it. `parent` isn't a form field — it's implicit from how the create flow
+// was invoked (e.g. a forward-port row's "sub workspace" button) and is passed
 // straight into the created workspace.
 export async function startCreateWorkspace(
   plugins: WorkspacePlugins,
   prefill: CreatePrefill = {},
+  { pickSource = false }: { pickSource?: boolean } = {},
 ): Promise<void> {
   const { config, dialogs, db, code, eventLog, wt } = plugins;
-  await db.load(); // populate the "Clone db" select
   const templates = config.config.templates || [];
-  const tpl = templates.find((t) => t.id === prefill.template) || null;
-  const existing = config.config.workspaces || [];
-  const dbNames = new Set(db.databases().map((d) => d.name));
-  // best-effort refresh so a branch created/fetched moments ago (e.g. in
-  // another tab) isn't reported stale by the hint/fork-set logic below. Reads
-  // live off `code.branchRepos()` (not a snapshot) so it also picks up a
-  // branch the "Search branches…" action just fetched, while the form is
-  // still open.
+  const tplOf = (id: string): TemplateConfig | null => templates.find((t) => t.id === id) || null;
+  await db.load(); // the existing databases (to pick, or clone)
+  // a template forks off a base version, so what the form can offer to restore is
+  // that version's own runbot database — looked up while the dialog is already
+  // open (a bundle source brings its own dumps)
+  const initialDumps = prefill.dumps
+    ? null
+    : baseVersionDumps(templateBranch(tplOf(prefill.template || "")));
+  // best-effort refresh so a branch created/fetched moments ago (e.g. in another
+  // tab) isn't reported stale by the form's attach/fork preview or the fork set below
   code.loadBranches();
   const hasLocalBranch = (repo: string, branch: string): boolean =>
     code
       .branchRepos()
       .find((r) => r.id === repo)
       ?.branches.some((b) => b.name === branch) ?? false;
-  const dbOptions = db.databases().map((d) => ({ value: d.name, label: d.name }));
-  const repoOptions = (config.config.repos || []).map((r) => ({ value: r.id, label: r.id }));
-  // "Restore runbot database": one option per database the bundle's latest batch
-  // dumped — "Enterprise Run — all (1.2 GB)". The option VALUE is the dump URL, so
-  // the form hands the restore step everything it needs. Only a bundle source
-  // prefills these, so the field is absent everywhere else.
-  const dumpOptions = (prefill.dumps || []).map((d) => ({
-    value: d.url,
-    label: dumpLabel(d),
-  }));
-  // ticked by default: whatever the prefilled config already covers, else every
-  // configured repo but the opt-in ones (a new task branch usually spans all of
-  // them). External repos, e.g. odoo/owl, are outside the CI ecosystem and rarely
-  // need a matching branch, so they're opt-in too.
-  const prefillRepoIds = prefill.config
-    ? repoBranchList.parse(prefill.config).map((c) => c.repo)
-    : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
-  // bundle / remote-branch / forward-port sources (createBranches: false) only
-  // fetched a branch for `prefillRepoIds` — anything the user ticks beyond that
-  // has no confirmed branch to attach; git worktree add for it fails with
-  // "invalid reference" and takes the whole creation down (see the check below,
-  // right before checkouts are used).
-  const verifiedRepos = prefill.createBranches === false ? new Set(prefillRepoIds) : null;
 
-  // default to the dump matching the checkout: an enterprise workspace wants the
-  // Enterprise run's db (community modules are in it too), a community-only one
-  // can't even load an enterprise dump. Within a build, "all" over "base" — "base"
-  // is a bare install, which is what an empty local db would give you anyway.
-  const wantsEnterprise = prefillRepoIds.includes("enterprise");
-  const bestDump =
-    (prefill.dumps || []).find(
-      (d) => d.db === "all" && /enterprise/i.test(d.slot) === wantsEnterprise,
-    ) || (prefill.dumps || []).find((d) => d.db === "all");
-  const res = await dialogs.open({
-    title: tpl ? `New workspace — from template "${tpl.name}"` : "New workspace",
-    okLabel: "Create",
-    validate: (v) => {
-      const name = (v.name || "").trim();
-      if (!name) return "a name is required";
-      if (existing.some((w) => w.name === name))
-        return `a workspace named "${name}" already exists`;
-      if (!repoBranchList.parse((v.config || "").trim()).length) return "a config is required";
-      if ((v.cloneDb || "") && !(v.db || "").trim())
-        return "set a database name to clone the selected database into";
-      if (v.location === "worktree" && v.cloneDb && dbNames.has((v.db || "").trim()))
-        return `database "${(v.db || "").trim()}" already exists — pick a new name to clone into`;
-      // both would write the same database, and the dump restore needs a fresh one
-      // in every location (it replays a schema, it doesn't seed an empty shell)
-      if (v.restoreDump && v.cloneDb)
-        return "clone a database or restore the runbot dump — not both";
-      if (v.restoreDump && !(v.db || "").trim())
-        return "set a database name to restore the runbot dump into";
-      if (v.restoreDump && dbNames.has((v.db || "").trim()))
-        return `database "${(v.db || "").trim()}" already exists — pick a new name to restore into`;
-      if (v.createVenv && v.location !== "worktree")
-        return 'a venv needs Location set to "Own worktree + port"';
-      return "";
-    },
-    fields: [
-      {
-        key: "location",
-        type: "select",
-        label: "Location",
-        value: prefill.location ?? (config.config.default_workspace_location || "main"),
-        options: [
-          { value: "main", label: "Main checkout (one loaded at a time)" },
-          {
-            value: "worktree",
-            // "+ port" only promises something goo actually manages — a "local"
-            // launch is the only mode where goo allocates a TCP port itself;
-            // "docker" routes by container name (no port), "external" owns its
-            // own port goo has no say in (see workspace_plugin.ts's port()/_baseUrl)
-            label:
-              config.config.launch_mode === "local"
-                ? "Own worktree + port (runs concurrently)"
-                : "Own worktree (runs concurrently)",
-          },
-        ],
-      },
-      {
-        key: "name",
-        type: "text",
-        label: "Name",
-        value: prefill.name ?? "",
-        placeholder: "name (e.g. master-mytask)",
-        onChange: (newName, currentValues, oldValues) => {
-          const forkingFresh = currentValues.createBranches !== false;
-          const updates: { config: string; demoData?: boolean; db?: string } = {
-            config: configFromRepos(
-              currentValues.repos || [],
-              newName.trim(),
-              currentValues.config,
-              !forkingFresh,
-            ),
-          };
-          // only stomp demoData while forking a fresh branch (same gating as
-          // config above) and with no template — attaching to an existing/remote
-          // branch shouldn't silently flip a checkbox the user didn't touch, and a
-          // template's own demo-data setting wins over the branch-based guess
-          if (forkingFresh && !tpl) updates.demoData = defaultDemoData(newName.trim());
-          // db stays in lockstep with name as it's typed (a blank db otherwise
-          // sails through Create silently, then fails Start with "no database
-          // configured") — full stomp while db is still empty or still exactly
-          // tracking the previous name (including the very first keystroke, an
-          // empty-to-empty match); once the user diverges db by hand, later
-          // name edits only best-effort replaceAll the old name within it,
-          // never overwriting a deliberately different value
-          const trimmed = newName.trim();
-          if (!currentValues.db || currentValues.db === oldValues.name) {
-            updates.db = trimmed;
-          } else if (oldValues.name) {
-            // db already diverged from name by hand — only best-effort replace
-            // the old name substring within it, and only when there IS an old
-            // name to replace (replaceAll("", newName) on nothing would
-            // otherwise splice newName between every character of db)
-            updates.db = currentValues.db.replaceAll(oldValues.name, newName);
-          }
-          return updates;
-        },
-      },
-      {
-        key: "repos",
-        type: "repo-checks",
-        label: "Repositories",
-        value: prefillRepoIds,
-        options: repoOptions,
-        onChange: (repoIds, currentValues) => ({
-          config: configFromRepos(
-            repoIds,
-            (currentValues.name || "").trim(),
-            currentValues.config,
-            currentValues.createBranches === false,
-          ),
-        }),
-      },
-      {
-        key: "config",
-        type: "text",
-        label: "Config",
-        value:
-          prefill.config ??
-          (prefill.name ? configFromRepos(prefillRepoIds, prefill.name.trim()) : ""),
-        placeholder: "community:master,enterprise:master",
-        // per-repo "will attach / will fork" preview, live off real local git
-        // state — the same ground truth forkRepos is computed from below, so
-        // this always matches what Create will actually do
-        hint: (values) => {
-          const checkouts = repoBranchList.parse((values.config || "").trim());
-          if (!checkouts.length) return null;
-          return checkouts
-            .map((c) =>
-              hasLocalBranch(c.repo, c.branch)
-                ? `${c.repo}: attach existing "${c.branch}"`
-                : `${c.repo}: fork new from ${baseBranchOf(c.branch)}`,
-            )
-            .join(" · ");
-        },
-      },
-      {
-        key: "branchSearch",
-        type: "action",
-        label: "Search local/remote branches…",
-        run: async (values) => {
-          const res = await dialogs.openComponent<RemoteBranchPick | null>(RemoteBranchDialog, {
-            repoIds: values.repos,
-          });
-          if (!res) return null;
-          const { pathByRepo, pullRemoteByRepo } = code.groups();
-          const toFetch = res.repos.filter((r) => !hasLocalBranch(r, res.branch) && pathByRepo[r]);
-          const fetchedNow: string[] = [];
-          for (const repoId of toFetch) {
-            const r = await fetchRemoteBranch(dialogs, {
-              path: pathByRepo[repoId],
-              branch: res.branch,
-              pull_remote: res.remoteByRepo[repoId] || pullRemoteByRepo[repoId],
-            });
-            if (r.ok) fetchedNow.push(repoId);
-            else dialogs.error("Fetching branch failed", `${repoId}: ${r.error}`);
-          }
-          if (fetchedNow.length) await code.refreshBranches(new Set(fetchedNow));
-          const repos = [...new Set([...values.repos, ...res.repos])];
-          // the searched branch applies to the repos it matched; any other
-          // already-ticked repo keeps whatever branch it already had
-          const currentByRepo = Object.fromEntries(
-            repoBranchList.parse(values.config || "").map((c) => [c.repo, c.branch]),
-          );
-          const config = repoBranchList.format(
-            repos.map((repo) => ({
-              repo,
-              branch: res.repos.includes(repo) ? res.branch : (currentByRepo[repo] ?? res.branch),
-            })),
-          );
-          return { name: res.branch, repos, config };
-        },
-      },
-      {
-        key: "db",
-        type: "text",
-        label: "Database",
-        value: prefill.db ?? prefill.name ?? "",
-        placeholder: "database name",
-      },
-      // Start args reach odoo-bin's own argument list regardless of how goo
-      // launches it (local subprocess or Docker) — unused only when goo never
-      // launches the server itself (launch_mode "external")
-      ...(config.config.launch_mode === "external"
-        ? []
-        : ([
-            {
-              key: "args",
-              type: "text",
-              label: "Start args",
-              value: prefill.args ?? "",
-              placeholder: "-i sale_management",
-            },
-          ] satisfies DialogField[])),
-      ...(config.config.workspace_categories_enabled
-        ? ([
-            {
-              key: "category",
-              type: "select",
-              label: "Category",
-              placeholder: "— none —",
-              options: categoryOptions(config),
-              value: prefill.category ?? "",
-            },
-          ] satisfies DialogField[])
-        : []),
-      {
-        key: "cloneDb",
-        type: "check-select",
-        label: "Clone db",
-        options: dbOptions,
-        value: "",
-        default: () => {
-          if (tpl?.db && dbNames.has(tpl.db)) return tpl.db;
-          return dbOptions[0]?.value || "";
-        },
-      },
-      // download + restore the bundle's own runbot database instead of starting from
-      // an empty one — the whole point of picking up a colleague's bundle is usually
-      // to reproduce something on their data. Bundle sources only (see dumpOptions).
-      ...(dumpOptions.length
-        ? ([
-            {
-              key: "restoreDump",
-              type: "check-select",
-              label: "Restore runbot database",
-              options: dumpOptions,
-              value: "",
-              default: () => bestDump?.url || dumpOptions[0].value,
-              hint: (v) =>
-                v.restoreDump
-                  ? "downloaded from runbot and restored after the workspace is created — this can take a while"
-                  : null,
-            },
-          ] satisfies DialogField[])
-        : []),
-      // same story as Start args: feeds --without-demo regardless of local vs.
-      // docker launch — unused only under launch_mode "external"
-      ...(config.config.launch_mode === "external"
-        ? []
-        : ([
-            {
-              key: "demoData",
-              type: "checkbox",
-              label: "Demo data",
-              value: prefill.demoData ?? defaultDemoData(prefill.name || ""),
-            },
-          ] satisfies DialogField[])),
-      {
-        key: "createBranches",
-        type: "checkbox",
-        label: "Create branches",
-        // true (the default, e.g. from a template): per repo, fork fresh unless
-        // that exact branch already exists locally (then attach it instead —
-        // see the hasLocalBranch-based forkRepos computation below). false
-        // (bundle / remote branch / forward-port prefills): the checkouts are
-        // already-existing local branches from an earlier fetch — attach them
-        // as-is, except any the source didn't actually confirm (see
-        // "Unconfirmed branch" below), which still fork from their base.
-        value: prefill.createBranches ?? true,
-      },
-      {
-        key: "activate",
-        type: "checkbox",
-        label: "Activate it (main)",
-        value: true,
-        // only meaningful for a main-located workspace (one loaded at a
-        // time) — a worktree runs concurrently from its own checkout, no
-        // activation step involved
-        visible: (v) => v.location !== "worktree",
-      },
-      // the venv is only ever consulted at launch by goo's own LOCAL subprocess
-      // (workspace_plugin.ts createWorktree) — a Docker container brings its own
-      // Python env, so this is local-mode-only, unlike Start args/Demo data above
-      ...(config.config.launch_mode === "local"
-        ? ([
-            {
-              key: "createVenv",
-              type: "checkbox",
-              label: "Create venv from requirements.txt (worktree)",
-              value: prefill.createVenv ?? false,
-            },
-          ] satisfies DialogField[])
-        : []),
-    ],
+  // Every value a source decides — the initial values, and what picking another
+  // source replaces them with. Repos ticked by default: whatever the config
+  // already covers, else every configured repo but the opt-in ones (a new task
+  // branch usually spans all of them; external repos, e.g. odoo/owl, are outside
+  // the CI ecosystem and rarely need a matching branch). A source attaching
+  // existing branches (createBranches: false) verifies exactly the repos it fetched.
+  const sourceValues = (
+    p: CreatePrefill,
+    sourceDumps: RunbotDump[],
+    fetches: Record<string, BranchFetch> = {},
+  ): SourceValues => {
+    const repos = p.config
+      ? repoBranchList.parse(p.config).map((c) => c.repo)
+      : (config.config.repos || []).filter((r) => !r.external && !r.opt_in).map((r) => r.id);
+    return {
+      template: p.template ?? "",
+      name: p.name ?? "",
+      repos,
+      config: p.config ?? (p.name ? configFromRepos(repos, p.name.trim()) : ""),
+      db: p.db ?? p.name ?? "",
+      // the form edits the modules a start installs apart from the other args
+      addons: splitStartArgs(p.args ?? "").addons,
+      args: splitStartArgs(p.args ?? "").extra,
+      category: p.category ?? "",
+      demoData: p.demoData ?? defaultDemoData(p.name || ""),
+      createBranches: p.createBranches ?? true,
+      verifiedRepos: p.createBranches === false ? repos : null,
+      dumps: sourceDumps,
+      fetches,
+    };
+  };
+  // the values of a source attaching existing branches, named after `name`. A
+  // branch with a planned fetch that's already local is attached as is: re-fetching
+  // could overwrite (or refuse) its unpushed commits.
+  const attachValues = (
+    name: string,
+    branches: CheckoutConfig[],
+    sourceDumps: RunbotDump[],
+    fetches: Record<string, BranchFetch> = {},
+  ): SourceValues =>
+    sourceValues(
+      { name, db: name, config: repoBranchList.format(branches), createBranches: false },
+      sourceDumps,
+      Object.fromEntries(
+        Object.entries(fetches).filter(([repo, f]) => !hasLocalBranch(repo, f.branch)),
+      ),
+    );
+
+  // load what a source picked in the dialog prefills (null: nothing loaded — any
+  // failure is reported by its own dialog)
+  const loadSource = async (req: SourceRequest): Promise<SourceValues | null> => {
+    if (req.kind === "template") {
+      const tpl = tplOf(req.id);
+      return sourceValues(templatePrefill(tpl), await baseVersionDumps(templateBranch(tpl)));
+    }
+    if (req.kind === "version") {
+      // the stable branch itself, ready to be renamed into a task branch forked off it
+      const { version } = req;
+      return sourceValues({ name: version }, await baseVersionDumps(version));
+    }
+    if (req.kind === "bundle") {
+      let info: BundleInfo;
+      try {
+        info = await postJSON<BundleInfo>("/api/runbot/bundle-info", { url: req.url });
+      } catch (e) {
+        dialogs.error("Reading the runbot bundle failed", errorMessage(e));
+        return null;
+      }
+      const matches = bundleMatches(plugins, info);
+      if (!matches) return null;
+      // the dumps the bundle's latest batch left on runbot, already proven to
+      // exist (the backend HEAD-probes them)
+      const branches = matches.map((m) => ({ repo: m.repo.id, branch: m.branch }));
+      const fetches = Object.fromEntries(
+        matches.map((m) => [m.repo.id, { branch: m.branch, remote: m.remote }]),
+      );
+      return attachValues(info.name, branches, info.dumps || [], fetches);
+    }
+    if (req.kind === "pr") {
+      const match = PR_URL_RE.exec(req.url);
+      if (!match) {
+        dialogs.error("Pull request", `not a pull request URL: ${req.url}`);
+        return null;
+      }
+      const github = `${match[1]}/${match[2]}`;
+      const repo = repoForGithub(config.config.repos || [], github);
+      if (!repo || !repo.path) {
+        dialogs.error("Pull request", `${github} isn't one of your configured repos`);
+        return null;
+      }
+      // the PR's head branch: read-only — it's fetched at Create
+      const number = Number(match[3]);
+      let name: string;
+      try {
+        const head = await postJSON<{ branch?: string }>("/api/prs/head", { repo: github, number });
+        if (!head.branch) throw new Error("could not resolve the PR's head branch");
+        name = head.branch;
+      } catch (e) {
+        dialogs.error("Pull request", errorMessage(e));
+        return null;
+      }
+      return attachValues(name, [{ repo: repo.id, branch: name }], await baseVersionDumps(name), {
+        [repo.id]: { branch: name, github, number },
+      });
+    }
+    // a local or remote branch, in every repo it was found in — a remote one is
+    // fetched at Create
+    const { branch, repos, remoteByRepo } = req.pick;
+    const branches = repos.map((repo) => ({ repo, branch }));
+    const fetches = Object.fromEntries(
+      Object.entries(remoteByRepo).map(([repo, remote]) => [repo, { branch, remote }]),
+    );
+    return attachValues(branch, branches, await baseVersionDumps(branch), fetches);
+  };
+
+  const initial = sourceValues(prefill, prefill.dumps || []);
+  const res = await dialogs.openComponent<CreateForm | null>(CreateWorkspaceDialog, {
+    initial: {
+      ...initial,
+      location: prefill.location ?? (config.config.default_workspace_location || "main"),
+      newDb: true,
+      existingDb: "", // the dialog preselects one
+      cloneDb: "",
+      restoreDump: "",
+      activate: false,
+      createVenv: prefill.createVenv ?? false,
+    } satisfies CreateForm,
+    blank: sourceValues({}, []),
+    pickSource,
+    loadSource,
+    categories: config.config.workspace_categories_enabled ? categoryOptions(config) : null,
+    ...(initialDumps ? { initialDumps } : {}),
   });
   if (!res) return;
+  const tpl = tplOf(res.template);
   const checkouts = repoBranchList.parse(res.config.trim());
+  // the source's branches that aren't local yet: fetched now, before anything is
+  // created — a failure creates nothing
+  const planned = checkouts
+    .map((c) => ({ repo: c.repo, fetch: res.fetches[c.repo] }))
+    .filter(
+      (p): p is { repo: string; fetch: BranchFetch } =>
+        !!p.fetch && checkouts.some((c) => c.repo === p.repo && c.branch === p.fetch.branch),
+    );
+  if (planned.length && !(await fetchPlanned(plugins, planned))) return;
   const startPointByRepo = Object.fromEntries(
     (tpl?.checkouts || []).map((c) => [c.repo, c.branch]),
   );
@@ -865,7 +594,8 @@ export async function startCreateWorkspace(
   const forkRepos = new Set<string>();
   if (res.createBranches) {
     for (const c of checkouts) if (!hasLocalBranch(c.repo, c.branch)) forkRepos.add(c.repo);
-  } else if (verifiedRepos) {
+  } else if (res.verifiedRepos) {
+    const verifiedRepos = new Set(res.verifiedRepos);
     // a repo ticked beyond what was actually fetched (createBranches still
     // false, e.g. "upgrade" isn't part of the bundle) has no real branch to
     // attach — ask before sending it: attaching a nonexistent branch fails the
@@ -896,7 +626,7 @@ export async function startCreateWorkspace(
       checkouts,
       startPointByRepo,
       baseId: tpl?.id || "",
-      on_create_args: (res.args || "").trim(),
+      on_create_args: startArgs(res.addons, res.args),
       demo_data: !!res.demoData,
       favorite: false,
       category: res.category || "",
@@ -923,7 +653,7 @@ export async function startCreateWorkspace(
     category: res.category || "",
     parent: prefill.parent || "",
     db: (res.db || "").trim(),
-    on_create_args: (res.args || "").trim(),
+    on_create_args: startArgs(res.addons, res.args),
     demo_data: !!res.demoData,
     location: "main",
     worktree: null,
@@ -1053,17 +783,11 @@ export async function createSubWorkspaceFromForwardPort(
     wt.select(existing.id);
     return;
   }
-  const repoFor = (slug: string): RepoConfig | null => {
-    const exact = (config.config.repos || []).find((r) => r.github === slug);
-    if (exact) return exact;
-    const name = slug.split("/")[1];
-    return (config.config.repos || []).find((r) => (r.github || "").split("/")[1] === name) || null;
-  };
   // one {repo, pull} per cell that both maps to a configured repo and has a PR (a
   // "waiting" cell — no PR yet — is skipped)
   const targets: PrTarget[] = [];
   for (const cell of row.cells || []) {
-    const repo = repoFor(cell.repository);
+    const repo = repoForGithub(config.config.repos || [], cell.repository);
     const pull = (cell.pulls || [])[0];
     if (repo && repo.path && pull) targets.push({ repo, pull });
   }

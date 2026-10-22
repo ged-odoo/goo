@@ -17,7 +17,7 @@ import { ServerPlugin } from "../core/server_plugin.ts";
 import { StorePlugin } from "../core/store_plugin.ts";
 import { WorkspacePlugin } from "../core/workspace_plugin.ts";
 import { ARCHIVED_CATEGORY, BASE_BRANCH_RE } from "../core/config.ts";
-import type { WorkspaceConfig } from "../core/config.ts";
+import type { WorkspaceConfig, WorkspaceLink } from "../core/config.ts";
 import { ICONS, LogConsole, SearchBox, appBus, m, mbCategory } from "../core/common.ts";
 import type { MbCategory } from "../core/common.ts";
 import type {
@@ -30,15 +30,21 @@ import type {
 import { branchKey } from "../core/models.ts";
 import type { CiCheck, CiRollup, PullRequest } from "../core/models.ts";
 import type { BranchInfo } from "../core/observed_models.ts";
-import { repoBranchList, timeAgo, nestByParent, descendantWorkspaces } from "../core/utils.ts";
+import {
+  autologinLink,
+  repoBranchList,
+  timeAgo,
+  nestByParent,
+  descendantWorkspaces,
+} from "../core/utils.ts";
 import {
   adoptCurrentCheckout,
   categoryOptions,
-  configFromRepos,
   deleteWorkspaceDialog,
   startCreateWorkspace,
-  startNewWorkspaceWizard,
+  startNewWorkspace,
 } from "./dialogs.ts";
+import { configFromRepos } from "./create_dialog.ts";
 import { ClaudeChat } from "./claude_chat.ts";
 import { CodePane } from "./code_pane.ts";
 import { AddonsPane, AssetsPane, TerminalPane, TestsPane } from "./panes.ts";
@@ -155,7 +161,7 @@ export class WorkspacesScreen extends Component {
           <div class="wt-list-title">
             <h1>Workspaces</h1>
             <span class="wt-sp"/>
-            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh every workspace's runbot / mergebot status" t-on-click="() => this.refreshStatuses()">
+            <button class="wt-new" t-att-disabled="this.refreshingStatuses()" title="refresh the runbot / mergebot status of every workspace but the archived ones" t-on-click="() => this.refreshStatuses()">
               <span t-if="this.refreshingStatuses()" class="wt-refresh-spin"/>
               <t t-else="" t-out="this.refreshIcon"/>
             </button>
@@ -272,8 +278,11 @@ export class WorkspacesScreen extends Component {
                 <span t-if="this.code.loading()" class="ws-refresh-spin"/>Refresh
               </button>
               <span class="wt-sp"/>
-              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.odooUrl(this.sel)" title="open /odoo (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.odooUrl(this.sel))"><t t-out="this.externalIcon"/>/odoo</button>
-              <button t-if="this.hasUrlButtons(this.sel)" class="pbtn ghost" t-att-disabled="!this.testsUrl(this.sel)" title="open /web/tests (autologin)" t-on-click="() => this.openWorkspaceUrl(this.sel, this.testsUrl(this.sel))"><t t-out="this.externalIcon"/>/web/tests</button>
+              <t t-if="this.hasUrlButtons(this.sel)">
+                <t t-foreach="this.workspaceLinks" t-as="link" t-key="link_index">
+                  <button class="pbtn ghost" t-att-disabled="!this.linkUrl(this.sel, link.path)" t-att-title="'open ' + link.path + ' on this workspace\'s server'" t-on-click="() => this.openWorkspaceUrl(this.sel, this.linkUrl(this.sel, link.path))"><t t-out="this.externalIcon"/><t t-out="link.label"/></button>
+                </t>
+              </t>
               <span class="wt-head-meta" t-att-title="this.sel.db || 'no database'"><t t-out="this.databaseIcon"/><b t-out="this.sel.db || '—'"/></span>
               <span t-if="this.config.config.launch_mode === 'local' and this.portOf(this.sel)" class="wt-head-meta wt-head-port">port <b t-out="this.portOf(this.sel)"/></span>
               <div class="dash-kebab-wrap">
@@ -453,7 +462,7 @@ export class WorkspacesScreen extends Component {
       if (!ids.size || key === loadedWsKey) return;
       loadedWsKey = key;
       untrack(() => {
-        this.code.loadWorkspace(ws.id, ids);
+        this.code.loadWorkspace(ws.id, ids, false, null, this._headKeys([ws]));
         // a worktree workspace's own branch/dirty state (Commit/WIP/Amend/Discard/
         // Rebase in its Code tab) lives at ITS OWN directory, never the main
         // checkout loadWorkspace above just scanned — fetched + stored separately
@@ -490,7 +499,9 @@ export class WorkspacesScreen extends Component {
       const key = [...ids].sort().join(",");
       if (!ids.size || key === loadedIds) return;
       loadedIds = key;
-      untrack(() => this.code.load(false, ids, ids));
+      untrack(() =>
+        this.code.load(false, ids, ids, null, this._headKeys(this._polledWorkspaces(false))),
+      );
     });
     // (2) runbot (bundle branches without a PR CI rollup) + mergebot (their PRs)
     // — body-tracked so it re-runs as branches/PRs stream in. Safe: both loaders
@@ -502,6 +513,20 @@ export class WorkspacesScreen extends Component {
       const prs = this._prs();
       if (prs.length) this.code.loadMergebot(prs);
     });
+  }
+
+  // the branches whose PR is looked up by head ref (forward ports, colleagues'
+  // PRs) — the given workspaces' checkouts and what their repos have checked out
+  // now — rather than every local branch of their repos (one GitHub ask each)
+  _headKeys(list: WorkspaceConfig[]): Set<string> {
+    const current = Object.fromEntries(this.code.branchRepos().map((r) => [r.id, r.current]));
+    const keys = new Set<string>();
+    for (const ws of list)
+      for (const c of ws.checkouts || []) {
+        keys.add(branchKey(c.repo, c.branch));
+        if (current[c.repo]) keys.add(branchKey(c.repo, current[c.repo]));
+      }
+    return keys;
   }
 
   // every repo referenced by any workspace's checkouts (for the list-wide load)
@@ -518,7 +543,13 @@ export class WorkspacesScreen extends Component {
   refreshWorkspace(ws: WorkspaceConfig) {
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
     if (!ids.size) return;
-    return this.code.loadWorkspace(ws.id, ids, true, this._workspaceStatusScope(ws));
+    return this.code.loadWorkspace(
+      ws.id,
+      ids,
+      true,
+      this._workspaceStatusScope(ws),
+      this._headKeys([ws]),
+    );
   }
 
   _workspaceStatusScope(ws: WorkspaceConfig) {
@@ -567,11 +598,12 @@ export class WorkspacesScreen extends Component {
   }
 
   // the workspaces whose runbot / mergebot status is worth scraping: the active
-  // ones, plus the selected one even if it is archived — archived means dormant
-  // (don't poll a graveyard of dead workspaces on every visit), but a workspace
-  // you explicitly opened is not dormant, and its detail header needs the state.
-  _polledWorkspaces() {
-    const selected = this.wt.selectedId();
+  // ones — archived means dormant (don't poll a graveyard of dead workspaces on
+  // every visit). `withSelected` adds the selected one even if it is archived: a
+  // workspace you explicitly opened is not dormant, and its detail header needs
+  // the state.
+  _polledWorkspaces(withSelected: boolean) {
+    const selected = withSelected ? this.wt.selectedId() : null;
     return (this.config.config.workspaces || []).filter(
       (ws) => ws.category !== ARCHIVED_CATEGORY || ws.id === selected,
     );
@@ -579,9 +611,9 @@ export class WorkspacesScreen extends Component {
 
   // branches needing the scraped runbot fallback: present, ours, pushed (or a base
   // branch), and not already covered by a PR's GitHub CI rollup
-  _runbotBranches(): string[] {
+  _runbotBranches(withSelected = true): string[] {
     const seen = new Set<string>();
-    for (const ws of this._polledWorkspaces()) {
+    for (const ws of this._polledWorkspaces(withSelected)) {
       for (const row of this.wsRows(ws)) {
         if (!row.present || this.code.isExternalRepo(row.github)) continue;
         if (!BASE_BRANCH_RE.test(row.branch) && !row.synced) continue;
@@ -594,10 +626,10 @@ export class WorkspacesScreen extends Component {
   }
 
   // the unique {github, number} of every PR across the polled workspaces (for mergebot)
-  _prs(): { github: string; number: number }[] {
+  _prs(withSelected = true): { github: string; number: number }[] {
     const seen = new Set<string>();
     const prs: { github: string; number: number }[] = [];
-    for (const ws of this._polledWorkspaces()) {
+    for (const ws of this._polledWorkspaces(withSelected)) {
       for (const row of this.prRows(ws)) {
         if (this.code.isExternalRepo(row.github)) continue;
         const key = `${row.github}#${row.pr.number}`;
@@ -609,13 +641,15 @@ export class WorkspacesScreen extends Component {
     return prs;
   }
 
-  // the list header's ⟳: force-refresh every workspace's runbot/mergebot status,
-  // spinning until both re-scrapes land (badges stay visible, update in place)
+  // the list header's ⟳: force-refresh the runbot/mergebot status of every
+  // workspace but the archived ones (even a selected archived one — its detail
+  // Refresh is the way to re-scrape it), spinning until both re-scrapes land
+  // (badges stay visible, update in place)
   async refreshStatuses() {
     if (this.refreshingStatuses()) return;
     this.refreshingStatuses.set(true);
     try {
-      await this.code.refreshStatuses(this._runbotBranches(), this._prs());
+      await this.code.refreshStatuses(this._runbotBranches(false), this._prs(false));
     } finally {
       this.refreshingStatuses.set(false);
     }
@@ -1369,14 +1403,14 @@ export class WorkspacesScreen extends Component {
     return this.isWt(ws) || this.config.config.launch_mode !== "external";
   }
 
-  odooUrl(ws: WorkspaceConfig): string {
-    if (this.isWt(ws)) return this.wt.odooUrl(ws);
-    return this.mainLink(ws, "/odoo?debug=assets");
+  // the detail header's buttons (configured in the Config tab's "Workspace links")
+  get workspaceLinks(): WorkspaceLink[] {
+    return (this.config.config.workspace_links || []).filter((l) => l.label && l.path);
   }
 
-  testsUrl(ws: WorkspaceConfig): string {
-    if (this.isWt(ws)) return this.wt.testsUrl(ws);
-    return this.mainLink(ws, "/web/tests?debug=assets&timeout=500000&manual=true");
+  // a workspace link's URL on `ws`'s own server; "" while it isn't running
+  linkUrl(ws: WorkspaceConfig, path: string): string {
+    return this.isWt(ws) ? this.wt.link(ws, path) : this.mainLink(ws, path);
   }
 
   // the main server's link: its container's nginx host in docker mode, else the
@@ -1388,9 +1422,7 @@ export class WorkspacesScreen extends Component {
       this.config.config.launch_mode === "docker"
         ? this.wt.dockerSlugUrl(server.docker_container)
         : "http://localhost:8069/";
-    if (!base) return "";
-    if (this.config.config.autologin_links === false) return `${base}${path.replace(/^\//, "")}`;
-    return `${base}dev/autologin?to=${encodeURIComponent(path)}`;
+    return autologinLink(base, path, this.config.config.autologin_links !== false);
   }
 
   open(url: string): void {
@@ -1471,7 +1503,10 @@ export class WorkspacesScreen extends Component {
     if (this.isWt(ws)) return this.wt.remove(ws);
     // main-located: the shared delete dialog (branches / PRs / db cleanup)
     const ids = new Set((ws.checkouts || []).map((c) => c.repo));
-    await Promise.all([this.code.load(false, ids, ids), this.db.load()]);
+    await Promise.all([
+      this.code.load(false, ids, ids, null, this._headKeys([ws])),
+      this.db.load(),
+    ]);
     return deleteWorkspaceDialog(ws, {
       config: this.config,
       code: this.code,
@@ -1604,7 +1639,7 @@ export class WorkspacesScreen extends Component {
   }
 
   create() {
-    return startNewWorkspaceWizard(this._dialogPlugins());
+    return startNewWorkspace(this._dialogPlugins());
   }
 
   adoptCheckout() {

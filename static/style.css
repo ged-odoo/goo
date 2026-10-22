@@ -313,6 +313,18 @@ a {
 .nav-target:hover .nt-menu {
   display: flex;
 }
+/* the main workspaces scroll on their own, so a long list never runs off the
+   screen while the running worktrees and "All workspaces →" stay in view (the
+   menu itself can't scroll: that would clip its hover bridge above) */
+.nt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--chrome-line) transparent;
+}
 .nt-item {
   display: flex;
   align-items: center;
@@ -3706,8 +3718,7 @@ tr.active td.brg-commit {
   outline: none;
   border-color: var(--l-accent-line);
 }
-/* launch-mode picker (Config screen, above Odoo settings) — same card-radio
-   look as the new-workspace wizard's source picker (.ws-wiz-option) */
+/* launch-mode picker (Config screen, above Odoo settings) — card radios */
 .launch-mode-picker {
   display: flex;
   gap: 10px;
@@ -4265,91 +4276,10 @@ tr.active td.brg-commit {
   border-radius: 8px;
 }
 
-/* ─── remote branch dialog ─── */
-.dialog.rbd {
-  width: min(520px, 92vw);
-}
-/* new-workspace wizard, step 1: source picker (template / runbot bundle) */
-.dialog.ws-wiz {
-  width: min(520px, 92vw);
-}
-.ws-wiz-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
-  border: 1px solid var(--l-line);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: 0.12s;
-}
-.ws-wiz-option:hover {
-  background: var(--l-hover);
-}
-.ws-wiz-option.selected {
-  border-color: var(--l-accent-line);
-  background: var(--l-accent-soft);
-}
-.ws-wiz-option input[type="radio"] {
-  margin-top: 3px;
-  accent-color: var(--l-accent);
-}
-.ws-wiz-opt-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ws-wiz-opt-title {
-  font-weight: 600;
-  color: var(--l-text);
-}
-.ws-wiz-opt-hint {
-  font-size: 12px;
-}
-.ws-wiz-select,
-.ws-wiz-url {
-  font-size: 12.5px;
-  color: var(--l-text);
-  background: var(--l-card);
-  border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
-  padding: 7px 10px;
-  width: 100%;
-  box-sizing: border-box;
-}
-.ws-wiz-url {
-  font-family: var(--mono);
-}
-.ws-wiz-select:disabled,
-.ws-wiz-url:disabled {
-  opacity: 0.5;
-}
-.ws-wiz-url:focus,
-.ws-wiz-select:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
-}
 .dialog.commit-msg-dialog {
   width: min(560px, 92vw);
 }
-.rbd-input {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--l-text);
-  background: var(--l-card);
-  border: 1px solid var(--l-panel-line);
-  border-radius: 8px;
-  padding: 8px 11px;
-  width: 100%;
-  box-sizing: border-box;
-}
-.rbd-input:focus {
-  outline: none;
-  border-color: var(--l-accent-line);
-}
+/* ─── branch results list (create-workspace branch combobox, database import) ─── */
 .rbd-results {
   min-height: 60px;
   max-height: 280px;
@@ -4401,6 +4331,221 @@ tr.active td.brg-commit {
 .rbd-repo-tag.local {
   color: var(--l-green);
   background: var(--l-green-bg);
+}
+/* ─── New workspace dialog: source radios on top, the form in two columns ─── */
+/* a form taller than the window scrolls with its backdrop, never inside the
+   dialog: a scrolling dialog body would clip the comboboxes' result lists (they
+   overlap the fields — and the footer — below them) */
+.dialog-backdrop.cwd-backdrop {
+  overflow-y: auto;
+  /* top-aligned + auto margins: centered while it fits, its top still
+     reachable when it doesn't (a centered overflow would cut it off) */
+  align-items: flex-start;
+  padding: 4vh 0;
+  box-sizing: border-box;
+}
+.dialog.cwd {
+  width: min(820px, 94vw);
+  margin: auto 0;
+}
+.cwd-sources {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto; /* one line: scrolls rather than wraps on a narrow screen */
+}
+.cwd-source {
+  flex: 1 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 7px 10px;
+  border: 1px solid var(--l-line);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--l-text);
+  cursor: pointer;
+  transition: 0.12s;
+}
+.cwd-source:hover {
+  background: var(--l-hover);
+}
+.cwd-source.selected {
+  border-color: var(--l-accent-line);
+  background: var(--l-accent-soft);
+}
+.cwd-source input[type="radio"] {
+  margin: 0;
+  accent-color: var(--l-accent);
+}
+.cwd-source-input {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--l-line);
+}
+.cwd-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cwd-repo {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cwd-repo-id {
+  min-width: 88px;
+}
+.cwd-repo-branch {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text);
+  overflow-wrap: anywhere;
+}
+.cwd-repo-action {
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--l-text-dim);
+}
+.cwd-repo-action.attach {
+  color: var(--l-green);
+}
+.cwd-repo-action.fetch {
+  color: var(--l-accent);
+}
+.cwd-url-row {
+  display: flex;
+  gap: 8px;
+}
+.cwd-url-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.cwd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 24px;
+  align-items: start;
+}
+/* the second row (First start / Database): set apart from Name / Location above */
+.cwd-sections {
+  padding-top: 14px;
+  border-top: 1px solid var(--l-line);
+}
+.cwd-section-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--l-text);
+}
+.cwd-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .cwd-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
+.branch-cb {
+  position: relative;
+}
+/* Addons: picked modules as chips, the search input inline after them — one box
+   that looks like a text input */
+.addons-cb-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  min-height: 36px;
+  box-sizing: border-box;
+  background: var(--l-card);
+  border: 1px solid var(--l-panel-line);
+  border-radius: 8px;
+  cursor: text;
+}
+.addons-cb-box:focus-within {
+  border-color: var(--l-accent-line);
+}
+.addons-cb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px 1px 8px;
+  border-radius: 6px;
+  background: var(--l-accent-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text);
+}
+.addons-cb-remove {
+  border: 0;
+  padding: 0 3px;
+  background: none;
+  color: var(--l-text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.addons-cb-remove:hover {
+  color: var(--l-text);
+}
+.dialog-field .addons-cb-box input.addons-cb-input {
+  flex: 1;
+  min-width: 120px;
+  border: 0;
+  padding: 3px 2px;
+  background: none;
+}
+/* a row is the module name, then its app tag + summary — the summary is what
+   gives way (an ellipsis) when the row is too narrow, never the list's width */
+.branch-cb-list {
+  overflow-x: hidden;
+}
+.addons-cb .rbd-branch {
+  flex: none;
+}
+.addons-cb .rbd-repos {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.addons-cb .rbd-repo-tag {
+  flex: none;
+}
+.addons-cb-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the odoo-bin parameters the first start gets, under Start args */
+.cwd-command {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--l-panel);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--l-text);
+  overflow-wrap: anywhere;
+}
+.branch-cb-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.branch-cb-list {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-height: 0;
+  background: var(--l-card);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
 }
 /* a field's live, secondary line under its own input (e.g. the create-workspace
    form's "will attach / will fork" preview) */

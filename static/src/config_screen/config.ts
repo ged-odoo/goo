@@ -29,7 +29,13 @@ import { Panel } from "../core/panel.ts";
 // ── ListEditor specs (see SPECS at the bottom) ─────────────────────────────────
 
 // the config lists a ListEditor edits
-type ListKey = "repos" | "docker_images" | "templates" | "workspace_categories" | "test_presets";
+type ListKey =
+  | "repos"
+  | "docker_images"
+  | "templates"
+  | "workspace_categories"
+  | "test_presets"
+  | "workspace_links";
 
 // a stored list record / one saved by the editor, read and written by field key
 type EditItem = Record<string, unknown>;
@@ -781,8 +787,8 @@ export class ConfigScreen extends Component {
             <input id="setting-ws-categories" type="checkbox" class="settings-check" title="Group the Workspaces list under collapsible per-category headers (see the Workspace categories section below). Each workspace picks its category in its create/edit dialog."
                    t-att-checked="this.config.config.workspace_categories_enabled"
                    t-on-change="ev => this.config.updateConfig({ workspace_categories_enabled: ev.target.checked })"/>
-            <label for="setting-autologin-links" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
-            <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the /odoo and /web/tests buttons link the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
+            <label for="setting-autologin-links" title="When off, the workspace links (a workspace's header buttons) open the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves.">autologin links</label>
+            <input id="setting-autologin-links" type="checkbox" class="settings-check" title="When off, the workspace links (a workspace's header buttons) open the plain path instead of goo's dev-only autologin route — for people who'd rather log in themselves."
                    t-att-checked="this.config.config.autologin_links"
                    t-on-change="ev => this.config.updateConfig({ autologin_links: ev.target.checked })"/>
             <label for="setting-cleanup-enabled" title="Once a day, automatically delete a worktree workspace once every checkout with a PR shows it merged (skipped if anything is dirty or unpushed). Branches are only ever deleted locally, never on the remote.">auto-delete merged workspaces</label>
@@ -819,6 +825,7 @@ export class ConfigScreen extends Component {
         <ListEditor kind="'categories'"/>
         <ListEditor kind="'testPresets'"/>
         <LinksEditor/>
+        <ListEditor kind="'workspaceLinks'"/>
         <div class="config-block">
           <h2 class="subtitle">Backup</h2>
           <p class="dim">goo stores your config on the server (~/.config/goo/config.json). Save a copy to a file, or restore one.</p>
@@ -1264,6 +1271,32 @@ export const SPECS: Record<string, ListSpec> = {
     ],
     validate(): string | null {
       return null; // a category removed while still assigned just falls back to uncategorized
+    },
+  },
+  workspaceLinks: {
+    key: "workspace_links",
+    title: "Workspace links",
+    itemName: "link",
+    reorderable: true, // drag the handle to reorder the buttons in a workspace's header
+    fields: [
+      {
+        key: "label",
+        name: "label",
+        placeholder: "label (e.g. /odoo)",
+        className: "w-name",
+        title: "the button's text in a workspace's header",
+      },
+      {
+        key: "path",
+        name: "path",
+        placeholder: "path on the workspace's server, e.g. /odoo/action-sale.action_orders",
+        className: "w-flex",
+        title:
+          "opened on the workspace's own server (its port or container), through the autologin route unless that's off",
+      },
+    ],
+    validate(): string | null {
+      return null;
     },
   },
   testPresets: {

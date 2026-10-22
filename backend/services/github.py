@@ -1,8 +1,8 @@
 """GitHub PRs + CI rollups, fetched via the `gh` CLI."""
 
 import json
+import os
 import subprocess
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any
@@ -67,6 +67,53 @@ def _ci_rollup(rollup: list[dict[str, Any]] | None) -> CiRollup:
         overall = ""
     runbot = next((c.state for c in checks if c.context == "ci/runbot"), "")
     return CiRollup(overall=overall, runbot=runbot, checks=checks)
+
+
+# branches asked per GraphQL query — well under GitHub's node limits even with
+# every PR's last-commit checks (10 PRs × 100 checks each)
+_HEADS_PER_QUERY = 50
+
+# what a head-ref lookup reads of each PR: the PullRequest fields, plus the last
+# commit's checks (CheckRun / StatusContext — the keys _ci_rollup reads)
+_PR_FRAGMENT = (
+    "fragment pr on PullRequest { number title url state isDraft headRefName "
+    "createdAt updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { "
+    "contexts(first: 100) { nodes { ... on CheckRun { name status conclusion detailsUrl } "
+    "... on StatusContext { context state targetUrl } } } } } } } }"
+)
+
+
+def _head_pr(gh_repo: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The PullRequest dict of the best of a branch's head-ref PRs (an open one is
+    the live one; otherwise the most recently touched), or None when it has none."""
+    if not rows:
+        return None
+    rows = sorted(
+        rows, key=lambda pr: (pr.get("state") == "OPEN", pr.get("updatedAt", "")), reverse=True
+    )
+    pr = rows[0]
+    commits = (pr.get("commits") or {}).get("nodes") or [{}]
+    rollup = ((commits[-1].get("commit") or {}).get("statusCheckRollup") or {}).get("contexts")
+    return asdict(
+        PullRequest(
+            github=gh_repo,
+            number=pr["number"],
+            title=pr.get("title", ""),
+            url=pr.get("url", ""),
+            state=(pr.get("state") or "").lower(),
+            branch=pr.get("headRefName", ""),
+            relation="head",
+            draft=pr.get("isDraft", False),
+            created_at=pr.get("createdAt", ""),
+            updated_at=pr.get("updatedAt", ""),
+            ci=_ci_rollup(((rollup or {}).get("nodes")) or []),
+        )
+    )
+
+
+# the newest branches per repo GitHub returns for a search's longest word — the
+# other words then narrow them down
+_REFS_PER_REPO = 100
 
 
 class _FetchFailed(Exception):
@@ -148,13 +195,19 @@ class GitHubService:
         return entry
 
     def prs_for_branches(
-        self, pairs: list[dict[str, Any]], refresh: bool = False
+        self,
+        pairs: list[dict[str, Any]],
+        refresh: bool = False,
+        unresolved: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """For each {github, branch}: the PR whose head is that branch, regardless
         of author, so forward-port / colleagues' PRs resolve too (the authored
         `prs()` fetch misses them). Returns a flat list of PullRequest dicts
         (`relation="head"`), one per branch that has a matching PR. Cached per
-        (github, branch); refresh=True bypasses it."""
+        (github, branch) — "no PR" included; refresh=True bypasses it. The branches
+        the cache doesn't hold are asked together, in batched GraphQL queries.
+        `unresolved`, when given, collects the {github, branch} a failed query
+        couldn't answer — unknown, not "no PR"."""
         seen, uniq = set(), []
         for p in pairs:
             gh_repo, branch = p.get("github"), p.get("branch")
@@ -162,68 +215,79 @@ class GitHubService:
                 continue
             seen.add((gh_repo, branch))
             uniq.append((gh_repo, branch))
-        if not uniq:
-            return []
-        if refresh:
-            for gh_repo, branch in uniq:
-                self.cache.invalidate(("head", gh_repo, branch))
-        with ThreadPoolExecutor(max_workers=min(8, len(uniq))) as pool:
-            results = pool.map(
-                lambda gb: self.cache.get(
-                    ("head", gb[0], gb[1]), lambda gb=gb: self._fetch_head(*gb)
-                ),
-                uniq,
-            )
-        return [pr for pr in results if pr]
+        found: dict[tuple[str, str], dict[str, Any] | None] = {}
+        missing = []
+        for gh_repo, branch in uniq:
+            key = ("head", gh_repo, branch)
+            if refresh:
+                self.cache.invalidate(key)
+            hit, pr = self.cache.peek(key)
+            if hit:
+                found[(gh_repo, branch)] = pr
+            else:
+                missing.append((gh_repo, branch))
+        for start in range(0, len(missing), _HEADS_PER_QUERY):
+            chunk = missing[start : start + _HEADS_PER_QUERY]
+            fetched = self._fetch_heads(chunk)
+            if fetched is None:
+                # the query failed: leave these uncached, re-askable
+                if unresolved is not None:
+                    unresolved += [{"github": g, "branch": b} for g, b in chunk]
+                continue
+            for gh_repo, branch in chunk:
+                pr = fetched.get((gh_repo, branch))
+                self.cache.put(("head", gh_repo, branch), pr)
+                found[(gh_repo, branch)] = pr
+        return [pr for k in uniq if (pr := found.get(k))]
 
-    def _fetch_head(self, gh_repo: str, branch: str) -> dict[str, Any] | None:
-        """The best PR whose head ref is `branch` (open preferred, else most recently
-        updated), or None. Returns a PullRequest dict, cached by the caller."""
-        self.io.log_request(f"gh pr list --repo {gh_repo} --head {branch}")
+    def _fetch_heads(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any] | None] | None:
+        """The best PR whose head ref is each (github, branch) — open preferred,
+        else the most recently updated — in ONE `gh api graphql` call: an aliased
+        `pullRequests(headRefName:)` per branch, grouped under an aliased
+        `repository` per repo. Repo and branch names travel as variables, never
+        spliced into the query text. {pair: PullRequest dict or None}, or None when
+        the call itself failed."""
+        by_repo: dict[str, list[str]] = {}
+        for gh_repo, branch in pairs:
+            by_repo.setdefault(gh_repo, []).append(branch)
+        decls, fields, args = [], [], []
+        aliases: dict[tuple[str, str], tuple[str, str]] = {}  # pair -> (repo alias, branch alias)
+        b = 0
+        for r, (gh_repo, branches) in enumerate(by_repo.items()):
+            owner, _, name = gh_repo.partition("/")
+            decls += [f"$o{r}: String!", f"$n{r}: String!"]
+            args += ["-f", f"o{r}={owner}", "-f", f"n{r}={name}"]
+            heads = []
+            for branch in branches:
+                decls.append(f"$b{b}: String!")
+                args += ["-f", f"b{b}={branch}"]
+                heads.append(
+                    f"b{b}: pullRequests(headRefName: $b{b}, first: 10, "
+                    "states: [OPEN, CLOSED, MERGED], "
+                    "orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { ...pr } }"
+                )
+                aliases[(gh_repo, branch)] = (f"r{r}", f"b{b}")
+                b += 1
+            fields.append(f"r{r}: repository(owner: $o{r}, name: $n{r}) {{ {' '.join(heads)} }}")
+        query = f"query({', '.join(decls)}) {{ {' '.join(fields)} }} {_PR_FRAGMENT}"
+        self.io.log_request(
+            f"gh api graphql (PRs by head: {len(pairs)} branches in {len(by_repo)} repos)"
+        )
         try:
-            r = self.io.run(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--repo",
-                    gh_repo,
-                    "--head",
-                    branch,
-                    "--state",
-                    "all",
-                    "--limit",
-                    "10",
-                    "--json",
-                    "number,title,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
-                ],
-                timeout=30,
-            )
-            if r.returncode != 0:
-                return None
-            rows = json.loads(r.stdout)
+            r = self.io.run(["gh", "api", "graphql", "-f", f"query={query}", *args], timeout=60)
+            data = json.loads(r.stdout).get("data") if r.stdout else None
         except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
             return None
-        if not rows:
-            return None
-        # an open PR is the live one; otherwise the most recently touched
-        rows.sort(key=lambda pr: (pr.get("state") == "OPEN", pr.get("updatedAt", "")), reverse=True)
-        pr = rows[0]
-        return asdict(
-            PullRequest(
-                github=gh_repo,
-                number=pr.get("number"),
-                title=pr.get("title", ""),
-                url=pr.get("url", ""),
-                state=(pr.get("state") or "").lower(),
-                branch=pr.get("headRefName", ""),
-                relation="head",
-                draft=pr.get("isDraft", False),
-                created_at=pr.get("createdAt", ""),
-                updated_at=pr.get("updatedAt", ""),
-                ci=_ci_rollup(pr.get("statusCheckRollup")),
-            )
-        )
+        if not isinstance(data, dict):
+            return None  # an error reply with no data at all
+        result: dict[tuple[str, str], dict[str, Any] | None] = {}
+        for (gh_repo, branch), (ra, ba) in aliases.items():
+            # a repo GitHub can't resolve comes back null: no PR there
+            rows = ((data.get(ra) or {}).get(ba) or {}).get("nodes") or []
+            result[(gh_repo, branch)] = _head_pr(gh_repo, rows)
+        return result
 
     def pr_infos(self, pairs: list[dict[str, Any]], refresh: bool = False) -> list[dict[str, Any]]:
         """Full PR info (title, url, state, ci, ...) for explicit {github, number}
@@ -533,73 +597,91 @@ class GitHubService:
             return "", str(e)
         return data.get("headRefName", ""), None
 
-    def search_branches(self, repos: list[dict[str, Any]], query: str) -> list[dict[str, str]]:
-        """Search GitHub for branches whose name starts with `query`, across each
-        repo's upstream (`github`) slug and its push remote's fork slug — a branch
-        pushed only to a personal/team fork never reaches upstream, so both are
-        searched (one `gh api` call per slug, in parallel across repos). Each
-        result also carries the git remote name to fetch it from (`pull_remote`
-        for an upstream match, else the fork's `push_remote`) — a caller that
-        blindly fetches from `pull_remote` gets "couldn't find remote ref" for a
-        fork-only branch. Returns a list of {repo: id, branch: name, remote: name}."""
-        results = []
-        lock = threading.Lock()
+    def search_branches(
+        self, repos: list[dict[str, Any]], query: str, limit: int = 20
+    ) -> tuple[list[dict[str, str]], str | None]:
+        """Search the branches of each repo's upstream (`github`) and of its push
+        remote's fork (a branch pushed only to the shared dev fork never reaches
+        upstream), in ONE `gh api graphql` call: GitHub filters the names itself
+        (`refs(query:)` — a case-insensitive substring), so no branch list is ever
+        downloaded. The query's longest word is the one GitHub matches; its newest
+        matches per repo are then narrowed to those holding every other word too.
+        The `limit` most recently committed branch names are kept, newest first.
+        Each result carries the git remote to fetch it from (`pull_remote` when
+        upstream has it, else the fork's `push_remote`). Returns
+        ([{repo: id, branch: name, remote: name}], error or None)."""
+        terms = query.lower().split()
+        if not terms:
+            return [], None
+        sources = []  # (repo id, github slug, remote) — upstream first: it wins
+        for r in repos:
+            upstream = r.get("github") or ""
+            if upstream:
+                sources.append((r["id"], upstream, r.get("pull_remote") or "origin"))
+            fork = self._fork_slug(r)
+            if fork and fork != upstream:
+                sources.append((r["id"], fork, r.get("push_remote") or "dev"))
+        if not sources:
+            return [], None
+        longest = max(terms, key=len)
+        decls, fields, args = ["$q: String!"], [], ["-f", f"q={longest}"]
+        for i, (_repo, slug, _remote) in enumerate(sources):
+            owner, _, name = slug.partition("/")
+            decls += [f"$o{i}: String!", f"$n{i}: String!"]
+            args += ["-f", f"o{i}={owner}", "-f", f"n{i}={name}"]
+            fields.append(
+                f"s{i}: repository(owner: $o{i}, name: $n{i}) {{ refs(refPrefix: "
+                f'"refs/heads/", query: $q, first: {_REFS_PER_REPO}, orderBy: '
+                "{field: TAG_COMMIT_DATE, direction: DESC}) { nodes { name "
+                "target { ... on Commit { committedDate } } } } }"
+            )
+        gql = f"query({', '.join(decls)}) {{ {' '.join(fields)} }}"
+        self.io.log_request(
+            f"gh api graphql (branches matching {longest!r} in {len(sources)} repos)"
+        )
+        try:
+            res = self.io.run(["gh", "api", "graphql", "-f", f"query={gql}", *args], timeout=30)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return [], f"GitHub's branch search failed: {e}"
+        try:
+            data = json.loads(res.stdout).get("data") if res.stdout else None
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
+            return [], res.stderr.strip() or "GitHub's branch search failed"
+        remote_of: dict[tuple[str, str], str] = {}  # (repo, branch) -> remote to fetch from
+        newest: dict[str, str] = {}  # branch -> its latest commit date, across repos
+        for i, (repo, _slug, remote) in enumerate(sources):
+            # a repo GitHub can't resolve (a fork that doesn't exist) comes back null
+            nodes = (((data.get(f"s{i}") or {}).get("refs") or {}).get("nodes")) or []
+            for node in nodes:
+                branch = node.get("name") or ""
+                if not branch or not all(t in branch.lower() for t in terms):
+                    continue
+                remote_of.setdefault((repo, branch), remote)
+                date = (node.get("target") or {}).get("committedDate") or ""
+                newest[branch] = max(newest.get(branch, ""), date)
+        best = sorted(newest, key=lambda b: (newest[b], b), reverse=True)[: max(1, limit)]
+        rank = {b: i for i, b in enumerate(best)}
+        hits = sorted(
+            ((repo, b, remote) for (repo, b), remote in remote_of.items() if b in rank),
+            key=lambda h: rank[h[1]],
+        )
+        return [{"repo": repo, "branch": b, "remote": remote} for repo, b, remote in hits], None
 
-        def matching_refs(slug: str) -> list[str]:
-            try:
-                res = self.io.run(
-                    [
-                        "gh",
-                        "api",
-                        f"repos/{slug}/git/matching-refs/heads/{query}",
-                        "--jq",
-                        ".[].ref",
-                    ],
-                    timeout=15,
-                )
-                if res.returncode != 0:
-                    return []
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                return []
-            found = []
-            for line in res.stdout.splitlines():
-                branch = line.strip()
-                if branch.startswith("refs/heads/"):
-                    branch = branch[len("refs/heads/") :]
-                if branch:
-                    found.append(branch)
-            return found
-
-        def fork_slug(r: dict[str, Any]) -> str | None:
-            path, push_remote = r.get("path"), r.get("push_remote")
-            if not path or not push_remote:
-                return None
-            try:
-                pu = self.io.run(
-                    ["git", "-C", path, "remote", "get-url", push_remote], timeout=10, quiet=True
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                return None
-            return parse_github_slug(pu.stdout.strip()) if pu.returncode == 0 else None
-
-        def search_one(r: dict[str, Any]) -> None:
-            found = {}  # branch -> remote name; an upstream match wins over a fork one
-            github = r.get("github", "")
-            if github:
-                for branch in matching_refs(github):
-                    found[branch] = r.get("pull_remote") or "origin"
-            fork = fork_slug(r)
-            if fork and fork != github:
-                push_remote = r.get("push_remote") or "dev"
-                for branch in matching_refs(fork):
-                    found.setdefault(branch, push_remote)
-            with lock:
-                for branch, remote in found.items():
-                    results.append({"repo": r["id"], "branch": branch, "remote": remote})
-
-        threads = [threading.Thread(target=search_one, args=(r,), daemon=True) for r in repos]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=20)
-        return results
+    def _fork_slug(self, r: dict[str, Any]) -> str | None:
+        """The GitHub slug the repo's push remote points at (its dev fork), read from
+        the checkout's own remote URL; None without one. A configured path may be
+        written "~/…": git -C doesn't expand it."""
+        path, push_remote = r.get("path"), r.get("push_remote")
+        if not path or not push_remote:
+            return None
+        try:
+            pu = self.io.run(
+                ["git", "-C", os.path.expanduser(path), "remote", "get-url", push_remote],
+                timeout=10,
+                quiet=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        return parse_github_slug(pu.stdout.strip()) if pu.returncode == 0 else None
