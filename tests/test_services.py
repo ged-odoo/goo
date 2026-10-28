@@ -776,7 +776,7 @@ class NightlyServiceTest(unittest.TestCase):
 
     def test_fetch_versions_parses_starred_bundles_only(self):
         html = (
-            '<div class="row bundle_row"><i class="fa fa-star"></i>'
+            '<div class="row bundle_row border-bottom"><i class="fa fa-star"></i>'
             '<a href="/runbot/bundle/1" title="View Bundle master">master</a></div>'
             '<div class="row bundle_row">'  # not starred -> excluded
             '<a href="/runbot/bundle/2" title="View Bundle saas-19.4">saas-19.4</a></div>'
