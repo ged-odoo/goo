@@ -23,7 +23,7 @@ MERGEBOT_BASE = "https://mergebot.odoo.com"
 # sticky series (master, 19.0, saas-19.4, …). The CI status, the pasted-bundle lookup
 # and the dump lookup read a bundle's row (RunbotService._bundle_html); the Nightly
 # screen walks the starred series.
-_BUNDLE_ROW_RE = re.compile(r'class="row bundle_row"')
+_BUNDLE_ROW_RE = re.compile(r'class="[^"]*\bbundle_row\b[^"]*"')
 _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
 
 
