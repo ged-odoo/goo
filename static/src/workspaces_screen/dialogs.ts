@@ -283,13 +283,20 @@ async function baseVersionDumps(branch: string): Promise<RunbotDump[]> {
   }
 }
 
-// The configured repos a runbot bundle's branches belong to, each with the remote
-// that carries its branch (the canonical repo's pull remote, or the shared dev
-// fork's push remote for colleagues' work); null (already explained) when none.
+// The configured repos a runbot bundle's branches and pull requests belong to: each
+// branch with the remote that carries it (the canonical repo's pull remote, or the
+// shared dev fork's push remote for colleagues' work), each pull request — one per
+// repo, for the repos no branch covers — with its own repo to fetch it from. A
+// community PR's bundle lists no `tree/` branch, only its pull request, opened from
+// a contributor's fork. Null (already explained) when nothing matches.
+interface BundlePlan {
+  matches: { repo: RepoConfig; branch: string; remote: string }[];
+  prs: { repo: RepoConfig; github: string; number: number }[];
+}
 function bundleMatches(
   { config, dialogs }: Pick<WorkspacePlugins, "config" | "dialogs">,
   info: BundleInfo,
-): { repo: RepoConfig; branch: string; remote: string }[] | null {
+): BundlePlan | null {
   // map the bundle's github repos onto the configured ones by repo name —
   // odoo-dev/odoo and odoo/odoo both mean the "odoo/odoo" config repo. Skips
   // "owl": it never carries per-feature branches, so there's nothing on the
@@ -311,16 +318,31 @@ function bundleMatches(
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
-  if (!matches.length) {
+  const prs: BundlePlan["prs"] = [];
+  const unmapped: string[] = [];
+  for (const { github, number } of info.prs || []) {
+    const repoName = github.split("/")[1];
+    const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
+    if (!r || !r.path || r.id === "owl") unmapped.push(`${github}#${number}`);
+    else if (![...matches, ...prs].some((m) => m.repo.id === r.id))
+      prs.push({ repo: r, github, number });
+  }
+  if (unmapped.length) {
+    dialogs.error(
+      "Some of the bundle's PRs were skipped",
+      `no configured repo for: ${unmapped.join(", ")}`,
+    );
+  }
+  if (!matches.length && !prs.length) {
     dialogs.open({
       title: "Workspace from bundle",
-      message: `none of the bundle's repositories (${(info.branches || []).map((b) => b.github).join(", ") || "none listed"}) match your configured repos`,
+      message: `none of the bundle's repositories (${[...(info.branches || []), ...(info.prs || [])].map((b) => b.github).join(", ") || "none listed"}) match your configured repos`,
       okLabel: "OK",
       cancelLabel: null,
     });
     return null;
   }
-  return matches;
+  return { matches, prs };
 }
 
 // Fetch the branches a remote / bundle / pull request source planned — at Create,
@@ -498,15 +520,31 @@ export async function startCreateWorkspace(
         dialogs.error("Reading the runbot bundle failed", errorMessage(e));
         return null;
       }
-      const matches = bundleMatches(plugins, info);
-      if (!matches) return null;
+      const plan = bundleMatches(plugins, info);
+      if (!plan) return null;
       // the dumps the bundle's latest batch left on runbot, already proven to
       // exist (the backend HEAD-probes them)
-      const branches = matches.map((m) => ({ repo: m.repo.id, branch: m.branch }));
-      const fetches = Object.fromEntries(
-        matches.map((m) => [m.repo.id, { branch: m.branch, remote: m.remote }]),
+      const branches = plan.matches.map((m) => ({ repo: m.repo.id, branch: m.branch }));
+      const fetches: Record<string, BranchFetch> = Object.fromEntries(
+        plan.matches.map((m) => [m.repo.id, { branch: m.branch, remote: m.remote }]),
       );
-      return attachValues(info.name, branches, info.dumps || [], fetches);
+      // a PR's head branch: read-only — it's fetched at Create, from the PR's own repo
+      for (const { repo, github, number } of plan.prs) {
+        try {
+          const head = await postJSON<{ branch?: string }>("/api/prs/head", {
+            repo: github,
+            number,
+          });
+          if (!head.branch) throw new Error("could not resolve the PR's head branch");
+          branches.push({ repo: repo.id, branch: head.branch });
+          fetches[repo.id] = { branch: head.branch, github, number };
+        } catch (e) {
+          dialogs.error("Pull request", `${github}#${number}: ${errorMessage(e)}`);
+        }
+      }
+      if (!branches.length) return null;
+      // a fork PR's bundle is titled "owner:branch" — the colon is no workspace/db name
+      return attachValues(info.name.replace(/^[^:\s]+:/, ""), branches, info.dumps || [], fetches);
     }
     if (req.kind === "pr") {
       const match = PR_URL_RE.exec(req.url);

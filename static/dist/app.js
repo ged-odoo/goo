@@ -11518,16 +11518,31 @@ function bundleMatches({ config, dialogs }, info) {
     const remote = github === r.github ? r.pull_remote || "origin" : r.push_remote || "dev";
     matches.push({ repo: r, branch, remote });
   }
-  if (!matches.length) {
+  const prs = [];
+  const unmapped = [];
+  for (const { github, number } of info.prs || []) {
+    const repoName = github.split("/")[1];
+    const r = (config.config.repos || []).find((x) => (x.github || "").split("/")[1] === repoName);
+    if (!r || !r.path || r.id === "owl") unmapped.push(`${github}#${number}`);
+    else if (![...matches, ...prs].some((m2) => m2.repo.id === r.id))
+      prs.push({ repo: r, github, number });
+  }
+  if (unmapped.length) {
+    dialogs.error(
+      "Some of the bundle's PRs were skipped",
+      `no configured repo for: ${unmapped.join(", ")}`
+    );
+  }
+  if (!matches.length && !prs.length) {
     dialogs.open({
       title: "Workspace from bundle",
-      message: `none of the bundle's repositories (${(info.branches || []).map((b) => b.github).join(", ") || "none listed"}) match your configured repos`,
+      message: `none of the bundle's repositories (${[...info.branches || [], ...info.prs || []].map((b) => b.github).join(", ") || "none listed"}) match your configured repos`,
       okLabel: "OK",
       cancelLabel: null
     });
     return null;
   }
-  return matches;
+  return { matches, prs };
 }
 async function fetchPlanned(plugins, planned) {
   const { config, dialogs, code, eventLog } = plugins;
@@ -11621,13 +11636,27 @@ async function startCreateWorkspace(plugins, prefill = {}, { pickSource = false 
         dialogs.error("Reading the runbot bundle failed", errorMessage(e));
         return null;
       }
-      const matches = bundleMatches(plugins, info);
-      if (!matches) return null;
-      const branches2 = matches.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }));
+      const plan = bundleMatches(plugins, info);
+      if (!plan) return null;
+      const branches2 = plan.matches.map((m2) => ({ repo: m2.repo.id, branch: m2.branch }));
       const fetches2 = Object.fromEntries(
-        matches.map((m2) => [m2.repo.id, { branch: m2.branch, remote: m2.remote }])
+        plan.matches.map((m2) => [m2.repo.id, { branch: m2.branch, remote: m2.remote }])
       );
-      return attachValues(info.name, branches2, info.dumps || [], fetches2);
+      for (const { repo, github, number } of plan.prs) {
+        try {
+          const head = await postJSON("/api/prs/head", {
+            repo: github,
+            number
+          });
+          if (!head.branch) throw new Error("could not resolve the PR's head branch");
+          branches2.push({ repo: repo.id, branch: head.branch });
+          fetches2[repo.id] = { branch: head.branch, github, number };
+        } catch (e) {
+          dialogs.error("Pull request", `${github}#${number}: ${errorMessage(e)}`);
+        }
+      }
+      if (!branches2.length) return null;
+      return attachValues(info.name.replace(/^[^:\s]+:/, ""), branches2, info.dumps || [], fetches2);
     }
     if (req.kind === "pr") {
       const match = PR_URL_RE.exec(req.url);
