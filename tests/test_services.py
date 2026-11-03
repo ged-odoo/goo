@@ -1266,7 +1266,10 @@ class GitHubServiceTest(unittest.TestCase):
             ' "headRefName": "br", "createdAt": "a", "updatedAt": "b", "statusCheckRollup": ['
             '{"context": "ci/runbot", "state": "SUCCESS", "targetUrl": "ru"}]}'
         )
-        io = FakeIO(run_result=completed(stdout=payload))
+        io = FakeIO(
+            run_result=completed(stdout=payload),
+            runs={"pulls/279751": completed(stdout="CONTRIBUTOR\n")},
+        )
         svc = services.GitHubService(io, TTLCache(ttl=600))
         pairs = [
             {"github": "odoo/odoo", "number": 279751},
@@ -1279,21 +1282,36 @@ class GitHubServiceTest(unittest.TestCase):
         self.assertEqual(pr["state"], "merged")
         self.assertEqual(pr["branch"], "br")
         self.assertEqual(pr["ci"]["runbot"], "success")
+        self.assertTrue(pr["external"])  # the author isn't a member of the org
         self.assertEqual(
-            io.run_calls,
+            io.run_calls[0],
             [
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    "279751",
-                    "--repo",
-                    "odoo/odoo",
-                    "--json",
-                    "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
-                ]
+                "gh",
+                "pr",
+                "view",
+                "279751",
+                "--repo",
+                "odoo/odoo",
+                "--json",
+                "number,title,body,url,state,isDraft,headRefName,createdAt,updatedAt,statusCheckRollup",
             ],
         )
+
+    def test_pr_infos_external_only_for_non_members(self):
+        payload = '{"number": 1, "title": "t", "url": "u", "state": "OPEN", "isDraft": false}'
+        for association, external in (("MEMBER", False), ("OWNER", False), ("NONE", True)):
+            io = FakeIO(
+                run_result=completed(stdout=payload),
+                runs={"pulls/1": completed(stdout=association + "\n")},
+            )
+            svc = services.GitHubService(io, TTLCache(ttl=0))
+            self.assertEqual(
+                svc.pr_infos([{"github": "odoo/odoo", "number": 1}])[0]["external"], external
+            )
+        # unknown (the association call failed) is not flagged
+        io = FakeIO(run_result=completed(stdout=payload), runs={"pulls/1": completed(returncode=1)})
+        svc = services.GitHubService(io, TTLCache(ttl=0))
+        self.assertFalse(svc.pr_infos([{"github": "odoo/odoo", "number": 1}])[0]["external"])
 
     def test_pr_infos_omits_unresolvable_pairs(self):
         io = FakeIO(run_result=completed(returncode=1, stderr="not found"))

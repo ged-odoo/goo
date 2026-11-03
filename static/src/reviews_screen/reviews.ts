@@ -108,6 +108,9 @@ export class ReviewsScreen extends Component {
             <option value="rplus">R+'d</option>
             <option value="merged">Merged</option>
           </select>
+          <label class="rev-chk" title="show the PRs opened from outside the organization">
+            <input type="checkbox" t-att-checked="this.showExternal()" t-on-change="() => this.showExternal.set(!this.showExternal())"/>External
+          </label>
         </t>
         <t t-set-slot="top-right">
           <span class="meta" t-out="this.stamp"/>
@@ -140,6 +143,8 @@ export class ReviewsScreen extends Component {
               <t t-set-slot="group-header" t-slot-scope="scope">
                 <span class="rl-group-label" t-out="scope.g.key"/>
                 <span t-if="scope.g.rows.length > 1" class="dash-pr-state" t-att-class="this.rollup(scope.g.rows).cls" t-out="this.rollup(scope.g.rows).label"/>
+                <span t-if="scope.g.rows.some((r) => r.external)" class="rev-external"
+                      title="opened by someone outside the organization"><t t-out="this.contributorIcon"/></span>
                 <TaskButton texts="this.taskTexts(scope.g.rows)"/>
                 <span class="rl-group-count" t-out="'(' + scope.g.rows.length + ')'"/>
                 <button class="rev-important" t-att-class="{on: this.isImportant(scope.g.rows)}"
@@ -175,15 +180,22 @@ export class ReviewsScreen extends Component {
   kebabIcon = m(ICONS.kebab);
   warningIcon = m(ICONS.warning);
   claudeIcon = m(ICONS.claude);
+  contributorIcon = m(ICONS.contributor);
   addPrText = signal("");
   addPrNote = signal("");
   statusFilter = signal(""); // "" = all
+  showExternal = signal(true); // false hides the PRs opened from outside the organization
   requestQuery = signal(readRequestQuery());
 
-  // the requested PRs not yet on the watchlist
+  // the requested PRs the External checkbox lets through
+  visibleRequested = computed((): RequestedPr[] =>
+    this.reviews.requested().filter((p) => this.showExternal() || !p.external),
+  );
+
+  // the visible requested PRs not yet on the watchlist
   untrackedRequested = computed((): RequestedPr[] => {
     const tracked = new Set((this.config.config.reviews || []).map((r) => r.id));
-    return this.reviews.requested().filter((p) => !tracked.has(`${p.github}#${p.number}`));
+    return this.visibleRequested().filter((p) => !tracked.has(`${p.github}#${p.number}`));
   });
 
   // one row per tracked {id, github, number}, enriched with fetched PR info +
@@ -205,6 +217,7 @@ export class ReviewsScreen extends Component {
         url: info?.url || `https://github.com/${t.github}/pull/${t.number}`,
         state: info?.state || "",
         draft: info?.draft || false,
+        external: !!info?.external,
         loaded: !!info,
         reviewStatus: reviewStatus[t.id],
         important: !!t.important,
@@ -213,7 +226,8 @@ export class ReviewsScreen extends Component {
   });
 
   // grouped by branch, filtered group-wise (a task stays visible if ANY of its
-  // PRs matches the selected status) — same pattern as Branches & PRs.
+  // PRs matches the selected status) — same pattern as Branches & PRs. Unchecking
+  // External hides a task as soon as one of its PRs is external (it carries the icon).
   groupsView = computed((): ReviewGroup[] => {
     const byBranch = new Map<string, ReviewRow[]>();
     for (const row of this.allRows()) {
@@ -222,9 +236,11 @@ export class ReviewsScreen extends Component {
       group.push(row);
     }
     const status = this.statusFilter();
+    const showExternal = this.showExternal();
     return [...byBranch.entries()]
       .map(([key, rows]) => ({ key, rows }))
-      .filter((g) => !status || g.rows.some((r) => this._statusKey(r) === status));
+      .filter((g) => !status || g.rows.some((r) => this._statusKey(r) === status))
+      .filter((g) => showExternal || !g.rows.some((r) => r.external));
   });
 
   rows = (): ReviewRow[] => this.groupsView().flatMap((g) => g.rows);
@@ -317,8 +333,9 @@ export class ReviewsScreen extends Component {
     );
   }
 
+  // the tracked PRs the filters (status, External) let through
   get count(): string {
-    const n = (this.config.config.reviews || []).length;
+    const n = this.rows().length;
     return `${n} PR${n === 1 ? "" : "s"}`;
   }
 
@@ -342,7 +359,7 @@ export class ReviewsScreen extends Component {
   }
 
   get showRequested(): boolean {
-    return this.config.config.review_requests && this.reviews.requested().length > 0;
+    return this.config.config.review_requests && this.visibleRequested().length > 0;
   }
 
   _requestCell = (pr: RequestedPr): { pr: RequestedPr; screen: ReviewsScreen } => ({
@@ -351,7 +368,7 @@ export class ReviewsScreen extends Component {
   });
 
   requestedRs = recordset(
-    () => this.reviews.requested(),
+    () => this.visibleRequested(),
     [
       { name: "repo", label: "Repo", get: (p) => this._repoLabel(p.github) },
       { name: "pr", label: "PR", component: RequestedPrCell, cellProps: this._requestCell },

@@ -348,8 +348,18 @@ class GitHubService:
                 created_at=pr.get("createdAt", ""),
                 updated_at=pr.get("updatedAt", ""),
                 ci=_ci_rollup(pr.get("statusCheckRollup")),
+                external=self._is_external(gh_repo, number),
             )
         )
+
+    def _is_external(self, gh_repo: str, number: int) -> bool:
+        """Whether the PR's author isn't a member of the repo's org (GitHub's REST
+        `author_association`; `gh pr view` has no field for it). False when unknown."""
+        try:
+            association = self._rest(f"repos/{gh_repo}/pulls/{number}", ".author_association")
+        except _FetchFailed:
+            return False
+        return association.strip() not in ("", "MEMBER", "OWNER")
 
     def review_statuses(self, pairs: list[dict[str, Any]], refresh: bool = False) -> dict[str, str]:
         """For each {github, number}: "reviewed" if the authenticated user has
@@ -471,15 +481,17 @@ class GitHubService:
 
     def review_requests(self, query: str) -> tuple[list[dict[str, Any]], str | None]:
         """The PRs a GitHub issue search returns (e.g. `review-requested:@me`), newest
-        update first, as ({github, number, title, body, url, author, draft, labels,
-        updated_at}, error). Uncached: a review request is waited on, not polled."""
+        update first, as ({github, number, title, body, url, author, external, draft,
+        labels, updated_at}, error) — `external`: the author isn't a member of the repo's org. Uncached: a review request is waited on, not polled."""
         return self._fetch_review_requests(query)
 
     def _fetch_review_requests(self, query: str) -> tuple[list[dict[str, Any]], str | None]:
         self.io.log_request(f"gh api search/issues q={query}")
         jq = (
             '.items[] | {github: (.repository_url | sub(".*/repos/"; "")), number, title, body,'
-            " url: .html_url, author: .user.login, draft, labels: [.labels[].name],"
+            " url: .html_url, author: .user.login,"
+            ' external: (.author_association | IN("MEMBER", "OWNER") | not),'
+            " draft, labels: [.labels[].name],"
             " updated_at}"
         )
         cmd = ["gh", "api", "-X", "GET", "search/issues", "-f", f"q=is:pr {query}"]

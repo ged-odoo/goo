@@ -12,7 +12,7 @@ import type { ForwardPortPull, ForwardPortRow } from "../core/observed_models.ts
 import { ReviewsPlugin } from "./reviews_plugin.ts";
 import type { RequestedPr, ReviewStatus } from "./reviews_plugin.ts";
 import type { ReviewsScreen } from "./reviews.ts";
-import { mbIsRPlus } from "../core/common.ts";
+import { ICONS, m, mbIsRPlus } from "../core/common.ts";
 import { TaskButton } from "../core/task_button.ts";
 
 // one tracked PR as the Reviews list shows it (ReviewsScreen.allRows): the
@@ -26,6 +26,7 @@ export interface ReviewRow {
   url: string;
   state: string; // GitHub's: open | closed | merged ("" until loaded)
   draft: boolean;
+  external: boolean; // authored by someone outside the repo's org
   loaded: boolean;
   reviewStatus: ReviewStatus | undefined;
   important: boolean;
@@ -51,11 +52,13 @@ export function isMerged(row: { state?: string }, mbState: string): boolean {
 export class RequestedPrCell extends Component {
   static components = { TaskButton };
   props = useProps({ pr: t.any() as Type<RequestedPr>, screen: t.any() as Type<ReviewsScreen> });
+  contributorIcon = m(ICONS.contributor);
   static template = xml`
     <span class="rev-pr">
       <a class="pr-link" target="_blank" t-att-href="this.props.pr.url" t-out="'#' + this.props.pr.number"/>
       <span class="rev-pr-title" t-out="this.props.pr.title"/>
       <span t-if="this.props.pr.draft" class="pr-state" t-out="'draft'"/>
+      <span t-if="this.props.pr.external" class="rev-external" t-att-title="this.props.pr.author + ' is outside the organization'"><t t-out="this.contributorIcon"/></span>
       <TaskButton texts="[this.props.pr.title, this.props.pr.body]"/>
     </span>`;
 }

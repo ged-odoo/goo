@@ -56,6 +56,7 @@ class PullRequest:
     updated_at: str = ""  # iso
     ci: CiRollup | None = None  # authored PRs only (from the status rollup)
     body: str = ""  # the description (where `task-123` / `opw-123` references live)
+    external: bool = False  # authored by someone outside the repo's org (tracked PRs only)
 
 
 # ─────────────────────────── Runtime snapshots ───────────────────────────────
