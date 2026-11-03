@@ -274,6 +274,39 @@ describe("Reviews screen — task link", () => {
   });
 });
 
+describe("Reviews screen — external author", () => {
+  it("marks a task with a PR opened from outside the organization", async () => {
+    const prs = [
+      prWire("odoo/odoo", 1, "18.0-task-x"),
+      prWire("odoo/enterprise", 2, "18.0-task-x", { external: true }),
+      prWire("odoo/odoo", 3, "17.0-fix-y"),
+      prWire("other/lib", 4, "ext-branch"),
+    ];
+    app = await mount({ "/api/prs/info": { prs } });
+    expect(groupHead("18.0-task-x").querySelector(".rev-external")).not.toBeNull();
+    expect(groupHead("17.0-fix-y").querySelector(".rev-external")).toBeNull();
+  });
+
+  it("hides the tasks with an external PR when External is unchecked", async () => {
+    const prs = [
+      prWire("odoo/odoo", 1, "18.0-task-x"),
+      prWire("odoo/enterprise", 2, "18.0-task-x", { external: true }),
+      prWire("odoo/odoo", 3, "17.0-fix-y"),
+      prWire("other/lib", 4, "ext-branch"),
+    ];
+    app = await mount({ "/api/prs/info": { prs } });
+    const box = app.root.querySelector<HTMLInputElement>(".rev-chk input")!;
+    const count = () => text(app.root.querySelector(".panel-inline-actions .sub"));
+    expect(count()).toBe("4 PRs");
+    await click(box);
+    expect(groupNames()).toEqual(["17.0-fix-y", "ext-branch"]);
+    expect(count()).toBe("2 PRs");
+    await click(box);
+    expect(groupNames()).toEqual(["18.0-task-x", "17.0-fix-y", "ext-branch"]);
+    expect(count()).toBe("4 PRs");
+  });
+});
+
 describe("Reviews screen — task stage", () => {
   const prs = [
     prWire("odoo/odoo", 1, "18.0-task-x", { body: "task-4939265" }),
@@ -691,6 +724,7 @@ describe("requested of you", () => {
     body: "**Task**: https://www.odoo.com/odoo/project/133/tasks/3969567",
     url: "https://github.com/odoo/odoo/pull/99",
     author: "bob",
+    external: false,
     draft: false,
     labels: [],
     updated_at: "2026-10-15T10:00:00Z",
@@ -742,6 +776,26 @@ describe("requested of you", () => {
       ...app.root.querySelectorAll(".rq-card .rl-row .dash-pr-state:not(.rev-task)"),
     ].map(text);
     expect(badges).toEqual(["To review", "Commented"]);
+  });
+
+  it("marks a requested PR whose author is outside the organization", async () => {
+    app = await mount(
+      {
+        "/api/prs/review-requests": {
+          ok: true,
+          prs: [requested, { ...requested, number: 98, author: "eve", external: true }],
+        },
+      },
+      { review_requests: true },
+    );
+    const rows = [...app.root.querySelectorAll(".rq-card .rl-row")];
+    expect(rows.map((r) => r.querySelector(".rev-external")?.getAttribute("title"))).toEqual([
+      undefined,
+      "eve is outside the organization",
+    ]);
+    await click(app.root.querySelector<HTMLInputElement>(".rev-chk input")!);
+    expect(app.root.querySelectorAll(".rq-card .rl-row")).toHaveLength(1);
+    expect(text(app.root.querySelector(".rq-card .rl-row"))).not.toContain("eve");
   });
 
   it("asks the status of each requested PR on its own, so a slow one doesn't hold the others", async () => {

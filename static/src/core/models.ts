@@ -34,6 +34,7 @@ export interface PullRequestWire {
   created_at?: string;
   updated_at?: string;
   ci?: CiRollup | null;
+  external?: boolean; // tracked PRs: authored by someone outside the repo's org
 }
 
 // the normalized client-side PR (PullRequest.from)

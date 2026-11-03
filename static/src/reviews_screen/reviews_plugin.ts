@@ -39,6 +39,7 @@ export interface RequestedPr extends PrRef {
   body: string;
   url: string;
   author: string;
+  external: boolean; // the author isn't a member of the repo's org
   draft: boolean;
   labels: string[];
   updated_at: string;

@@ -87,6 +87,8 @@ export const ICONS = {
   // a fixed-color hazard triangle (not currentColor) — it should read as "yellow
   // warning sign" regardless of hover/active state, so only its opacity toggles
   warning: `<svg viewBox="0 0 24 24"><path d="M12 3 22.5 20.5H1.5Z" fill="#f5c518" stroke="#c8960a" stroke-width="0.6" stroke-linejoin="round"/><rect x="11.1" y="9.5" width="1.8" height="5.5" rx="0.9" fill="#1f1f1f"/><circle cx="12" cy="17" r="1.05" fill="#1f1f1f"/></svg>`,
+  // a PR by someone outside the repo's org: a person with a "+" (an outside contributor)
+  contributor: `<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="16" y1="11" x2="22" y2="11"/></svg>`,
   // sidebar collapse/expand toggle: a double chevron (points left; CSS flips it
   // when collapsed so it points right = "expand")
   collapse: `<svg viewBox="0 0 24 24"><polyline points="13 17 8 12 13 7"/><polyline points="18 17 13 12 18 7"/></svg>`,

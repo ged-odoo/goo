@@ -3080,6 +3080,21 @@ tr.active td.brg-commit {
 .rl-table tbody tr.rl-group-head:hover .rev-important {
   opacity: 1;
 }
+/* a PR opened by someone outside the organization (ICONS.contributor) */
+.rev-external {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--l-blue);
+}
+.rev-external svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
 /* the Odoo task pill: a link coloured like the status pills (see stageClass) */
 .rev-task {
   flex: none;
@@ -3600,7 +3615,8 @@ tr.active td.brg-commit {
   color: var(--l-accent);
 }
 /* js / css include toggles in the Assets control panel */
-.assets-chk {
+.assets-chk,
+.rev-chk {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3609,7 +3625,8 @@ tr.active td.brg-commit {
   cursor: pointer;
   user-select: none;
 }
-.assets-chk input {
+.assets-chk input,
+.rev-chk input {
   cursor: pointer;
 }
 /* clickable bundle name → opens the per-file analysis view */
