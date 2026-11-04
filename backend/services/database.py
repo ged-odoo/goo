@@ -296,7 +296,25 @@ class DatabaseService:
             return False, r.stderr.strip() or "createdb failed"
         self.cache.invalidate("list")
         try:
-            r = self.io.run(["psql", "--quiet", "--dbname", name, "--file", sql], timeout=3600)
+            # odoo makes unaccent immutable at startup; the dump's unaccent indexes
+            # need it so already, or they fail to build
+            r = self.io.run(
+                [
+                    "psql",
+                    "--quiet",
+                    "--dbname",
+                    name,
+                    "-c",
+                    "CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public;"
+                    " ALTER FUNCTION public.unaccent(text) IMMUTABLE",
+                ],
+                timeout=60,
+            )
+            if r.returncode == 0:
+                r = self.io.run(
+                    ["psql", "--quiet", "-v", "ON_ERROR_STOP=1", "--dbname", name, "--file", sql],
+                    timeout=3600,
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             self._drop_quietly(name)
             return False, str(e)

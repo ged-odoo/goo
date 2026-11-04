@@ -66,7 +66,7 @@ class DockerInfraService:
                 return False, r.stderr.strip() or "docker start (postgres) failed"
             return True, None
         network = config.get("docker_network") or "goo_odoo"
-        image = config.get("docker_postgres_image") or "postgres:16"
+        image = config.get("docker_postgres_image") or "pgvector/pgvector:pg18"
         port = config.get("docker_postgres_port") or "5433"
         volume = config.get("docker_postgres_volume") or "goo-postgres-data"
         user = config.get("db_user") or "odoo"
@@ -87,7 +87,7 @@ class DockerInfraService:
                 "-p",
                 f"127.0.0.1:{port}:5432",
                 "-v",
-                f"{volume}:/var/lib/postgresql/data",
+                f"{volume}:/var/lib/postgresql",
                 image,
             ],
             timeout=60,
