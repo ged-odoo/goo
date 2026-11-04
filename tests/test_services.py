@@ -1891,8 +1891,24 @@ class DatabaseServiceTest(unittest.TestCase):
             io.run_calls,
         )
         self.assertIn(
-            ["psql", "--quiet", "--dbname", "gamma", "--file", "/tmp/goo-fake/dump/dump.sql"],
+            [
+                "psql",
+                "--quiet",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "--dbname",
+                "gamma",
+                "--file",
+                "/tmp/goo-fake/dump/dump.sql",
+            ],
             io.run_calls,
+        )
+        # unaccent is immutable before the dump's indexes on it are built
+        self.assertTrue(
+            any(
+                c[-1].endswith("ALTER FUNCTION public.unaccent(text) IMMUTABLE")
+                for c in io.run_calls
+            )
         )
         self.assertIn(("move", "/tmp/goo-fake/dump/filestore", "/fs/gamma"), io.fs_ops)
         self.assertIn(("remove", "/tmp/goo-fake", None), io.fs_ops)  # temp dir cleaned up
@@ -1949,7 +1965,13 @@ class DatabaseServiceTest(unittest.TestCase):
         )
 
     def _psql_commands(self, io):
-        return [c[-1] for c in io.run_calls if c[:2] == ["psql", "--quiet"] and c[-2] == "-c"]
+        return [
+            c[-1]
+            for c in io.run_calls
+            if c[:2] == ["psql", "--quiet"]
+            and c[-2] == "-c"
+            and not c[-1].startswith("CREATE EXTENSION")
+        ]
 
     def test_restore_dump_runs_the_requested_cleanups(self):
         io = self._dump_io()
@@ -1980,7 +2002,16 @@ class DatabaseServiceTest(unittest.TestCase):
         self.assertTrue(ok, err)
         self.assertEqual(io.downloads, [])
         self.assertIn(
-            ["psql", "--quiet", "--dbname", "gamma", "--file", "/tmp/goo-fake/dump/dump.sql"],
+            [
+                "psql",
+                "--quiet",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "--dbname",
+                "gamma",
+                "--file",
+                "/tmp/goo-fake/dump/dump.sql",
+            ],
             io.run_calls,
         )
         self.assertIn(("move", "/tmp/goo-fake/dump/filestore", "/fs/gamma"), io.fs_ops)
@@ -1992,7 +2023,16 @@ class DatabaseServiceTest(unittest.TestCase):
         self.assertTrue(ok, err)
         self.assertIn(("gunzip", "/up/dump.sql.gz", "/tmp/goo-fake/dump/dump.sql"), io.fs_ops)
         self.assertIn(
-            ["psql", "--quiet", "--dbname", "gamma", "--file", "/tmp/goo-fake/dump/dump.sql"],
+            [
+                "psql",
+                "--quiet",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "--dbname",
+                "gamma",
+                "--file",
+                "/tmp/goo-fake/dump/dump.sql",
+            ],
             io.run_calls,
         )
         self.assertFalse(any(op == "move" for op, _s, _d in io.fs_ops))  # no filestore in it
@@ -4885,7 +4925,7 @@ class DockerInfraServiceTest(unittest.TestCase):
         self.assertIn("POSTGRES_USER=odoo", joined)
         self.assertIn("POSTGRES_PASSWORD=odoo", joined)
         self.assertIn("127.0.0.1:5433:5432", joined)
-        self.assertIn("goo-postgres-data:/var/lib/postgresql/data", joined)
+        self.assertIn("goo-postgres-data:/var/lib/postgresql", joined)
         self.assertIn("postgres:16", run_cmd)
 
     def test_ensure_nginx_writes_config_and_creates_when_missing(self):
