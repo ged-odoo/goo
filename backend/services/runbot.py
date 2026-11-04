@@ -192,7 +192,10 @@ class RunbotService:
         key = ("sticky",)
         if refresh:
             self.cache.invalidate(key)
-        return self.cache.get(key, self._fetch_sticky)
+        versions = self.cache.get(key, self._fetch_sticky)
+        if not versions:
+            self.cache.invalidate(key)  # an unreadable page is retried, not cached
+        return versions
 
     def _fetch_sticky(self) -> dict[str, str]:
         html, err = self.io.http_get(f"{RUNBOT_BASE}/runbot/rd-1", timeout=20)
