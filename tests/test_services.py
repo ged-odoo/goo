@@ -209,6 +209,17 @@ class RunbotServiceTest(unittest.TestCase):
         svc = services.RunbotService(io, TTLCache(ttl=0))
         self.assertEqual(svc.search_bundles("x"), [])
 
+    def test_sticky_bundles_retries_after_an_unreadable_page(self):
+        io = FakeIO(http={"rd-1": ("", "boom")})
+        svc = services.RunbotService(io, TTLCache(ttl=60))
+        self.assertEqual(svc.sticky_bundles(), {})
+        io._http["rd-1"] = (
+            '<div class="row bundle_row"><i class="fa fa-star"></i>'
+            '<a href="/runbot/bundle/1" title="View Bundle master">master</a></div>',
+            None,
+        )
+        self.assertEqual(svc.sticky_bundles(), {"master": "1"})
+
     @staticmethod
     def _row(bundle_id, name, body=""):
         """One bundle row of runbot's r-d-1 listing: the bundle link, then `body`."""
