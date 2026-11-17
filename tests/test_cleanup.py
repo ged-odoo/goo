@@ -81,7 +81,9 @@ class MergeGateTest(unittest.TestCase):
         pr = {"github": "odoo/odoo", "branch": "17.0-feature-jpp", "number": 42, "state": "merged"}
         with (
             unittest.mock.patch.object(cleanup.GITHUB, "prs_for_branches", return_value=[pr]),
-            unittest.mock.patch.object(cleanup.MERGEBOT, "statuses", return_value=({}, {}, {}, [])),
+            unittest.mock.patch.object(
+                cleanup.MERGEBOT, "statuses", return_value=({}, {}, {}, ["odoo/odoo"])
+            ),
         ):
             ok, reason = cleanup._merge_gate(ws(), REPO_MAP)
         self.assertTrue(ok)
@@ -95,7 +97,9 @@ class MergeGateTest(unittest.TestCase):
         with (
             unittest.mock.patch.object(cleanup.GITHUB, "prs_for_branches", return_value=[pr]),
             unittest.mock.patch.object(
-                cleanup.MERGEBOT, "statuses", return_value=({"odoo/odoo#42": "merged"}, {}, {}, [])
+                cleanup.MERGEBOT,
+                "statuses",
+                return_value=({"odoo/odoo#42": "merged"}, {}, {"odoo/odoo#42": []}, []),
             ),
         ):
             ok, reason = cleanup._merge_gate(ws(), REPO_MAP)
@@ -161,7 +165,9 @@ class MergeGateTest(unittest.TestCase):
                 cleanup.GITHUB, "prs_for_branches", return_value=[community_pr, enterprise_pr]
             ),
             unittest.mock.patch.object(
-                cleanup.MERGEBOT, "statuses", return_value=(mb_states, {}, {}, [])
+                cleanup.MERGEBOT,
+                "statuses",
+                return_value=(mb_states, {}, {k: [] for k in mb_states}, []),
             ),
             unittest.mock.patch.object(
                 cleanup, "_pr_is_empty", side_effect=lambda gh, n: gh == "odoo/enterprise"
@@ -169,6 +175,75 @@ class MergeGateTest(unittest.TestCase):
         ):
             ok, reason = cleanup._merge_gate(ws_two_repos("master-x-jpp"), TWO_REPO_MAP)
         self.assertTrue(ok)
+
+
+def fw_row(branch, *pulls):
+    return {
+        "branch": branch,
+        "cells": [
+            {"repository": "odoo/odoo", "pulls": [{"github": g, "number": n} for g, n in pulls]}
+        ],
+    }
+
+
+class ForwardPortGateTest(unittest.TestCase):
+    def gate(self, fps, states):
+        pr = {"github": "odoo/odoo", "branch": "17.0-feature-jpp", "number": 42, "state": "closed"}
+        mb = {"odoo/odoo#42": "merged", **states}
+
+        def statuses(prs):
+            return ({k: v for k, v in mb.items()}, {}, {"odoo/odoo#42": fps}, [])
+
+        with (
+            unittest.mock.patch.object(cleanup.GITHUB, "prs_for_branches", return_value=[pr]),
+            unittest.mock.patch.object(cleanup.MERGEBOT, "statuses", side_effect=statuses),
+        ):
+            return cleanup._merge_gate(ws(), REPO_MAP)
+
+    def test_all_forward_ports_merged_is_eligible(self):
+        ok, _ = self.gate([fw_row("18.0", ("odoo/odoo", 43))], {"odoo/odoo#43": "merged"})
+        self.assertTrue(ok)
+
+    def test_long_chain_with_master_still_open_keeps_everything(self):
+        # 19.0 merged; saas-19.1 and 20.0 merged; saas-19.2/19.3 only forward ports
+        # still open; master in progress
+        fps = [
+            fw_row("saas-19.1", ("odoo/odoo", 43)),
+            fw_row("saas-19.2", ("odoo/odoo", 44)),
+            fw_row("saas-19.3", ("odoo/odoo", 45)),
+            fw_row("20.0", ("odoo/odoo", 46)),
+            fw_row("master", ("odoo/odoo", 47)),
+        ]
+        states = {
+            "odoo/odoo#43": "merged",
+            "odoo/odoo#44": "merged",
+            "odoo/odoo#45": "merged",
+            "odoo/odoo#46": "merged",
+            "odoo/odoo#47": "ready",
+        }
+        ok, reason = self.gate(fps, states)
+        self.assertFalse(ok)
+        self.assertIn("odoo/odoo#47", reason)
+
+    def test_unreadable_mergebot_page_blocks(self):
+        pr = {"github": "odoo/odoo", "branch": "17.0-feature-jpp", "number": 42, "state": "merged"}
+        with (
+            unittest.mock.patch.object(cleanup.GITHUB, "prs_for_branches", return_value=[pr]),
+            unittest.mock.patch.object(cleanup.MERGEBOT, "statuses", return_value=({}, {}, {}, [])),
+        ):
+            ok, reason = cleanup._merge_gate(ws(), REPO_MAP)
+        self.assertFalse(ok)
+        self.assertIn("unreachable", reason)
+
+    def test_open_forward_port_blocks(self):
+        ok, reason = self.gate([fw_row("18.0", ("odoo/odoo", 43))], {"odoo/odoo#43": "ready"})
+        self.assertFalse(ok)
+        self.assertIn("odoo/odoo#43", reason)
+
+    def test_forward_port_not_opened_yet_blocks(self):
+        ok, reason = self.gate([fw_row("18.0")], {})
+        self.assertFalse(ok)
+        self.assertIn("18.0", reason)
 
 
 class PrIsEmptyTest(unittest.TestCase):
@@ -539,6 +614,64 @@ class RunTest(unittest.TestCase):
             cleanup.run()
         merge_gate.assert_not_called()
         notify.assert_not_called()
+
+
+class SubWorkspaceTest(unittest.TestCase):
+    def run_cleanup(self, workspaces, gate, guard=None):
+        for w in workspaces:
+            w["location"] = w.get("location", "worktree")
+        with (
+            unittest.mock.patch.object(cleanup.CONFIG, "get", return_value=run_config(workspaces)),
+            unittest.mock.patch.object(
+                cleanup, "_merge_gate", side_effect=lambda w, _r: gate[w["id"]]
+            ),
+            unittest.mock.patch.object(
+                cleanup, "_safety_guard", side_effect=lambda w, _r: (guard or {}).get(w["id"])
+            ),
+            unittest.mock.patch.object(cleanup, "_delete") as delete,
+            unittest.mock.patch.object(cleanup.CONFIG, "save", return_value=(True, {})),
+            unittest.mock.patch.object(cleanup, "_notify"),
+        ):
+            cleanup.run()
+        return [c.args[0]["id"] for c in delete.call_args_list]
+
+    def tree(self):
+        return [
+            {**ws(), "id": "p", "name": "p"},
+            {**ws(), "id": "c", "name": "c", "parent": "p"},
+            {**ws(), "id": "g", "name": "g", "parent": "c"},
+        ]
+
+    DONE = (True, "merged")
+    WIP = (False, "no PR yet (WIP)")
+
+    def test_everything_done_deletes_the_whole_tree(self):
+        deleted = self.run_cleanup(self.tree(), {"p": self.DONE, "c": self.DONE, "g": self.DONE})
+        self.assertEqual(sorted(deleted), ["c", "g", "p"])
+
+    def test_unfinished_grandchild_keeps_every_ancestor(self):
+        deleted = self.run_cleanup(self.tree(), {"p": self.DONE, "c": self.DONE, "g": self.WIP})
+        self.assertEqual(deleted, [])
+
+    def test_dirty_child_keeps_the_parent(self):
+        deleted = self.run_cleanup(
+            self.tree(),
+            {"p": self.DONE, "c": self.DONE, "g": self.DONE},
+            guard={"c": "community: uncommitted changes"},
+        )
+        self.assertEqual(sorted(deleted), ["g"])
+
+    def test_parent_cycle_does_not_loop_forever(self):
+        a = {**ws(), "id": "a", "name": "a", "parent": "b"}
+        b = {**ws(), "id": "b", "name": "b", "parent": "a"}
+        deleted = self.run_cleanup([a, b], {"a": self.DONE, "b": self.DONE})
+        self.assertEqual(sorted(deleted), ["a", "b"])
+
+    def test_main_located_child_keeps_the_parent(self):
+        tree = self.tree()[:2]
+        tree[1]["location"] = "main"
+        deleted = self.run_cleanup(tree, {"p": self.DONE, "c": self.DONE})
+        self.assertEqual(deleted, [])
 
 
 class LoopTest(unittest.TestCase):

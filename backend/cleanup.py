@@ -10,7 +10,9 @@ it by hand is an explicit request.
 Deletes a workspace's worktrees, local branches, database, and filestore once
 every checkout that has a PR shows it merged (skipped entirely if no checkout
 has a PR yet — work in progress), and only if no worktree has uncommitted
-changes. "Merged" checks mergebot's own state first (a mergebot-merged PR
+changes. Nothing may be left to do: every forward-port PR of a merged PR must be
+merged too, and every sub-workspace (at any depth) must itself be done and clean —
+otherwise the whole tree is kept. "Merged" checks mergebot's own state first (a mergebot-merged PR
 routinely shows GitHub state "closed", not "merged" — mergebot integrates by
 its own rebase/squash and just closes the PR via the API), falling back to
 GitHub's PR state for a repo mergebot doesn't track. A PR that's closed
@@ -105,10 +107,11 @@ def _merge_gate(ws: dict[str, Any], repo_map: dict[str, dict[str, Any]]) -> tupl
     # "merged". Mergebot's own page is the authoritative "was this actually
     # merged" signal; GitHub's state is only a fallback for a PR on a repo
     # mergebot doesn't track.
-    mb_states, _details, _fps, _unsupported = MERGEBOT.statuses(
+    mb_states, _details, forward_ports, unsupported = MERGEBOT.statuses(
         [{"github": pr["github"], "number": pr["number"]} for pr in prs]
     )
     has_any_pr = False
+    merged_keys: list[str] = []
     for p in pairs:
         pr = pr_by_key.get((p["github"], p["branch"]))
         if not pr:
@@ -117,6 +120,12 @@ def _merge_gate(ws: dict[str, Any], repo_map: dict[str, dict[str, Any]]) -> tupl
         mb_state = mb_states.get(f"{pr['github']}#{pr['number']}")
         merged = mb_state == "merged" if mb_state else pr["state"] == "merged"
         if merged:
+            key = f"{pr['github']}#{pr['number']}"
+            if key not in forward_ports and pr["github"] not in unsupported:
+                # mergebot's page couldn't be read just now: the forward ports are
+                # unknown, not absent
+                return False, f"{key} forward ports unknown (mergebot unreachable)"
+            merged_keys.append(key)
             continue
         if _pr_is_empty(pr["github"], pr["number"]):
             continue
@@ -124,7 +133,30 @@ def _merge_gate(ws: dict[str, Any], repo_map: dict[str, dict[str, Any]]) -> tupl
         return False, f"{p['branch']} ({p['github']}) PR is {state}, not merged"
     if not has_any_pr:
         return False, "no PR yet (WIP)"
-    return True, "every checkout with a PR is merged"
+    pending = _pending_forward_ports(merged_keys, forward_ports)
+    if pending:
+        return False, f"forward port not merged yet: {pending}"
+    return True, "every checkout with a PR is merged, with all its forward ports"
+
+
+def _pending_forward_ports(keys: list[str], forward_ports: dict[str, list[dict[str, Any]]]) -> str:
+    """The first forward-port PR (or branch) of the merged PRs `keys` that isn't
+    merged yet, "" when the whole chain is done. A branch row with no PR at all
+    is a forward port fw-bot hasn't opened yet. Each forward-port PR's state is
+    mergebot's own, like the source PR's."""
+    pulls: list[dict[str, Any]] = []
+    for key in keys:
+        for row in forward_ports.get(key, []):
+            row_pulls = [pull for cell in row["cells"] for pull in cell["pulls"]]
+            if not row_pulls:
+                return f"{row['branch']} has no PR yet"
+            pulls.extend(row_pulls)
+    states, _details, _fps, _unsupported = MERGEBOT.statuses(pulls)
+    for pull in pulls:
+        key = f"{pull['github']}#{pull['number']}"
+        if states.get(key) != "merged":
+            return f"{key} is {states.get(key) or 'unknown'}"
+    return ""
 
 
 def _safety_guard(ws: dict[str, Any], repo_map: dict[str, dict[str, Any]]) -> str | None:
@@ -224,19 +256,54 @@ def run(dry_run: bool = False) -> None:
     repo_map = {r["id"]: r for r in config.get("repos", []) if r.get("id")}
     workspaces = [w for w in (config.get("workspaces") or []) if w.get("location") == "worktree"]
 
+    all_workspaces = config.get("workspaces") or []
+    children: dict[str, list[dict[str, Any]]] = {}
+    for w in all_workspaces:
+        if w.get("parent"):
+            children.setdefault(w["parent"], []).append(w)
+    # a workspace's own verdict, computed once: (why it's done | "", why it's not | "",
+    # safety-guard failure | "")
+    verdicts: dict[str, tuple[str, str, str]] = {}
+
+    def verdict(ws: dict[str, Any]) -> tuple[str, str, str]:
+        if ws["id"] not in verdicts:
+            if ws.get("location") != "worktree":
+                verdicts[ws["id"]] = ("", "not a worktree workspace", "")
+            else:
+                ok, reason = _merge_gate(ws, repo_map)
+                guard = (_safety_guard(ws, repo_map) or "") if ok else ""
+                verdicts[ws["id"]] = (reason, "", guard) if ok else ("", reason, "")
+        return verdicts[ws["id"]]
+
+    def pending_descendant(ws: dict[str, Any], seen: frozenset[str] = frozenset()) -> str:
+        """Name of the first sub-workspace (any depth) that still has work to do."""
+        for child in children.get(ws["id"], []):
+            if child["id"] in seen or child["id"] == ws["id"]:
+                continue  # a parent cycle in the config
+            reason, _not_done, guard = verdict(child)
+            if not reason or guard:
+                return child.get("name") or child["id"]
+            nested = pending_descendant(child, seen | {ws["id"]})
+            if nested:
+                return nested
+        return ""
+
     deleted_ids: list[str] = []
     deleted_names: list[str] = []
     warned: list[str] = []
     for ws in workspaces:
         name = ws.get("name") or ws.get("id")
-        ok, reason = _merge_gate(ws, repo_map)
-        if not ok:
-            log.info(f"skip {name}: {reason}")
+        reason, not_done, guard = verdict(ws)
+        if not_done:
+            log.info(f"skip {name}: {not_done}")
             continue
-        guard = _safety_guard(ws, repo_map)
         if guard:
             log.info(f"skip {name}: safety guard — {guard}")
             warned.append(f"{name}: {guard}")
+            continue
+        pending = pending_descendant(ws)
+        if pending:
+            log.info(f"skip {name}: sub-workspace {pending} is not done")
             continue
         log.info(f"deleting {name}: {reason}")
         _delete(ws, repo_map, config, dry_run)
