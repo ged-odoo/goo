@@ -82,8 +82,12 @@ class FakeIO:
 
     def http_post_json(self, url, body, **kwargs):
         self.http_calls.append((url, body, kwargs.get("headers")))
+        # a needle matches either the URL or the JSON body -- callers that always hit
+        # the same URL (e.g. one JSON-RPC endpoint for every model/method) key their
+        # scripted replies off a body fragment instead (the model/method/field names)
+        haystack = url + json.dumps(body, sort_keys=True)
         for needle, resp in self._http.items():
-            if needle in url:
+            if needle in haystack:
                 return resp
         return None, "not stubbed"
 
@@ -895,14 +899,20 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertEqual(rows, [{"suite": "@suite.one", "master": 100, "uploaded": 300}])
 
 
+def _call_kw(model, method):
+    """A FakeIO needle matching one call_kw payload by its model + method (every call
+    hits the same URL, so the body is what tells two stubbed calls apart)."""
+    return f'"method": "{method}", "model": "{model}"'
+
+
 class TaskServiceTest(unittest.TestCase):
     def test_read_maps_tasks_to_their_stage_and_asks_once(self):
         rows = [
             {"id": 7, "name": "Fix it", "stage_id": [3, "In Progress"]},
             {"id": 9, "name": "No stage", "stage_id": False},
         ]
-        io = FakeIO(http={"/json/2/project.task/search_read": (rows, None)})
-        tasks, error = services.TaskService(io).read("k", [9, 7, 7, 0, "x"])
+        io = FakeIO(http={_call_kw("project.task", "search_read"): ({"result": rows}, None)})
+        tasks, error = services.TaskService(io).read("sess", [9, 7, 7, 0, "x"])
         self.assertIsNone(error)
         self.assertEqual(
             tasks,
@@ -912,28 +922,45 @@ class TaskServiceTest(unittest.TestCase):
             },
         )
         ((url, body, headers),) = io.http_calls  # a single call for every task
-        self.assertEqual(url, "https://www.odoo.com/json/2/project.task/search_read")
-        self.assertEqual(body["domain"], [["id", "in", [7, 9]]])
-        self.assertEqual(headers, {"Authorization": "bearer k"})
+        self.assertEqual(url, "https://www.odoo.com/web/dataset/call_kw")
+        self.assertEqual(body["params"]["args"], [])  # search_read takes no ids
+        self.assertEqual(body["params"]["kwargs"]["domain"], [["id", "in", [7, 9]]])
+        self.assertEqual(headers, {"Cookie": "session_id=sess"})
 
-    def test_read_without_a_key_makes_no_call(self):
+    def test_read_without_a_session_makes_no_call(self):
         io = FakeIO()
         svc = services.TaskService(io)
-        self.assertEqual(svc.read("", [1]), ({}, "GOO_ODOO_API_KEY is not set"))
+        self.assertEqual(svc.read("", [1]), ({}, "not connected to odoo.com yet"))
         self.assertEqual(io.http_calls, [])
 
-    def test_read_with_no_ids_still_checks_the_key(self):
-        io = FakeIO(http={"/json/2/": (None, "HTTP 401: Invalid apikey")})
-        self.assertEqual(services.TaskService(io).read("bad", []), ({}, services.KEY_REJECTED))
+    def test_read_with_no_ids_still_checks_the_session(self):
+        io = FakeIO(
+            http={
+                "jsonrpc": (
+                    {
+                        "error": {
+                            "message": "Odoo Session Expired",
+                            "data": {"name": "odoo.http.SessionExpiredException"},
+                        }
+                    },
+                    None,
+                )
+            }
+        )
+        self.assertEqual(services.TaskService(io).read("bad", []), ({}, services.SESSION_REJECTED))
         self.assertEqual(len(io.http_calls), 1)
 
     def test_read_reports_a_failed_call(self):
-        io = FakeIO(http={"/json/2/": (None, "HTTP 500")})
-        self.assertEqual(services.TaskService(io).read("k", [1]), ({}, "HTTP 500"))
-        io = FakeIO(http={"/json/2/": ({"not": "a list"}, None)})
+        io = FakeIO(http={"jsonrpc": (None, "HTTP 500")})
+        self.assertEqual(services.TaskService(io).read("sess", [1]), ({}, "HTTP 500"))
+        io = FakeIO(http={"jsonrpc": ({"result": {"not": "a list"}}, None)})
         self.assertEqual(
-            services.TaskService(io).read("k", [1]), ({}, "unexpected reply from Odoo")
+            services.TaskService(io).read("sess", [1]), ({}, "unexpected reply from Odoo")
         )
+
+    def test_read_reports_a_generic_rpc_error(self):
+        io = FakeIO(http={"jsonrpc": ({"error": {"message": "Access Denied"}}, None)})
+        self.assertEqual(services.TaskService(io).read("sess", [1]), ({}, "Access Denied"))
 
 
 class TaskDetailTest(unittest.TestCase):
@@ -967,16 +994,19 @@ class TaskDetailTest(unittest.TestCase):
 
     def _io(self, **overrides):
         http = {
-            "/project.task/search_read": ([self.TASK], None),
-            "/mail.message/search_read": (self.MESSAGES, None),
-            "/res.users/read": ([{"id": 11, "name": "Ann"}, {"id": 12, "name": "Cy"}], None),
-            "/project.tags/read": ([{"id": 5, "name": "bug"}], None),
+            _call_kw("project.task", "search_read"): ({"result": [self.TASK]}, None),
+            _call_kw("mail.message", "search_read"): ({"result": self.MESSAGES}, None),
+            _call_kw("res.users", "read"): (
+                {"result": [{"id": 11, "name": "Ann"}, {"id": 12, "name": "Cy"}]},
+                None,
+            ),
+            _call_kw("project.tags", "read"): ({"result": [{"id": 5, "name": "bug"}]}, None),
         }
         return FakeIO(http={**http, **overrides})
 
     def test_detail_gathers_the_fields_the_chatter_and_the_names(self):
         io = self._io()
-        task, error = services.TaskService(io).detail("k", 7)
+        task, error = services.TaskService(io).detail("sess", 7)
         self.assertIsNone(error)
         assert task is not None
         self.assertEqual(
@@ -1003,13 +1033,18 @@ class TaskDetailTest(unittest.TestCase):
         self.assertEqual((task["messages_error"], task["messages_cut"]), ("", False))
         # the whole tab is four calls at most, and only for this one task
         self.assertEqual(len(io.http_calls), 4)
-        self.assertEqual(io.http_calls[0][1]["domain"], [["id", "=", 7]])
+        self.assertEqual(io.http_calls[0][1]["params"]["kwargs"]["domain"], [["id", "=", 7]])
 
     def test_detail_skips_the_name_lookups_when_there_is_nobody_to_name(self):
         io = self._io(
-            **{"/project.task/search_read": ([{**self.TASK, "user_ids": [], "tag_ids": []}], None)}
+            **{
+                _call_kw("project.task", "search_read"): (
+                    {"result": [{**self.TASK, "user_ids": [], "tag_ids": []}]},
+                    None,
+                )
+            }
         )
-        task, _ = services.TaskService(io).detail("k", 7)
+        task, _ = services.TaskService(io).detail("sess", 7)
         assert task is not None
         self.assertEqual((task["assignees"], task["tags"]), ([], []))
         self.assertEqual(len(io.http_calls), 2)  # the task and its chatter only
@@ -1017,11 +1052,11 @@ class TaskDetailTest(unittest.TestCase):
     def test_detail_survives_a_failed_side_call(self):
         io = self._io(
             **{
-                "/mail.message/search_read": (None, "HTTP 403"),
-                "/res.users/read": (None, "HTTP 403"),
+                _call_kw("mail.message", "search_read"): (None, "HTTP 403"),
+                _call_kw("res.users", "read"): (None, "HTTP 403"),
             }
         )
-        task, error = services.TaskService(io).detail("k", 7)
+        task, error = services.TaskService(io).detail("sess", 7)
         assert task is not None
         self.assertIsNone(error)
         self.assertEqual((task["messages"], task["assignees"], task["tags"]), ([], [], ["bug"]))
@@ -1030,24 +1065,36 @@ class TaskDetailTest(unittest.TestCase):
     def test_detail_says_when_the_chatter_was_cut(self):
         many = [{"id": i, "date": "2026-10-01 08:00:00", "body": "x"} for i in range(200)]
         task, _ = services.TaskService(
-            self._io(**{"/mail.message/search_read": (many, None)})
-        ).detail("k", 7)
+            self._io(**{_call_kw("mail.message", "search_read"): ({"result": many}, None)})
+        ).detail("sess", 7)
         assert task is not None
         self.assertTrue(task["messages_cut"])
 
     def test_detail_errors(self):
         self.assertEqual(
-            services.TaskService(FakeIO()).detail("", 7), (None, "GOO_ODOO_API_KEY is not set")
+            services.TaskService(FakeIO()).detail("", 7), (None, "not connected to odoo.com yet")
         )
         self.assertEqual(
-            services.TaskService(self._io(**{"/project.task/search_read": ([], None)})).detail(
-                "k", 7
-            ),
-            (None, "this task does not exist, or the key cannot read it"),
+            services.TaskService(
+                self._io(**{_call_kw("project.task", "search_read"): ({"result": []}, None)})
+            ).detail("sess", 7),
+            (None, "this task does not exist, or the session cannot read it"),
         )
-        rejected = self._io(**{"/project.task/search_read": (None, "HTTP 401: Invalid apikey")})
+        rejected = self._io(
+            **{
+                _call_kw("project.task", "search_read"): (
+                    {
+                        "error": {
+                            "message": "Odoo Session Expired",
+                            "data": {"name": "odoo.http.SessionExpiredException"},
+                        }
+                    },
+                    None,
+                )
+            }
+        )
         self.assertEqual(
-            services.TaskService(rejected).detail("k", 7), (None, services.KEY_REJECTED)
+            services.TaskService(rejected).detail("sess", 7), (None, services.SESSION_REJECTED)
         )
 
 

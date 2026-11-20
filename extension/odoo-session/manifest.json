@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "goo odoo session bridge",
+  "version": "1.0",
+  "description": "Sends goo (127.0.0.1:8068) your odoo.com session cookie, so it can show task stages without an API key.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw8yHcGQ9cY5xysQ/NElkD6FU7rHuohiJ7mfD2x9LtR5Ij5r32NFy6ntmk2xQXRjdYMoumFx0EzoRS+PIVJs4S40Ir7gdaicIfUbtKubdCpME/8zOjf/zXEHvs9dOo1OGOkOJlLS7EFmTDaihqOwZ9ewAizCaof5bN/zVz0aRk1Io+41J6p/sJeqNZ0IbCCFpW7JzoodEn7ned5So+ZbmKQApwWK5No0SvJ0oNVO8Uo6QRTs4LXm1qcbfDdpwyD6HaotWS/ZLFrVtvByNtTnLX0E6dmRz6HhMUU063WL/uqbP8rJibGpqWo+sDnqBTe8ip0/NW4KnqAy/zwe5UFZ4DwIDAQAB",
+  "permissions": ["cookies", "alarms"],
+  "host_permissions": ["https://*.odoo.com/*", "http://127.0.0.1:8068/*"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

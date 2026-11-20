@@ -49,13 +49,13 @@ export class TaskButton extends Component {
   // "Odoo: <stage>" once the stage is known, so it is not mistaken for the GitHub status
   get label(): string {
     if (this.info) return `Odoo: ${this.info.stage}`;
-    return this.tasks.keyRejected() ? "Odoo: key expired?" : "Odoo task";
+    return this.tasks.sessionRejected() ? "Odoo: session expired?" : "Odoo task";
   }
 
   get cls(): string {
     const category = this.info
       ? stageClass(this.info.stage)
-      : this.tasks.keyRejected()
+      : this.tasks.sessionRejected()
         ? "blocked"
         : "other";
     return `${this.props.ci ? "dash-ci dash-mb" : "dash-pr-state"} ${category}`;
@@ -63,8 +63,8 @@ export class TaskButton extends Component {
 
   get title(): string {
     if (this.info) return `${this.info.name} — open the task on odoo.com`;
-    if (this.tasks.keyRejected()) {
-      return "Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration. Click to open the task on odoo.com";
+    if (this.tasks.sessionRejected()) {
+      return "Odoo rejected the session (expired, or logged out of odoo.com): open an odoo.com tab you're logged into, see Configuration. Click to open the task on odoo.com";
     }
     return "open the task on odoo.com";
   }

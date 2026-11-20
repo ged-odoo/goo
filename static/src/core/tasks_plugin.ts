@@ -1,8 +1,13 @@
 // The stage of the odoo.com tasks that branches / PRs name (see taskId in utils.ts).
-// Opt-in (`odoo_tasks` setting): the backend (POST /api/tasks) reads them with the API
-// key in its GOO_ODOO_API_KEY environment variable — the key never reaches the
-// browser or the config file. Every TaskButton asks for its task with want(); the
-// asks made within a few ms leave as one request.
+// Opt-in (`odoo_tasks` setting): the backend (POST /api/tasks) reads them with the
+// odoo.com session cookie goo's browser extension pushes it (POST
+// /api/odoo-session) — the session never reaches this page or the config file.
+// Every TaskButton asks for its task with want(); the asks made within a few ms
+// leave as one request. A task is only ever asked for once on its own (a new one
+// appearing) or re-asked by an explicit Refresh — never polled or auto-retried. Its
+// last-known name/stage is cached in localStorage, so a reload of the page repaints
+// every already-seen task instantly, with no call to odoo.com — only a task this
+// browser has genuinely never seen before triggers one, until the next Refresh.
 
 import { ConfigPlugin } from "./config_plugin.ts";
 import { EventLogPlugin } from "./event_log_plugin.ts";
@@ -55,11 +60,11 @@ interface TasksReply {
   ok: boolean;
   tasks?: Record<string, TaskInfo>;
   error?: string;
-  key_rejected?: boolean; // Odoo answered 401: the key is wrong or has expired
+  session_rejected?: boolean; // Odoo answered 401: the session is expired or logged out
 }
 
 const BATCH_DELAY_MS = 30;
-const RETRY_AFTER_MS = 60_000; // a failed task is not asked again before this
+const CACHE_KEY = "oo-tasks-cache"; // task id -> its last-known {name, stage}
 
 export class TasksPlugin extends Plugin {
   static sequence = 2; // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
@@ -68,38 +73,51 @@ export class TasksPlugin extends Plugin {
   eventLog = usePlugin(EventLogPlugin);
   tasks = signal<Record<string, TaskInfo>>({}); // task id -> its name and stage
   error = signal(""); // why the last request failed ("" when it worked)
-  keyRejected = signal(false); // Odoo refused the key (odoo.com keys expire after 90 days)
-  _warned = false; // the event log hears about a rejected key once per session
+  sessionRejected = signal(false); // Odoo refused the session (expired, or logged out)
+  _warned = false; // the event log hears about a rejected session once per session
   details = signal<Record<string, TaskDetailState>>({}); // task id -> its Task tab content
   _asked = new Set<string>(); // ids already requested (answered, in flight or failed)
-  _failedAt = new Map<string, number>(); // ids whose last request failed -> when
   _queue: string[] = [];
   _timer: ReturnType<typeof setTimeout> | undefined;
 
   setup(): void {
+    // instant paint from last session's cache; a cached id counts as already
+    // asked, so want() leaves it alone until an explicit Refresh re-validates it
+    const cached = this._loadCache();
+    if (Object.keys(cached).length) {
+      this.tasks.set(cached);
+      for (const id of Object.keys(cached)) this._asked.add(id);
+    }
     onWillDestroy(() => clearTimeout(this._timer));
+  }
+
+  _loadCache(): Record<string, TaskInfo> {
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null");
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, TaskInfo>) : {};
+    } catch {
+      return {};
+    }
   }
 
   get enabled(): boolean {
     return this.config.config.odoo_tasks;
   }
 
-  // ask for a task's stage, once; a no-op when the feature is off. A task whose request
-  // failed is asked again only after a minute, so an outage is not hammered by every
-  // re-render (a rejected key is never asked again: see _flush)
+  // ask for a task's stage, once; a no-op when the feature is off or this id was
+  // already asked (whether that answered, is still in flight, or failed) — a failed
+  // one is only ever retried by the screens' explicit Refresh (reload()), never on
+  // its own, so a stretch with no odoo.com session open stays quiet instead of
+  // pinging odoo.com on every re-render
   want(id: string): void {
-    if (!this.enabled) return;
-    if (this._asked.has(id)) {
-      const failedAt = this._failedAt.get(id);
-      if (failedAt === undefined || Date.now() - failedAt < RETRY_AFTER_MS) return;
-      this._failedAt.delete(id);
-    }
+    if (!this.enabled || this._asked.has(id)) return;
     this._asked.add(id);
     this._queue.push(id);
     this._timer ??= setTimeout(() => this._flush(), BATCH_DELAY_MS);
   }
 
-  // re-read every task asked for so far (the screens' Refresh)
+  // re-read every task asked for so far, including a previously failed one (the
+  // screens' Refresh — the only way a failure is retried)
   async reload(): Promise<void> {
     await this._request([...this._asked]);
   }
@@ -122,7 +140,7 @@ export class TasksPlugin extends Plugin {
     }
   }
 
-  // whether the backend can see the key, as the reason when it can't ("" when it can)
+  // whether the backend has a working session, as the reason when it doesn't ("" when it does)
   async check(): Promise<string> {
     await this._request([]);
     return this.error();
@@ -131,10 +149,7 @@ export class TasksPlugin extends Plugin {
   async _flush(): Promise<void> {
     this._timer = undefined;
     const ids = this._queue.splice(0);
-    // (a rejected key is not worth asking again: only a new key, so a restart, changes that)
-    if (!(await this._request(ids)) && !this.keyRejected()) {
-      ids.forEach((id) => this._failedAt.set(id, Date.now()));
-    }
+    await this._request(ids);
   }
 
   // whether Odoo answered; an id it has no row for (unreadable, deleted) still counts as asked
@@ -143,13 +158,15 @@ export class TasksPlugin extends Plugin {
     try {
       const res = await postJSON<TasksReply>("/api/tasks", { ids: ids.map(Number) });
       this.error.set(res.ok ? "" : res.error || "failed");
-      this.keyRejected.set(!!res.key_rejected);
-      if (res.key_rejected && !this._warned) {
+      this.sessionRejected.set(!!res.session_rejected);
+      if (res.session_rejected && !this._warned) {
         this._warned = true;
         this.eventLog.add(`Odoo task stages: ${res.error}`, "", "error");
       }
       if (res.tasks && Object.keys(res.tasks).length) {
-        this.tasks.set({ ...this.tasks(), ...res.tasks });
+        const merged = { ...this.tasks(), ...res.tasks };
+        this.tasks.set(merged);
+        localStorage.setItem(CACHE_KEY, JSON.stringify(merged));
       }
       return res.ok;
     } catch (e) {

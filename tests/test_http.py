@@ -245,7 +245,7 @@ class PostRoutesTest(ServerTestCase):
         self.assertEqual((status, body), (200, {"ok": True}))
         self.assertIn("hello log", out.getvalue())
 
-    def test_tasks_are_opt_in_and_the_key_only_comes_from_the_environment(self):
+    def test_tasks_are_opt_in_and_the_session_only_comes_from_the_extension(self):
         class FakeTasks:
             calls = []
 
@@ -254,17 +254,19 @@ class PostRoutesTest(ServerTestCase):
                 return {"7": {"name": "t", "stage": "Done"}}, None
 
         fake = FakeTasks()
-        env = {"GOO_ODOO_API_KEY": "secret"}
-        with mock.patch.object(server, "TASKS", fake), mock.patch.dict(os.environ, env):
+        with (
+            mock.patch.object(server, "TASKS", fake),
+            mock.patch.object(server, "ODOO_SESSION", "sess"),
+        ):
             status, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
             self.assertEqual((status, body["ok"], fake.calls), (200, False, []))  # setting off
 
             self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
             _, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
         self.assertEqual(body, {"ok": True, "tasks": {"7": {"name": "t", "stage": "Done"}}})
-        self.assertEqual(fake.calls, [("secret", [7])])
+        self.assertEqual(fake.calls, [("sess", [7])])
 
-    def test_task_detail_follows_the_same_opt_in_and_key_rules(self):
+    def test_task_detail_follows_the_same_opt_in_and_session_rules(self):
         class FakeTasks:
             calls = []
 
@@ -275,7 +277,7 @@ class PostRoutesTest(ServerTestCase):
         fake = FakeTasks()
         with (
             mock.patch.object(server, "TASKS", fake),
-            mock.patch.dict(os.environ, {"GOO_ODOO_API_KEY": "secret"}),
+            mock.patch.object(server, "ODOO_SESSION", "sess"),
         ):
             status, body = self.json_request("POST", "/api/tasks/detail", {"id": 7})
             self.assertEqual((status, body["ok"], fake.calls), (200, False, []))  # setting off
@@ -283,24 +285,82 @@ class PostRoutesTest(ServerTestCase):
             self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
             _, body = self.json_request("POST", "/api/tasks/detail", {"id": 7})
             self.assertEqual(body, {"ok": True, "task": {"id": 7, "name": "t"}})
-            self.assertEqual(fake.calls, [("secret", 7)])
+            self.assertEqual(fake.calls, [("sess", 7)])
             for bad in ("abc", [1], True, -3, 1e999):  # never reaches Odoo, never raises
                 status, body = self.json_request("POST", "/api/tasks/detail", {"id": bad})
                 self.assertEqual((status, body["ok"], body["error"]), (200, False, "not a task id"))
             self.assertEqual(len(fake.calls), 1)
 
-    def test_tasks_flag_a_rejected_key(self):
+    def test_tasks_flag_a_rejected_session(self):
         class Rejecting:
             def read(self, *args):
-                return {}, services.KEY_REJECTED
+                return {}, services.SESSION_REJECTED
 
         self.config.save(self.config.get()["rev"], config={"odoo_tasks": True})
         with mock.patch.object(server, "TASKS", Rejecting()):
             _, body = self.json_request("POST", "/api/tasks", {"ids": [7]})
         self.assertEqual(
             body,
-            {"ok": False, "tasks": {}, "error": services.KEY_REJECTED, "key_rejected": True},
+            {
+                "ok": False,
+                "tasks": {},
+                "error": services.SESSION_REJECTED,
+                "session_rejected": True,
+            },
         )
+
+    def test_odoo_session_is_stored_only_from_the_extension_origin(self):
+        status, body = self.json_request(
+            "POST",
+            "/api/odoo-session",
+            {"session_id": "abc"},
+            headers={"Origin": "http://evil.example"},
+        )
+        self.assertEqual(
+            (status, body), (403, {"ok": False, "error": "cross-origin request refused"})
+        )
+        self.assertEqual(server.ODOO_SESSION, "")
+
+        status, body = self.json_request(
+            "POST",
+            "/api/odoo-session",
+            {"session_id": "abc"},
+            headers={"Origin": server.EXTENSION_ORIGIN},
+        )
+        self.assertEqual((status, body), (200, {"ok": True}))
+        self.assertEqual(server.ODOO_SESSION, "abc")
+        server.ODOO_SESSION = ""  # don't leak into other tests
+
+        # goo's own UI origin works too (manual testing from the Config screen)
+        status, body = self.json_request(
+            "POST",
+            "/api/odoo-session",
+            {"session_id": "xyz"},
+            headers={"Origin": f"http://127.0.0.1:{server.PORT}"},
+        )
+        self.assertEqual((status, body), (200, {"ok": True}))
+        self.assertEqual(server.ODOO_SESSION, "xyz")
+        server.ODOO_SESSION = ""  # don't leak into other tests
+
+    def test_the_extension_origin_carve_out_is_scoped_to_its_one_route(self):
+        # EXTENSION_ORIGIN must not become a backdoor into any other endpoint
+        status, body = self.json_request(
+            "POST", "/api/event", {"text": "x"}, headers={"Origin": server.EXTENSION_ORIGIN}
+        )
+        self.assertEqual(
+            (status, body), (403, {"ok": False, "error": "cross-origin request refused"})
+        )
+
+    def test_odoo_session_rejects_a_missing_or_empty_value(self):
+        for bad_body in ({}, {"session_id": ""}, {"session_id": 7}):
+            status, body = self.json_request(
+                "POST",
+                "/api/odoo-session",
+                bad_body,
+                headers={"Origin": server.EXTENSION_ORIGIN},
+            )
+            self.assertEqual((status, body), (400, {"ok": False, "error": "missing session_id"}))
+        self.assertEqual(server.ODOO_SESSION, "")
 
     def test_route_success_and_error_through_a_swapped_singleton(self):
         db = _FakeDatabase({"keep", "gone"})

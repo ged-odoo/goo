@@ -79,6 +79,16 @@ source; a first build may download Maturin and Cargo dependencies. Installation
 does not enable the feature. Tick **rust bundler** and restart Odoo to activate
 it; untick and restart to return to the Python path.
 
+### Optional Odoo task stage
+
+Tick **show Odoo task stage** in Configuration to show each task's stage (New,
+In Progress, …) next to its Task button. It reads odoo.com with your own
+browser session, not an API key: install the small browser extension at
+`extension/odoo-session/` ("Load unpacked" in `chrome://extensions`, see its
+README), then open any odoo.com tab you're logged into — goo picks up the
+session right away, and again whenever it changes. The session is kept in
+memory only, never written to disk.
+
 **Targets** are the core concept: a named combination of a database, per-repo
 branches (`repo:branch`), and start args. Manage them in the **Targets** tab
 (create from an existing one, edit, star). Starring a target shows it on the
