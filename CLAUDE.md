@@ -82,6 +82,10 @@ watch` rebuilds on change. Rebuild + commit `static/dist/app.js` whenever you ed
 - `addons/` — Odoo addons goo injects (e.g. `autologin`) to the odoo instance
   in the addons path. `rust_bundler/native/` is Goo's minimal Rust/PyO3 asset
   bundler; Odoo's resolved file list is authoritative and imports are never crawled.
+- `extension/odoo-session/` — a small browser extension (plain JS, Manifest V3; not
+  part of the Owl/TypeScript build) that pushes the user's own odoo.com session
+  cookie to goo (`POST /api/odoo-session`), for the opt-in "show Odoo task stage"
+  setting (`backend/services/tasks.py`). goo keeps it in memory only.
 - `static/src/` — the Owl 3 frontend application (TypeScript ES modules; `main.ts` at the root
   is the entry, `plugins.ts` the registered plugin list, `globals.d.ts` the `<script>`-loaded
   globals: owl, xterm, Chart.js). Organized **by feature**: a shared `core/` plus one folder per screen.

@@ -345,6 +345,16 @@ describe("Reviews screen — task stage", () => {
     expect(pill.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("caches stages in localStorage: a reload shows them with no call to odoo.com", async () => {
+    app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute }, { odoo_tasks: true });
+    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
+    app.destroy();
+
+    // no "/api/tasks" route at all this time: mountApp fails the test if anything calls it
+    app = await mount({ "/api/prs/info": { prs } }, { odoo_tasks: true });
+    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
+  });
+
   it("Refresh re-reads the stages", async () => {
     app = await mount({ "/api/prs/info": { prs }, "/api/tasks": tasksRoute }, { odoo_tasks: true });
     await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
@@ -361,53 +371,48 @@ describe("Reviews screen — task stage", () => {
     expect(app.root.querySelector("a.rev-task")).not.toBeNull();
   });
 
-  it("asks again after a failed request, but not before a minute has passed", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] }); // only the clock: the app's timers keep running
-    try {
-      let calls = 0;
-      app = await mount(
-        {
-          "/api/prs/info": { prs },
-          "/api/tasks": (body: unknown) =>
-            ++calls === 1 ? { ok: false, tasks: {}, error: "unreachable" } : tasksRoute(body),
-        },
-        { odoo_tasks: true },
-      );
-      await vi.waitFor(() => expect(calls).toBe(1));
-      await app.settle();
-      expect(stages()).toEqual([]);
-
-      await app.navigate("todo");
-      await app.navigate("review-queue"); // right away: an outage is not hammered
-      await app.settle();
-      expect(calls).toBe(1);
-
-      vi.setSystemTime(Date.now() + 61_000);
-      await app.navigate("todo");
-      await app.navigate("review-queue");
-      await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
-      expect(calls).toBe(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("flags a rejected (expired) key on the Task button and tells the event log once", async () => {
-    const error =
-      "Odoo rejects the API key (invalid or expired: odoo.com keys last 90 days at most)";
+  it("never retries a failed request on its own, only on an explicit Refresh", async () => {
+    let calls = 0;
     app = await mount(
       {
         "/api/prs/info": { prs },
-        "/api/tasks": { ok: false, tasks: {}, error, key_rejected: true },
+        "/api/tasks": (body: unknown) =>
+          ++calls === 1 ? { ok: false, tasks: {}, error: "unreachable" } : tasksRoute(body),
+      },
+      { odoo_tasks: true },
+    );
+    await vi.waitFor(() => expect(calls).toBe(1));
+    await app.settle();
+    expect(stages()).toEqual([]);
+
+    // navigating away and back, however long later, never asks again on its own
+    await app.navigate("todo");
+    await app.navigate("review-queue");
+    await app.settle();
+    expect(calls).toBe(1);
+
+    await click(button(app.root, "Refresh"));
+    await vi.waitFor(() => expect(stages()).toEqual(["Odoo: In Progress"]));
+    expect(calls).toBe(2);
+  });
+
+  it("flags a rejected session on the Task button and tells the event log once", async () => {
+    const error = "Odoo rejected the session (expired, or you're logged out of odoo.com)";
+    app = await mount(
+      {
+        "/api/prs/info": { prs },
+        "/api/tasks": { ok: false, tasks: {}, error, session_rejected: true },
         "/api/event": { ok: true },
       },
       { odoo_tasks: true },
     );
     await vi.waitFor(() =>
-      expect(text(app.root.querySelector(".rl-group-head a.rev-task"))).toBe("Odoo: key expired?↗"),
+      expect(text(app.root.querySelector(".rl-group-head a.rev-task"))).toBe(
+        "Odoo: session expired?↗",
+      ),
     );
     await app.navigate("todo");
-    await app.navigate("review-queue"); // a rejected key is not asked again on its own
+    await app.navigate("review-queue"); // not asked again on its own — only an explicit Refresh retries it
     await app.settle();
     expect(app.callsTo("/api/tasks")).toHaveLength(1);
     await click(button(app.root, "Refresh")); // only an explicit Refresh asks again
@@ -415,7 +420,7 @@ describe("Reviews screen — task stage", () => {
     const logged = app
       .callsTo("/api/event")
       .map((c) => (c.body as { text: string }).text)
-      .filter((t) => t.includes("Odoo rejects the API key"));
+      .filter((t) => t.includes("Odoo rejected the session"));
     expect(logged).toHaveLength(1);
   });
 
@@ -423,7 +428,7 @@ describe("Reviews screen — task stage", () => {
     app = await mount(
       {
         "/api/prs/info": { prs },
-        "/api/tasks": { ok: false, tasks: {}, error: "HTTP 401: Invalid apikey" },
+        "/api/tasks": { ok: false, tasks: {}, error: "HTTP 401: Invalid session" },
       },
       { odoo_tasks: true },
     );

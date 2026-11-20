@@ -192,7 +192,7 @@ export class Settings extends Model {
   // off by default -- the Reviews screen lists the PRs GitHub says await my review
   // (a user-editable search) above the watchlist, with a Track button each.
   review_requests = fields.bool();
-  // off by default -- the stage of the odoo.com task a branch / PR names, read with the key in GOO_ODOO_API_KEY
+  // off by default -- the stage of the odoo.com task a branch / PR names, read with the session goo's browser extension pushes it
   odoo_tasks = fields.bool();
   // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.ts).
   // Replaces the old hide_start_controls boolean (migrated in toModels below);

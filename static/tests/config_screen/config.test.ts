@@ -47,44 +47,41 @@ const labels = () =>
 describe("Config screen — Odoo task stage", () => {
   const OFF = { ok: false, tasks: {}, error: "disabled in the settings" };
 
-  it("is off by default; turning it on explains the key and checks that goo can see it", async () => {
+  it("is off by default; turning it on explains the extension and checks the session", async () => {
     let reply: Record<string, unknown> = {
       ok: false,
       tasks: {},
-      error: "GOO_ODOO_API_KEY is not set",
+      error: "not connected to odoo.com yet",
     };
     const be = await openConfig({}, { "/api/tasks": () => reply });
-    expect(app.root.textContent).not.toContain("GOO_ODOO_API_KEY");
+    expect(app.root.textContent).not.toContain("extension/odoo-session");
     expect(input("setting-odoo-tasks").checked).toBe(false);
 
     check(input("setting-odoo-tasks"));
-    await until(app, () => app.root.textContent?.includes("✗ GOO_ODOO_API_KEY is not set"));
+    await until(app, () => app.root.textContent?.includes("✗ not connected to odoo.com yet"));
     await until(app, () => be.saves.length);
     expect(be.last().config).toMatchObject({ odoo_tasks: true });
-    // how to give the key to goo, per shell — and never a place to type the key into
+    // how to install the extension — and never a place to type a key or cookie into
     const block = [...app.root.querySelectorAll(".config-block")].find(
       (b) => b.querySelector("h2")?.textContent === "Odoo task stage",
     )!;
-    expect(block.textContent).toContain("export GOO_ODOO_API_KEY");
-    expect(block.textContent).toContain("set -gx GOO_ODOO_API_KEY");
-    expect(block.textContent).toContain("systemctl --user edit goo.service");
+    expect(block.textContent).toContain("extension/odoo-session");
+    expect(block.textContent).toContain("Load unpacked");
     expect(block.querySelector("input")).toBeNull();
 
     reply = { ok: true, tasks: {} };
     byText(block, "Check").click();
-    await until(app, () => app.root.textContent?.includes("✓ the key works"));
+    await until(app, () => app.root.textContent?.includes("✓ connected"));
   });
 
-  it("says when Odoo rejects the key, and how to renew it", async () => {
-    const error =
-      "Odoo rejects the API key (invalid or expired: odoo.com keys last 90 days at most)";
+  it("says when Odoo rejects the session", async () => {
+    const error = "Odoo rejected the session (expired, or you're logged out of odoo.com)";
     await openConfig(
       { odoo_tasks: true },
-      { "/api/tasks": { ok: false, tasks: {}, error, key_rejected: true } },
+      { "/api/tasks": { ok: false, tasks: {}, error, session_rejected: true } },
     );
     await until(app, () => app.root.textContent?.includes(`✗ ${error}`));
-    expect(app.root.textContent).toContain("odoo.com keys last 90 days at most");
-    expect(app.root.textContent).toContain("swap the key");
+    expect(app.root.textContent).toContain("logged out of odoo.com");
   });
 
   it("asks nothing while the setting is off", async () => {

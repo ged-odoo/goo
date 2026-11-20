@@ -271,7 +271,7 @@ export const DEFAULT_CONFIG: Config = {
   auto_claude_review: false,
   // the Reviews screen's "Requested of you" list (a GitHub review-request search)
   review_requests: false,
-  // show the stage of the odoo.com task a branch / PR names (the key comes from GOO_ODOO_API_KEY)
+  // show the stage of the odoo.com task a branch / PR names (the session comes from goo's browser extension)
   odoo_tasks: false,
   // the create-workspace dialog's Location field default: "main" (one loaded
   // at a time) or "worktree" (its own checkout, runs concurrently). Only the

@@ -71,6 +71,9 @@ from .update import _git_goo, goo_fast_forward, goo_update_status
 
 PORT = 8068
 ODOO_PORT = 8069
+# goo's browser extension (extension/odoo-session/, its manifest.json "key" pins
+# this id) — the one non-goo origin allowed to POST /api/odoo-session, nothing else
+EXTENSION_ORIGIN = "chrome-extension://agbhbdlhocoednglikaebfoinablbkci"
 READY_MARKER = "odoo.registry: Registry loaded"
 STATIC_DIR = os.path.join(GOO_DIR, "static")
 
@@ -1012,6 +1015,11 @@ WORKSPACES = WorkspaceManager(BUS)
 GITHUB = services.GitHubService(effects, TTLCache(600))
 RUNBOT = services.RunbotService(effects, TTLCache(300))
 TASKS = services.TaskService(effects)
+# the odoo.com session cookie, pushed by goo's browser extension
+# (extension/odoo-session/) over POST /api/odoo-session. In memory only — never
+# written to config.json, never read from an environment variable — so it doesn't
+# outlive the process and can't end up in a file the user might commit.
+ODOO_SESSION = ""
 MERGEBOT = services.MergebotService(effects, TTLCache(8 * 3600))  # 8h TTL (states change slowly)
 DATABASE = services.DatabaseService(effects, TTLCache(60))
 # git on the user's repos — uncached (branch reads are volatile + fast); notify
@@ -1789,43 +1797,48 @@ def _api_prs_review_requests(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": error is None, "prs": prs, **({"error": error} if error else {})}
 
 
-def _odoo_tasks_key() -> tuple[str, str | None]:
-    """(API key, error): the key only ever comes from the GOO_ODOO_API_KEY environment
-    variable — never from the config file, which may be committed — and only when the
-    opt-in `odoo_tasks` setting is on."""
+def _odoo_session() -> tuple[str, str | None]:
+    """(session cookie, error): the session only ever comes from goo's own
+    ODOO_SESSION, pushed in memory by the browser extension — never from the config
+    file, which may be committed — and only when the opt-in `odoo_tasks` setting is
+    on."""
     if not (CONFIG.get().get("config") or {}).get("odoo_tasks"):
         return "", "disabled in the settings"
-    return os.environ.get("GOO_ODOO_API_KEY", ""), None
+    return ODOO_SESSION, None
 
 
 def _tasks_reply(error: str | None, **payload: Any) -> dict[str, Any]:
     return {
         "ok": error is None,
         **payload,
-        **({"error": error, "key_rejected": error == services.KEY_REJECTED} if error else {}),
+        **(
+            {"error": error, "session_rejected": error == services.SESSION_REJECTED}
+            if error
+            else {}
+        ),
     }
 
 
 @post_route("/api/tasks", "ids:list")
 def _api_tasks(body: dict[str, Any]) -> dict[str, Any]:
-    """The stage of Odoo tasks. An empty `ids` just checks the key."""
-    key, error = _odoo_tasks_key()
+    """The stage of Odoo tasks. An empty `ids` just checks the session."""
+    session_id, error = _odoo_session()
     tasks: dict[str, dict[str, str]] = {}
     if error is None:
-        tasks, error = TASKS.read(key, body["ids"])
+        tasks, error = TASKS.read(session_id, body["ids"])
     return _tasks_reply(error, tasks=tasks)
 
 
 @post_route("/api/tasks/detail", "id")
 def _api_tasks_detail(body: dict[str, Any]) -> dict[str, Any]:
     """One task in full (fields, description, chatter), for the workspace's Task tab."""
-    key, error = _odoo_tasks_key()
+    session_id, error = _odoo_session()
     task = None
     task_id = body["id"]
     if error is None and not (type(task_id) is int and task_id > 0):
         error = "not a task id"
     if error is None:
-        task, error = TASKS.detail(key, task_id)
+        task, error = TASKS.detail(session_id, task_id)
     return _tasks_reply(error, task=task)
 
 
@@ -2095,17 +2108,34 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass  # keep the terminal quiet
 
-    def _origin_ok(self) -> bool:
+    def _origin_ok(self, extra: frozenset[str] = frozenset()) -> bool:
         """Reject cross-site requests. goo exposes shell-equivalent endpoints on
         localhost; localhost is not an auth boundary against the user's own
         browser, so a malicious page could POST/WS to us without this check.
         Browsers attach Origin to every cross-origin POST and WebSocket handshake,
         so an Origin outside our allowlist is a CSRF attempt. A missing Origin is a
-        non-browser client (curl, the --test-tags CLI) and carries no CSRF risk."""
+        non-browser client (curl, the --test-tags CLI) and carries no CSRF risk.
+        `extra` widens the allowlist for one call only (the odoo-session route's
+        pinned extension origin) — it never applies to any other endpoint."""
         origin = self.headers.get("Origin")
         if origin is None:
             return True
-        return origin in self.ALLOWED_ORIGINS
+        return origin in self.ALLOWED_ORIGINS or origin in extra
+
+    def _handle_odoo_session(self) -> None:
+        """POST /api/odoo-session {session_id}: goo's browser extension pushes the
+        live odoo.com session cookie here. Scoped to its own pinned EXTENSION_ORIGIN
+        (as well as goo's own UI, for manual testing) — never the general
+        ALLOWED_ORIGINS — so no other extension or site can set it."""
+        if not self._origin_ok(extra=frozenset({EXTENSION_ORIGIN})):
+            return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
+        body, _ = self._read_json()
+        session_id = (body or {}).get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return self._send_json(400, {"ok": False, "error": "missing session_id"})
+        global ODOO_SESSION
+        ODOO_SESSION = session_id
+        self._send_json(200, {"ok": True})
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
@@ -2140,9 +2170,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:
+        path = self.path.split("?", 1)[0]
+        # its own (wider) origin check: the extension posts from outside ALLOWED_ORIGINS
+        if path == "/api/odoo-session":
+            return self._handle_odoo_session()
         if not self._origin_ok():
             return self._send_json(403, {"ok": False, "error": "cross-origin request refused"})
-        path = self.path.split("?", 1)[0]
         # the two POSTs that need the raw request stay hand-dispatched
         if path == "/api/config":
             return self._save_config()

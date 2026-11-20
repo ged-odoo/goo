@@ -111,7 +111,7 @@ var DEFAULT_CONFIG = {
   auto_claude_review: false,
   // the Reviews screen's "Requested of you" list (a GitHub review-request search)
   review_requests: false,
-  // show the stage of the odoo.com task a branch / PR names (the key comes from GOO_ODOO_API_KEY)
+  // show the stage of the odoo.com task a branch / PR names (the session comes from goo's browser extension)
   odoo_tasks: false,
   // the create-workspace dialog's Location field default: "main" (one loaded
   // at a time) or "worktree" (its own checkout, runs concurrently). Only the
@@ -3579,7 +3579,7 @@ var Settings = class extends Model {
   // off by default -- the Reviews screen lists the PRs GitHub says await my review
   // (a user-editable search) above the watchlist, with a Track button each.
   review_requests = fields.bool();
-  // off by default -- the stage of the odoo.com task a branch / PR names, read with the key in GOO_ODOO_API_KEY
+  // off by default -- the stage of the odoo.com task a branch / PR names, read with the session goo's browser extension pushes it
   odoo_tasks = fields.bool();
   // "local" | "docker" | "external" — see DEFAULT_CONFIG's comment (config.ts).
   // Replaces the old hide_start_controls boolean (migrated in toModels below);
@@ -6688,7 +6688,7 @@ var BranchesScreen = class extends Component {
 
 // static/src/core/tasks_plugin.ts
 var BATCH_DELAY_MS = 30;
-var RETRY_AFTER_MS = 6e4;
+var CACHE_KEY = "oo-tasks-cache";
 var TasksPlugin = class extends Plugin {
   static sequence = 2;
   // after ConfigPlugin (1), whose `odoo_tasks` setting gates everything
@@ -6698,39 +6698,48 @@ var TasksPlugin = class extends Plugin {
   // task id -> its name and stage
   error = signal("");
   // why the last request failed ("" when it worked)
-  keyRejected = signal(false);
-  // Odoo refused the key (odoo.com keys expire after 90 days)
+  sessionRejected = signal(false);
+  // Odoo refused the session (expired, or logged out)
   _warned = false;
-  // the event log hears about a rejected key once per session
+  // the event log hears about a rejected session once per session
   details = signal({});
   // task id -> its Task tab content
   _asked = /* @__PURE__ */ new Set();
   // ids already requested (answered, in flight or failed)
-  _failedAt = /* @__PURE__ */ new Map();
-  // ids whose last request failed -> when
   _queue = [];
   _timer;
   setup() {
+    const cached = this._loadCache();
+    if (Object.keys(cached).length) {
+      this.tasks.set(cached);
+      for (const id of Object.keys(cached)) this._asked.add(id);
+    }
     onWillDestroy(() => clearTimeout(this._timer));
+  }
+  _loadCache() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
   }
   get enabled() {
     return this.config.config.odoo_tasks;
   }
-  // ask for a task's stage, once; a no-op when the feature is off. A task whose request
-  // failed is asked again only after a minute, so an outage is not hammered by every
-  // re-render (a rejected key is never asked again: see _flush)
+  // ask for a task's stage, once; a no-op when the feature is off or this id was
+  // already asked (whether that answered, is still in flight, or failed) — a failed
+  // one is only ever retried by the screens' explicit Refresh (reload()), never on
+  // its own, so a stretch with no odoo.com session open stays quiet instead of
+  // pinging odoo.com on every re-render
   want(id) {
-    if (!this.enabled) return;
-    if (this._asked.has(id)) {
-      const failedAt = this._failedAt.get(id);
-      if (failedAt === void 0 || Date.now() - failedAt < RETRY_AFTER_MS) return;
-      this._failedAt.delete(id);
-    }
+    if (!this.enabled || this._asked.has(id)) return;
     this._asked.add(id);
     this._queue.push(id);
     this._timer ??= setTimeout(() => this._flush(), BATCH_DELAY_MS);
   }
-  // re-read every task asked for so far (the screens' Refresh)
+  // re-read every task asked for so far, including a previously failed one (the
+  // screens' Refresh — the only way a failure is retried)
   async reload() {
     await this._request([...this._asked]);
   }
@@ -6751,7 +6760,7 @@ var TasksPlugin = class extends Plugin {
       set({ error: errorMessage(e) });
     }
   }
-  // whether the backend can see the key, as the reason when it can't ("" when it can)
+  // whether the backend has a working session, as the reason when it doesn't ("" when it does)
   async check() {
     await this._request([]);
     return this.error();
@@ -6759,9 +6768,7 @@ var TasksPlugin = class extends Plugin {
   async _flush() {
     this._timer = void 0;
     const ids = this._queue.splice(0);
-    if (!await this._request(ids) && !this.keyRejected()) {
-      ids.forEach((id) => this._failedAt.set(id, Date.now()));
-    }
+    await this._request(ids);
   }
   // whether Odoo answered; an id it has no row for (unreadable, deleted) still counts as asked
   async _request(ids) {
@@ -6769,13 +6776,15 @@ var TasksPlugin = class extends Plugin {
     try {
       const res = await postJSON("/api/tasks", { ids: ids.map(Number) });
       this.error.set(res.ok ? "" : res.error || "failed");
-      this.keyRejected.set(!!res.key_rejected);
-      if (res.key_rejected && !this._warned) {
+      this.sessionRejected.set(!!res.session_rejected);
+      if (res.session_rejected && !this._warned) {
         this._warned = true;
         this.eventLog.add(`Odoo task stages: ${res.error}`, "", "error");
       }
       if (res.tasks && Object.keys(res.tasks).length) {
-        this.tasks.set({ ...this.tasks(), ...res.tasks });
+        const merged = { ...this.tasks(), ...res.tasks };
+        this.tasks.set(merged);
+        localStorage.setItem(CACHE_KEY, JSON.stringify(merged));
       }
       return res.ok;
     } catch (e) {
@@ -7475,21 +7484,16 @@ var ConfigScreen = class extends Component {
         </div>
         <div t-if="this.config.config.odoo_tasks" class="config-block">
           <h2 class="subtitle">Odoo task stage</h2>
-          <p class="dim">Shows the stage of each task (New, In Progress, …) next to its Task button, read from odoo.com in a single request. goo never stores the API key: it reads it from the <code>GOO_ODOO_API_KEY</code> environment variable of the goo process, so this config file, which you may commit, never holds it.</p>
+          <p class="dim">Shows the stage of each task (New, In Progress, …) next to its Task button, read from odoo.com in a single request. goo never stores a password or key: a small browser extension sends it your odoo.com session cookie, kept in memory only (never written to this config file), whenever you have an odoo.com tab open and logged in.</p>
           <ol class="dim">
-            <li>Create a key on odoo.com: your avatar → My Profile → Account Security → New API Key. Copy it, it is shown only once.</li>
-            <li>Give it to the process that runs goo, then restart goo:
-              <ul>
-                <li>bash / zsh: add <code>export GOO_ODOO_API_KEY=the-key</code> to <code>~/.bashrc</code> / <code>~/.zshrc</code></li>
-                <li>fish: <code>set -gx GOO_ODOO_API_KEY the-key</code> in a file fish loads that no repo tracks (not <code>set -Ux</code>: it writes the key into <code>fish_variables</code>, which dotfile repos often commit)</li>
-                <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
-              </ul>
-            </li>
-            <li>odoo.com keys last 90 days at most. When yours expires, the Task buttons show "key expired?", the event log says so once, and Check says Odoo rejects the key. Renew it: create a new key (step 1) and replace the old one the same way as in step 2 (for the service: <code>systemctl --user edit goo.service</code>, swap the key, then <code>systemctl --user restart goo.service</code>).</li>
+            <li>Install the extension: <code>extension/odoo-session/</code> in the goo repo — open <code>chrome://extensions</code> (or <code>brave://extensions</code>), turn on Developer mode, "Load unpacked", pick that folder.</li>
+            <li>Open an odoo.com tab you're logged into. The extension sends goo the session right away, and again whenever it changes.</li>
+            <li>A goo restart loses the session from memory; the extension resends it within a few minutes on its own (or reload any odoo.com tab to send it immediately).</li>
+            <li>If the session expires or you log out of odoo.com, the Task buttons show "session expired?" and the event log says so once. Logging back in fixes it with no goo restart needed.</li>
           </ol>
           <p>
-            <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>
-            <button class="pbtn" t-on-click="() => this.checkTaskKey()">Check</button>
+            <span t-att-class="this.taskSessionOk() ? 'ok' : 'dim'" t-out="this.taskSessionStatus()"/>
+            <button class="pbtn" t-on-click="() => this.checkTaskSession()">Check</button>
           </p>
         </div>
         <div class="config-block">
@@ -7532,9 +7536,9 @@ var ConfigScreen = class extends Component {
   eventLog = usePlugin(EventLogPlugin);
   tasks = usePlugin(TasksPlugin);
   refreshIcon = m(ICONS.refresh);
-  taskKeyStatus = signal("");
-  // can goo's backend see GOO_ODOO_API_KEY, and does Odoo accept it
-  taskKeyOk = signal(false);
+  taskSessionStatus = signal("");
+  // does goo have a session, and does Odoo accept it
+  taskSessionOk = signal(false);
   checking = signal(false);
   upToDate = signal(false);
   // brief green check by the button when already up to date
@@ -7559,17 +7563,17 @@ var ConfigScreen = class extends Component {
   setup() {
     onMounted(() => this.checkRustBundler());
     useEffect(() => {
-      if (this.tasks.enabled) this.checkTaskKey();
+      if (this.tasks.enabled) this.checkTaskSession();
     });
     onMounted(() => fetchReviewPrompt().then((c) => this.reviewPromptText.set(c)));
     onWillUnmount(() => clearTimeout(this._reviewPromptTimer));
   }
-  async checkTaskKey() {
-    this.taskKeyStatus.set("checking\u2026");
-    this.taskKeyOk.set(false);
+  async checkTaskSession() {
+    this.taskSessionStatus.set("checking\u2026");
+    this.taskSessionOk.set(false);
     const error = await this.tasks.check();
-    this.taskKeyOk.set(!error);
-    this.taskKeyStatus.set(error ? `\u2717 ${error}` : "\u2713 the key works: task stages are shown");
+    this.taskSessionOk.set(!error);
+    this.taskSessionStatus.set(error ? `\u2717 ${error}` : "\u2713 connected: task stages are shown");
   }
   onReviewPromptInput(value) {
     this.reviewPromptText.set(value);
@@ -9688,16 +9692,16 @@ var TaskButton = class extends Component {
   // "Odoo: <stage>" once the stage is known, so it is not mistaken for the GitHub status
   get label() {
     if (this.info) return `Odoo: ${this.info.stage}`;
-    return this.tasks.keyRejected() ? "Odoo: key expired?" : "Odoo task";
+    return this.tasks.sessionRejected() ? "Odoo: session expired?" : "Odoo task";
   }
   get cls() {
-    const category = this.info ? stageClass(this.info.stage) : this.tasks.keyRejected() ? "blocked" : "other";
+    const category = this.info ? stageClass(this.info.stage) : this.tasks.sessionRejected() ? "blocked" : "other";
     return `${this.props.ci ? "dash-ci dash-mb" : "dash-pr-state"} ${category}`;
   }
   get title() {
     if (this.info) return `${this.info.name} \u2014 open the task on odoo.com`;
-    if (this.tasks.keyRejected()) {
-      return "Odoo rejects the API key (expired? odoo.com keys last 90 days at most): create a new one, see Configuration. Click to open the task on odoo.com";
+    if (this.tasks.sessionRejected()) {
+      return "Odoo rejected the session (expired, or logged out of odoo.com): open an odoo.com tab you're logged into, see Configuration. Click to open the task on odoo.com";
     }
     return "open the task on odoo.com";
   }

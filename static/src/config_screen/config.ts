@@ -819,21 +819,16 @@ export class ConfigScreen extends Component {
         </div>
         <div t-if="this.config.config.odoo_tasks" class="config-block">
           <h2 class="subtitle">Odoo task stage</h2>
-          <p class="dim">Shows the stage of each task (New, In Progress, …) next to its Task button, read from odoo.com in a single request. goo never stores the API key: it reads it from the <code>GOO_ODOO_API_KEY</code> environment variable of the goo process, so this config file, which you may commit, never holds it.</p>
+          <p class="dim">Shows the stage of each task (New, In Progress, …) next to its Task button, read from odoo.com in a single request. goo never stores a password or key: a small browser extension sends it your odoo.com session cookie, kept in memory only (never written to this config file), whenever you have an odoo.com tab open and logged in.</p>
           <ol class="dim">
-            <li>Create a key on odoo.com: your avatar → My Profile → Account Security → New API Key. Copy it, it is shown only once.</li>
-            <li>Give it to the process that runs goo, then restart goo:
-              <ul>
-                <li>bash / zsh: add <code>export GOO_ODOO_API_KEY=the-key</code> to <code>~/.bashrc</code> / <code>~/.zshrc</code></li>
-                <li>fish: <code>set -gx GOO_ODOO_API_KEY the-key</code> in a file fish loads that no repo tracks (not <code>set -Ux</code>: it writes the key into <code>fish_variables</code>, which dotfile repos often commit)</li>
-                <li>goo as a systemd user service (it does not read your shell's variables): <code>systemctl --user edit goo.service</code>, then add <code>[Service]</code> and <code>Environment=GOO_ODOO_API_KEY=the-key</code></li>
-              </ul>
-            </li>
-            <li>odoo.com keys last 90 days at most. When yours expires, the Task buttons show "key expired?", the event log says so once, and Check says Odoo rejects the key. Renew it: create a new key (step 1) and replace the old one the same way as in step 2 (for the service: <code>systemctl --user edit goo.service</code>, swap the key, then <code>systemctl --user restart goo.service</code>).</li>
+            <li>Install the extension: <code>extension/odoo-session/</code> in the goo repo — open <code>chrome://extensions</code> (or <code>brave://extensions</code>), turn on Developer mode, "Load unpacked", pick that folder.</li>
+            <li>Open an odoo.com tab you're logged into. The extension sends goo the session right away, and again whenever it changes.</li>
+            <li>A goo restart loses the session from memory; the extension resends it within a few minutes on its own (or reload any odoo.com tab to send it immediately).</li>
+            <li>If the session expires or you log out of odoo.com, the Task buttons show "session expired?" and the event log says so once. Logging back in fixes it with no goo restart needed.</li>
           </ol>
           <p>
-            <span t-att-class="this.taskKeyOk() ? 'ok' : 'dim'" t-out="this.taskKeyStatus()"/>
-            <button class="pbtn" t-on-click="() => this.checkTaskKey()">Check</button>
+            <span t-att-class="this.taskSessionOk() ? 'ok' : 'dim'" t-out="this.taskSessionStatus()"/>
+            <button class="pbtn" t-on-click="() => this.checkTaskSession()">Check</button>
           </p>
         </div>
         <div class="config-block">
@@ -877,8 +872,8 @@ export class ConfigScreen extends Component {
   eventLog = usePlugin(EventLogPlugin);
   tasks = usePlugin(TasksPlugin);
   refreshIcon = m(ICONS.refresh);
-  taskKeyStatus = signal(""); // can goo's backend see GOO_ODOO_API_KEY, and does Odoo accept it
-  taskKeyOk = signal(false);
+  taskSessionStatus = signal(""); // does goo have a session, and does Odoo accept it
+  taskSessionOk = signal(false);
   checking = signal(false);
   upToDate = signal(false); // brief green check by the button when already up to date
   backupMsg = signal("");
@@ -904,18 +899,18 @@ export class ConfigScreen extends Component {
   setup(): void {
     onMounted(() => this.checkRustBundler());
     useEffect(() => {
-      if (this.tasks.enabled) this.checkTaskKey();
+      if (this.tasks.enabled) this.checkTaskSession();
     });
     onMounted(() => fetchReviewPrompt().then((c) => this.reviewPromptText.set(c)));
     onWillUnmount(() => clearTimeout(this._reviewPromptTimer));
   }
 
-  async checkTaskKey(): Promise<void> {
-    this.taskKeyStatus.set("checking…");
-    this.taskKeyOk.set(false);
+  async checkTaskSession(): Promise<void> {
+    this.taskSessionStatus.set("checking…");
+    this.taskSessionOk.set(false);
     const error = await this.tasks.check();
-    this.taskKeyOk.set(!error);
-    this.taskKeyStatus.set(error ? `✗ ${error}` : "✓ the key works: task stages are shown");
+    this.taskSessionOk.set(!error);
+    this.taskSessionStatus.set(error ? `✗ ${error}` : "✓ connected: task stages are shown");
   }
 
   onReviewPromptInput(value: string): void {
