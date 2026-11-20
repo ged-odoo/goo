@@ -38,6 +38,18 @@ DUMP_TMP_DIR = "~/.cache/goo"
 #   two-factor (user 2 is the admin since Odoo 12; skipped when a user already has
 #   the "admin" login). Odoo's password hashing accepts a plaintext password and
 #   re-hashes it on login.
+_MAKE_UNACCENT_IMMUTABLE = """
+CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public;
+DO $$
+BEGIN
+  IF (SELECT provolatile FROM pg_proc
+      WHERE proname = 'unaccent' AND pronargs = 1 AND pronamespace = 'public'::regnamespace) <> 'i'
+  THEN
+    ALTER FUNCTION public.unaccent(text) IMMUTABLE;
+  END IF;
+END $$
+"""
+
 RESTORE_CLEANUPS = {
     "crons": "UPDATE ir_cron SET active = false",
     "assets": (
@@ -296,31 +308,33 @@ class DatabaseService:
             return False, r.stderr.strip() or "createdb failed"
         self.cache.invalidate("list")
         try:
-            # odoo makes unaccent immutable at startup; the dump's unaccent indexes
-            # need it so already, or they fail to build
+            # the dump's unaccent indexes need an immutable unaccent, so before the
+            # replay. A non-superuser can't alter it (its functions belong to the
+            # bootstrap superuser), so it is only altered when it isn't already: a
+            # database cluster prepared like odoo's own docs say (unaccent installed
+            # and made immutable in template0 by a superuser) needs no ALTER.
             r = self.io.run(
-                [
-                    "psql",
-                    "--quiet",
-                    "--dbname",
-                    name,
-                    "-c",
-                    "CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public;"
-                    " ALTER FUNCTION public.unaccent(text) IMMUTABLE",
-                ],
+                ["psql", "--quiet", "--dbname", name, "-c", _MAKE_UNACCENT_IMMUTABLE],
                 timeout=60,
             )
             if r.returncode == 0:
+                # no ON_ERROR_STOP: the dump's COMMENT ON EXTENSION lines fail for a
+                # role that doesn't own the (superuser-installed) extension, which
+                # must not stop the restore; any other error still fails it below.
+                # LC_ALL=C: the errors are found by their English "ERROR:" prefix
                 r = self.io.run(
-                    ["psql", "--quiet", "-v", "ON_ERROR_STOP=1", "--dbname", name, "--file", sql],
+                    ["psql", "--quiet", "--dbname", name, "--file", sql],
                     timeout=3600,
+                    env={**os.environ, "LC_ALL": "C"},
                 )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             self._drop_quietly(name)
             return False, str(e)
-        if r.returncode != 0:
+        errors = [line for line in r.stderr.splitlines() if "ERROR:" in line]
+        errors = [line for line in errors if "must be owner of extension" not in line]
+        if r.returncode != 0 or errors:
             self._drop_quietly(name)
-            return False, r.stderr.strip() or "psql restore failed"
+            return False, (errors[0] if errors else r.stderr.strip()) or "psql restore failed"
         # the filestore rides along in the archive; without it every attachment in
         # the restored database 404s. Best-effort, like every other filestore step.
         src = os.path.join(unpacked, "filestore")

@@ -1905,8 +1905,6 @@ class DatabaseServiceTest(unittest.TestCase):
             [
                 "psql",
                 "--quiet",
-                "-v",
-                "ON_ERROR_STOP=1",
                 "--dbname",
                 "gamma",
                 "--file",
@@ -1914,10 +1912,10 @@ class DatabaseServiceTest(unittest.TestCase):
             ],
             io.run_calls,
         )
-        # unaccent is immutable before the dump's indexes on it are built
+        # unaccent is made immutable (when it isn't) before the dump's indexes on it
         self.assertTrue(
             any(
-                c[-1].endswith("ALTER FUNCTION public.unaccent(text) IMMUTABLE")
+                c[-1].rstrip().endswith("END $$") and "unaccent(text) IMMUTABLE" in c[-1]
                 for c in io.run_calls
             )
         )
@@ -1963,6 +1961,35 @@ class DatabaseServiceTest(unittest.TestCase):
         self.assertIn(["dropdb", "--if-exists", "gamma"], io.run_calls)
         self.assertNotIn(("move", "/tmp/goo-fake/dump/filestore", "/fs/gamma"), io.fs_ops)
 
+    def test_restore_ignores_comment_on_extension_for_a_non_owner(self):
+        io = self._dump_io()
+        io._runs["--file"] = completed(
+            stderr="psql:dump.sql:9: ERROR:  must be owner of extension unaccent"
+        )
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, filestore="/fs", log_progress=False)
+        self.assertTrue(ok, err)
+        self.assertNotIn(["dropdb", "--if-exists", "gamma"], io.run_calls)
+
+    def test_restore_replay_reads_psql_errors_in_english(self):
+        io = self._dump_io()
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        svc.restore_dump("gamma", self.DUMP_URL, filestore="/fs", log_progress=False)
+        replay = [kw for c, kw in zip(io.run_calls, io.run_kwargs, strict=True) if "--file" in c]
+        self.assertEqual([kw["env"]["LC_ALL"] for kw in replay], ["C"])
+
+    def test_restore_fails_on_any_other_error_even_with_exit_zero(self):
+        io = self._dump_io()
+        io._runs["--file"] = completed(
+            stderr="psql:dump.sql:9: ERROR:  must be owner of extension unaccent\n"
+            'psql:dump.sql:20: ERROR:  relation "x" does not exist'
+        )
+        svc = services.DatabaseService(io, TTLCache(ttl=0))
+        ok, err = svc.restore_dump("gamma", self.DUMP_URL, filestore="/fs", log_progress=False)
+        self.assertFalse(ok)
+        self.assertIn('relation "x" does not exist', err)
+        self.assertIn(["dropdb", "--if-exists", "gamma"], io.run_calls)
+
     def test_restore_dump_rejects_archive_without_dump_sql(self):
         io = self._dump_io()
         io.unpacks = {"dump.zip": ["logs.txt"]}
@@ -1981,7 +2008,7 @@ class DatabaseServiceTest(unittest.TestCase):
             for c in io.run_calls
             if c[:2] == ["psql", "--quiet"]
             and c[-2] == "-c"
-            and not c[-1].startswith("CREATE EXTENSION")
+            and not c[-1].lstrip().startswith("CREATE EXTENSION")
         ]
 
     def test_restore_dump_runs_the_requested_cleanups(self):
@@ -2016,8 +2043,6 @@ class DatabaseServiceTest(unittest.TestCase):
             [
                 "psql",
                 "--quiet",
-                "-v",
-                "ON_ERROR_STOP=1",
                 "--dbname",
                 "gamma",
                 "--file",
@@ -2037,8 +2062,6 @@ class DatabaseServiceTest(unittest.TestCase):
             [
                 "psql",
                 "--quiet",
-                "-v",
-                "ON_ERROR_STOP=1",
                 "--dbname",
                 "gamma",
                 "--file",
