@@ -233,20 +233,31 @@ class RunbotServiceTest(unittest.TestCase):
         )
 
     @staticmethod
-    def _tile(colour, extra=""):
-        return f'<div class="batch_tile"><div class="card bg-{colour}-subtle">{extra}</div></div>'
+    def _batch(batch_id, state="done", result="ok", global_state="done", category="Default"):
+        return {
+            "id": batch_id,
+            "state": state,
+            "result": result,
+            "category": category,
+            "global_state": global_state,
+        }
 
-    def _status(self, listing, branch="master", http=None):
-        io = FakeIO(http={f"r-d-1?search={branch}": (listing, None), **(http or {})})
+    def _api_bundle(self, bundle_id, name, *batches):
+        """The reply of runbot's bundle route: the bundle, its newest batch first."""
+        bundle = {"id": bundle_id, "name": name, "last_batch": batches[0] if batches else False}
+        return json.dumps([{**bundle, "batches": list(batches)}])
+
+    def _status(self, reply, branch="master"):
+        io = FakeIO(http={f"api/bundle/{branch}?": (reply, None)})
         return services.RunbotService(io, TTLCache(ttl=0)).statuses([branch])[branch]
 
     def test_bundle_pass_and_running(self):
         # the newest batch is still building; the result is the newest finished one's
-        row = self._row(
-            1, "master", self._tile("info", '<i class="fa fa-spin"></i>') + self._tile("success")
+        reply = self._api_bundle(
+            1, "master", self._batch(3, "ready", "ok", "testing"), self._batch(2)
         )
         self.assertEqual(
-            self._status(row),
+            self._status(reply),
             {
                 "result": "success",
                 "running": True,
@@ -254,52 +265,78 @@ class RunbotServiceTest(unittest.TestCase):
             },
         )
 
-    def test_bundle_pass_not_running_with_connect_links(self):
-        # every finished slot has an `fa-sign-in btn-info` connect link — a bare
-        # btn-info must NOT be read as "still running"
-        row = self._row(
-            1, "master", self._tile("success", '<a class="fa fa-sign-in btn btn-info"></a>')
-        )
-        self.assertEqual(self._status(row)["running"], False)
-        self.assertEqual(self._status(row)["result"], "success")
+    def test_bundle_pass_not_running(self):
+        status = self._status(self._api_bundle(1, "master", self._batch(2)))
+        self.assertEqual((status["result"], status["running"]), ("success", False))
 
-    def test_bundle_fail_and_killed_are_failures(self):
-        for colour in ("danger", "killed"):
-            row = self._row(1, "master", self._tile(colour) + self._tile("success"))
-            self.assertEqual(self._status(row)["result"], "failure", colour)
-
-    def test_bundle_without_finished_batch_has_no_result(self):
-        row = self._row(1, "master", self._tile("info"))
-        status = self._status(row)
+    def test_a_running_batch_is_not_the_result_even_when_a_build_already_failed(self):
+        reply = self._api_bundle(1, "master", self._batch(3, "ready", "ko", "testing"))
+        status = self._status(reply)
         self.assertEqual((status["result"], status["running"]), ("", True))
 
-    def test_status_matches_the_exact_bundle_name(self):
-        # the search also lists bundles whose name merely contains the branch
-        listing = self._row(7, "master-x", self._tile("danger")) + self._row(
-            9, "master", self._tile("success")
+    def test_bundle_fail_and_killed_are_failures(self):
+        for result in ("ko", "killed"):
+            reply = self._api_bundle(1, "master", self._batch(3, result=result), self._batch(2))
+            self.assertEqual(self._status(reply)["result"], "failure", result)
+
+    def test_bundle_without_finished_batch_has_no_result(self):
+        # a batch with no build yet reports no global_state: it is still running
+        status = self._status(
+            self._api_bundle(1, "master", self._batch(3, "preparing", "ok", False))
         )
-        status = self._status(listing)
-        self.assertEqual(
-            (status["result"], status["url"]),
-            ("success", "https://runbot.odoo.com/runbot/bundle/9"),
+        self.assertEqual((status["result"], status["running"]), ("", True))
+
+    def test_status_skips_other_batch_categories_and_warnings(self):
+        reply = self._api_bundle(
+            1,
+            "master",
+            self._batch(4, result="warn"),
+            self._batch(3, category="Nightly", result="ko"),
+            self._batch(2),
         )
+        self.assertEqual(self._status(reply)["result"], "success")
 
     def test_bundle_absent(self):
-        # not in the listing, and the badge 404s too
-        self.assertEqual(
-            self._status(self._row(7, "master-x"), "master"),
-            {"result": "", "running": False, "url": ""},
-        )
-
-    def test_badge_fallback_when_bundle_not_listed(self):
-        for label, expected in (("success", ("success", False)), ("pending", ("", True))):
-            status = self._status(
-                "",
-                "b",
-                http={"badge": (f"<svg><text>x</text><text>{label}</text></svg>", None)},
+        for reply in ("[]", "", "<html>"):
+            self.assertEqual(
+                self._status(reply), {"result": "", "running": False, "url": ""}, reply
             )
-            self.assertEqual((status["result"], status["running"]), expected)
-            self.assertEqual(status["url"], "https://runbot.odoo.com/runbot/bundle/b")
+
+    def test_a_branch_ending_in_digits_is_not_read_as_a_bundle_id(self):
+        # runbot reads `master-fix-123456` as bundle 123456 (here: master): the
+        # bundle of that exact name is found through the listing's id instead
+        listing = self._row(900, "master-fix-123456")
+        io = FakeIO(
+            http={
+                "api/bundle/master-fix-123456?": (
+                    self._api_bundle(1, "master", self._batch(2)),
+                    None,
+                ),
+                "r-d-1?search=": (listing, None),
+                "api/bundle/900?": (
+                    self._api_bundle(900, "master-fix-123456", self._batch(8, result="ko")),
+                    None,
+                ),
+            }
+        )
+        status = services.RunbotService(io, TTLCache(ttl=0)).statuses(["master-fix-123456"])
+        self.assertEqual(
+            status["master-fix-123456"],
+            {
+                "result": "failure",
+                "running": False,
+                "url": "https://runbot.odoo.com/runbot/bundle/900",
+            },
+        )
+        # and without such a bundle, the other bundle's status isn't borrowed
+        io._http["r-d-1?search="] = ("", None)
+        status = services.RunbotService(io, TTLCache(ttl=0)).statuses(["master-fix-123456"])
+        self.assertEqual(status["master-fix-123456"], {"result": "", "running": False, "url": ""})
+
+    def test_status_of_a_branch_with_slashes_is_one_path_segment(self):
+        io = FakeIO(http={"api/bundle/a%2Fb?": ("[]", None)})
+        services.RunbotService(io, TTLCache(ttl=0)).statuses(["a/b"])
+        self.assertIn("api/bundle/a%2Fb?project_id=1&batch_history=10", io.http_calls[0])
 
     GITHUB_LINKS = (
         '<a href="https://github.com/odoo-dev/odoo/tree/master-tref-pr-3-nby">branch</a>'
@@ -310,14 +347,19 @@ class RunbotServiceTest(unittest.TestCase):
         '<a href="https://github.com/odoo/enterprise/pull/123261">pr again</a>'
     )
 
-    def _bundle_info(self, url, listing, **io_kwargs):
-        io = FakeIO(http={"r-d-1?search=": (listing, None)}, **io_kwargs)
+    def _bundle_info(self, url, bundle_reply, listing="", **io_kwargs):
+        http = {"api/bundle/": (bundle_reply, None), "r-d-1?search=": (listing, None)}
+        io = FakeIO(http={**http, **io_kwargs.pop("http", {})}, **io_kwargs)
         return services.RunbotService(io, TTLCache(ttl=0)).bundle_info(url)
 
     def test_bundle_info_name_url(self):
-        listing = self._row(475950, "master-tref-pr-3-nby", self.GITHUB_LINKS)
+        listing = self._row(7, "master-tref-pr-3-nby-older") + self._row(
+            475950, "master-tref-pr-3-nby", self.GITHUB_LINKS
+        )
         info, error = self._bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby", listing
+            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby",
+            self._api_bundle(475950, "master-tref-pr-3-nby", self._batch(1)),
+            listing,
         )
         self.assertIsNone(error)
         self.assertEqual(info["name"], "master-tref-pr-3-nby")
@@ -338,156 +380,93 @@ class RunbotServiceTest(unittest.TestCase):
             ],
         )
 
-    def test_bundle_info_canonical_url_with_id(self):
-        # the canonical URL is <name>-<id>: the name is searched without the id
-        listing = self._row(475950, "master-tref-pr-3-nby", self.GITHUB_LINKS)
-        info, error = self._bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-tref-pr-3-nby-475950", listing
-        )
-        self.assertIsNone(error)
-        self.assertEqual(info["name"], "master-tref-pr-3-nby")
-
-    def test_bundle_info_name_ending_in_digits(self):
-        # a bundle really named "…-33" is found under its full name
-        listing = self._row(5, "master-test-33", self.GITHUB_LINKS)
-        info, error = self._bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-test-33", listing
-        )
-        self.assertIsNone(error)
-        self.assertEqual(info["name"], "master-test-33")
-
-    def test_bundle_info_slugified_canonical_url(self):
-        # runbot's canonical URL slugifies the name (`_` → `-`), which a name search
-        # can't match: the bundle is found through its words and confirmed by its id
-        listing = self._row(485999, "master-fix_fast_delete_open-jebou", self.GITHUB_LINKS)
-        info, error = self._bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-fix-fast-delete-open-jebou-485999",
-            listing,
-        )
-        self.assertIsNone(error)
-        self.assertEqual(info["name"], "master-fix_fast_delete_open-jebou")
-        # the id alone isn't enough: the starred `master` (id 1) is listed for the
-        # word "master", but isn't the bundle the slug names
-        listing += self._row(1, "master", self._tile("success"))
-        info, error = self._bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-fix-fast-delete-open-jebou-1", listing
-        )
-        self.assertIsNone(info)
-        self.assertIn("no such bundle", error)
+    def test_bundle_info_url_by_slug_or_id_resolves_the_name_through_the_api(self):
+        # runbot resolves the slug/id; the listing is then searched by the real name,
+        # which a slugified `_` could never match
+        listing = self._row(485999, "master-fix_fast_open-jebou", self.GITHUB_LINKS)
+        reply = self._api_bundle(485999, "master-fix_fast_open-jebou", self._batch(1))
+        for tail in ("master-fix-fast-open-jebou-485999", "485999"):
+            info, error = self._bundle_info(
+                f"https://runbot.odoo.com/runbot/bundle/{tail}", reply, listing
+            )
+            self.assertIsNone(error)
+            self.assertEqual(info["name"], "master-fix_fast_open-jebou")
+            self.assertEqual(len(info["prs"]), 3)
 
     def test_bundle_info_html_escaped_name(self):
         listing = self._row(8, "master-a&amp;b", self.GITHUB_LINKS)
-        info, _ = self._bundle_info("https://runbot.odoo.com/runbot/bundle/master-a%26b", listing)
+        info, _ = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-a%26b",
+            self._api_bundle(8, "master-a&b", self._batch(1)),
+            listing,
+        )
         self.assertEqual(info["name"], "master-a&b")
-
-    def test_bundle_info_unreadable_listing(self):
-        io = FakeIO(http={"r-d-1": ("", "HTTP Error 503")})
-        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-x"
-        )
-        self.assertIsNone(info)
-        self.assertIn("no such bundle", error)
-
-    def test_bundle_info_bare_id_asks_for_no_page(self):
-        io = FakeIO()
-        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/475950"
-        )
-        self.assertIsNone(info)
-        self.assertIn("not only its id", error)
-        self.assertEqual(io.http_calls, [])
-
-    def test_listing_is_fetched_once_per_branch(self):
-        # status, dumps and the bundle lookup of one branch share the listing page
-        listing = self._listing("master-x")
-        io = FakeIO(
-            http={"r-d-1?search=master-x": (listing, None)},
-            http_head={"runbot9.odoo.com": (200, 1)},
-        )
-        svc = services.RunbotService(io, TTLCache(ttl=60))
-        svc.statuses(["master-x"])
-        svc.dumps("master-x")
-        svc.bundle_info("https://runbot.odoo.com/runbot/bundle/master-x")
-        self.assertEqual(sum("r-d-1" in c for c in io.http_calls), 1)
-        svc.statuses(["master-x"], refresh=True)
-        self.assertEqual(sum("r-d-1" in c for c in io.http_calls), 2)
-
-    def test_unreadable_listing_is_retried_not_cached(self):
-        io = FakeIO(http={"r-d-1": ("", "boom")})
-        svc = services.RunbotService(io, TTLCache(ttl=60))
-        svc.dumps("master")
-        svc.bundle_info("https://runbot.odoo.com/runbot/bundle/master")
-        self.assertGreaterEqual(sum("r-d-1" in c for c in io.http_calls), 2)
+        self.assertEqual(len(info["branches"]), 2)
 
     def test_bundle_info_rejects_foreign_and_missing(self):
         svc = services.RunbotService(FakeIO(), TTLCache(ttl=0))
         info, error = svc.bundle_info("https://example.com/runbot/bundle/x")
         self.assertIsNone(info)
         self.assertIn("not a runbot bundle URL", error)
-        # a slug whose trailing number is another bundle's id must not resolve to it
-        listing = self._row(7, "nope", self.GITHUB_LINKS)
-        info, error = self._bundle_info("https://runbot.odoo.com/runbot/bundle/nope-33", listing)
-        self.assertIsNone(info)
-        self.assertIn("no such bundle", error)
-        # a bare id carries no name to search for
-        info, error = self._bundle_info("https://runbot.odoo.com/runbot/bundle/475950", listing)
+        info, error = self._bundle_info("https://runbot.odoo.com/runbot/bundle/nope-33", "[]")
         self.assertIsNone(info)
         self.assertIn("no such bundle", error)
 
-    # ── database dumps off a bundle's listing row ────────────────────────────────────
+    def test_bundle_info_without_listing_row_has_no_branches_but_a_name(self):
+        info, error = self._bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/x", self._api_bundle(1, "x", self._batch(1))
+        )
+        self.assertIsNone(error)
+        self.assertEqual((info["name"], info["branches"], info["prs"]), ("x", [], []))
 
-    # two batch tiles (newest first), each with build slots carrying the data
-    # attributes the dump URL is assembled from. The Documentation slot dumps no
-    # database (data-databases="[]"), and the older tile must be ignored entirely.
+    # ── database dumps off a bundle's batches ────────────────────────────────────────
+
     @staticmethod
-    def _slot(name, build, dest, host, databases):
-        return (
-            f'<div class="slot_container"><a class="btn btn-default slot_name">'
-            f"<span>{name}</span></a>"
-            f'<build-options-dropdown data-id="{build}" data-dest="{dest}" '
-            f'data-host="{host}" data-databases="{databases}"></build-options-dropdown></div>'
-        )
+    def _slot(name, build, host, *databases):
+        """A batch slot: a trigger and its build, which dumped `databases`."""
+        dest = f"{build}-master"
+        dumps = [
+            {
+                "name": db,
+                "db_name": f"{dest}-{db}",
+                "url": f"https://{host}/runbot/static/build/{dest}/logs/{dest}-{db}.zip",
+            }
+            for db in databases
+        ]
+        return {"trigger": {"id": build, "name": name}, "build": {"id": build, "databases": dumps}}
 
-    def _bundle_with_batches(self):
-        latest = (
-            self._slot("Community Run", "12", "12-master", "runbot9.odoo.com", "[&#34;all&#34;]")
-            + self._slot(
-                "Enterprise Run",
-                "13",
-                "13-master",
-                "runbot9.odoo.com",
-                "[&#34;all&#34;, &#34;base&#34;]",
-            )
-            + self._slot("Documentation", "14", "14-master", "runbot9.odoo.com", "[]")
-        )
-        older = self._slot("Community Run", "1", "1-master", "runbot1.odoo.com", "[&#34;all&#34;]")
-        return (
-            "<title>Bundle master-x</title>"
-            f'<div class="batch_tile">{latest}</div><div class="batch_tile">{older}</div>'
-        )
+    def _api_batch(self, batch_id, *slots):
+        return {
+            f"api/batch/{batch_id}?": (json.dumps([{"id": batch_id, "slots": list(slots)}]), None)
+        }
 
-    def _bundle_with_fresh_empty_batch(self):
-        """A bundle whose newest batch was created seconds ago: runbot hasn't filled
-        in its build slots yet, so it carries no dropdowns at all."""
-        return self._bundle_with_batches().replace(
-            '<div class="batch_tile">',
-            '<div class="batch_tile"></div><div class="batch_tile">',
-            1,
-        )
+    def _dumps_io(self, batches, **kwargs):
+        """A runbot for bundle `master-x`: newest batch (3) with dumps on runbot9,
+        the one before it (2) on runbot1, `batches` listing what the bundle has."""
+        http = {
+            "api/bundle/": (self._api_bundle(5, "master-x", *batches), None),
+            **self._api_batch(
+                3,
+                self._slot("Community Run", 12, "runbot9.odoo.com", "all"),
+                self._slot("Enterprise Run", 13, "runbot9.odoo.com", "all", "base"),
+                self._slot("Documentation", 14, "runbot9.odoo.com"),
+                {"trigger": {"id": 1, "name": "Manual"}, "build": False},
+            ),
+            **self._api_batch(2, self._slot("Community Run", 1, "runbot1.odoo.com", "all")),
+        }
+        return FakeIO(http=http, **kwargs)
+
+    def _dumps(self, io, branch="master-x"):
+        return services.RunbotService(io, TTLCache(ttl=0)).dumps(branch)
 
     def test_bundle_dumps_stops_at_the_newest_usable_batch(self):
         # every dump the latest batch offers, each probed and sized; the older
-        # batch's build (runbot1) is never even looked at
-        io = FakeIO(
-            http={"r-d-1?search=master-x": (self._listing("master-x"), None)},
-            http_head={"runbot9.odoo.com": (200, 4096)},
+        # batch (runbot1) is never even fetched
+        io = self._dumps_io(
+            [self._batch(3), self._batch(2)], http_head={"runbot9.odoo.com": (200, 4096)}
         )
-        info, error = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-x"
-        )
-        self.assertIsNone(error)
         self.assertEqual(
-            info["dumps"],
+            self._dumps(io),
             [
                 {
                     "build": "12",
@@ -513,105 +492,83 @@ class RunbotServiceTest(unittest.TestCase):
             ],
         )
         self.assertNotIn("runbot1.odoo.com", " ".join(io.http_calls))
+        self.assertNotIn("api/batch/2", " ".join(io.http_calls))
 
     def test_bundle_dumps_falls_back_past_a_batch_with_no_builds(self):
-        # a batch created moments ago has no build slots yet — read the one before it
+        # a batch created moments ago has no builds yet — read the one before it
         # rather than reporting that the bundle has no database to restore
-        io = FakeIO(
-            http={
-                "r-d-1?search=master-x": (
-                    self._listing("master-x", batches=self._bundle_with_fresh_empty_batch()),
-                    None,
-                )
-            },
+        io = self._dumps_io(
+            [self._batch(4), self._batch(3), self._batch(2)],
             http_head={"runbot9.odoo.com": (200, 4096)},
         )
-        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-x"
-        )
+        io._http = {**self._api_batch(4), **io._http}
         self.assertEqual(
-            [(d["build"], d["db"]) for d in info["dumps"]],
+            [(d["build"], d["db"]) for d in self._dumps(io)],
             [("12", "all"), ("13", "all"), ("13", "base")],
         )
 
     def test_bundle_dumps_falls_back_when_every_dump_is_pruned(self):
         # the newest batch's builds are all gone from disk → the previous batch's
         # (runbot1) dumps are offered instead
-        io = FakeIO(
-            http={"r-d-1?search=master-x": (self._listing("master-x"), None)},
+        io = self._dumps_io(
+            [self._batch(3), self._batch(2)],
             http_head={"runbot9.odoo.com": (404, 0), "runbot1.odoo.com": (200, 77)},
         )
-        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-x"
-        )
         self.assertEqual(
-            [(d["build"], d["db"], d["size"]) for d in info["dumps"]], [("1", "all", 77)]
+            [(d["build"], d["db"], d["size"]) for d in self._dumps(io)], [("1", "all", 77)]
         )
 
     def test_bundle_dumps_drops_pruned_builds(self):
         # runbot cleans old build directories up: a candidate whose zip is gone is
         # not offered at all, rather than failing after the workspace exists
-        io = FakeIO(
-            http={"r-d-1?search=master-x": (self._listing("master-x"), None)},
-            http_head={"13-master": (200, 10), "12-master": (404, 0)},
-        )
-        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/master-x"
+        io = self._dumps_io(
+            [self._batch(3)], http_head={"13-master": (200, 10), "12-master": (404, 0)}
         )
         self.assertEqual(
-            [(d["build"], d["db"]) for d in info["dumps"]], [("13", "all"), ("13", "base")]
+            [(d["build"], d["db"]) for d in self._dumps(io)], [("13", "all"), ("13", "base")]
         )
 
-    def _listing(self, *names, batches=None):
-        """runbot's r-d-1 search listing: one bundle row per name, each carrying the
-        batch tiles of _bundle_with_batches (or of `batches`)."""
-        tiles = (batches or self._bundle_with_batches()).split("</title>", 1)[1]
-        return "".join(
-            f'<div class="row bundle_row"><a href="/runbot/bundle/{i}" '
-            f'title="View Bundle {name}">{name}</a>{tiles}</div>'
-            for i, name in enumerate(names, 1)
+    def test_bundle_dumps_ignore_other_batch_categories(self):
+        # `batches` mixes every category: the Nightly batch 3 has dumps but isn't the
+        # bundle's own (Default) kind of batch
+        io = self._dumps_io(
+            [self._batch(5), self._batch(3, category="Nightly"), self._batch(2)],
+            http_head={"runbot9.odoo.com": (200, 5), "runbot1.odoo.com": (200, 5)},
         )
+        io._http = {**self._api_batch(5), **io._http}
+        self.assertEqual([d["build"] for d in self._dumps(io)], ["1"])
 
-    def test_dumps_by_branch_name(self):
-        # "the runbot database for master" — the bundle's row of runbot's search
-        # listing (bundle pages need a browser), matched on the exact name among the
-        # bundles whose name merely contains it
-        listing = self._listing("master-x-older", "master")
-        listing = listing.replace("runbot9", "runbot7", 1)  # the first row's builds
-        io = FakeIO(
-            http={"r-d-1?search=master": (listing, None)},
-            http_head={"runbot9.odoo.com": (200, 4096)},
-        )
+    def test_dumps_by_branch_name_are_cached(self):
+        io = self._dumps_io([self._batch(3)], http_head={"runbot9.odoo.com": (200, 4096)})
         svc = services.RunbotService(io, TTLCache(ttl=60))
-        dumps = svc.dumps("master")
-        self.assertEqual(
-            [(d["build"], d["db"], d["url"].split("/")[2]) for d in dumps],
-            [
-                ("12", "all", "runbot9.odoo.com"),
-                ("13", "all", "runbot9.odoo.com"),
-                ("13", "base", "runbot9.odoo.com"),
-            ],
-        )
-        self.assertFalse(any("/runbot/bundle/" in c for c in io.http_calls))
+        self.assertEqual(len(svc.dumps("master-x")), 3)
         # cached per branch under its own key — a second open costs no requests
         before = len(io.http_calls)
-        svc.dumps("master")
+        svc.dumps("master-x")
         self.assertEqual(len(io.http_calls), before)
+        svc.dumps("master-x", refresh=True)
+        self.assertGreater(len(io.http_calls), before)
 
     def test_dumps_by_branch_absent_bundle(self):
-        # the search only finds bundles whose name contains it: no exact row, no offer
-        io = FakeIO(http={"r-d-1?search=nope": (self._listing("nope-more"), None)})
+        io = FakeIO(http={"api/bundle/": ("[]", None)})
         self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("nope"), [])
 
-    def test_dumps_unreadable_listing(self):
-        io = FakeIO(http={"r-d-1": ("", "HTTP Error 503")})
+    def test_dumps_unreadable_api(self):
+        io = FakeIO(http={"api/bundle/": ("", "HTTP Error 503")})
         self.assertEqual(services.RunbotService(io, TTLCache(ttl=0)).dumps("master"), [])
 
     def test_bundle_dumps_absent_without_batches(self):
         info, _ = self._bundle_info(
-            "https://runbot.odoo.com/runbot/bundle/x", self._row(1, "x", self.GITHUB_LINKS)
+            "https://runbot.odoo.com/runbot/bundle/x", self._api_bundle(1, "x")
         )
         self.assertEqual(info["dumps"], [])
+
+    def test_bundle_info_carries_the_dumps(self):
+        io = self._dumps_io([self._batch(3)], http_head={"runbot9.odoo.com": (200, 1)})
+        info, _ = services.RunbotService(io, TTLCache(ttl=0)).bundle_info(
+            "https://runbot.odoo.com/runbot/bundle/master-x"
+        )
+        self.assertEqual([d["build"] for d in info["dumps"]], ["12", "13", "13"])
 
 
 class MergebotServiceTest(unittest.TestCase):
@@ -805,70 +762,72 @@ class ParseStarredBundlesTest(unittest.TestCase):
 
 
 class MemoryServiceTest(unittest.TestCase):
-    def test_batch_builds_filters_start_qunit_only_links(self):
-        html = (
-            '<build-options-dropdown data-id="300" data-dest="300-master" '
-            'data-host="runbot1.odoo.com" '
-            'data-log_list="[&#34;restore_all&#34;, &#34;start_qunit_only&#34;]"></build-options-dropdown>'
-            '<build-options-dropdown data-id="301" data-dest="301-master" '
-            'data-host="runbot2.odoo.com" '
-            'data-log_list="[&#34;install_all&#34;]"></build-options-dropdown>'
+    @staticmethod
+    def _build(build_id, *steps, children=()):
+        return {
+            "id": build_id,
+            "log_files": [
+                {
+                    "name": s,
+                    "url": f"https://runbot1.odoo.com/runbot/static/build/{build_id}/logs/{s}.txt",
+                }
+                for s in steps
+            ],
+            "children": list(children),
+        }
+
+    def _batch_builds(self, url, api_path, builds):
+        reply = (
+            [{"id": 1, "slots": [{"build": b} for b in builds]}] if "batch/" in api_path else builds
         )
-        io = FakeIO(http={"batch/1/build/1": (html, None)})
-        svc = services.MemoryService(io)
+        io = FakeIO(http={api_path: (json.dumps(reply), None)})
+        return services.MemoryService(io).batch_builds(url)
+
+    def test_batch_builds_filters_start_qunit_only_links(self):
+        builds = self._batch_builds(
+            "/runbot/batch/1/build/1",
+            "api/build/1?",
+            [self._build(300, "restore_all", "start_qunit_only"), self._build(301, "install_all")],
+        )
         self.assertEqual(
-            svc.batch_builds("/runbot/batch/1/build/1"),
+            builds,
             [
                 {
                     "label": "300",
-                    "url": "https://runbot1.odoo.com/runbot/static/build/300-master/logs/start_qunit_only.txt",
+                    "url": "https://runbot1.odoo.com/runbot/static/build/300/logs/start_qunit_only.txt",
                 }
             ],
         )
+
+    def test_batch_builds_of_a_batch_url_reads_slots_and_children(self):
+        builds = self._batch_builds(
+            "https://runbot.odoo.com/runbot/batch/1",
+            "api/batch/1?",
+            [self._build(300, "install_all", children=[self._build(302, "start_qunit_only")])],
+        )
+        self.assertEqual([b["label"] for b in builds], ["302"])
 
     def test_batch_builds_falls_back_to_test_only_no_limit_no_autotags(self):
-        html = (
-            '<build-options-dropdown data-id="300" data-dest="300-master" '
-            'data-host="runbot1.odoo.com" '
-            'data-log_list="[&#34;restore&#34;, &#34;test_only_no_limit_no_autotags&#34;]">'
-            "</build-options-dropdown>"
-            '<build-options-dropdown data-id="301" data-dest="301-master" '
-            'data-host="runbot2.odoo.com" '
-            'data-log_list="[&#34;install_all&#34;]"></build-options-dropdown>'
+        builds = self._batch_builds(
+            "/runbot/batch/1/build/1",
+            "api/build/1?",
+            [self._build(300, "restore", "test_only_no_limit_no_autotags")],
         )
-        io = FakeIO(http={"batch/1/build/1": (html, None)})
-        svc = services.MemoryService(io)
-        self.assertEqual(
-            svc.batch_builds("/runbot/batch/1/build/1"),
-            [
-                {
-                    "label": "300",
-                    "url": (
-                        "https://runbot1.odoo.com/runbot/static/build/300-master"
-                        "/logs/test_only_no_limit_no_autotags.txt"
-                    ),
-                }
-            ],
-        )
+        self.assertEqual(builds[0]["url"].rsplit("/", 1)[1], "test_only_no_limit_no_autotags.txt")
 
     def test_batch_builds_prefers_start_qunit_only_when_both_present(self):
-        html = (
-            '<build-options-dropdown data-id="300" data-dest="300-master" '
-            'data-host="runbot1.odoo.com" '
-            'data-log_list="[&#34;test_only_no_limit_no_autotags&#34;, &#34;start_qunit_only&#34;]">'
-            "</build-options-dropdown>"
+        builds = self._batch_builds(
+            "/runbot/batch/1/build/1",
+            "api/build/1?",
+            [self._build(300, "test_only_no_limit_no_autotags", "start_qunit_only")],
         )
-        io = FakeIO(http={"batch/1/build/1": (html, None)})
+        self.assertEqual(builds[0]["url"].rsplit("/", 1)[1], "start_qunit_only.txt")
+
+    def test_batch_builds_of_an_unreadable_or_foreign_url(self):
+        io = FakeIO(http={"api/": ("", "boom")})
         svc = services.MemoryService(io)
-        self.assertEqual(
-            svc.batch_builds("/runbot/batch/1/build/1"),
-            [
-                {
-                    "label": "300",
-                    "url": "https://runbot1.odoo.com/runbot/static/build/300-master/logs/start_qunit_only.txt",
-                }
-            ],
-        )
+        self.assertEqual(svc.batch_builds("/runbot/batch/1"), [])
+        self.assertEqual(svc.batch_builds("https://example.com/x"), [])
 
     def test_fetch_from_url(self):
         log = "a.WebSuite.Something.js:  [MEMINFO] @suite.one (after GC) - used: 100\n"
