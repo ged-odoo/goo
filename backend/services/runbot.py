@@ -1,10 +1,9 @@
-"""Runbot / mergebot HTML scraping: starred bundles, mergebot PR state, the CI
-(stagings) dashboard, and hoot [MEMINFO] memory logs."""
+"""Runbot (JSON API) and mergebot (HTML scraping): CI status, bundles and database
+dumps, mergebot PR state, the CI (stagings) dashboard, and hoot [MEMINFO] memory logs."""
 
 import html as html_lib
 import json
 import re
-import unicodedata
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -16,14 +15,17 @@ RUNBOT_BASE = "https://runbot.odoo.com"
 MERGEBOT_BASE = "https://mergebot.odoo.com"
 
 
-# ─────────────────────────── Runbot (HTML scraping) ─────────────────────────
+# ─────────────────────────── Runbot (JSON API + HTML) ───────────────────────
 
-# runbot's rd-1 page lists the bundles of the R&D project, one row each (name, github
-# branch/PR links, latest batch tiles with their build slots); the starred ones are the
-# sticky series (master, 19.0, saas-19.4, …). The CI status, the pasted-bundle lookup
-# and the dump lookup read a bundle's row (RunbotService._bundle_html).
+# runbot's JSON API (RUNBOT_BASE/runbot/api): bundles, batches and builds by id or
+# name. It gives the CI status, the database dumps and the build logs. Two things it
+# doesn't list are still read off the HTML of the rd-1 page, which lists the bundles
+# of the R&D project, one row each (name, github branch/PR links): the starred
+# (sticky) series (master, 19.0, saas-19.4, …) and the github branches/PRs a pasted
+# bundle carries (RunbotService._bundle_html).
 _BUNDLE_ROW_RE = re.compile(r'class="[^"]*\bbundle_row\b[^"]*"')
 _BUNDLE_LINK_RE = re.compile(r'href="/runbot/bundle/(\d+)"[^>]*title="View Bundle ([^"]+)"')
+_RD_PROJECT = 1  # the R&D project: where the branches of Odoo's own repos live
 
 
 def parse_starred_bundles(html: str) -> list[tuple[str, str]]:
@@ -42,15 +44,19 @@ def parse_starred_bundles(html: str) -> list[tuple[str, str]]:
     return out
 
 
-def _slugify(name: str) -> str:
-    """The name as runbot's canonical URLs spell it (Odoo's slugify: ASCII, lowercase,
-    every run of non-alphanumerics a single dash)."""
-    ascii_name = unicodedata.normalize("NFKD", html_lib.unescape(name)).encode("ascii", "ignore")
-    return re.sub(r"[\W_]+", "-", ascii_name.decode().lower()).strip("-")
+def _api_get(io: Any, path: str, timeout: float = 20) -> Any:
+    """The parsed JSON of a runbot API route (None when it can't be read)."""
+    text, err = io.http_get(f"{RUNBOT_BASE}/runbot/api/{path}", timeout=timeout)
+    if err or not text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
 
 
 class RunbotService:
-    """Runbot CI status for a branch's bundle, read from runbot.odoo.com's R&D listing."""
+    """Runbot CI status, bundle lookup and database dumps, read from runbot.odoo.com."""
 
     def __init__(self, io: Any, cache: TTLCache) -> None:
         self.io = io
@@ -65,67 +71,71 @@ class RunbotService:
         if refresh:
             for b in branches:
                 self.cache.invalidate(b)
-                self.cache.invalidate(("listing", b))
         with ThreadPoolExecutor(max_workers=min(8, len(branches))) as pool:
             states = pool.map(lambda b: self.cache.get(b, lambda b=b: self._status(b)), branches)
             return dict(zip(branches, states, strict=False))
 
-    def _status(self, branch: str) -> dict[str, Any]:
-        """{result, running, url} for a branch's runbot bundle, read off its row of
-        the R&D listing (see _bundle_html): `running` is true when the newest batch
-        tile is still in progress (runbot tints it `bg-info-subtle`, vs
-        `bg-success-subtle` / `bg-danger-subtle` / `bg-killed-subtle` once done), and
-        `result` ("success"/"failure"/"") is the newest finished tile's colour.
-        `url` is the canonical bundle page (""=no bundle); the UI links to it.
+    def _bundle(self, name: str, batches: int = 0) -> dict[str, Any] | None:
+        """The R&D bundle `name` names (a bundle id or `<name>-<id>` slug too), with
+        its last `batches` batches; None when runbot has none or can't be read."""
+        query = f"project_id={_RD_PROJECT}" + (f"&batch_history={batches}" if batches else "")
+        found = _api_get(self.io, f"bundle/{urllib.parse.quote(name, safe='')}?{query}")
+        return found[0] if isinstance(found, list) and found else None
 
-        A bundle the listing doesn't show falls back to the name-keyed badge, which
-        only knows the result of the last finished batch."""
-        row = self._bundle_html(branch)
-        m = _BUNDLE_LINK_RE.search(row)
-        if not m:
-            s = self._badge(branch)
-            if not s:
-                return {"result": "", "running": False, "url": ""}
-            r = s if s in ("success", "failure") else ""
-            url = f"{RUNBOT_BASE}/runbot/bundle/{urllib.parse.quote(branch)}"
-            return {"result": r, "running": s == "pending", "url": url}
-        tiles = row.split('class="batch_tile')[1:]
-        running = bool(tiles) and ("bg-info-subtle" in tiles[0] or "fa-spin" in tiles[0])
+    def _bundle_named(self, branch: str, batches: int = 0) -> dict[str, Any] | None:
+        """The R&D bundle whose name is exactly `branch`. The API reads a trailing
+        `-<digits>` as a bundle id (`master-fix-123456` is bundle 123456), so a name
+        that comes back as another bundle is looked up by the id its listing row gives."""
+        bundle = self._bundle(branch, batches)
+        if bundle and bundle["name"] != branch:
+            link = _BUNDLE_LINK_RE.search(self._bundle_html(branch))
+            bundle = self._bundle(link.group(1), batches) if link else None
+        return bundle
+
+    _STATUS_BATCHES = 10  # how far back _status looks for a finished batch
+
+    def _status(self, branch: str) -> dict[str, Any]:
+        """{result, running, url} for a branch's runbot bundle. `running` is true while
+        the newest batch has builds still in progress (or none yet), `result`
+        ("success"/"failure"/"") is the newest finished batch's. `url` is the bundle
+        page (""=no bundle); the UI links to it."""
+        bundle = self._bundle_named(branch, self._STATUS_BATCHES)
+        last = bundle and bundle.get("last_batch")
+        if not bundle or not last:
+            return {"result": "", "running": False, "url": ""}
+        running = last.get("global_state") != "done"
         result = ""
-        for tile in tiles[1:] if running else tiles:
-            if "bg-success-subtle" in tile:
-                result = "success"
-            elif "bg-danger-subtle" in tile or "bg-killed-subtle" in tile:
-                result = "failure"
+        for batch in bundle.get("batches") or []:
+            if batch["id"] == last["id"] and running:
+                continue
+            if batch.get("category") != last.get("category") or batch.get("state") != "done":
+                continue
+            result = {"ok": "success", "ko": "failure", "killed": "failure"}.get(
+                batch.get("result"), ""
+            )
             if result:
                 break
         return {
             "result": result,
             "running": running,
-            "url": f"{RUNBOT_BASE}/runbot/bundle/{m.group(1)}",
+            "url": f"{RUNBOT_BASE}/runbot/bundle/{bundle['id']}",
         }
 
     def bundle_info(self, url: str | None) -> tuple[dict[str, Any] | None, str | None]:
         """The bundle a pasted runbot URL names: (info, error) with info =
         {name, branches, prs, dumps}. `name` is the bundle (= branch) name; `branches`
         lists the github repos carrying the branch (the row's `tree` links — dev forks
-        for colleagues' work); `prs` the pull requests the bundle shows. Read off the
-        bundle's row of the R&D listing, found by the name in the URL: either the
-        bundle name itself or the canonical `<name>-<id>` slug (see _bundle_html_by_id).
-        A bare id names nothing to look up."""
+        for colleagues' work); `prs` the pull requests the bundle shows. The URL names
+        the bundle by name, id or canonical `<name>-<id>` slug; its branches and PRs
+        are read off its row of the R&D listing (see _bundle_html) — none when the
+        listing doesn't show it."""
         m = re.match(r"https?://runbot\.odoo\.com/runbot/bundle/([^\s?#/]+)", (url or "").strip())
         if not m:
             return None, "not a runbot bundle URL (https://runbot.odoo.com/runbot/bundle/…)"
-        slug = urllib.parse.unquote(m.group(1))
-        row = ""
-        if not slug.isdigit():  # a bare id has no name to look up
-            row = self._bundle_html(slug) or self._bundle_html_by_id(slug)
-        link = _BUNDLE_LINK_RE.search(row)
-        if not link:
-            return None, (
-                "no such bundle in runbot's R&D listing — paste the bundle's address with its "
-                "name (…/runbot/bundle/<name>-<id>), not only its id"
-            )
+        bundle = self._bundle(urllib.parse.unquote(m.group(1)), self._HISTORY)
+        if not bundle:
+            return None, "no such bundle in runbot's R&D project"
+        row = self._bundle_html(bundle["name"])
         branches, prs, seen = [], [], set()
         for github, branch in re.findall(r'github\.com/([\w.-]+/[\w.-]+)/tree/([^"\s<>]+)', row):
             if ("t", github, branch) not in seen:
@@ -136,41 +146,26 @@ class RunbotService:
                 seen.add(("p", github, number))
                 prs.append({"github": github, "number": int(number)})
         info = {
-            "name": html_lib.unescape(link.group(2)),
+            "name": bundle["name"],
             "branches": branches,
             "prs": prs,
-            "dumps": self.bundle_dumps(row),
+            "dumps": self._bundle_dumps(bundle),
         }
         return info, None
 
     # ── database dumps ───────────────────────────────────────────────────────
-    # Every runbot build leaves its databases dumped next to its logs, as
-    # <host>/runbot/static/build/<dest>/logs/<dest>-<db_suffix>.zip (an odoo dump:
-    # dump.sql + filestore/) — that's the very URL runbot's own `restore` build step
-    # downloads to seed a child build. The listing never links it, but the
-    # <build-options-dropdown> element on each build slot carries all three parts as
-    # data attributes, so we can address it ourselves. Used by "Restore runbot
-    # database" in the create-workspace form — for a pasted bundle (bundle_info)
-    # and for a workspace forked off a sticky series (dumps).
-
-    _SLOT_NAME_RE = re.compile(r'class="[^"]*slot_name"[^>]*>\s*<span>\s*([^<]*?)\s*</span>')
-
-    @staticmethod
-    def _dump_url(host: str, dest: str, db: str) -> str:
-        return f"https://{host}/runbot/static/build/{dest}/logs/{dest}-{db}.zip"
-
-    @staticmethod
-    def _data_attr(attrs: str, name: str) -> str:
-        """One data-<name> value out of a raw tag's attribute string ("" if absent)."""
-        m = re.search(rf'data-{name}="([^"]*)"', attrs)
-        return html_lib.unescape(m.group(1)) if m else ""
+    # Every runbot build leaves its databases dumped next to its logs (an odoo dump:
+    # dump.sql + filestore/) — the very zip runbot's own `restore` build step
+    # downloads to seed a child build. The API lists them in each build's `databases`.
+    # Used by "Restore runbot database" in the create-workspace form — for a pasted
+    # bundle (bundle_info) and for a workspace forked off a sticky series (dumps).
 
     def dumps(self, branch: str, refresh: bool = False) -> list[dict[str, Any]]:
         """The dumps of `branch`'s bundle — "the runbot database for master / 19.0 /
         saas-19.4 / …", for a workspace forked off a sticky series rather than picked
         up from a pasted bundle URL. Works for any branch with a bundle in the R&D
-        listing; [] when there's none, in which
-        case the create form simply doesn't offer the restore.
+        project; [] when there's none, in which case the create form simply doesn't
+        offer the restore.
 
         Cached under a tuple key, out of the way of the bare branch names the status
         cache uses — the create form asks on every open, and a bundle's latest batch
@@ -178,11 +173,79 @@ class RunbotService:
         key = ("dumps", branch)
         if refresh:
             self.cache.invalidate(key)
-            self.cache.invalidate(("listing", branch))
         return self.cache.get(key, lambda: self._dumps(branch))
 
     def _dumps(self, branch: str) -> list[dict[str, Any]]:
-        return self.bundle_dumps(self._bundle_html(branch))
+        bundle = self._bundle_named(branch, self._HISTORY)
+        return self._bundle_dumps(bundle) if bundle else []
+
+    _MAX_BATCHES = 4  # how many batches _bundle_dumps reads, looking for one that has dumps
+    _HISTORY = 10  # the batches fetched with the bundle (of every category)
+
+    def _bundle_dumps(self, bundle: dict[str, Any]) -> list[dict[str, Any]]:
+        """[{build, slot, db, url, size}] — one entry per database dumped by the
+        builds of the bundle's newest USABLE batch ("all" and "base" for the Community
+        and Enterprise runs, "design-theme" for Design-themes; the Documentation build
+        dumps none).
+
+        Newest batch first, falling back to the one before it when that yields
+        nothing — neither "the latest" nor "any" batch is the right one to read. A
+        batch created moments ago has no builds yet (runbot fills them in over the
+        following minutes), and runbot prunes old builds' directories, so what we
+        want is the newest batch that still HAS its dumps. Bounded to the few most
+        recent, so a bundle whose dumps are all long gone costs a handful of probes
+        rather than fifty.
+
+        Each candidate is HEAD-probed (in parallel) and only offered if it is really
+        still served — the alternative is letting the user tick a restore that only
+        fails once the workspace has already been created — and that probe doubles as
+        the size we label it with."""
+        last = bundle.get("last_batch") or {}
+        batches = bundle.get("batches") or ([last] if last else [])
+        own = [b for b in batches if b.get("category") == last.get("category")]
+        for batch in own[: self._MAX_BATCHES]:
+            detail = _api_get(self.io, f"batch/{batch['id']}?depth=0&logs=none")
+            if not isinstance(detail, list) or not detail:
+                continue
+            dumps = self._probe_dumps(self._batch_dump_candidates(detail[0]))
+            if dumps:
+                return dumps
+        return []
+
+    @staticmethod
+    def _batch_dump_candidates(batch: dict[str, Any]) -> list[dict[str, str]]:
+        """[{build, slot, db, url}] for one batch, read off its slots' builds — before
+        any check that the dump is still on disk."""
+        candidates = []
+        for slot in batch.get("slots") or []:
+            build = slot.get("build")
+            if not build:
+                continue
+            for database in build.get("databases") or []:
+                if database.get("name") and database.get("url"):
+                    candidates.append(
+                        {
+                            "build": str(build["id"]),
+                            "slot": slot["trigger"]["name"],
+                            "db": database["name"],
+                            "url": database["url"],
+                        }
+                    )
+        return candidates
+
+    def _probe_dumps(self, candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
+        """The candidates whose zip is actually still served, each with its size."""
+        if not candidates:
+            return []
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+            probes = list(pool.map(lambda c: self.io.http_head(c["url"]), candidates))
+        return [
+            {**c, "size": size}
+            for c, (status, size, _err) in zip(candidates, probes, strict=False)
+            if status == 200
+        ]
+
+    # ── R&D listing (HTML) ───────────────────────────────────────────────────
 
     def sticky_bundles(self, refresh: bool = False) -> dict[str, str]:
         """{version: bundle id} for runbot's sticky (starred) series — master, 19.0,
@@ -209,134 +272,18 @@ class RunbotService:
             return []
         return list(dict.fromkeys(name for _id, name in _BUNDLE_LINK_RE.findall(html)))
 
-    def _listing_rows(self, query: str) -> list[str]:
-        """The bundle rows of runbot's R&D listing whose name contains `query` (a
-        literal substring match, at most one page of them), cached per query so a
-        branch's status, dumps and bundle lookup share one fetch of the page. An
-        unreadable listing is not cached."""
-        key = ("listing", query)
-        rows = self.cache.get(key, lambda: self._fetch_rows(query))
-        if not rows:
-            self.cache.invalidate(key)
-        return rows
-
-    def _fetch_rows(self, query: str) -> list[str]:
-        url = f"{RUNBOT_BASE}/runbot/r-d-1?search={urllib.parse.quote(query)}"
+    def _bundle_html(self, name: str) -> str:
+        """The R&D listing's row for the bundle named exactly `name` ("" when the
+        listing doesn't show it). The search also lists every bundle whose name merely
+        contains it (and the starred series), so the row is matched on the exact name."""
+        url = f"{RUNBOT_BASE}/runbot/r-d-1?search={urllib.parse.quote(name)}"
         html, err = self.io.http_get(url, timeout=20)
-        return [] if err or not html else _BUNDLE_ROW_RE.split(html)[1:]
-
-    def _bundle_html(self, branch: str) -> str:
-        """The R&D listing's row for `branch`'s bundle, with its latest batch tiles
-        newest first ("" when there's none to read).
-
-        Read off runbot's search listing (r-d-1?search=), not the bundle page: bundle
-        pages sit behind a bot check that only a browser passes. The row is matched on
-        the exact bundle name, since the search also lists every bundle whose name
-        merely contains it (and the starred series)."""
-        for row in self._listing_rows(branch):
+        if err or not html:
+            return ""
+        for row in _BUNDLE_ROW_RE.split(html)[1:]:
             m = _BUNDLE_LINK_RE.search(row)
-            if m and html_lib.unescape(m.group(2)) == branch:
+            if m and html_lib.unescape(m.group(2)) == name:
                 return row
-        return ""
-
-    def _bundle_html_by_id(self, slug: str) -> str:
-        """The row of the bundle a canonical `<name>-<id>` slug names ("" if none).
-        The slug's name is slugified (`master-fix_x` → `master-fix-x`), so it can't be
-        searched as a name: search its longest words instead (any bundle containing
-        one is listed) and take the row carrying the slug's own id."""
-        name, _, bundle_id = slug.rpartition("-")
-        if not name or not bundle_id.isdigit():
-            return ""
-        for word in sorted(dict.fromkeys(name.split("-")), key=len, reverse=True)[:3]:
-            for row in self._listing_rows(word):
-                m = _BUNDLE_LINK_RE.search(row)
-                if m and m.group(1) == bundle_id and _slugify(m.group(2)) == name.lower():
-                    return row
-        return ""
-
-    _MAX_BATCHES = 4  # how far back bundle_dumps looks for a batch that still has dumps
-
-    def bundle_dumps(self, html: str) -> list[dict[str, Any]]:
-        """[{build, slot, db, url, size}] — one entry per database dumped by the
-        builds of the bundle's newest USABLE batch ("all" and "base" for the Community
-        and Enterprise runs, "design-theme" for Design-themes; the Documentation build
-        dumps none, and says so with an empty data-databases).
-
-        Newest batch first, falling back to the one before it when that yields
-        nothing — neither "the latest" nor "any" batch is the right one to read. A
-        batch created moments ago has no build slots yet (runbot fills them in over
-        the following minutes), and runbot prunes old builds' directories, so what we
-        want is the newest batch that still HAS its dumps. Bounded to the few most
-        recent, so a bundle whose dumps are all long gone costs a handful of probes
-        rather than fifty.
-
-        Each candidate is HEAD-probed (in parallel) and only offered if it is really
-        still served — the alternative is letting the user tick a restore that only
-        fails once the workspace has already been created — and that probe doubles as
-        the size we label it with."""
-        for tile in html.split('class="batch_tile')[1 : self._MAX_BATCHES + 1]:
-            dumps = self._probe_dumps(self._batch_dump_candidates(tile))
-            if dumps:
-                return dumps
-        return []
-
-    def _batch_dump_candidates(self, tile: str) -> list[dict[str, str]]:
-        """[{build, slot, db, url}] for one batch tile, read off its build slots' data
-        attributes — before any check that the dump is still on disk."""
-        candidates = []
-        for container in tile.split('class="slot_container"')[1:]:
-            attrs_m = re.search(r"<build-options-dropdown\b([^>]*)>", container)
-            if not attrs_m:
-                continue
-            attrs = attrs_m.group(1)
-            host = self._data_attr(attrs, "host")
-            dest = self._data_attr(attrs, "dest")
-            if not host or not dest:
-                continue
-            try:  # data-databases is a JSON list, e.g. ["all", "base"]
-                databases = json.loads(self._data_attr(attrs, "databases") or "[]")
-            except ValueError:
-                continue
-            slot_m = self._SLOT_NAME_RE.search(container)
-            slot = slot_m.group(1) if slot_m else dest
-            build = self._data_attr(attrs, "id")
-            for db in databases:
-                if isinstance(db, str) and db:
-                    candidates.append(
-                        {
-                            "build": build,
-                            "slot": slot,
-                            "db": db,
-                            "url": self._dump_url(host, dest, db),
-                        }
-                    )
-        return candidates
-
-    def _probe_dumps(self, candidates: list[dict[str, str]]) -> list[dict[str, Any]]:
-        """The candidates whose zip is actually still served, each with its size."""
-        if not candidates:
-            return []
-        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
-            probes = list(pool.map(lambda c: self.io.http_head(c["url"]), candidates))
-        return [
-            {**c, "size": size}
-            for c, (status, size, _err) in zip(candidates, probes, strict=False)
-            if status == 200
-        ]
-
-    def _badge(self, branch: str) -> str:
-        """Parse the runbot badge SVG: "success" / "failure" / "pending" / ""."""
-        svg, _ = self.io.http_get(f"{RUNBOT_BASE}/runbot/badge/1/{urllib.parse.quote(branch)}.svg")
-        if not svg:
-            return ""
-        texts = re.findall(r"<text[^>]*>([^<]*)</text>", svg)
-        label = texts[-1].strip().lower() if texts else ""
-        if "success" in label:
-            return "success"
-        if any(k in label for k in ("fail", "ko", "error", "killed")):
-            return "failure"
-        if any(k in label for k in ("pending", "running", "testing", "progress")):
-            return "pending"
         return ""
 
 
@@ -836,46 +783,33 @@ class MemoryService:
 
     def batch_builds(self, url: str) -> list[dict[str, str]]:
         """[{"label", "url"}] of raw step-log URLs (one of `_MEMINFO_STEP_NAMES`)
-        for builds offering one of those steps on a runbot batch/build page —
-        the Memory panel's bulk import of a batch's builds (fetch parses [MEMINFO] lines out of the raw log text,
-        not a build's HTML page). The action dropdown itself is built
-        client-side by runbot's JS from a <build-options-dropdown data-id
-        data-log_list data-dest data-log_url> element, so we read those data
-        attributes and construct the log URL directly rather than the
-        (JS-rendered, never-present-in-the-fetched-HTML) <a> links. Runbot
-        dropped the once-present `data-log_url` attribute, so the log host
-        is now built from `data-host` instead. Not cached: a one-off user
-        action, not a periodic poll."""
-        if url.startswith("/"):
-            url = f"{RUNBOT_BASE}{url}"
-        html, err = self.io.http_get(url, timeout=20)
-        if err or not html:
+        for the builds of a runbot batch or build page that ran one of those steps —
+        the Memory panel's bulk import of a batch's builds (fetch parses [MEMINFO]
+        lines out of the raw log text). The builds, children included, come from the
+        runbot API and each lists its step logs. Not cached: a one-off user action,
+        not a periodic poll."""
+        m = re.search(r"/runbot/(batch|build)/(\d+)(?:/build/(\d+))?", url)
+        if not m:
             return []
-        builds, seen = [], set()
-        for m in re.finditer(r"<build-options-dropdown\b([^>]*)>", html):
-            attrs = m.group(1)
-            log_list_m = re.search(r'data-log_list="([^"]*)"', attrs)
-            if not log_list_m:
-                continue
-            log_list = html_lib.unescape(log_list_m.group(1))
-            step = next((s for s in self._MEMINFO_STEP_NAMES if s in log_list), None)
-            if not step:
-                continue
-            id_m = re.search(r'data-id="(\d+)"', attrs)
-            dest_m = re.search(r'data-dest="([^"]*)"', attrs)
-            host_m = re.search(r'data-host="([^"]*)"', attrs)
-            if not id_m or not dest_m or not host_m:
-                continue
-            build_id = id_m.group(1)
-            if build_id in seen:
-                continue
-            seen.add(build_id)
-            log_url = f"https://{html_lib.unescape(host_m.group(1))}"
-            dest = html_lib.unescape(dest_m.group(1))
-            builds.append(
-                {
-                    "label": build_id,
-                    "url": f"{log_url}/runbot/static/build/{dest}/logs/{step}.txt",
-                }
+        if m.group(3) or m.group(1) == "build":
+            found = _api_get(self.io, f"build/{m.group(3) or m.group(2)}?depth=3&logs=none")
+        else:
+            batch = _api_get(self.io, f"batch/{m.group(2)}?depth=3&logs=none")
+            found = (
+                [s["build"] for s in batch[0].get("slots", []) if s.get("build")] if batch else []
             )
+        builds: list[dict[str, str]] = []
+        seen: set[int] = set()
+
+        def visit(build: dict[str, Any]) -> None:
+            logs = {f["name"]: f["url"] for f in build.get("log_files", [])}
+            step = next((s for s in self._MEMINFO_STEP_NAMES if s in logs), None)
+            if step and build["id"] not in seen:
+                seen.add(build["id"])
+                builds.append({"label": str(build["id"]), "url": logs[step]})
+            for child in build.get("children", []):
+                visit(child)
+
+        for build in found if isinstance(found, list) else []:
+            visit(build)
         return builds

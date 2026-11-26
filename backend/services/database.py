@@ -17,7 +17,7 @@ from ..cache import TTLCache
 # Covers typical odoo db names (master, 19.0, master-feat-xyz, test_db).
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-# A runbot build's dump, as RunbotService._dump_url builds it. restore_dump checks
+# A runbot build's dump, as runbot lists it in a build's databases. restore_dump checks
 # the URL it is handed against this: the endpoint feeds a downloaded file straight
 # into psql, so it may fetch runbot dumps and nothing else — never an arbitrary
 # "download this and run it through my database" primitive. (restore_file does
